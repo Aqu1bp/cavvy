@@ -2,7 +2,7 @@
 // name isn't cut to a letter or two. Measured rather than by the column's width (`data-narrow`): the
 // name, the account and the pickers' labels are as long as they are. The row's `data-fit` holds the
 // steps taken, as words ("1 2 3"), for composer.css:
-//   1. the effort and mode pickers' labels (their glyphs stay; their tooltips say it)
+//   1. the effort after the model's name ("xhigh": its tooltip, and the picker, still say it)
 //   2. the pickers' chevrons
 //   3. the account after the model's name
 //   4. the model's name, once only a few letters of it would show (the provider's mark stays)

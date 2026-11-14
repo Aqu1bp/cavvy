@@ -315,7 +315,7 @@ export class AppUpdates {
         const bundle = this.o.bundle ?? (process.env.CAVVY_APP_BUNDLE || bundleOf(process.execPath));
         if (!bundle) return { unavailable: "Only the installed desktop app updates itself." };
         const record = await readInstallRecord();
-        if (!record) return { unavailable: "There's no record of the checkout this app was built from. Install it once with bun run desktop:install or desktop:update, and it can update itself after that." };
+        if (!record) return { unavailable: "Install it once with bun run desktop:install to get updates." };
         if (record.app && real(record.app) !== real(bundle)) return { unavailable: `This copy isn't the one last installed from a checkout (${record.app}).` };
         if (!isDir(record.source)) return { unavailable: `The checkout this app was built from is gone (${record.source}).` };
         return { record };

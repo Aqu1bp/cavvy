@@ -20,8 +20,7 @@ export function contextView(s: { contextTokens: number; compactAt?: number; mode
     if (!s) return { ring: false, line: "" };
     const win = s.model?.contextWindow;
     const full = s.compactAt && win ? Math.min(s.compactAt, win) : s.compactAt ?? win;
-    if (full) return { ring: true, pct: s.contextTokens / full, full, window: win, early: Boolean(win && full < win), line: `${tokens(s.contextTokens)} of ${tokens(full)}` };
+    if (full) return { ring: true, pct: s.contextTokens / full, full, window: win, early: Boolean(win && full < win), line: `${tokens(s.contextTokens)} / ${tokens(full)}` };
     // Claude Code says how big its window is only with its first result.
-    const who = s.model?.providerName ?? "the model";
-    return { ring: cardOpen, line: `Known after ${who}'s first reply` };
+    return { ring: cardOpen, line: "After the first reply" };
 }

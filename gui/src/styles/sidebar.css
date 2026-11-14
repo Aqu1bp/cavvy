@@ -1,8 +1,13 @@
 /* ---- Rail: the sessions, straight on the window glass ------------------
-   No card of its own: the window's material shows through. Its top line
-   (hide, new session) sits at its far end, level with the traffic lights;
-   then search, the list and the plan footer. Rows are pills; the selected
-   one is a raised translucent pill. */
+   No surface of its own: a hairline (shell.css) is all that parts it from
+   the work. From the top: the line level with the traffic lights (its few
+   tools at the far end), New session and Search, the list, the footer.
+
+   Every row in it is one shape: the words from the headings' edge, then at
+   the far end a glyph when there's news (needs you, working, unread,
+   failed, pinned) and when it last moved. Listed by date, a session's
+   second line is its project. The open one is a soft fill. Headings are
+   plain words, never smaller than what they head. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -13,30 +18,35 @@
     position: relative;
     min-height: 0;
     min-width: 0;
-    padding: 0 calc(10 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
     color: var(--rail-fg);
     background: transparent;
-    font-size: 0.929rem;
+    font-size: 0.964rem;
     line-height: 1.4;
     user-select: none;
     -webkit-user-select: none;
+    /* Where a row's glyph slot starts, and how wide it is: headings and the footer line up with it. */
+    --row-pad: calc(8 * var(--sp));
+    --lead-w: calc(16 * var(--sp));
+    --lead-gap: calc(8 * var(--sp));
+    /* How far a session's title sits in from the headings: none by date, under the project's name by project. */
+    --indent: 0px;
 }
 
-/* Narrow windows: the shell floats the rail over the sheet (data-rail="overlay" on an ancestor). */
-/* From the window's edge (shell.css): rounded on its open side only, and --win-pad down inside, so its top line
-   stays level with the traffic lights as when docked. */
+/* Narrow windows: the shell floats the rail over the work (data-rail="overlay" on an ancestor).
+   From the window's edge (shell.css): rounded on its open side only. */
 [data-rail="overlay"] .sidebar {
     padding-top: var(--win-pad);
-    border-radius: 0 calc(14 * var(--sp)) calc(14 * var(--sp)) 0;
+    border-radius: 0 var(--r-card) var(--r-card) 0;
     background: var(--rail-float);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
-    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    -webkit-backdrop-filter: blur(30px) saturate(1.6);
+    backdrop-filter: blur(30px) saturate(1.6);
+    box-shadow: var(--pop-shadow);
 }
 
 .sidebar .hb {
-    border-radius: var(--pill);
-    color: var(--rail-fg-2);
+    border-radius: calc(8 * var(--sp));
+    color: var(--fg-3);
     transition: background 140ms, color 140ms, transform 160ms var(--ease);
 }
 
@@ -59,8 +69,7 @@
     align-items: center;
     gap: 2px;
     height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
-    margin-bottom: 6px;
-    padding-right: 4px;
+    padding: 0 0 0 4px;
     flex: none;
 }
 
@@ -70,85 +79,94 @@
     height: 28px;
 }
 
-/* The app's mark (the svg's own 20px, the frame's like the buttons: base.css leaves the
-   row's icons unscaled), at the row's start; on the lights' line with the buttons. */
+/* The app's mark, where there are no traffic lights (the svg's own 20px, the frame's like the buttons). */
 .side-top .brand {
     flex: none;
     border-radius: 25%;
     box-shadow: var(--shadow-sm);
 }
 
-/* Beside the traffic lights (macOS): they end 78px from the window's left (header.css), and
-   the mark starts 10px after them, as in the mockup. The rail starts at the window's edge,
-   docked or as a drawer. */
-.sidebar.traffic {
-    --brand-x: 88px;
-}
+/* ---- New session, Search ------------------------------------------------ */
 
-.sidebar.traffic .side-top .brand {
-    margin-left: calc(var(--brand-x) - 12 * var(--sp));
-}
-
-.side-tools {
+.side-nav {
     display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    margin-bottom: calc(14 * var(--sp));
+    flex-direction: column;
+    gap: 1px;
     flex: none;
+    margin-bottom: calc(10 * var(--sp));
 }
 
-/* Search everything (the palette): a pill, like a field. */
-.side-search {
-    flex: 1;
-    min-width: 0;
+.nav-row {
     display: flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
+    gap: var(--lead-gap);
+    width: 100%;
+    min-width: 0;
     height: calc(32 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--rail-fg-2);
-    background: var(--rail-hover);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+    padding: 0 var(--row-pad);
+    border-radius: var(--r-row);
+    color: var(--rail-fg);
+    font-weight: 500;
     text-align: left;
-    transition: box-shadow 140ms, color 140ms;
+    transition: background 140ms;
     /* Its width decides whether the shortcut shows (below). */
     container-type: inline-size;
 }
 
-.side-search:hover {
-    color: var(--rail-fg);
-}
-
-.side-search > svg {
+.nav-row > svg {
     flex: none;
+    width: var(--lead-w);
+    height: var(--lead-w);
+    color: var(--rail-fg-2);
 }
 
-.side-search > span:not(.side-kbd) {
+.nav-row > .truncate {
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
 }
 
-/* A narrow sidebar at a large text size: the shortcut gives way rather than run into "Search" (it's in the tooltip). */
-@container (width < 8em) {
+.nav-row:hover {
+    background: var(--rail-hover);
+}
+
+.nav-row:active {
+    background: var(--press);
+}
+
+.nav-row:focus-visible,
+.card-hit:focus-visible,
+.slim-hit:focus-visible,
+.slim.more:focus-visible,
+.shelf-toggle:focus-visible,
+.settled-head:focus-visible,
+.day-head:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
+/* The row's shortcut: there while you point at it, so the rail at rest is only words. */
+.side-kbd {
+    flex: none;
+    font: 500 0.821rem/1 var(--font-ui);
+    color: var(--fg-3);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 140ms;
+}
+
+.nav-row:hover .side-kbd,
+.nav-row:focus-visible .side-kbd {
+    opacity: 1;
+}
+
+/* A narrow sidebar at a large text size: the shortcut gives way rather than run into the words (it's in the tooltip). */
+@container (width < 9em) {
     .side-kbd {
         display: none;
     }
 }
 
-.side-kbd {
-    flex: none;
-    font: 500 0.786rem/1 var(--font-ui);
-    color: var(--fg-3);
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--hover);
-    white-space: nowrap;
-}
+/* ---- The list ------------------------------------------------------------ */
 
 .side-list {
     flex: 1;
@@ -159,8 +177,8 @@
     display: flex;
     flex-direction: column;
     scrollbar-width: none;
-    /* Both edges fade: a row scrolled half out isn't cut through its words. The top 8px is a row's own padding. */
-    mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 16px), transparent);
+    /* Both edges fade: a row scrolled half out isn't cut through its words. */
+    mask-image: linear-gradient(transparent, #000 10px, #000 calc(100% - 16px), transparent);
 }
 
 .side-list::-webkit-scrollbar {
@@ -171,29 +189,44 @@
     flex: none;
 }
 
+/* Nothing in the list: one quiet line where the first day's heading goes, and a retry at its end when loading failed. */
 .side-empty {
-    padding: calc(20 * var(--sp)) calc(8 * var(--sp));
-    color: var(--rail-fg-2);
-    line-height: 1.5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(8 * var(--sp));
+    min-height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 var(--row-pad);
+    font-size: 0.929rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg-3);
 }
 
-/* ---- Group headings: a project, Settled, Archived ---------------------- */
+/* ---- Headings: a day, a project, Needs you, Settled, Archived -----------
+   Plain words over their rows, starting where the rows' glyphs do, never
+   smaller or dimmer than the rows' second line. A count, where there is one,
+   a step quieter. */
 
+.day-head,
 .shelf {
     position: relative;
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(6 * var(--sp));
     flex: none;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
-    margin-top: calc(14 * var(--sp));
-    font-size: 0.857rem;
+    min-height: calc(26 * var(--sp));
+    margin-top: calc(16 * var(--sp));
+    padding: 0 var(--row-pad);
+    font-size: 0.929rem;
     font-weight: 600;
-    color: var(--rail-fg-2);
+    color: var(--fg-2);
     text-align: left;
 }
 
-.shelf:first-child {
+.day-head:first-child,
+.shelf:first-child,
+.needs-g:first-child .shelf {
     margin-top: 0;
 }
 
@@ -202,10 +235,9 @@
 }
 
 .shelf .n {
-    margin-left: auto;
     font-weight: 500;
-    opacity: 0.8;
     font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
 }
 
 .shelf-btn {
@@ -213,8 +245,9 @@
     align-items: center;
     flex: none;
     height: calc(22 * var(--sp));
+    margin-left: auto;
     padding: 0 calc(8 * var(--sp));
-    margin: calc(-3 * var(--sp)) calc(-4 * var(--sp)) calc(-3 * var(--sp)) 0;
+    margin-right: calc(-4 * var(--sp));
     border-radius: var(--pill);
     color: var(--rail-fg-2);
     font-size: 0.857rem;
@@ -226,14 +259,14 @@
     color: var(--rail-fg);
 }
 
-/* A project's New session takes its count's place while you point at the heading. */
+/* A project's New session: at the heading's end while you point at it. */
 .shelf-btn.add {
     position: absolute;
     right: calc(4 * var(--sp));
     top: 50%;
     width: calc(22 * var(--sp));
     padding: 0;
-    margin: calc(-13 * var(--sp)) 0 0;
+    margin: calc(-11 * var(--sp)) 0 0;
     justify-content: center;
     opacity: 0;
 }
@@ -243,41 +276,96 @@
     opacity: 1;
 }
 
-.shelf:hover .n,
-.shelf:has(.shelf-btn.add:focus-visible) .n {
-    visibility: hidden;
-}
-
-.settled-head {
+.settled-head,
+.day-head {
     width: 100%;
-    border-radius: calc(10 * var(--sp));
+    border-radius: var(--r-row);
+    transition: color 140ms;
 }
 
-.settled-head:hover {
+.day-head {
+    transition: color 140ms, margin-bottom 180ms var(--ease);
+}
+
+/* Folded days stacked: one list of headings, not each its own gap. On the folded one, so it closes as its rows
+   go (the side list is a flex column: margins add, they don't collapse). */
+.day-head[aria-expanded="false"] {
+    margin-bottom: calc(-14 * var(--sp));
+}
+
+/* The last day folded: Settled keeps a heading's gap below it. */
+.day-head[aria-expanded="false"] + .settled-gap {
+    margin-top: calc(14 * var(--sp));
+}
+
+.day-head .wait-dot {
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+}
+
+.settled-head:hover,
+.day-head:hover {
     color: var(--rail-fg);
 }
 
+/* The fold's chevron: after the words, there while you point at the heading (or it's folded, so it says why
+   nothing is under it). */
+/* Settled sits at the foot of the list: the gap above it takes what room is left, and is a heading's gap at least. */
+.settled-gap {
+    flex: 1 0 calc(16 * var(--sp));
+}
+
+.side-list > .settled-head {
+    margin-top: 0;
+}
+
+/* Open, it points down at its rows; folded, along the heading. */
 .settled-chev {
     flex: none;
-    transition: transform var(--dur-fast);
+    opacity: 0;
+    transform: rotate(90deg);
+    transition: transform var(--dur-fast), opacity 140ms;
 }
 
 .settled-chev.closed {
-    transform: rotate(180deg);
+    transform: none;
+    opacity: 0.8;
+}
+
+.settled-head:hover .settled-chev,
+.day-head:hover .settled-chev,
+.shelf-toggle:hover .settled-chev,
+:is(.settled-head, .day-head, .shelf-toggle):focus-visible .settled-chev {
+    opacity: 1;
 }
 
 /* Grouped by project, a heading folds its sessions under it (and unfolds
-   them), like Settled. Its New session takes the count's place on hover,
-   beside the chevron. */
+   them), like Settled. It reads as the first row of its group: a folder in
+   the glyph slot (open or shut), the name at the rows' size, so the titles
+   under it start where the name does. Its New session shows at its end on
+   hover. */
+.project-head {
+    min-height: calc(32 * var(--sp));
+    margin-top: calc(14 * var(--sp));
+    font-size: inherit;
+    font-weight: 500;
+    color: var(--rail-fg);
+}
+
+.project-head .lead {
+    color: var(--fg-3);
+}
+
 .shelf-toggle {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
-    margin: calc(-4 * var(--sp)) calc(-8 * var(--sp)) calc(-6 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    gap: calc(6 * var(--sp));
+    align-self: stretch;
+    margin: 0 calc(-1 * var(--row-pad));
+    padding: 0 calc(30 * var(--sp)) 0 var(--row-pad);
+    border-radius: var(--r-row);
     color: inherit;
     font: inherit;
     text-align: left;
@@ -288,52 +376,52 @@
     color: var(--rail-fg);
 }
 
-.shelf-toggle:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+.project-head .shelf-toggle {
+    gap: var(--lead-gap);
+    transition: background 140ms;
 }
 
-.shelf-toggle > svg {
-    flex: none;
-}
-
-.project-head .shelf-btn.add {
-    right: calc(25 * var(--sp));
+.project-head .shelf-toggle:hover {
+    background: var(--rail-hover);
 }
 
 .project-head .wait-dot {
     margin-left: calc(2 * var(--sp));
 }
 
-/* Folded projects one after another read as a list of folders. */
+/* Folded projects one after another read as a list. */
 .project-head.folded + .project-head {
-    margin-top: calc(2 * var(--sp));
+    margin-top: 0;
 }
 
-/* ---- A session in play: title, when | project · branch -----------------
-   No glyph at the start: how it's doing is said at the end (RowEnd), so a
-   quiet row is just its words and the titles all start at one edge. */
+/* ---- A session: what it's about, a glyph when there's news, when --------- */
 
-.card {
+.card,
+.slim {
     position: relative;
     flex: none;
     margin-bottom: 1px;
-    border-radius: calc(11 * var(--sp));
+    border-radius: var(--r-row);
+    color: var(--rail-fg);
     transition: background 140ms;
 }
 
 .card:hover,
-.card.menu-open {
+.card.menu-open,
+.slim:hover,
+.slim.menu-open {
     background: var(--rail-hover);
 }
 
-.card.cur {
-    background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
+/* The open one: a soft fill. */
+.card.cur,
+.slim.cur {
+    background: color-mix(in srgb, var(--fg) 11%, transparent);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
 }
 
-/* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted pill, apart
-   from the open session's raised one; a check in an accent disc for its glyph. */
+/* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted row, apart
+   from the open session's; a check in an accent disc for its glyph. */
 .card.picked,
 .slim.picked {
     background: var(--accent-soft);
@@ -347,71 +435,170 @@
 
 .card.cur.picked,
 .slim.cur.picked {
-    box-shadow: inset 0 0 0 1px var(--accent-border), var(--ctl-shadow);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
-.sidebar .st.pick {
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
-    margin: 1px;
-    place-content: center;
-    justify-self: center;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--accent-ink);
-}
-
-.card-hit {
+/* The title from the headings' edge; how it's doing (the glyph), then when, at the far end. */
+.card-hit,
+.slim-hit {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: calc(9 * var(--sp));
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: calc(8 * var(--sp));
     align-items: center;
     width: 100%;
     min-width: 0;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(11 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: 0 var(--row-pad) 0 calc(var(--row-pad) + var(--indent));
+    border-radius: var(--r-row);
     text-align: left;
     color: inherit;
 }
 
-[data-density="compact"] .card-hit {
-    padding-top: calc(5 * var(--sp));
-    padding-bottom: calc(5 * var(--sp));
+/* Listed by date: two lines, the title over its project and what it runs on. By project, the heading says
+   where: one line. */
+[data-group="date"] .card:not(.needs-row) .card-hit {
+    grid-template-rows: auto auto;
+    row-gap: calc(3 * var(--sp));
+    min-height: calc(54 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp)) calc(9 * var(--sp)) calc(var(--row-pad) + var(--indent) + 2 * var(--sp));
 }
 
-.card-hit:focus-visible,
-.slim-hit:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+[data-group="date"] .card:not(.needs-row) {
+    border-radius: calc(var(--r-row) + 2 * var(--sp));
 }
 
-/* The status glyph: a working ring, a hand while it needs you, a check when it finished unseen. */
-.sidebar .st {
+[data-group="date"] .card:not(.needs-row) .t {
+    font-size: 1rem;
+}
+
+/* The actions take the time's place on the top line; what it runs on stays below. */
+[data-group="date"] .card:not(.needs-row) .sess-acts {
+    bottom: auto;
+    top: calc(5 * var(--sp));
+    right: calc(6 * var(--sp));
+}
+
+.card-hit > .t,
+.slim-hit > .truncate {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.card-hit > .lead,
+.slim-hit > .lead {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.card-hit > .end {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+/* Nothing to say: no glyph, and no room kept for one. */
+.sidebar :is(.card-hit, .slim-hit) > .lead:not(:has(*)) {
+    display: none;
+}
+
+/* Archive and More take the time's place while you point at the row: the glyph gives way with it. */
+.card:not(.needs-row):is(:hover, :focus-within, .menu-open) .card-hit > .lead {
+    visibility: hidden;
+}
+
+/* By project, a project's sessions sit under its name, as in a tree; Settled's don't. */
+.side-list[data-group="project"] > .project-head ~ [data-session-row] {
+    --indent: calc(var(--lead-w) + var(--lead-gap));
+}
+
+.side-list[data-group="project"] > .settled-head ~ [data-session-row] {
+    --indent: 0px;
+}
+
+.card .sub {
+    display: none;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.821rem;
+    line-height: 1.3;
+    color: var(--fg-3);
+}
+
+[data-group="date"] .card .sub {
+    display: block;
+    grid-column: 1 / 3;
+    font-size: 0.893rem;
+}
+
+.card .prov {
+    display: none;
+}
+
+/* What it runs on: there while you point at the row, with its actions. */
+[data-group="date"] .card .prov {
+    display: grid;
+    grid-column: 3;
+    grid-row: 2;
+    justify-self: end;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 120ms;
+}
+
+[data-group="date"] .card:is(:hover, :focus-within, .menu-open) .prov {
+    opacity: 1;
+}
+
+[data-density="compact"] :is(.card-hit, .slim-hit) {
+    min-height: calc(28 * var(--sp));
+}
+
+/* ---- How it's doing: the glyph at the start of a row ----------------------- */
+
+.sidebar .lead {
     display: grid;
     place-items: center;
-    height: calc(18 * var(--sp));
-    color: var(--rail-fg-2);
+    width: var(--lead-w);
+    height: var(--lead-w);
+    flex: none;
 }
 
-.sidebar .st.waiting {
-    color: var(--warn);
+/* Finished, and you haven't looked. */
+.sidebar .unread-dot {
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
 }
 
-.sidebar .st.done {
-    color: var(--ok);
+/* Needs you. */
+.sidebar .wait-dot {
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
+    border-radius: 50%;
+    background: var(--warn);
+    box-shadow: 0 0 0 3px var(--warn-bg);
+    flex: none;
 }
 
-.sidebar .st.error {
-    color: var(--danger);
+.sidebar .err-dot {
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    background: var(--danger);
 }
 
+/* Working: a ring, turning. */
 .sidebar .spin-ring {
     display: inline-block;
-    width: calc(14 * var(--sp));
-    height: calc(14 * var(--sp));
+    width: calc(11 * var(--sp));
+    height: calc(11 * var(--sp));
     border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
-    border-top-color: var(--accent);
+    border: 1.5px solid color-mix(in srgb, var(--rail-fg) 26%, transparent);
+    border-top-color: var(--rail-fg);
     animation: spin 0.9s steps(18) infinite;
 }
 
@@ -420,21 +607,50 @@
     animation: none;
 }
 
-.card .t {
+.sidebar .lead-pin {
+    color: var(--fg-3);
+}
+
+.sidebar .st.pick {
+    display: grid;
+    place-content: center;
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+/* ---- The words, and when ---------------------------------------------------- */
+
+.card .t,
+.slim-hit > .truncate {
     min-width: 0;
-    font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+.card .t {
+    font-weight: 500;
+}
+
 .card.unread .t {
-    font-weight: 650;
+    font-weight: 600;
+}
+
+/* Settled or archived: done with, so a step quieter. */
+.slim:not(.cur) .slim-hit > .truncate {
+    color: var(--rail-fg-2);
+}
+
+.slim:hover .slim-hit > .truncate {
+    color: var(--rail-fg);
 }
 
 /* Working in the background: it can recede, without fading below AA. */
 .card.rec .t {
-    color: var(--fg-2);
+    color: var(--rail-fg-2);
 }
 
 .card.rec:hover .t {
@@ -445,90 +661,19 @@
 .slim .t {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--rail-fg-2);
+    font-size: 0.857rem;
+    color: var(--fg-3);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
-.card .end {
-    grid-row: 1;
-    grid-column: 2;
-}
-
-/* Where it is, a step quieter than the time: the title carries the row. */
-.card .m {
-    grid-column: 1 / span 2;
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    margin-top: 1px;
-    font-size: 0.821rem;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
-}
-
-.card-pin,
-.slim-pin {
-    flex: none;
-    color: var(--rail-fg-2);
-}
-
-/* Which provider: on the open row and the one you point at; the footer shows the plans the rest of the time. */
-.card-model {
-    display: none;
-    place-items: center;
-    margin-left: auto;
-    flex: none;
-}
-
-.card.cur .card-model,
-.card:hover .card-model,
-.card:focus-within .card-model {
-    display: inline-grid;
-}
-
-/* Listed by date: Today, Yesterday and so on, over their sessions. */
-.day-head {
-    flex: none;
-    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
-}
-
-.day-head:first-child,
-.needs-g + .day-head {
-    padding-top: calc(4 * var(--sp));
-}
-
-.sidebar .unread-dot {
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    flex: none;
-}
-
-/* Needs you: an amber dot, no words; its row keeps no archive button. */
-.sidebar .wait-dot {
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: 50%;
-    background: var(--warn);
-    box-shadow: 0 0 0 3px var(--warn-bg);
-    flex: none;
-}
-
 /* Archive and More take the time's place while you point at the row. */
-.sess-acts {
+.sess-acts,
+.slim-acts {
     position: absolute;
-    top: calc(6 * var(--sp));
-    right: calc(6 * var(--sp));
+    top: 0;
+    bottom: 0;
+    right: calc(4 * var(--sp));
     display: flex;
     align-items: center;
     opacity: 0;
@@ -538,7 +683,10 @@
 
 .card:hover .sess-acts,
 .card:focus-within .sess-acts,
-.card.menu-open .sess-acts {
+.card.menu-open .sess-acts,
+.slim:hover .slim-acts,
+.slim:focus-within .slim-acts,
+.slim.menu-open .slim-acts {
     opacity: 1;
     pointer-events: auto;
 }
@@ -548,19 +696,15 @@
 .card:focus-within .end,
 .card.menu-open .end {
     visibility: hidden;
-    min-width: calc(46 * var(--sp));
+    min-width: calc(44 * var(--sp));
 }
 
-/* Over the title line, its text where the title's was (the hit's padding, less the box's own). */
+/* Over the title, its text where the title's was. */
 .card-rename {
     position: absolute;
-    left: calc(4 * var(--sp));
-    right: calc(8 * var(--sp));
+    left: calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
+    right: calc(6 * var(--sp));
     top: calc(5 * var(--sp));
-}
-
-.card-rename .sess-rename {
-    font-weight: 500;
 }
 
 /* The field is see-through: what it covers at the row's end goes, hovered or not. */
@@ -569,55 +713,53 @@
     visibility: hidden;
 }
 
+.card.renaming .t::before {
+    content: "\200b";
+}
+
 /* ---- Needs you: pinned above the list until answered -------------------
    Every session waiting on you but the open one (its request is in front of
-   you), as amber rows saying what it asks; each keeps its own row below.
-   One answered while the rail holds still is a plain row until it goes. */
+   you). The same row, with what it asks under its title; each keeps its own
+   row below. One answered while the rail holds still says how it's doing
+   now until it goes. */
 
 .needs-g {
     flex: none;
-    margin-bottom: calc(14 * var(--sp));
-}
-
-.needs-g + .shelf {
-    margin-top: 0;
-}
-
-.needs-head,
-.needs-head .n {
-    color: var(--warn);
 }
 
 .needs-row {
     animation: needs-in 420ms var(--spring);
 }
 
-.needs-row.waiting {
-    background: color-mix(in srgb, var(--warn) 9%, transparent);
+.needs-hit {
+    row-gap: 0;
+    padding-top: calc(6 * var(--sp));
+    padding-bottom: calc(7 * var(--sp));
 }
 
-.needs-row.waiting:hover {
-    background: color-mix(in srgb, var(--warn) 15%, transparent);
+/* What it asks, under the title, from where the title starts. */
+.needs-row .m {
+    grid-column: 1 / -1;
+    display: flex;
+    min-width: 0;
+    margin-top: 1px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
 }
 
 .needs-row.waiting .m {
     color: var(--warn);
 }
 
-/* No actions take the dot's place here. */
+/* No actions take the time's place here. */
 .needs-row:hover .end,
 .needs-row:focus-within .end {
     visibility: visible;
     min-width: 0;
 }
 
-/* Renamed in place: the field needs the title's line kept (its text is out while it's edited) and the dot gone. */
 .needs-row.renaming .end {
     visibility: hidden;
-}
-
-.card.renaming .t::before {
-    content: "\200b";
 }
 
 @keyframes needs-in {
@@ -631,50 +773,17 @@
     animation: none;
 }
 
-/* ---- Everything else (settled, archived): one line --------------------- */
+/* ---- Settled and archived rows -------------------------------------------- */
 
 .slim {
-    position: relative;
     display: flex;
     align-items: center;
-    flex: none;
-    height: calc(32 * var(--sp));
-    margin-bottom: 1px;
-    border-radius: calc(10 * var(--sp));
-    color: var(--rail-fg);
-    transition: background 140ms;
-}
-
-[data-density="compact"] .slim {
-    height: calc(28 * var(--sp));
-}
-
-.slim:hover,
-.slim.menu-open {
-    background: var(--rail-hover);
-}
-
-.slim.cur {
-    background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
 }
 
 .slim-hit {
     flex: 1;
-    min-width: 0;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    gap: calc(9 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    text-align: left;
-    color: inherit;
-}
-
-.slim .st {
-    width: calc(18 * var(--sp));
-    flex: none;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-right: calc(4 * var(--sp));
 }
 
 .slim-end {
@@ -683,49 +792,39 @@
     place-items: center end;
     flex: none;
     min-width: calc(34 * var(--sp));
-    height: 100%;
-    padding-right: calc(10 * var(--sp));
-}
-
-.slim-acts {
-    position: absolute;
-    right: calc(4 * var(--sp));
-    top: 0;
-    bottom: 0;
-    display: none;
-    align-items: center;
+    align-self: stretch;
+    padding-right: var(--row-pad);
 }
 
 .slim:hover .t,
 .slim:focus-within .t,
 .slim.menu-open .t {
     visibility: hidden;
+    min-width: calc(44 * var(--sp));
 }
 
-.slim:hover .slim-acts,
-.slim:focus-within .slim-acts,
-.slim.menu-open .slim-acts {
-    display: flex;
-}
-
+/* "Show 20 more": a row of the list, quieter. */
 .slim.more {
-    gap: calc(9 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
-    color: var(--rail-fg-2);
-    font-size: 0.857rem;
+    display: flex;
+    gap: var(--lead-gap);
+    width: 100%;
+    min-height: calc(30 * var(--sp));
+    padding: 0 var(--row-pad);
+    color: var(--fg-3);
+    font-size: 0.893rem;
+    text-align: left;
+}
+
+.slim.more > .lead {
+    display: none;
 }
 
 .slim.more:hover {
     color: var(--rail-fg);
 }
 
-.slim.more > svg {
-    width: calc(18 * var(--sp));
-    flex: none;
-}
-
 .slim > .sess-rename {
-    margin: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
+    margin: 0 calc(8 * var(--sp)) 0 calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
 }
 
 /* Renaming edits the title in place: the same type and spot, a quiet field around it, not a box over the row. */
@@ -761,9 +860,7 @@
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(44 * var(--sp));
-    padding: calc(6 * var(--sp)) 0 0;
-    border-top: 0.5px solid var(--line);
+    height: calc(40 * var(--sp));
     flex: none;
 }
 
@@ -775,9 +872,9 @@
     display: flex;
     align-items: center;
     gap: calc(12 * var(--sp));
-    /* The first gauge is centred under the rows' status glyphs (their 18px column starts 8px in). */
-    padding: 0 calc(4 * var(--sp)) 0 calc(5 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    /* The first gauge is centred under the rows' glyphs (their 16px slot starts 8px in). */
+    padding: 0 calc(4 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: var(--r-row);
     overflow: hidden;
     color: var(--rail-fg-2);
     text-align: left;
@@ -908,7 +1005,7 @@
 /* The detail, inside the rail: every plan, each window with its bar and how full it is, and under them when it
    resets. The popovers' own colour, made opaque: the rows it covers don't show through its figures. */
 .popover.plans-card {
-    background: var(--sheen), linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
+    background: linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
 }
 
 .pu-plan {
@@ -1018,7 +1115,7 @@
    whose look says how it stands. Ready: the accent, on a tint of it. Building or
    restarting: a spinner, nothing to click. Failed: red, click to try again. */
 .side-foot .upd-btn {
-    color: var(--accent);
+    color: var(--accent-text);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
@@ -1049,35 +1146,34 @@
 .sidebar.settings-nav .set-back {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
+    gap: var(--lead-gap);
     width: 100%;
-    height: auto;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
-    border-radius: 0;
+    height: calc(32 * var(--sp));
+    margin-bottom: calc(10 * var(--sp));
+    padding: 0 var(--row-pad);
+    border-radius: var(--r-row);
     background: none;
-    color: var(--rail-fg-2);
-    font-size: 0.929rem;
-    font-weight: 600;
+    color: var(--rail-fg);
+    font-size: inherit;
+    font-weight: 500;
 }
 
 .sidebar.settings-nav .set-back:hover {
-    background: none;
-    color: var(--rail-fg);
+    background: var(--rail-hover);
 }
 
 .sidebar.settings-nav .set-back kbd {
     margin-left: auto;
-    font: 500 0.786rem/1 var(--font-ui);
+    font: 500 0.821rem/1 var(--font-ui);
     color: var(--fg-3);
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--hover);
+    padding: 0;
+    background: none;
 }
 
 .sidebar.settings-nav .set-tabs {
     display: flex;
     flex-direction: column;
-    gap: calc(2 * var(--sp));
+    gap: 1px;
     padding: 0;
     overflow: visible;
     background: none;
@@ -1087,15 +1183,15 @@
 .sidebar.settings-nav .navi {
     display: flex;
     align-items: center;
-    gap: calc(10 * var(--sp));
+    gap: var(--lead-gap);
     width: 100%;
-    height: auto;
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    height: calc(32 * var(--sp));
+    padding: 0 var(--row-pad);
+    border-radius: var(--r-row);
     background: none;
     color: var(--rail-fg);
-    font-size: 0.929rem;
-    font-weight: 500;
+    font-size: inherit;
+    font-weight: 400;
     transition: background 140ms;
 }
 
@@ -1135,8 +1231,7 @@
 }
 
 /* ---- Several picked: the selection bar under the list ------------------
-   A glass pill like a toast: how many, what can be done to all of them, and
-   a way out. */
+   A card: how many, what can be done to all of them, and a way out. */
 
 .rail-sel {
     display: flex;
@@ -1144,9 +1239,9 @@
     gap: calc(2 * var(--sp));
     flex: none;
     height: calc(40 * var(--sp));
-    margin: calc(6 * var(--sp)) calc(-2 * var(--sp)) calc(10 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 calc(6 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--r-card);
     color: var(--fg);
     animation: rail-sel-in 280ms var(--spring);
 }

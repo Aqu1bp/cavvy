@@ -15,7 +15,7 @@
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
     flex: none;
     min-width: 0;
 }

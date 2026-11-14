@@ -29,10 +29,10 @@ const [addServerOpen, setAddServerOpen] = createSignal(false);
 
 let mounted = false;
 /**
- * Opens the list of machines under `anchor` (the sidebar's button), or closes it. The list and the dialog it leads
+ * Opens the list of machines under `anchor` (the new session's strip: mountWhere), or closes it. The list and the dialog it leads
  * to are put on the page the first time: none of this is loaded before the button is pressed.
  */
-export function openMachines(anchor: HTMLElement, align: "start" | "end" = "end") {
+export function openMachines(anchor: HTMLElement, align: "start" | "end" = "start") {
     setMenuAlign(align);
     if (!mounted) {
         mounted = true;

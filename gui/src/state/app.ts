@@ -272,6 +272,10 @@ export const [app, setApp] = createStore<AppState>({
     ...loadNavigation(),
 });
 
+/** Nothing connected: the model lists are in and none has a model. Kept while they load again (opening the model
+ *  picker does that), so what depends on it doesn't go and come back. */
+export const noModel = () => Boolean(app.modelsLoaded && app.models.every((g) => !g.models.length));
+
 // Observe the store so all navigation paths (Home, send, import, deletion and
 // sidebar activation) persist together, including direct setApp callers.
 createRoot(() => createEffect(() => {

@@ -6,14 +6,14 @@ import { CONVERSATION_MIN } from "./layout";
 
 export type Change = GitFileDiff["change"];
 
-/** git status's letters, spelled out on hover. */
-export const CHANGE: Record<Change, { letter: string; label: string }> = {
-    added: { letter: "A", label: "Added" },
-    modified: { letter: "M", label: "Modified" },
-    deleted: { letter: "D", label: "Deleted" },
-    untracked: { letter: "U", label: "Untracked" },
-    renamed: { letter: "R", label: "Renamed" },
-    typechange: { letter: "T", label: "Type changed" },
+/** A quiet word after a file's name for what's unusual about its change. A modified file, most of them, has none. */
+export const CHANGE_WORD: Record<Change, string | undefined> = {
+    added: "new",
+    untracked: "new",
+    modified: undefined,
+    deleted: "deleted",
+    renamed: "renamed",
+    typechange: "type changed",
 };
 
 /** "gui/src/lib/" for "gui/src/lib/a.ts"; "" at the top. */

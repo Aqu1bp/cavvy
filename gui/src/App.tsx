@@ -1,11 +1,11 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { FloatingBrowser } from "./components/FloatingBrowser";
@@ -17,14 +17,14 @@ import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
-import { Header } from "./components/Header";
+import { Header, RailButtons } from "./components/Header";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { following, openFind, terminalOpen, setTerminalOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
@@ -216,7 +216,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         railWidth: railDrag() ?? prefs.sidebarWidth,
         panel: p.panel,
         review: p.review,
-        split: reviewSplit(),
+        full: panelFull(),
         reviewBase: reviewDrag() ?? prefs.reviewWidth,
         inspectorWidth: inspectorDrag() ?? inspectorWidth(),
         terminalShown: terminalShown(),
@@ -226,6 +226,10 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     }));
 
     createEffect(() => setShellLayout(layout()));
+    // A panel that closes leaves full screen: it opens again at its own width.
+    createEffect(() => {
+        if (!layout().inspector.open) setPanelFull(false);
+    });
 
     // Opening or closing a panel slides the window's tracks (shell.css). Meanwhile the conversation and
     // the terminal hold one size (lib/layout.ts heldSizes): they're laid out as the slide starts and as it
@@ -265,11 +269,15 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     // A request arriving closes a floating inspector too short to sit above it.
     let cleared: string | undefined;
     let wasOpen = false;
+    let asked: string | undefined;
     createEffect(() => {
         const asks = handleFor(app.activeId)?.view.state.interactions ?? [];
         const request = asks.length ? `${app.activeId}:${asks.map((a) => a.id).join(",")}` : undefined;
         const { mode, short } = layout().inspector;
         const open = p.panel || p.review;
+        // A new request leaves full screen, which covers the composer it shows over; the panel stays open.
+        if (request && request !== asked && untrack(panelFull)) setPanelFull(false);
+        asked = request;
         const next = requestCloses(cleared, wasOpen, { request, mode, short, open });
         cleared = next.cleared;
         wasOpen = open && !next.close;
@@ -406,6 +414,8 @@ export function App() {
                 if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
                 // A sub-agent's own goes back to the one it's under.
                 if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
+                // Full screen first, then the reader.
+                if (panelFull() && shellLayout().inspector.open) return e.preventDefault(), setPanelFull(false);
                 if (review()) return e.preventDefault(), setReview(undefined);
             }
             // And otherwise interrupts a working session.
@@ -488,6 +498,9 @@ export function App() {
             data-insp={inspOpen() ? "on" : "off"}
             data-inspmode={layout().inspector.mode}
             data-inspshort={layout().inspector.short ? "on" : "off"}
+            data-inspfull={layout().inspector.full ? "on" : "off"}
+            // Full screen with no sidebar beside it: the panel's top row starts with the sidebar's buttons (shell.css).
+            data-lead={layout().inspector.full && (!prefs.sidebar || layout().railMode === "overlay") ? "" : undefined}
             data-inspdocking={inspectorDocking() ? "on" : undefined}
             data-sliding={tracksSliding() ? "on" : undefined}
             data-term={layout().terminal.shown ? "on" : "off"}
@@ -518,7 +531,6 @@ export function App() {
                     <div
                         class="sheet"
                         inert={drawerOpen()}
-                        data-following={following() ? "" : undefined}
                         style={{
                             "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
                             "--term-h": `${layout().terminal.height}px`,
@@ -578,6 +590,12 @@ export function App() {
                         <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} inert={holding() || undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
                             <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
+                            </Show>
+                            {/* Full screen covers the title bar: with the sidebar hidden, its two buttons stay here (shell.css). */}
+                            <Show when={panelFull()}>
+                                <div class="insp-lead">
+                                    <RailButtons />
+                                </div>
                             </Show>
                             <Show
                                 when={reviewKept()}

@@ -1,19 +1,9 @@
-/* ---- The dock: request cards and the composer, floating over the conversation's end ----
-   Glass pieces on the sheet (design/glass "Dock: prompts + composer"). The
-   composer is one pill-cornered glass card: the status row while a turn runs,
-   the goal, schedules and queue, attachments, the text, and the controls row.
-   What waits on you (a permission, a question, a plan, a secret) is its own
-   glass card above it. */
-
-/* The transcript fades out under the dock, so text never runs behind the glass. */
-.composer-dock::before {
-    content: "";
-    position: absolute;
-    inset: calc(-28 * var(--sp)) 0 0 0;
-    z-index: -1;
-    background: linear-gradient(transparent, var(--sheet) 62%);
-    pointer-events: none;
-}
+/* ---- The dock: request cards and the composer, at the conversation's end ----
+   Cards on the window's glass (base.css .card-surface). The composer is one:
+   the goal, schedules and queue, attachments, the text, and under it a row of
+   plain words that say how it will run (the model, the effort, the mode) and
+   the one filled button, Send. What waits on you (a permission, a question,
+   a plan, a secret) is its own card above it. */
 
 .composer {
     position: relative;
@@ -25,49 +15,27 @@
 
 /* ---- The card ---------------------------------------------------------- */
 
-.composer-box.glass {
+.composer-box {
     position: relative;
     z-index: 2;
     flex: none;
-    border-radius: calc(24 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp)) calc(16 * var(--sp));
-    transition: box-shadow 200ms;
+    border-radius: calc(18 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(18 * var(--sp));
+    transition: box-shadow 200ms, background 200ms;
 }
 
-.composer-box.glass:has(textarea:focus) {
-    box-shadow:
-        0 0 0 0.5px var(--ctl-stroke),
-        0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
+/* Typing in it: its edge a step stronger. No ring in the accent: the caret says where you are. */
+.composer-box:has(textarea:focus) {
+    box-shadow: inset 0 0 0 0.5px var(--line-strong), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
 }
 
-.composer.dragging .composer-box.glass {
-    box-shadow: 0 0 0 2px var(--accent), var(--ctl-shadow);
+.composer.dragging .composer-box {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 /* A shell command (!): a plain ring in the text colour. */
-.composer.shell .composer-box.glass {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
-}
-
-.composer.v-home .composer-box.glass {
-    box-shadow:
-        0 0 0 0.5px var(--ctl-stroke),
-        inset 0 1px 0 var(--ctl-hi),
-        inset 0 -1px 0 var(--ctl-lo),
-        var(--pop-shadow);
-}
-
-.composer.v-home .composer-box.glass:has(textarea:focus) {
-    box-shadow:
-        0 0 0 0.5px var(--ctl-stroke),
-        0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--pop-shadow);
+.composer.shell .composer-box {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 34%, transparent);
 }
 
 @keyframes c-in {
@@ -95,9 +63,9 @@
     padding: calc(7 * var(--sp)) calc(9 * var(--sp));
     border-radius: calc(10 * var(--sp));
     background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(20px) saturate(1.9);
-    backdrop-filter: blur(20px) saturate(1.9);
-    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    -webkit-backdrop-filter: blur(30px) saturate(1.6);
+    backdrop-filter: blur(30px) saturate(1.6);
+    box-shadow: var(--pop-shadow);
     font-size: 0.821rem;
     color: var(--fg-2);
     white-space: nowrap;
@@ -204,7 +172,7 @@
    to go into this box". Rows are numbered in the order they go; the number is a
    grip while you're on the row. The hint and the row's buttons share one spot. */
 
-.uq-tray.glass {
+.uq-tray {
     position: relative;
     z-index: 1;
     flex: none;
@@ -463,7 +431,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .uq-tray.glass {
+    .uq-tray {
         animation: none;
     }
 
@@ -825,7 +793,7 @@
     display: block;
     flex: 1;
     width: 100%;
-    min-height: calc(44 * var(--sp));
+    min-height: calc(40 * var(--sp));
     max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
     padding: calc(2 * var(--sp)) 0 0;
     /* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. */
@@ -938,14 +906,17 @@
     color: var(--fg-2);
 }
 
-/* ---- Controls row: attach, mention | model, effort, mode … context, send --- */
+/* ---- Controls row: attach | model, effort, mode … context, send ----------
+   Words, not chips: each picker is what it's set to and a chevron, quiet
+   until pointed at. Their glyphs (the provider's mark, the effort's bars, the
+   mode's icon) stand in only when the row is too tight for the words. */
 
 .composer-bar {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
     min-width: 0;
-    margin: calc(4 * var(--sp)) 0 0 calc(-8 * var(--sp));
+    margin: calc(8 * var(--sp)) 0 0 calc(-8 * var(--sp));
 }
 
 .cb {
@@ -955,8 +926,8 @@
     flex: none;
     height: calc(28 * var(--sp));
     min-width: calc(28 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     color: var(--fg-2);
     transition: background 140ms, color 140ms, transform 160ms var(--ease);
 }
@@ -971,25 +942,21 @@
     background: var(--press);
 }
 
-.vsep {
-    flex: none;
-    width: 1px;
-    height: calc(16 * var(--sp));
-    margin: 0 calc(3 * var(--sp));
-    background: var(--line);
+/* Attach leads the row; the pickers start a little after it. */
+.composer-bar > .cb:first-of-type {
+    margin-right: calc(4 * var(--sp));
 }
 
 .pick {
     display: inline-flex;
     align-items: center;
     flex: none;
-    gap: calc(6 * var(--sp));
+    gap: calc(4 * var(--sp));
     height: calc(28 * var(--sp));
     min-width: 0;
-    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 500;
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.964rem;
     color: var(--fg-2);
     white-space: nowrap;
     transition: background 140ms, color 140ms;
@@ -1018,6 +985,30 @@
     min-width: 0;
 }
 
+/* How hard the model thinks, after its name: a step quieter, so the two read as one thing, name first. */
+.pick-eff {
+    color: var(--fg-3);
+}
+
+.pick:hover .pick-eff,
+.pick.open .pick-eff {
+    color: var(--fg-2);
+}
+
+/* The mode's glyph waits until its word gives way (below). The model's provider always shows its mark, before the name. */
+.composer-bar .pick:not(.model) > :is(svg:not(.chev), .provider-mono) {
+    display: none;
+}
+
+.composer-bar .pick.model > :is(svg:not(.chev), .provider-mono) {
+    flex: none;
+    margin-right: calc(2 * var(--sp));
+}
+
+.composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
+    display: inline-flex;
+}
+
 /* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
    still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
 .composer-bar[data-fit~="1"] .pick .lbl,
@@ -1039,12 +1030,12 @@
 
 /* Comparing models (Home): the chip says how many. */
 .pick.model.on {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .pick.mode-plan,
 .pick.mode-plan:hover {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .pick.mode-bypass,
@@ -1052,75 +1043,58 @@
     color: var(--danger);
 }
 
-/* Fast mode: a filled ⚡ in the accent before the effort glyph. */
+/* Fast mode: a filled ⚡ before the model's name. */
 .pick .fz {
     display: inline-grid;
-    margin-right: calc(-2 * var(--sp));
-    color: var(--accent);
+    margin: 0 calc(1 * var(--sp)) 0 calc(-2 * var(--sp));
+    color: var(--accent-text);
 }
 
 .pick .fz svg {
     fill: currentColor;
 }
 
-/* Effort as a glyph: bars rising left to right, filled to the level. */
-.eg {
-    display: inline-flex;
-    align-items: flex-end;
-    flex: none;
-    gap: calc(1.5 * var(--sp));
-    height: calc(12 * var(--sp));
+/* Context: a few quiet words under the card, at its far end ("4% context"), amber then red as it fills. */
+.composer-under {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+    min-height: calc(20 * var(--sp));
+    margin-top: calc(-2 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
 }
 
-.eg i {
-    width: calc(2.5 * var(--sp));
-    border-radius: 1px;
-    background: color-mix(in srgb, currentColor 28%, transparent);
+.composer-under:empty {
+    display: none;
 }
 
-.eg i.on {
-    background: currentColor;
-}
-
-/* Context: a ring with its percentage inside. */
 .ctx-btn {
-    position: relative;
-    display: grid;
-    place-items: center;
     flex: none;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin: 0 calc(6 * var(--sp));
     padding: 0;
-    border-radius: 50%;
-    transition: transform 140ms;
-}
-
-.ctx-btn > * {
-    grid-area: 1 / 1;
-}
-
-.ctx-ring,
-.ctx-ring svg {
-    display: block;
+    font: inherit;
+    line-height: 1.5;
+    color: var(--fg-3);
+    transition: color 140ms;
 }
 
 .ctx-btn:hover,
 .ctx-btn.open {
-    transform: scale(1.06);
+    color: var(--fg);
 }
 
 .ctx-num {
-    font: 600 calc(9 * var(--sp))/1 var(--font-ui);
-    letter-spacing: -0.02em;
-    color: var(--fg-2);
+    font-variant-numeric: tabular-nums;
 }
 
-.ctx-btn.tone-warning .ctx-num {
+.ctx-btn.tone-warning {
     color: var(--warn);
 }
 
-.ctx-btn.tone-danger .ctx-num {
+.ctx-btn.tone-danger {
     color: var(--danger);
 }
 
@@ -1159,30 +1133,26 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(34 * var(--sp));
-    height: calc(34 * var(--sp));
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
     border-radius: 50%;
-    background: var(--accent);
-    color: var(--accent-ink);
-    box-shadow:
-        inset 0 1px 0 color-mix(in srgb, var(--accent-ink) 28%, transparent),
-        0 6px 14px -6px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: var(--ink);
+    color: var(--ink-fg);
     transition: transform 200ms var(--spring), opacity 160ms, background 200ms;
+}
+
+.send:hover:not(:disabled) {
+    background: var(--ink-hover);
 }
 
 .send:active:not(:disabled) {
     transform: scale(0.88);
 }
 
+/* Nothing to send: there, and plainly not yet. */
 .send:disabled {
-    opacity: 0.35;
-    box-shadow: none;
-}
-
-.send.stop {
-    background: var(--fg);
-    color: var(--sheet);
-    box-shadow: none;
+    background: var(--press);
+    color: var(--fg-3);
 }
 
 /* Home, comparing models: the button says how many get the prompt. */
@@ -1207,89 +1177,86 @@
     }
 }
 
-.ask.glass {
+.ask {
     display: flex;
     flex-direction: column;
     flex: 0 1 auto;
     min-height: 0;
     max-height: min(calc(var(--column-h, 100vh) * 0.46), 560 * var(--sp));
-    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
-    border-radius: calc(20 * var(--sp));
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
+    padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
+    border-radius: calc(18 * var(--sp));
     animation: ask-rise 460ms var(--spring);
 }
 
-.ask.glass.itab-plan,
-.ask.glass.itab-question {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
-}
-
-.ask.glass.danger {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
+/* Something destructive: the one card with a colour to its edge. */
+.ask.danger {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 55%, transparent), var(--card-shadow);
 }
 
 .itab-count {
-    margin: calc(-2 * var(--sp)) 0 calc(6 * var(--sp));
-    font-size: 0.786rem;
-    font-weight: 500;
+    margin: calc(-4 * var(--sp)) 0 calc(6 * var(--sp));
+    font-size: 0.821rem;
     color: var(--fg-3);
 }
 
+/* The question: the card's first words, at the text's size, a step heavier. */
 .ask-h {
     display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
+    align-items: baseline;
+    gap: calc(12 * var(--sp));
     min-width: 0;
+    font-size: 1.036rem;
     font-weight: 600;
-}
-
-.ask-ic {
-    display: inline-grid;
-    flex: none;
-    color: var(--warn);
-}
-
-.itab-plan .ask-ic,
-.itab-question .ask-ic {
-    color: var(--accent);
-}
-
-.ask.danger .ask-ic {
-    color: var(--danger);
+    line-height: 1.45;
 }
 
 .ask-title {
+    flex: 1;
     min-width: 0;
     overflow-wrap: anywhere;
     /* An MCP server's form puts its message and the field on separate lines. */
     white-space: pre-line;
 }
 
+/* What it's about, in the question: the command, the file. */
+.ask-code {
+    font-size: 0.929rem;
+    font-weight: 500;
+}
+
+.ask-end {
+    flex: none;
+    font-size: 0.857rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.ask-end .stat {
+    display: inline-flex;
+    gap: calc(6 * var(--sp));
+}
+
 .itab-sub {
     display: flex;
     align-items: center;
     gap: calc(5 * var(--sp));
-    margin: calc(4 * var(--sp)) 0 0 calc(24 * var(--sp));
-    font-size: 0.857rem;
+    margin: calc(3 * var(--sp)) 0 0;
+    font-size: 0.893rem;
     color: var(--fg-3);
 }
 
 .itab-body {
     display: flex;
     flex-direction: column;
-    gap: calc(6 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-height: 0;
-    margin-top: calc(10 * var(--sp));
+    margin-top: calc(12 * var(--sp));
     overflow-y: auto;
+}
+
+/* Nothing more to show than the question. */
+.itab-body:empty {
+    display: none;
 }
 
 .itab-code {
@@ -1297,8 +1264,9 @@
     padding: calc(9 * var(--sp)) calc(12 * var(--sp));
     max-height: calc(150 * var(--sp));
     overflow: auto;
-    border-radius: calc(10 * var(--sp));
-    background: var(--sheet-2);
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
     font-size: 0.893rem;
     line-height: 1.5;
     color: var(--fg);
@@ -1331,14 +1299,18 @@
     margin-top: calc(2 * var(--sp));
 }
 
-.itab-diff {
+/* What an edit would change: the diff as it's drawn in the conversation, in a well. */
+.diff.inline.itab-diff {
     flex: none;
-    border-radius: calc(10 * var(--sp));
+    border-radius: var(--r-well);
     overflow: hidden;
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
 }
 
-.itab-diff .diff-scroll {
-    max-height: calc(150 * var(--sp));
+.diff.inline.itab-diff .diff-scroll {
+    max-height: calc(168 * var(--sp));
+    overflow-y: auto;
 }
 
 .itab-feedback,
@@ -1346,10 +1318,10 @@
     width: 100%;
     padding: calc(8 * var(--sp)) calc(10 * var(--sp));
     border: 0;
-    border-radius: calc(10 * var(--sp));
+    border-radius: var(--r-well);
     resize: none;
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
     font-size: 0.929rem;
     line-height: 1.45;
     color: var(--fg);
@@ -1364,7 +1336,7 @@
 .itab-input:focus,
 .itab-feedback.plan-fb {
     outline: none;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .itab-input.masked {
@@ -1425,7 +1397,8 @@
 }
 
 .q-option.on {
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    background: var(--press);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
 }
 
 .q-option kbd {
@@ -1450,28 +1423,26 @@
     color: var(--fg-3);
 }
 
-/* The answers: the safe one on the left, the rest at the trailing edge, the primary last. */
+/* The answers: the one that goes ahead first, filled; what's broader after it; the way out at the far end, plain. */
 .ask-row {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
     flex-wrap: wrap;
     gap: calc(6 * var(--sp)) calc(8 * var(--sp));
     flex: none;
     min-width: 0;
-    margin-top: calc(12 * var(--sp));
+    margin-top: calc(14 * var(--sp));
 }
 
-/* The plan's first row (keep planning, save, worktree) starts at the leading edge. */
-/* The plan card's first row: the three quiet actions, at the leading edge. */
-.ask-row.plan-row.quiet-row {
-    justify-content: flex-start;
+.ask-row .grow {
+    flex: 1;
 }
 
+/* The plan card's second row: what else can be done with the plan, quieter. */
 .ask-row.plan-row + .ask-row.plan-row {
-    margin-top: calc(8 * var(--sp));
+    margin-top: calc(10 * var(--sp));
     padding-top: calc(8 * var(--sp));
-    border-top: 0.5px solid var(--line);
+    border-top: 1px solid var(--line);
 }
 
 .pbtn {
@@ -1480,61 +1451,79 @@
     justify-content: center;
     flex: none;
     gap: calc(8 * var(--sp));
-    height: calc(30 * var(--sp));
+    height: calc(32 * var(--sp));
     max-width: 100%;
     min-width: 0;
-    padding: 0 calc(14 * var(--sp));
+    padding: 0 calc(16 * var(--sp));
     border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 600;
+    font-size: 0.964rem;
+    font-weight: 500;
     white-space: nowrap;
-    color: var(--fg-2);
-    background: var(--ctl-strong);
-    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
-    transition: transform 160ms var(--ease), filter 140ms, opacity 140ms, color 140ms;
+    color: var(--fg);
+    background: var(--press);
+    transition: transform 160ms var(--ease), background 140ms, opacity 140ms, color 140ms;
 }
 
 .pbtn:has(> kbd) {
-    padding-right: calc(8 * var(--sp));
+    padding-right: calc(12 * var(--sp));
 }
 
 .pbtn:hover:not(:disabled) {
-    color: var(--fg);
+    background: color-mix(in srgb, var(--fg) 15%, transparent);
 }
 
 .pbtn:active:not(:disabled) {
     transform: scale(0.96);
 }
 
-.ask-row.plan-row.quiet-row .pbtn {
-    height: calc(28 * var(--sp));
-}
-
 .pbtn.primary {
-    color: var(--accent-ink);
-    background: var(--accent);
-    box-shadow:
-        inset 0 1px 0 color-mix(in srgb, var(--accent-ink) 25%, transparent),
-        0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+    font-weight: 600;
+    color: var(--ink-fg);
+    background: var(--ink);
 }
 
 .pbtn.primary:hover:not(:disabled) {
-    color: var(--accent-ink);
-    filter: brightness(1.06);
+    background: var(--ink-hover);
+}
+
+/* The way out: words, no fill until pointed at. */
+.pbtn.quiet {
+    padding: 0 calc(12 * var(--sp));
+    color: var(--fg-2);
+    background: none;
+}
+
+.pbtn.quiet:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--hover);
+}
+
+.ask-row.plan-row.quiet-row .pbtn {
+    height: calc(28 * var(--sp));
+    font-size: 0.893rem;
+}
+
+.ask-row.plan-row.quiet-row .pbtn:first-child {
+    margin-left: calc(-12 * var(--sp));
 }
 
 .pbtn:disabled {
     opacity: 0.45;
 }
 
-/* A permission's answers: one row at the trailing edge, never wrapped. Short of room, the broader choices give way
-   (an ellipsis, the whole label on hover); Deny and Allow once stay whole. */
+/* A permission's answers: one row, never wrapped, Deny at its far end. Short of room, the broader choice gives way
+   (an ellipsis, the whole label on hover); Allow once and Deny stay whole. */
 .ask-row.perm-row {
     flex-wrap: nowrap;
 }
 
 .perm-row .pbtn.outlined {
     flex: 0 1 auto;
+}
+
+.perm-row .pbtn.quiet {
+    margin-left: auto;
+    margin-right: calc(-6 * var(--sp));
 }
 
 .pbtn svg {
@@ -1567,20 +1556,29 @@
     min-width: 3ch;
 }
 
+/* A button's key: a small quiet figure after its words, no box. */
 .ask kbd {
     height: auto;
-    min-width: calc(16 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    font-size: 0.786rem;
+    min-width: 0;
+    padding: 0;
+    border-radius: 0;
+    font: 500 0.786rem/1 var(--font-ui);
     color: var(--fg-3);
-    background: var(--hover);
+    background: none;
+    box-shadow: none;
 }
 
 .pbtn.primary kbd {
-    color: inherit;
-    opacity: 0.9;
-    background: color-mix(in srgb, var(--accent-ink) 22%, transparent);
+    color: color-mix(in srgb, var(--ink-fg) 62%, transparent);
+}
+
+/* A question's options keep their key in a box: it's what you press, at the row's start. */
+.q-option kbd {
+    min-width: calc(18 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    text-align: center;
+    background: var(--press);
 }
 
 /* ---- / commands, @ files and $ skills ------------------------------------- */
@@ -1716,49 +1714,58 @@
     color: var(--fg-3);
 }
 
-/* ---- The context card, from the ring ------------------------------------------
-   Context, measured to where it compacts, with Compact now beside the numbers;
-   then this session's tokens. Plan limits are in the rail's footer: only a
-   reached one is said here, since it stops this session. */
+/* ---- The context card -----------------------------------------------------------
+   Above the words under the composer that open it: what the context holds, the bar,
+   then Compact now. Plan limits are in the rail's footer: only a reached one is said
+   here, since it stops this session. */
 
 .popover.ctx-card {
-    padding: 0;
-    border-radius: calc(16 * var(--sp));
     max-width: calc(100vw - 16 * var(--sp));
     overflow-wrap: anywhere;
 }
 
 .cx {
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) 0;
     outline: 0;
+}
+
+.cx .menu-sep {
+    margin-block: calc(2 * var(--sp));
+}
+
+.cx .menu-item {
+    min-height: calc(30 * var(--sp));
+    padding-block: calc(5 * var(--sp));
+}
+
+.cx-info {
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
 }
 
 .cx-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: calc(8 * var(--sp));
+    gap: calc(12 * var(--sp));
+    font-size: 0.929rem;
 }
 
 .cx-head h3 {
     margin: 0;
-    font-size: 0.893rem;
-    font-weight: 600;
-    color: var(--fg-2);
-}
-
-.cx-pct {
-    font-size: 0.929rem;
-    font-weight: 650;
+    font-size: inherit;
+    font-weight: 500;
     color: var(--fg);
 }
 
-.cx-pct.warning { color: var(--warn); }
-.cx-pct.danger { color: var(--danger); }
+.cx-head span {
+    min-width: 0;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    text-align: right;
+}
 
 .cx-bar {
-    height: calc(5 * var(--sp));
-    margin: calc(10 * var(--sp)) 0 calc(8 * var(--sp));
+    height: calc(3 * var(--sp));
+    margin-top: calc(8 * var(--sp));
     overflow: hidden;
     border-radius: var(--pill);
     background: var(--press);
@@ -1767,62 +1774,19 @@
 .cx-bar i {
     display: block;
     height: 100%;
+    min-width: calc(3 * var(--sp));
     border-radius: inherit;
-    background: var(--accent);
+    background: var(--fg-2);
 }
 
 .cx-bar.warning i { background: var(--warn); }
 .cx-bar.danger i { background: var(--danger); }
 
-/* The numbers on the left, the action on the right: the same shape as the footer below. */
-.cx-line,
-.cx-foot {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: calc(12 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.cx-line {
-    padding: calc(4 * var(--sp)) 0 calc(12 * var(--sp));
-}
-
-.cx-line > span,
-.cx-foot > span {
-    min-width: 0;
-}
-
-.cx-foot {
-    margin: 0 calc(-14 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(14 * var(--sp)) calc(10 * var(--sp));
-    border-top: 0.5px solid var(--line);
-}
-
-.cx-link {
-    flex: none;
-    padding: 0;
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--accent);
-}
-
-.cx-link:hover:not([aria-disabled="true"]) {
-    text-decoration: underline;
-    text-underline-offset: 2px;
-}
-
-.cx-link[aria-disabled="true"] {
-    color: var(--fg-4);
-    cursor: default;
-}
-
 /* A reached limit: red while it blocks, amber while credits carry the turns past it (#426). */
 .cx-limit {
     display: flex;
     gap: calc(9 * var(--sp));
-    margin: 0 0 calc(12 * var(--sp));
+    margin: 0 0 calc(2 * var(--sp));
     padding: calc(10 * var(--sp)) calc(11 * var(--sp));
     border-radius: calc(12 * var(--sp));
     background: var(--danger-soft);
@@ -1866,6 +1830,18 @@
     white-space: normal;
 }
 
+/* Compact now: its icon, as the other menus' items have. */
+.cx .compact {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+}
+
+.cx .compact svg {
+    flex: none;
+    color: var(--fg-2);
+}
+
 /* The card's small buttons, like the mockup's ghost pills. */
 .cbtn {
     display: inline-flex;
@@ -1876,15 +1852,14 @@
     padding: 0 calc(11 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--fg-2);
-    background: var(--ctl-strong);
-    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
-    transition: color 140ms, transform 160ms var(--ease);
+    font-weight: 500;
+    color: var(--fg);
+    background: var(--press);
+    transition: background 140ms, transform 160ms var(--ease);
 }
 
-.cbtn:hover:not(:disabled) {
-    color: var(--fg);
+.cbtn:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: color-mix(in srgb, var(--fg) 15%, transparent);
 }
 
 .cbtn:active:not(:disabled) {
@@ -1905,66 +1880,108 @@
     color: var(--fg-3);
 }
 
-/* ---- Effort: the popover and the slider ---------------------------------------- */
+/* ---- Effort: what the model picker opens on; and the slider (Settings uses it too) ----
+   The model in use and how hard it thinks, over a slider with a stop per level. The name opens the models in the
+   popover's place; fast mode is a bolt beside it. */
 
-.popover.effort-pop {
-    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(13 * var(--sp));
-    border-radius: calc(16 * var(--sp));
+.popover.mp:has(> .mpe) {
     overflow: visible;
 }
 
-.ep-h {
+.mpe {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: calc(8 * var(--sp));
-    min-height: calc(24 * var(--sp));
-    margin-bottom: calc(8 * var(--sp));
-    font-size: 1.071rem;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
 }
 
-.ep-h b {
-    font-weight: 650;
+.mpe-h {
+    display: flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    min-width: 0;
+    margin: 0 calc(-4 * var(--sp));
+}
+
+/* The model and its effort, as on the button that opened this; the whole row goes to the models. */
+/* Centred, not on the text's baseline: the provider's mark and Fast's bolt beside it line up with the words. */
+.mpe-model {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 1rem;
+    text-align: left;
+    transition: background 140ms;
+}
+
+.mpe-model:hover,
+.mpe-model:focus-visible {
+    background: var(--hover);
+    outline: none;
+}
+
+.mpe-model > :is(svg, .provider-mono) {
+    flex: none;
+}
+
+.mpe-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    font-weight: 500;
     color: var(--fg);
 }
 
-.ep-ends {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: calc(6 * var(--sp));
-    font-size: 0.857rem;
+.mpe-eff {
+    flex: none;
+    margin-left: calc(-2 * var(--sp));
     color: var(--fg-3);
 }
 
-/* Fast mode, beside the level: a pill that turns the accent when on, its bolt filling with a pop. */
-.ep-fast {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(3 * var(--sp));
-    height: calc(24 * var(--sp));
-    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--fg-2);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
-    transition: background 140ms, color 140ms, box-shadow 140ms;
+.mpe-model .chev {
+    flex: none;
+    align-self: center;
+    margin-left: auto;
+    color: var(--fg-3);
 }
 
-.ep-fast:hover:not(:disabled) {
-    color: var(--fg);
+/* Fast mode: a bolt, filled while it's on. */
+.mpe-fast {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
+}
+
+.mpe-fast:hover:not(:disabled) {
     background: var(--hover);
+    color: var(--fg);
 }
 
-.ep-fast.on {
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 15%, transparent);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 40%, transparent);
+.mpe-fast.on {
+    color: var(--accent-text);
 }
 
-.ep-fast.on svg {
+.mpe-fast.on svg {
     fill: currentColor;
     animation: ep-bolt 260ms var(--ease-out);
+}
+
+.mpe-fast:disabled {
+    opacity: 0.45;
+}
+
+/* Back to the effort, from the models. */
+.mp-search .mp-back {
+    margin-left: calc(-8 * var(--sp));
 }
 
 @keyframes ep-bolt {
@@ -1974,24 +1991,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .ep-fast.on svg {
+    .mpe-fast.on svg {
         animation: none;
     }
 }
 
-[data-motion="instant"] .ep-fast.on svg {
+[data-motion="instant"] .mpe-fast.on svg {
     animation: none;
 }
 
-.ep-fast:disabled {
-    opacity: 0.45;
-}
-
-
-/* Effort as a slider, from Quick at the left to Thorough at the right: a knob that stops at a dot per
-   level, the track behind it filled with an accent that deepens toward Thorough. It moves quickly, and
-   while it's dragged the knob follows the pointer without easing behind it. --p is where the knob is
-   (0 to 1); --pad is the track's padding around the knob, --t the knob's size. */
 .es {
     --pad: calc(3 * var(--sp));
     --t: calc(28 * var(--sp));
@@ -2033,7 +2041,7 @@
     bottom: 0;
     width: calc(2 * var(--pad) + var(--t) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
     border-radius: inherit;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 30%, transparent), color-mix(in srgb, var(--accent) 85%, transparent));
+    background: linear-gradient(90deg, color-mix(in srgb, var(--fg) 14%, transparent), color-mix(in srgb, var(--fg) 34%, transparent));
     transition: width var(--move);
 }
 
@@ -2095,7 +2103,11 @@
     outline-offset: 2px;
 }
 
-/* ---- Model picker: provider filters, then one provider's models ------------ */
+/* ---- Model picker ---------------------------------------------------------
+   From the top: search; whose models are listed, as plain words (the
+   favourites or one provider, with its account at the row's end); the models;
+   and under them the effort of the one in use. No headings, no marks, one
+   fill: the row under the pointer or the keys. */
 
 /* One size while it's open, whatever is filtered or searched: tall enough for everything the providers offer
    (--mp-fit, ModelPicker.tsx), so a few models don't leave half of it blank, and never taller than a long list
@@ -2147,11 +2159,8 @@
     align-items: center;
     flex: none;
     gap: calc(8 * var(--sp));
-    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
-    padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--hover);
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) 0 calc(14 * var(--sp));
+    height: calc(42 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2174,19 +2183,37 @@
 }
 
 .mp-search .hb.sm {
-    border-radius: 50%;
+    border-radius: calc(7 * var(--sp));
+    color: var(--fg-3);
 }
 
-/* The provider filters: one row that scrolls sideways, faded at an edge with more past it. */
+.mp-search .hb.sm + .hb.sm {
+    margin-left: calc(-6 * var(--sp));
+}
+
+/* Whose models are listed, and the listed provider's account at the row's end. */
+.mp-bar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    flex: none;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
+    border-bottom: 0.5px solid var(--line);
+}
+
+/* The filters: one row of words that scrolls sideways, faded at an edge with more past it. */
 .mp-filters {
     display: flex;
-    flex: none;
-    gap: calc(4 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    gap: calc(2 * var(--sp));
+    padding: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
     overflow-x: auto;
     scrollbar-width: none;
     scroll-padding: 0 calc(28 * var(--sp));
-    border-bottom: 0.5px solid var(--line);
 }
 
 .mp-filters::-webkit-scrollbar {
@@ -2209,27 +2236,24 @@
     position: relative;
     display: inline-flex;
     align-items: center;
-    flex: none;
     gap: calc(6 * var(--sp));
+    flex: none;
     height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(8 * var(--sp));
+    border-radius: calc(7 * var(--sp));
     white-space: nowrap;
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
+    font-size: 0.893rem;
+    color: var(--fg-3);
+    transition: color var(--dur-fast);
 }
 
 .mp-f:hover:not(.on) {
-    background: var(--hover);
     color: var(--fg);
 }
 
 .mp-f.on {
-    background: var(--seg-on);
     color: var(--fg);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 3px rgba(0, 0, 0, 0.1);
+    font-weight: 500;
 }
 
 .mp-f:focus-visible {
@@ -2237,70 +2261,58 @@
     outline-offset: -2px;
 }
 
-.mp-f-star {
-    color: var(--fg-3);
-}
-
-.mp-f.on .mp-f-star {
-    color: var(--warn);
-    fill: currentColor;
-}
-
-/* A provider that couldn't list its models: a small dot at its pill's corner. */
+/* A provider that couldn't list its models: a small dot after its name. */
 .mp-f.err::after {
     content: "";
     position: absolute;
-    top: calc(4 * var(--sp));
-    right: calc(4 * var(--sp));
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
+    top: calc(5 * var(--sp));
+    right: calc(1 * var(--sp));
+    width: calc(5 * var(--sp));
+    height: calc(5 * var(--sp));
     border-radius: 50%;
     background: var(--danger);
-    box-shadow: 0 0 0 1.5px var(--ctl-strong);
 }
 
-/* A list's heading: the provider, a note on its list, and a subscription's account. It sits above the list, so the
-   accounts list it opens covers the rows. */
+/* Searching, each provider's matches under its name: a quiet label. */
+.mp-f > :is(svg, .provider-mono) {
+    flex: none;
+}
+
+/* Favorites' star, quiet until its tab is the one shown. */
+.mp-f:not(.on) > .lucide-star {
+    color: var(--fg-4);
+}
+
 .mp-h {
-    position: relative;
-    z-index: 2;
     display: flex;
     align-items: center;
     flex: none;
-    gap: calc(7 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    min-height: calc(32 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(2 * var(--sp)) calc(15 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
 }
 
-.mp-h b {
-    flex: 0 1 auto;
-    font-weight: 600;
-}
-
-.mp-h .grow {
-    flex: 1;
-}
-
-.mp-h-star {
+.mp-h-ic {
+    display: grid;
+    place-items: center;
     flex: none;
-    color: var(--warn);
-    fill: currentColor;
+    width: calc(16 * var(--sp));
 }
 
-.mp-group .mp-h {
-    padding-left: calc(10 * var(--sp));
+/* In Favorites, where providers mix: each row's provider mark before its name. */
+.mr-ic {
+    display: grid;
+    place-items: center;
+    flex: none;
+    align-self: center;
+    margin-right: calc(-2 * var(--sp));
 }
 
 .mp-group + .mp-group {
-    margin-top: calc(4 * var(--sp));
-}
-
-.mp-note {
-    font-weight: 400;
-    color: var(--fg-3);
+    margin-top: calc(6 * var(--sp));
 }
 
 /* A subscription's account: a quiet button with its name (and a plan near its limit), opening the list of them. */
@@ -2309,8 +2321,8 @@
     display: inline-flex;
     flex: 0 1 auto;
     min-width: 0;
-    max-width: 60%;
-    margin: calc(-3 * var(--sp)) calc(-4 * var(--sp)) calc(-3 * var(--sp)) 0;
+    max-width: 50%;
+    margin-bottom: calc(4 * var(--sp));
 }
 
 .mp-acct-btn {
@@ -2379,7 +2391,9 @@
     width: max-content;
     min-width: calc(180 * var(--sp));
     max-width: calc(260 * var(--sp));
-    max-height: calc(220 * var(--sp));
+    /* Inside the picker, which is only as tall as its list of models (--mp-fit): what's under the search and the
+       filters' row. */
+    max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 72) * var(--sp)));
     padding: calc(4 * var(--sp));
     overflow-y: auto;
     border-radius: calc(9 * var(--sp));
@@ -2468,9 +2482,12 @@
     flex: 1;
     gap: 1px;
     min-height: 0;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
     overflow-y: auto;
     overscroll-behavior: contain;
+    scrollbar-width: none;
+    /* More below: the rows fade out, not cut through their words. */
+    mask-image: linear-gradient(#000 calc(100% - 18 * var(--sp)), transparent);
 }
 
 .mp-group {
@@ -2547,7 +2564,7 @@
     place-items: center;
     flex: none;
     width: calc(16 * var(--sp));
-    color: var(--accent);
+    color: var(--fg);
 }
 
 /* ⌘1–9: on the row under the pointer or keyboard, not down every row. */
@@ -2658,27 +2675,32 @@
 .mp-foot {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     flex: none;
-    gap: calc(8 * var(--sp));
     padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
-.mp-link,
+.mp-cmp-wrap,
+.mp-cmp {
+    flex: 1;
+}
+
+.mp-cmp .mp-switch {
+    margin-left: auto;
+}
+
 .mp-cmp {
     display: inline-flex;
     align-items: center;
     gap: calc(7 * var(--sp));
     height: calc(28 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
     border-radius: calc(8 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-2);
     transition: background var(--dur-fast), color var(--dur-fast);
 }
 
-.mp-link:hover,
 .mp-cmp:hover:not(:disabled) {
     background: var(--hover);
     color: var(--fg);
@@ -2724,7 +2746,7 @@
 }
 
 .mp-switch.on {
-    background: var(--accent);
+    background: var(--fg);
 }
 
 .mp-switch.on::after {
@@ -2766,10 +2788,10 @@
     color: var(--fg-2);
 }
 
-/* The icon and the check (each in a .menu-ico a line tall) sit on the label's line, not in the middle of the label and the description under it. */
+/* Words alone: the mode and what it does under it, the check (in a .menu-ico a line tall) on the mode's line. */
 .mode-menu .menu-item {
     align-items: flex-start;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(12 * var(--sp));
     border-radius: calc(10 * var(--sp));
 }
 
@@ -2894,7 +2916,7 @@
 /* ---- A short column: request cards compact ------------------------------------- */
 
 :where(.main[data-short~="560"]) {
-    .ask.glass {
+    .ask {
         padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(14 * var(--sp));
     }
 

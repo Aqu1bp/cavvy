@@ -16,8 +16,8 @@ function summary(): UsageSummary {
         sources: [{ ...total, source: "claude-code", label: "Claude Code plan", sessions: 1 }, { ...zero(), source: "codex", label: "Codex plan", sessions: 0 }, { ...zero(), source: "api", label: "API providers", sessions: 0 }],
         series: [{ ...total, at: 1_800_000_000_000, sessions: 1, sources: { "claude-code": total, codex: zero(), api: zero() } }], interval: "day", accounts: [], buckets: [], limits: [], sessions: 1, approxDated: 0 };
 }
-function mount(call = async (_method: string, _params: any): Promise<UsageSummary> => summary(), limitReports: any = {}, providers: any[] = []) {
-    const requests: any[] = []; let limitRefreshes = 0;
+function mount(call = async (_method: string, _params: any): Promise<UsageSummary> => summary(), limitReports: any = {}, providers: any[] = [], noModel = false) {
+    const requests: any[] = []; const tabs: string[] = []; let limitRefreshes = 0;
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
         createElement: (tag: string) => ({ tag, props: {} as any, children: [] as any[] }),
@@ -33,6 +33,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const scope = { renderer, ...solid, ...usage, ...limits, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
         app: { limits: limitReports, providers }, refreshLimits: async () => { limitRefreshes++; },
+        noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
         RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null,
         Segmented: (p: any) => ({ tag: "segmented", props: p, children: [] }),
@@ -49,7 +50,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         return [v, ...walk(v.children)];
     };
     const nodes = () => walk(root);
-    return { dispose, requests, nodes, text: () => nodes().filter(n => typeof n !== "object").join(" "),
+    return { tabs, dispose, requests, nodes, text: () => nodes().filter(n => typeof n !== "object").join(" "),
         segment: (label: string) => nodes().find(n => n.tag === "segmented" && n.props.label === label).props,
         button: (label: string) => nodes().find(n => n.tag === "button" && n.props["aria-label"] === label).props,
         buttonText: (text: string) => nodes().find(n => n.tag === "button" && walk(n.children).join("") === text).props,
@@ -141,6 +142,14 @@ test("empty state differs from partial/unknown usage; limits displays windows an
         f.button("Refresh limits").onClick(); await tick(); expect(f.limitRefreshes).toBe(2);
         expect(f.nodes().some(n => n.tag === "segmented" && n.props.label === "Usage time range")).toBe(false);
     } finally { f.dispose(); }
+    // Nothing connected: that's why there's nothing, and the way to connect is one click.
+    const none = mount(async () => empty, {}, [], true);
+    try {
+        await tick(); expect(none.text()).toContain("No model connected.");
+        expect(none.text()).not.toContain("No usage in the last");
+        none.buttonText("Connect a model").onClick();
+        expect(none.tabs).toEqual(["providers"]);
+    } finally { none.dispose(); }
     const unknown = summary(); unknown.totals.unknown = true; unknown.totals.cost = 0; unknown.rows[0]!.unknown = true; unknown.rows[0]!.cost = 0;
     const g = mount(async () => unknown);
     try {

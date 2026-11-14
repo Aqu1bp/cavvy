@@ -28,7 +28,7 @@ import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
 import { needsYou } from "../lib/rail";
-import { Segmented, Spinner, Toggle } from "./ui/bits";
+import { Logo, Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Plugins } from "./Plugins";
 
@@ -74,9 +74,9 @@ export function SettingsNav() {
 }
 
 /** One setting: title and description on the left, its control on the right, then Reset when it differs from the default. */
-function Row(p: { title: string; desc?: JSX.Element; children?: JSX.Element; reset?: () => void; changed?: boolean; class?: string }) {
+function Row(p: { title: string; desc?: JSX.Element; children?: JSX.Element; reset?: () => void; changed?: boolean; class?: string; hint?: string }) {
     return (
-        <div class={`set-row ${p.class ?? ""}`}>
+        <div class={`set-row ${p.class ?? ""}`} title={p.hint}>
             <div class="set-lab">
                 <div class="set-title">{p.title}</div>
                 <Show when={p.desc}>
@@ -102,15 +102,20 @@ function Group(p: { children: JSX.Element }) {
     return <div class="set-h">{p.children}</div>;
 }
 
-/** A heading, and its settings in one rounded list. */
-function Section(p: { title?: JSX.Element; children: JSX.Element; class?: string }) {
+/** A heading (with a line under it, if it needs one), and its settings in one rounded list. */
+function Section(p: { title?: JSX.Element; caption?: JSX.Element; children: JSX.Element; class?: string }) {
     return (
-        <>
+        <div class="set-sec">
             <Show when={p.title}>
-                <Group>{p.title}</Group>
+                <Show when={p.caption} fallback={<Group>{p.title}</Group>}>
+                    <div class="set-hd">
+                        <Group>{p.title}</Group>
+                        <p class="set-cap">{p.caption}</p>
+                    </div>
+                </Show>
             </Show>
             <div class={`set-group ${p.class ?? ""}`}>{p.children}</div>
-        </>
+        </div>
     );
 }
 
@@ -596,7 +601,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     // The line under the name: the key as stored (masked), or what's missing.
     const sub = () =>
         p.pr.masked ? undefined
-        : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
+        : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : p.pr.id === "vertex" ? "Run cavvy auth add vertex in a terminal" : "Set up in the terminal")
         : undefined;
     return (
         <div class="prov" classList={{ err: !!failure() }} data-flash={failure() ? flash() : undefined}>
@@ -731,28 +736,29 @@ function Providers() {
         { title: "On this computer", list: models().filter((p) => !p.agentCli && p.local) },
         { title: "Web search", list: app.providers.filter((p) => p.search) },
     ].filter((g) => g.list.length);
+    const keyBox = () => (
+        <div class="keyin">
+            <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
+            <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
+                {busy() ? <Spinner size={12} /> : "Add"}
+            </button>
+        </div>
+    );
+    // API keys always shows, for the box that adds one.
+    const sections = () => groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
     return (
-        <>
-            <div class="set-group">
-                <div class="keyin">
-                    <input class="input mono" type="password" aria-label="API key" placeholder="Paste an API key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
-                    <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
-                        {busy() ? <Spinner size={12} /> : "Add"}
-                    </button>
-                </div>
-            </div>
-            <For each={groups()}>
-                {(g) => (
-                    <Section title={g.title} class="prov-group">
-                        <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
-                    </Section>
-                )}
-            </For>
-            <div class="set-note">Keys stay on this computer and go only to their own provider.</div>
-            <div class="set-note">
-                Gemini on Vertex AI: run <code>cavvy auth add vertex</code> in a terminal. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
-            </div>
-        </>
+        <For each={sections()}>
+            {(g) => (
+                <Section
+                    title={g.title}
+                    class="prov-group"
+                    caption={g.title === "API keys" ? <>Kept on this computer, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
+                >
+                    <Show when={g.title === "API keys"}>{keyBox()}</Show>
+                    <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
+                </Section>
+            )}
+        </For>
     );
 }
 
@@ -761,17 +767,17 @@ const shift = os === "macos" ? "⇧" : "Shift";
 
 /** Keys that aren't in the keybindings file: they belong to what's on screen. */
 const BUILT_IN: [string, string][] = [
-    [`${mod}+1…9`, "Pick a model (model picker open)"],
-    ["Esc", "Deny a permission · close a dialog, Settings or the review"],
-    ["1  2  3", "Answer the request on the composer"],
-    [`${mod}+${shift}+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
+    [`${mod}+1…9`, "Pick a model, in the model picker"],
+    ["Esc", "Deny a request, or close what's open"],
+    ["1  2  3", "Answer a request"],
+    [`${mod}+${shift}+Enter`, "Steer instead of queue, or the reverse"],
     ["@", "Mention a file"],
     ["/", "Commands"],
-    ["!", "Run a shell command yourself"],
+    ["!", "Run a shell command"],
     // Mouse gestures and arrows in the session list: not bindings.
-    [`${shift}+Click`, "Select the sessions from the last one clicked to this one"],
-    [`${mod}+Click`, "Add a session to the selection, or take it out"],
-    [`${shift}+↑  ${shift}+↓`, "In the session list: extend the selection · Esc clears it"],
+    [`${shift}+Click`, "Select a range of sessions"],
+    [`${mod}+Click`, "Add a session to the selection, or remove it"],
+    [`${shift}+↑  ${shift}+↓`, "Extend the session selection"],
 ];
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };
@@ -812,28 +818,6 @@ function Shortcuts() {
     const rows = (context: string) => ACTIONS.filter((a) => a.context === context && keymap().keysOf.has(a.id));
     return (
         <>
-            <Section>
-                <Row
-                    title="Keybindings file"
-                    desc={
-                        <>
-                            <span class="mono">{path()}</span>
-                            <br />
-                            Shared with the terminal app. Saved changes apply at once.{" "}
-                            <a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>Format</a>
-                        </>
-                    }
-                >
-                    <span class="sc-file-actions">
-                        <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
-                            <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
-                        </Show>
-                        <Show when={canReveal && exists()}>
-                            <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
-                        </Show>
-                    </span>
-                </Row>
-            </Section>
             <Show when={issues().length}>
                 <div class="sc-issues" role="alert">
                     <div class="sc-issues-title">
@@ -853,7 +837,7 @@ function Shortcuts() {
                                     const keys = () => (keymap().keysOf.get(a.id) ?? []).map((k) => formatKeys(k, "gui", os));
                                     const custom = () => keymap().customized.has(a.id);
                                     return (
-                                        <Row title={a.description} desc={<span class="mono sc-action">{a.id}</span>}>
+                                        <Row title={a.description} hint={a.id}>
                                             <span class="sc-keys">
                                                 <Show when={custom()}><span class="sc-custom" title="Set in your keybindings file">Custom</span></Show>
                                                 <Show when={keys().length} fallback={<span class="sc-none">Not bound</span>}>
@@ -868,7 +852,7 @@ function Shortcuts() {
                     </Show>
                 )}
             </For>
-            <Section title="Built in">
+            <Section title="Built in" caption="Can't be changed.">
                 <For each={BUILT_IN}>
                     {([k, d]) => (
                         <Row title={d}>
@@ -878,6 +862,24 @@ function Shortcuts() {
                         </Row>
                     )}
                 </For>
+            </Section>
+            {/* Where the keys above are changed: the file, shared with the terminal app. A row's action name (its
+                tooltip) is what the file calls it. */}
+            <Section title="Your keys" caption="Shared with the terminal app.">
+                <Row
+                    title={path()}
+                    class="sc-file"
+                    desc={<a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>File format</a>}
+                >
+                    <span class="sc-file-actions">
+                        <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
+                            <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
+                        </Show>
+                        <Show when={canReveal && exists()}>
+                            <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
+                        </Show>
+                    </span>
+                </Row>
             </Section>
         </>
     );
@@ -911,7 +913,7 @@ function Updates() {
     return (
         <Show when={v() && (isDesktop || !app.update?.unavailable) ? v() : undefined}>
             {(v) => (
-                <Section title="Updates" class="upd-group">
+                <>
                     <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
@@ -949,31 +951,41 @@ function Updates() {
                         </div>
                     </Show>
                     <update.Confirm />
-                </Section>
+                </>
             )}
         </Show>
     );
 }
 
+const PLATFORMS: Record<string, string> = { darwin: "macOS", win32: "Windows", linux: "Linux" };
+
 function About() {
+    const platform = () => PLATFORMS[app.hello?.platform ?? ""] ?? app.hello?.platform ?? "—";
     return (
         <>
-            <Updates />
-            <Section title={app.update && (isDesktop || !app.update.unavailable) ? "Details" : undefined}>
-                <Row title="Version">
-                    <span class="set-val">{app.hello?.version ?? "—"}</span>
-                </Row>
-                <Row title="Protocol">
-                    <span class="set-val">{app.hello?.protocol ?? "—"}</span>
-                </Row>
+            {/* The app and its version, with its updates under them. */}
+            <Section title="Version">
+                <div class="ab-hero">
+                    <Logo size={40} />
+                    <div class="ab-name">
+                        <b>Cavvy</b>
+                        <span class="num">{app.hello?.version ?? "—"}</span>
+                    </div>
+                </div>
+                <Updates />
+            </Section>
+            <Section title="Details">
                 <Row title="Data">
                     <span class="set-val">{app.hello?.home ?? "—"}</span>
                 </Row>
                 <Row title="Platform">
-                    <span class="set-val">{app.hello?.platform ?? "—"}</span>
+                    <span class="set-val plain">{platform()}</span>
                 </Row>
                 <Row title="Connection">
-                    <span class="set-val">{app.conn}</span>
+                    <span class="set-val plain">{app.conn === "open" ? "Connected" : app.conn}</span>
+                </Row>
+                <Row title="Protocol">
+                    <span class="set-val">{app.hello?.protocol ?? "—"}</span>
                 </Row>
             </Section>
         </>
@@ -1015,6 +1027,7 @@ export function SettingsPage() {
                         )}
                     </For>
                 </nav>
+                <div class="set-body">
                 <Switch>
                     <Match when={tab() === "general"}>
                         <General />
@@ -1038,6 +1051,7 @@ export function SettingsPage() {
                         <About />
                     </Match>
                 </Switch>
+                </div>
             </div>
         </div>
     );

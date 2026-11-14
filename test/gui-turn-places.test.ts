@@ -51,10 +51,9 @@ test("a card's Review opens that worktree on its branch against main, even when 
     expect(requestWorktree({ worktree: wt, scope: "uncommitted", base: "release", own: { scope: "turn" } }, wt)).toEqual({ worktree: wt, scope: "branch", base: undefined, own: { scope: "turn" } });
 });
 
-test("an incomplete snapshot is one line: how many paths it left out, the reasons in the tooltip, not the standing policy", () => {
-    const policy = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
-    expect(incompleteLine([policy, "Not captured: vendor/sdk/: Submodule or nested repository contents are not captured."])).toEqual({ text: "1 path not captured", detail: "Not captured: vendor/sdk/: Submodule or nested repository contents are not captured." });
-    const many = [policy, ...Array.from({ length: 20 }, (_, i) => `Not captured: f${i}: Over 10 MB; not captured, change unknown.`), "5 other paths were not captured."];
+test("an incomplete snapshot is one line: how many paths it left out, the reasons in the tooltip", () => {
+    expect(incompleteLine(["Not captured: vendor/sdk/: Submodule or nested repository contents are not captured."])).toEqual({ text: "1 path not captured", detail: "Not captured: vendor/sdk/: Submodule or nested repository contents are not captured." });
+    const many = [...Array.from({ length: 20 }, (_, i) => `Not captured: f${i}: Over 10 MB; not captured, change unknown.`), "5 other paths were not captured."];
     expect(incompleteLine(many).text).toBe("25 paths not captured");
-    expect(incompleteLine([policy, "Snapshot exceeded its time budget (2 seconds by default)."])).toEqual({ text: "Snapshot incomplete", detail: "Snapshot exceeded its time budget (2 seconds by default)." });
+    expect(incompleteLine(["Snapshot exceeded its time budget (2 seconds by default)."])).toEqual({ text: "Snapshot incomplete", detail: "Snapshot exceeded its time budget (2 seconds by default)." });
 });

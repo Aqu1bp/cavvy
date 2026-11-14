@@ -90,7 +90,7 @@ const App = component(appSource.slice(appSource.indexOf("export function App")),
     RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", isDesktop: mode === "desktop", isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), os: "other", setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
     railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
-    attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
+    attentionCount: () => 0, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, onMount() {},
 });
 const root = node("root");
 const dispose = renderer.render(App, root);

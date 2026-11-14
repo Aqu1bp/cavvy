@@ -107,7 +107,7 @@ test("EffortSlider: a secondary or middle press changes nothing and starts no dr
     }
 });
 
-test("EffortPicker: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)", async () => {
+test("the model picker's effort: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)", async () => {
     // The real action; the store and the socket under it are stand-ins (the call fails once, as when disconnected).
     const calls: unknown[] = [];
     const errors: unknown[] = [];
@@ -124,6 +124,7 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
     mock.module("../../gui/src/state/app", () => ({
         // On Home the picker shows the saved default, which only a saved change moves.
         app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub,
+        noModel: () => false,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
         ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
     }));
@@ -131,15 +132,22 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
     mock.module("../../gui/src/lib/platform", () => ({ ...names(["copyText", "pickFolder"]), machine: undefined }));
     mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: stub }));
     mock.module("../../gui/src/state/ui", () => ({
-        ...names(["railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
+        ...names(["freeRail", "railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
         shellLayout: () => ({ railMode: "dock" }),
     }));
     const { setEffort } = await import("../../gui/src/state/actions");
-    const Picker = component(source(), "EffortPicker", {
-        app, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub, Zap: stub, ChevronDown: stub,
+    // The model picker holds the effort now: it opens on the slider, under the model's name, and the level in force
+    // follows the name on the button ("Opus 5.5 xhigh").
+    const Picker = component(source(), "ModelPicker", {
+        app, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
         Menu: (p: { open: boolean; children: unknown }) => solid.createMemo(() => (p.open ? p.children : null)),
+        menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined,
+        now: () => 0, sendsAccountPick: () => false, setAccount: stub, prefs: { favoriteModels: [] }, setPrefs: stub, handleFor: () => undefined, noModel: () => false, refreshModels: stub, setModel: stub,
+        setAddAccountFor: stub, toast: stub, isMod: () => false, mod: "Ctrl", withShortcut: (label: string) => label, requestAnimationFrame: () => 0,
+        ...names(["ProviderIcon", "Spinner", "Check", "ChevronDown", "ChevronLeft", "ChevronRight", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "Zap"]),
     });
-    const current = { id: "m", ref: "mock:m", supportsReasoning: true, effortLevels: ["low", "medium", "high", "xhigh"] };
+    Object.assign(app, { providers: [], limits: {} });
+    const current = { id: "m", ref: "mock:m", name: "M", provider: "mock", supportsReasoning: true, effortLevels: ["low", "medium", "high", "xhigh"] };
     const root = node("root");
     const dispose = renderer.render(() => Picker({ current, get effort() { return effort(); }, open: true, setOpen() {} }), root);
     const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -152,17 +160,21 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
             slider().props.onPointerDown({ clientX: x, button: 0, pointerId: 1, preventDefault() {} });
             slider().props.onPointerUp({});
         };
-        const label = () => text(all(root).find((n) => n.props.class === "lbl")!);
-        expect(label()).toBe("Medium");
+        // On the button, after the model's name; and beside the name in the popover, over the slider.
+        const label = () => text(all(root).find((n) => n.props.class === "lbl pick-eff")!).replace(/ effort$/, "");
+        const inPopover = () => text(all(root).find((n) => n.props.class === "mpe-eff")!);
+        expect(label()).toBe("medium");
+        expect(inPopover()).toBe("medium");
 
         pick(90);
         // Shown at once while it's on its way.
-        expect(label()).toBe("Extra high");
+        expect(label()).toBe("xhigh");
+        expect(inPopover()).toBe("xhigh");
         await settle();
         expect(calls).toEqual([["session.setEffort", { id: "s1", effort: "xhigh" }]]);
-        // Refused: the session is still at Medium, and the control says so.
+        // Refused: the session is still at medium, and the control says so.
         expect(errors).toHaveLength(1);
-        expect(label()).toBe("Medium");
+        expect(label()).toBe("medium");
         expect(slider().props["aria-valuetext"]).toBe("Medium");
 
         // Picking it again sends again; this time the server takes it.
@@ -172,7 +184,7 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
         expect(calls).toHaveLength(2);
         expect(calls[1]).toEqual(["session.setEffort", { id: "s1", effort: "xhigh" }]);
         setSessionEffort("xhigh");
-        expect(label()).toBe("Extra high");
+        expect(label()).toBe("xhigh");
 
         // Home: the same for the default the next session starts with.
         app.activeId = undefined;
@@ -181,12 +193,12 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
         await settle();
         expect(calls[2]).toEqual(["settings.update", { patch: { effort: "low" } }]);
         expect(errors).toHaveLength(2);
-        expect(label()).toBe("Extra high");
+        expect(label()).toBe("xhigh");
         fail = false;
         pick(10);
         await settle();
         expect(calls[3]).toEqual(["settings.update", { patch: { effort: "low" } }]);
-        expect(label()).toBe("Low");
+        expect(label()).toBe("low");
     } finally {
         dispose();
     }

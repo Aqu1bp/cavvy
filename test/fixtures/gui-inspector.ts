@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
-import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_MIN, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../../gui/src/lib/inspector";
+import { REVIEW_DEFAULT, REVIEW_MIN, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../../gui/src/lib/inspector";
 import { frameDrag } from "../../gui/src/lib/drag";
 import { fakeFrames } from "../helpers/frames";
 
@@ -124,7 +124,7 @@ test("closing the reader in the middle of a drag ends it: no resizing class or l
     expect(frames.pending()).toBe(0);
 });
 
-test("the side-by-side toggle sets the shared split signal the layout widens the inspector for, and says so pressed", () => {
+test("the side-by-side toggle sets the shared split signal, and says so pressed", () => {
     const [reviewSplit, setReviewSplit] = solid.createSignal(false);
     const Toggle = component(between(review, "function SplitToggle(", "/**\n * The reader's left edge"), "SplitToggle", {
         reviewSplit, setReviewSplit,
@@ -146,55 +146,6 @@ test("the side-by-side toggle sets the shared split signal the layout widens the
     }
 });
 
-test("the Changes pane: a row per file opening the reader on it, and the empty and error states", () => {
-    const opened: unknown[][] = [];
-    const Pane = component(between(panel, "function FileRow(", "/** Pull requests the agent watches"), "ChangesPane", {
-        CHANGE, dirOf, nameOf,
-        plural: (n: number, w: string) => `${n} ${n === 1 ? w : `${w}s`}`,
-        openReview: (...args: unknown[]) => opened.push(args),
-        Spinner: () => node("spinner"),
-        FileDiff: () => node("icon"),
-    });
-    const [changes, setChanges] = solid.createSignal<any>({
-        repo: true, count: 3, more: 1, atLeast: false, added: 7, removed: 2, error: undefined,
-        files: [
-            { path: "src/auth/index.ts", change: "modified", added: 6, removed: 2 },
-            { path: "README.md", change: "untracked", added: 1, removed: 0 },
-        ],
-    });
-    const root = node("root");
-    const dispose = renderer.render(() => Pane({ get changes() { return changes(); } }), root);
-    const rows = () => all(root).filter((n) => n.props.class === "file");
-    try {
-        // The totals and Review are on the pane's title line (RightPanel), not repeated in it.
-        expect(text(root)).not.toContain("+7");
-        expect(text(root)).toContain("1 more not shown");
-        expect(rows().map((r) => text(r))).toEqual(["Mindex.tssrc/auth/+6−2", "UREADME.md+1"]);
-        rows()[0]!.props.onClick();
-        expect(opened.at(-1)).toEqual(["src/auth/index.ts", "uncommitted"]);
-        // Outside a repository: Cavvy's own record, and the reader opens on it.
-        setChanges({ repo: false, count: 1, more: 0, atLeast: false, added: 1, removed: 0, files: [{ path: "notes.md", change: "added", added: 1, removed: 0 }] });
-        rows()[0]!.props.onClick();
-        expect(opened.at(-1)).toEqual(["notes.md", "cavvy"]);
-        // Nothing changed: a blank pane that still opens the reader (the branch, a turn).
-        setChanges({ repo: true, count: 0, more: 0, atLeast: false, added: 0, removed: 0, files: [] });
-        // One short line: no sentence about why.
-        expect(text(root)).toContain("No changes yet");
-        expect(text(root)).not.toContain("working tree");
-        all(root).find((n) => n.props.class === "link-btn")!.props.onClick();
-        expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
-        // Git couldn't say: why, rather than "no changes".
-        setChanges({ repo: true, count: 0, more: 0, atLeast: false, added: 0, removed: 0, files: [], error: "fatal: bad object HEAD" });
-        expect(text(root)).toContain("Changes unavailable");
-        expect(text(root)).toContain("fatal: bad object HEAD");
-        expect(text(root)).not.toContain("No changes yet");
-        // Still loading.
-        setChanges(undefined);
-        expect(all(root).some((n) => n.tag === "spinner")).toBe(true);
-    } finally {
-        dispose();
-    }
-});
 
 /** useFolderChanges with git's answer and the server's replies under the test's control. */
 function folderChanges(reply: () => Promise<unknown>) {

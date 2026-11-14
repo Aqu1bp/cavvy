@@ -45,13 +45,13 @@ test("the column's size steps stand for the queries they replaced, at the same s
 });
 
 test("the column is the sheet less a docked inspector and the terminal's row, and waits behind a maximized terminal at its size", () => {
-    expect(windowLayout(base).column).toEqual({ w: 1092, h: 864 });
+    expect(windowLayout(base).column).toEqual({ w: 1100, h: 880 });
     expect(windowLayout({ ...base, rail: false }).column).toEqual({ w: 1360, h: 880 });
-    expect(windowLayout({ ...base, panel: true }).column).toEqual({ w: 732, h: 864 });
+    expect(windowLayout({ ...base, panel: true }).column).toEqual({ w: 740, h: 880 });
     // A floating inspector is over the column, not beside it.
-    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, panel: true }).column.w).toBe(756);
-    expect(windowLayout({ ...base, terminalShown: true }).column).toEqual({ w: 1092, h: 604 });
-    expect(windowLayout({ ...base, terminalShown: true, terminalMax: true }).column).toEqual({ w: 1092, h: 604 });
+    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, panel: true }).column.w).toBe(764);
+    expect(windowLayout({ ...base, terminalShown: true }).column).toEqual({ w: 1100, h: 620 });
+    expect(windowLayout({ ...base, terminalShown: true, terminalMax: true }).column).toEqual({ w: 1100, h: 620 });
 });
 
 test("the tracks change when a panel opens or closes, not when the window resizes the column alone", () => {
@@ -69,16 +69,16 @@ test("the tracks change when a panel opens or closes, not when the window resize
 test("while the tracks slide, the conversation and the terminal hold one size that covers both ends", () => {
     const at = (o: Partial<typeof base>) => windowLayout({ ...base, ...o });
     // The inspector opening: the conversation at the width it ends at, from the width it was.
-    expect(heldSizes(undefined, at({}), at({ panel: true }))).toEqual({ column: { w: 732, h: 864 }, from: { w: 1092, h: 864 }, to: { w: 732, h: 864 }, sheetWidth: 1092, terminal: 0 });
+    expect(heldSizes(undefined, at({}), at({ panel: true }))).toEqual({ column: { w: 740, h: 880 }, from: { w: 1100, h: 880 }, to: { w: 740, h: 880 }, sheetWidth: 1100, terminal: 0 });
     // The terminal opening: the conversation as tall as it was, the terminal as tall as it'll be.
-    expect(heldSizes(undefined, at({}), at({ terminalShown: true }))).toMatchObject({ column: { w: 1092, h: 864 }, terminal: 260 });
+    expect(heldSizes(undefined, at({}), at({ terminalShown: true }))).toMatchObject({ column: { w: 1100, h: 880 }, terminal: 260 });
     // Closing it: as tall as it'll be.
-    expect(heldSizes(undefined, at({ terminalShown: true }), at({}))).toMatchObject({ column: { w: 1092, h: 864 }, terminal: 260 });
+    expect(heldSizes(undefined, at({ terminalShown: true }), at({}))).toMatchObject({ column: { w: 1100, h: 880 }, terminal: 260 });
     // The rail opening with the terminal open: the terminal as wide as the sheet was.
-    expect(heldSizes(undefined, at({ rail: false, terminalShown: true }), at({ terminalShown: true }))).toMatchObject({ sheetWidth: 1360, column: { w: 1092 } });
+    expect(heldSizes(undefined, at({ rail: false, terminalShown: true }), at({ terminalShown: true }))).toMatchObject({ sheetWidth: 1360, column: { w: 1100 } });
     // Another slide on the way keeps what's held covering where it went.
     const held = heldSizes(undefined, at({}), at({ terminalShown: true }));
-    expect(heldSizes(held, at({ terminalShown: true }), at({ terminalShown: true, terminalMax: true }))).toMatchObject({ column: { h: 864 }, terminal: 864 });
+    expect(heldSizes(held, at({ terminalShown: true }), at({ terminalShown: true, terminalMax: true }))).toMatchObject({ column: { h: 880 }, terminal: 880 });
 });
 
 test("the slide moves the held boxes, not the layout: they're sized with properties that don't inherit, and laid out once", () => {
@@ -116,12 +116,12 @@ test("the conversation is drawn from where its left edge was, not from half the 
 });
 
 test("hiding the rail takes the sheet to the window's edges, and the conversation is held at that size", () => {
-    // The model had the sheet inset 8px with the rail hidden, where shell.css draws none: held 16px too small each
-    // way, the conversation snapped 8px across and 16px down as the slide ended (and back as the next began).
+    // The model's sheet is what shell.css draws, with the rail and without it (no inset either way): held at any
+    // other size, the conversation snapped across and down as the slide ended (and back as the next began).
     const at = (o: Partial<typeof base>) => windowLayout({ ...base, ...o });
     expect(at({ rail: false }).sheet).toEqual({ w: base.win.w, h: base.win.h });
     expect(heldSizes(undefined, at({}), at({ rail: false })).column).toEqual({ w: base.win.w, h: base.win.h });
-    expect(heldSizes(undefined, at({ rail: false }), at({})).column).toEqual({ w: 1092, h: base.win.h });
+    expect(heldSizes(undefined, at({ rail: false }), at({})).column).toEqual({ w: 1100, h: base.win.h });
 });
 
 test("what the rail's hiding puts before the title opens with the slide, so the title moves to its place in step with it", () => {
@@ -246,6 +246,19 @@ test("the side panel keeps what's in it until it has slid shut", () => {
     expect(INSPECTOR_MOVES).toEqual(["grid-template-columns", "transform"]);
     expect(transition(".sheet")).toContain(`${INSPECTOR_MOVES[0]} var(--dur-panel)`);
     expect(transition('[data-inspmode="float"] .insp')).toContain(`${INSPECTOR_MOVES[1]} var(--dur-panel)`);
+});
+
+test("a shut side panel isn't drawn once it has closed, so a change of layout while it's shut doesn't show", () => {
+    // Opening the sidebar narrowed the sheet and floated the shut panel: its slide out of the way crossed the
+    // conversation as a grey card. It goes at once from sight once its own slide is over, by opacity (not inherited).
+    const shell = parseRules(read("styles/shell.css"));
+    const rule = (selector: string) => shell.find((r) => r.selectors.includes(selector))?.decls;
+    expect(rule('[data-insp="off"] .insp')?.get("opacity")).toBe("0");
+    expect(rule('[data-insp="off"] .insp')?.get("transition")).toBe("opacity 0s linear var(--dur-panel)");
+    const float = rule('[data-insp="off"][data-inspmode="float"] .insp')?.get("transition") ?? "";
+    expect(float).toContain(`${INSPECTOR_MOVES[1]} var(--dur-panel)`);
+    expect(float).toContain("opacity 0s linear var(--dur-panel)");
+    expect(shell.some((r) => r.selectors.some((s) => s.includes(".insp")) && r.decls.has("visibility") && r.selectors.some((s) => s.includes('data-insp="off"')))).toBe(false);
 });
 
 test("the Browser page is drawn no further than what shows of its box, and sized by the whole box", () => {

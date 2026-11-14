@@ -5,15 +5,47 @@ import type { BackgroundTaskInfo, ToolBlock } from "@shared/protocol";
 import { stripAnsi } from "./format";
 import { commandDescription } from "./tool-words";
 
+/** Lines that run nothing worth naming: blank, a comment, a shell option (`set -e`, `set -euo pipefail`). */
+const NOISE = /^(?:#.*|set(?:\s+[-+][a-zA-Z]+(?:\s+[a-z]+)?)+)?$/;
+
+/**
+ * A script's commands, one each: past a cd to where it runs ("cd '/repo' && bun test" is "bun test"; a cd on its
+ * own line goes too), without the
+ * lines that say nothing, a line continued (a trailing backslash, a leading && or |) joined to its command, up to a
+ * heredoc, whose body isn't commands.
+ */
+export function commandParts(command: string): string[] {
+    const parts: string[] = [];
+    let carry = "";
+    for (const raw of command.trim().split("\n")) {
+        const line = raw.trim();
+        if (line.endsWith("\\")) {
+            carry += `${line.slice(0, -1).trimEnd()} `;
+            continue;
+        }
+        const whole = (carry + line).trim();
+        carry = "";
+        if (NOISE.test(whole)) continue;
+        if (parts.length && /^(?:&&|\|\|?)/.test(whole)) parts[parts.length - 1] += ` ${whole}`;
+        else parts.push(whole);
+        if (/<<-?\s*['"]?\w/.test(whole)) break;
+    }
+    if (carry.trim()) parts.push(carry.trim());
+    // A cd on a line of its own says where the rest runs, not what it does.
+    if (parts.length > 1 && /^cd\s+(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)$/.test(parts[0]!)) parts.shift();
+    if (parts[0]) parts[0] = /^cd\s+(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)\s*&&\s*(\S.*)$/.exec(parts[0])?.[1] ?? parts[0];
+    return parts;
+}
+
 /**
  * What a command's row says folded: what it's for (Claude Code's description), or, with none (Codex), the command
- * itself, shortened: its first line, past a cd to where it runs ("cd '/repo' && bun test" says "bun test").
+ * itself (commandParts), "; " between its commands: the row cuts it to its width. Its first line alone was often
+ * only `set +e` or `pwd`.
  */
 export function commandLabel(t: ToolBlock): string | undefined {
     const description = commandDescription(t);
     if (description) return description;
-    const first = String(t.input?.command ?? "").trim().split("\n")[0]!;
-    return /^cd\s+(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)\s*&&\s*(\S.*)$/.exec(first)?.[1] ?? (first || undefined);
+    return commandParts(String(t.input?.command ?? "")).join("; ") || undefined;
 }
 
 /** A piece of a highlighted command: `cls` is its kind (f command, t flag, s string, k operator, c comment, hd heredoc body). */

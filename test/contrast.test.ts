@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { cascade, contrast, over, parseRules, resolveColor, stack } from "./helpers/contrast";
-import { AA, configurations, failures, measure, themes } from "./helpers/contrast-matrix";
+import { AA, configurations, failures, GLASS_GROUND, measure, themes } from "./helpers/contrast-matrix";
 
 const CSS = readFileSync(resolve(import.meta.dir, "../gui/src/styles/tokens.css"), "utf8");
 describe("WCAG contrast of GUI text tokens", () => {
@@ -44,7 +44,7 @@ describe("WCAG contrast of GUI text tokens", () => {
         }
     });
 
-    test("measures the rail over each stop of a tint's wash, laid over the window tint", () => {
+    test("measures the window's text over each stop of a tint's wash, laid over the window tint", () => {
         for (const tint of ["ocean", "accent"]) {
             const rail = measure(CSS, { theme: "dark", scheme: "dark", tint, glass: "glass", contrast: "standard" }).filter((m) => m.token === "--rail-fg-2");
             const surfaces = rail.map((m) => m.surface);
@@ -53,12 +53,12 @@ describe("WCAG contrast of GUI text tokens", () => {
                 for (const blob of ["--wash-1", "--wash-2", "--wash-3"]) expect(surfaces).toContain(`#808080 > --win-tint > ${ground} > ${blob} > --rail-hover`);
             }
             expect(surfaces).not.toContain("#808080 > --win-tint");
-            // The floating rail is drawn over the sheet, not the window: no wash.
+            // The drawer rail has its own ground, over the window: no wash.
             expect(surfaces).toContain("#808080 > --rail-float");
         }
     });
 
-    test("a tint whose wash is too strong for the rail fails", () => {
+    test("a tint whose wash is too strong for the text on it fails", () => {
         // The mockup's raw Ocean blue, without the light tint the mockup lays over it.
         const strong = `${CSS}\n[data-tint="ocean"][data-theme="light"] { --wash-3: rgba(61, 111, 216, 0.75); }`;
         const root = { theme: "light", scheme: "light" as const, tint: "ocean", glass: "glass", contrast: "standard" };
@@ -66,7 +66,7 @@ describe("WCAG contrast of GUI text tokens", () => {
         expect(failures(strong, root).some((f) => f.startsWith("--rail-fg-2 on ") && f.includes("--wash-3"))).toBe(true);
     });
 
-    test("measures the rail over the window tint on a mid-grey desktop", () => {
+    test("measures the window's text over the window tint on a mid-grey desktop", () => {
         const rail = measure(CSS, { theme: "dark", scheme: "dark", glass: "glass", contrast: "standard" }).filter((m) => m.token === "--rail-fg-2");
         expect(rail.map((m) => m.surface)).toContain("#808080 > --win-tint");
     });
@@ -80,8 +80,8 @@ describe("WCAG contrast of GUI text tokens", () => {
     test("a text token lowered back toward the background fails", () => {
         // The pre-fix light --fg-3, appended so it wins the cascade.
         const lowered = `${CSS}\n[data-theme="light"] { --fg-3: #a1a1a6; }`;
-        const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-3" && m.surface === "--sheet");
-        expect(result?.ratio).toBeCloseTo(2.51, 2);
+        const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-3" && m.surface === GLASS_GROUND);
+        expect(result?.ratio).toBeLessThan(2.5);
         expect(failures(lowered, { theme: "light", scheme: "light" }).some((f) => f.startsWith("--fg-3 on "))).toBe(true);
     });
 
@@ -103,15 +103,15 @@ describe("WCAG contrast of GUI text tokens", () => {
 // A passing token is not enough if an entire card/turn is faded afterwards.
 // Reintroducing the old .75/.55 opacity must fail even with the new tokens.
 for (const [file, selector, surface] of [
-    ["sidebar.css", ".card.rec", "--insp-bg"],
-    ["transcript.css", ".turn.archived", "--sheet"],
+    ["sidebar.css", ".card.rec", GLASS_GROUND],
+    ["transcript.css", ".turn.archived", GLASS_GROUND],
 ] as const) {
     test(`${selector}: group opacity preserves secondary-text contrast`, () => {
         const rules = parseRules(readFileSync(resolve(import.meta.dir, `../gui/src/styles/${file}`), "utf8"));
         const opacity = Number(rules.filter((r) => r.selectors.includes(selector) && r.decls.has("opacity")).at(-1)?.decls.get("opacity") ?? 1);
         for (const root of themes(CSS)) {
             const vars = cascade(parseRules(CSS), root);
-            const bg = resolveColor(`var(${surface})`, vars);
+            const bg = stack(surface.split(" > ").map((layer) => resolveColor(layer.startsWith("--") ? `var(${layer})` : layer, vars)));
             for (const token of ["--fg-2", "--fg-3"]) {
                 const text = over(resolveColor(`var(${token})`, vars), bg);
                 expect(contrast({ ...text, a: opacity }, bg)).toBeGreaterThanOrEqual(AA);

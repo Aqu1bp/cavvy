@@ -1,6 +1,6 @@
 // Which dialogs and popovers are open, and how the window is laid out.
 
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
@@ -9,8 +9,6 @@ import type { InspectorPane } from "../lib/inspector";
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
-/** The session on screen follows the end of its conversation: nothing is passing behind what floats over it. */
-export const [following, setFollowing] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
 /** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
 export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();
@@ -46,12 +44,12 @@ function carriedPane(): InspectorPane {
     try {
         const was = sessionStorage.getItem(PANE_KEY);
         sessionStorage.removeItem(PANE_KEY);
-        return was === "agents" || was === "commands" || was === "browser" || was === "simulator" ? was : "changes";
+        return was === "agents" || was === "commands" || was === "browser" || was === "simulator" ? was : "agents";
     } catch {
-        return "changes";
+        return "agents";
     }
 }
-/** The side panel's tab; kept while the app runs, like the reader's layout, and when the window goes to another machine. */
+/** The side panel's pane, kept while the app runs and when the window goes to another machine. Changes isn't one: its icon opens the diff reader. */
 export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>(carriedPane());
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
@@ -93,7 +91,7 @@ export const [findOpen, setFindOpen] = createSignal(false);
 export const [findQuery, setFindQuery] = createSignal("");
 export const [findFocus, setFindFocus] = createSignal(0);
 export const openFind = () => {
-    if (coversConversation(shellLayout())) setReview(undefined);
+    if (coversConversation(shellLayout())) batch(() => (setReview(undefined), setPanelFull(false)));
     setFindOpen(true);
     setFindFocus((n) => n + 1);
 };
@@ -120,8 +118,10 @@ export const takeDockGlide = () => {
     dockGlideUntil = -Infinity;
     return glides;
 };
-/** The diff reader shows changes side by side: the inspector widens further for it. */
+/** The diff reader shows changes side by side, at the width the panel has (full screen gives it room). Kept while the app runs. */
 export const [reviewSplit, setReviewSplit] = createSignal(false);
+/** The side panel (or the diff reader in it) fills the sheet, from the sidebar to the window's edge. Off when it closes. */
+export const [panelFull, setPanelFull] = createSignal(false);
 /** The inspector's width (its resizer), when it isn't the diff reader. */
 export const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT);
 
@@ -140,7 +140,7 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
     railShown: true,
     sheet: { w: 0, h: 0 },
     column: { w: 0, h: 0 },
-    inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0 },
+    inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0, full: false },
     terminal: { shown: false, height: 0, maximized: false, most: 0 },
 });
 

@@ -1,28 +1,30 @@
-// A sub-agent's own view, in the main area: what the parent asked, what it
-// did (the transcript's own rows), and what it reported. It takes no
-// messages, so where the composer would be there's a status bar instead.
-// An agent is a Task call, or a task Claude Code or Codex delegated.
+// A sub-agent's own view, in the main area, drawn as a turn of the session is: what the parent asked (on the
+// right, as a prompt), what it did (runs of steps, one quiet line each, and what it said on the way), what's
+// under way (the live line, at the end), and what it reported. It takes no messages, so where the composer would
+// be there's one line saying how it's doing instead. An agent is a Task call, or a task Claude Code or Codex
+// delegated.
 
 import { createMemo, createSignal, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, CornerLeftDown } from "lucide-solid";
+import { LiveLine } from "./LiveLine";
+import { liveLine, workSegments } from "../lib/live-line";
+import { prefs } from "../state/prefs";
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
 import { setAgentFocus, setDockHeight } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
-import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, type Item } from "./blocks/Activity";
+import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { shortModelRef } from "../lib/tool-words";
 import { Markdown } from "./blocks/Markdown";
 import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
-import { Narration } from "./TurnView";
 import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
 import { ErrorCards } from "./ErrorCards";
-import { ProviderIcon } from "./ui/ProviderIcon";
 import { AgentMark } from "./ui/AgentMark";
-import { agentProvider, agentStep } from "../lib/agent-marks";
+import { agentProvider } from "../lib/agent-marks";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 
@@ -46,7 +48,7 @@ function statusLine(a: AgentRun): string {
         case "running":
             return `Working · ${elapsed(a)}`;
         case "waiting":
-            return "Needs your approval";
+            return "Waiting for you";
         case "done":
             return `Done in ${elapsed(a)}`;
         case "failed":
@@ -56,25 +58,36 @@ function statusLine(a: AgentRun): string {
     }
 }
 
+/** Its steps as a turn's are: runs of them, one quiet line each that opens into its rows, and what it said between. */
 function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?: string }) {
     const running = () => live(p.agent);
     // Its own sub-agents (a delegated Codex task's) get their row, which opens each one's view.
     const own = () => p.agents.filter((x) => x.parentId === p.agent.id);
+    const segs = createMemo(() => workSegments(p.items) ?? []);
+    const renderItem = (it: () => Item) => (
+        <Switch>
+            <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={own()} flat hideLive={running()} />}</Match>
+            <Match when={it().kind === "block" && (it() as { block: Block }).block}>
+                {(b) => (
+                    <Switch>
+                        <Match when={b().t === "text" && (b() as TextBlock)}>{(t) => <Markdown text={t().text} streaming={running() && t().id === p.lastText} find={t().id} />}</Match>
+                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={false} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
+                    </Switch>
+                )}
+            </Match>
+        </Switch>
+    );
     return (
-        <Index each={p.items}>
-            {(it) => (
-                <Switch>
-                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={own()} />}</Match>
-                    <Match when={it().kind === "block" && (it() as { block: Block }).block}>
-                        {(b) => (
-                            <Switch>
-                                <Match when={b().t === "text" && (b() as TextBlock)}>{(t) => (running() && t().id === p.lastText ? <Markdown text={t().text} streaming /> : <Narration block={t()} />)}</Match>
-                                <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={false} />}</Match>
-                                <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
-                            </Switch>
-                        )}
-                    </Match>
-                </Switch>
+        <Index each={segs()}>
+            {(seg) => (
+                <Show when={seg().kind === "work"} fallback={renderItem(() => (seg() as { item: Item }).item)}>
+                    <div class="worklog">
+                        <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={running()}>
+                            <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
+                        </WorkRun>
+                    </div>
+                </Show>
             )}
         </Index>
     );
@@ -85,6 +98,8 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const st = () => p.handle.view.state;
     const [unfolded, setUnfolded] = createSignal(false);
     const [fullTask, setFullTask] = createSignal(false);
+    /** A task this long opens and closes: an agent's instructions run long. */
+    const longTask = () => Boolean(a().prompt && (a().prompt!.split("\n").length > 6 || a().prompt!.length > 520));
     /** The sub-agent whose own this one is (a delegated task's): what it came from, and goes back to. */
     const parent = () => (a().parentId ? p.handle.view.agents.find((x) => x.id === a().parentId) : undefined);
     const parentName = () => parent()?.description || "Sub-agent";
@@ -107,8 +122,12 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const showWork = () => live(a()) || unfolded();
     const model = () => (a().model ? shortModelRef(a().model) : (st().model?.name ?? "Session model"));
     const provider = () => agentProvider(a(), st().model?.provider, p.handle.view.agents);
-    /** What it's doing, in a few words; the whole call in the tooltip. */
-    const step = () => agentStep(a());
+    /** What's under way, on the live line at the end of its steps: what it waits on you for, else its call running. */
+    const line = createMemo(() => {
+        if (!live(a())) return undefined;
+        if (a().status === "waiting") return { key: "wait", kind: "wait" as const, label: "Waiting for you" };
+        return liveLine({ blocks: a().blocks, activity: undefined, interactions: [], showThinking: prefs.showThinking });
+    });
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
     // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
@@ -159,53 +178,42 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
             </TitleBar>
             <div class="stage">
                 <div class="transcript-wrap">
-                    <div class="transcript-fade" />
-                    <section class="transcript" aria-label="Sub-agent transcript">
+                    <section class="transcript" aria-label="Sub-agent transcript" style={{ "--dock-h": `${dockH()}px` }}>
                         <div class="transcript-col agent-col">
-                            <div class="from-parent">
-                                <span class="from-parent-label">
-                                    <CornerLeftDown size={13} /> {parent() ? `From ${parentName()}` : "From the parent session"} · {clock(a().startedAt)}
+                            {/* What the parent asked: on the right, as a prompt, under where it came from. */}
+                            <div class="user-row agent-task">
+                                <span class="agent-from" data-find-skip>
+                                    <CornerLeftDown size={12} aria-hidden="true" /> {parent() ? `From ${parentName()}` : "From the session"}
                                 </span>
-                                <div class={`user-bubble ${fullTask() ? "" : "clamped"}`}>
-                                    <Show when={a().prompt} fallback={<span class="user-text">{a().description || "No instructions were recorded."}</span>}>
-                                        <span class="user-text">{a().prompt}</span>
-                                        <Show when={a().prompt!.length > 1400 || a().prompt!.split("\n").length > 14}>
-                                            <button class="link-btn more" onClick={() => setFullTask(!fullTask())}>
-                                                {fullTask() ? "Show less" : "Show more"}
-                                            </button>
-                                        </Show>
+                                <div class={`user-bubble ${longTask() && !fullTask() ? "clamped" : ""}`}>
+                                    <span class="user-text">{a().prompt || a().description || "No instructions were recorded."}</span>
+                                    <Show when={longTask()}>
+                                        <button class="link-btn more" aria-expanded={fullTask()} onClick={() => setFullTask(!fullTask())}>
+                                            {fullTask() ? "Show less" : "Show more"}
+                                        </button>
                                     </Show>
+                                </div>
+                                <div class="user-actions" data-find-skip>
+                                    <time class="user-when" dateTime={new Date(a().startedAt).toISOString()}>{clock(a().startedAt)}</time>
                                 </div>
                             </div>
                             <div class="reply agent-reply">
-                                <Show
-                                    when={live(a())}
-                                    fallback={
-                                        <Show when={items().length}>
-                                            <button class="fold acts-h" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
-                                                <ChevronRight size={14} class="chev" />
-                                                <span>
-                                                    Worked for <span class="num">{elapsed(a())}</span>
-                                                </span>
-                                            </button>
-                                        </Show>
-                                    }
-                                >
-                                    <div class="live-head">
-                                        <Show when={a().status === "waiting"} fallback={<span class="shimmer num live-label" title={step()?.full}>{step() && step()!.text !== "Working" ? step()!.text : `Working for ${elapsed(a())}`}</span>}>
-                                            <span class="tone-warn live-label">{asks().length ? "Waiting for you" : "Waiting for you. Answer in the parent session."}</span>
-                                        </Show>
-                                    </div>
+                                <Show when={!live(a()) && items().length}>
+                                    <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
+                                        <ChevronRight size={14} class="chev" />
+                                        <span class="num">Worked for {elapsed(a())}</span>
+                                    </button>
                                 </Show>
                                 <Show when={a().dropped && showWork()}>
                                     <div class="agent-dropped">{plural(a().dropped!, "earlier step")} not shown</div>
                                 </Show>
                                 <Show when={showWork()}>
-                                    <div class="worklog">
-                                        <CardFoldsProvider sessionId={p.handle.id}>
-                                            <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
-                                        </CardFoldsProvider>
-                                    </div>
+                                    <CardFoldsProvider sessionId={p.handle.id}>
+                                        <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
+                                    </CardFoldsProvider>
+                                </Show>
+                                <Show when={live(a())}>
+                                    <LiveLine state={line()} />
                                 </Show>
                                 <Show when={a().replayed && !a().blocks.length}>
                                     <div class="agent-dropped">Its steps aren't kept once the session is reopened.</div>
@@ -227,22 +235,19 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar glass" role="status">
+                        <div class="agent-bar card-surface" role="status">
                             <span class="av">
                                 <AgentMark provider={provider()} />
                                 <span class={`nd st-${a().status}`} />
                             </span>
-                            <span class="agent-bar-text">
-                                <span class={`agent-bar-state num st-${a().status}`}>{statusLine(a())}</span>
-                                <span class="agent-bar-note truncate">Reply in the parent session.</span>
-                            </span>
+                            <span class={`agent-bar-state num st-${a().status}`}>{statusLine(a())}</span>
                             <span class="grow" />
                             <span class="agent-bar-model truncate" title={a().model ?? st().model?.ref}>
-                                <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={14} />}</Show> {model()}<Show when={a().effort}>{(effort) => ` · ${effort()} effort`}</Show>
+                                {model()}<Show when={a().effort}>{(effort) => ` · ${effort()}`}</Show>
                             </span>
                             <span class="agent-sep" aria-hidden="true" />
                             <button class="agent-back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
-                                <ArrowLeft size={15} /> {parent() ? "Back" : "Back to session"}
+                                <ArrowLeft size={14} /> Back
                             </button>
                             <Show when={live(a()) && a().taskId}>
                                 <button class="stop-btn" title="Stop this agent" aria-label="Stop this agent" onClick={() => void stopAgent(p.handle.id, a().id)}>

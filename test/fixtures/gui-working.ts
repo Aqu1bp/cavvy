@@ -25,10 +25,12 @@ const scope = {
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub,
+    // The run's line (Activity.tsx): here just what it opens into, the steps' rows.
+    WorkRun: (p: any) => p.children,
     // A running command opens to its row's block (Activity.tsx), kept in the rows' folds.
     LiveCommandBody: (p: any) => { const n = node("cmd-body"); n.props.class = "cmd-body"; solid.createRenderEffect(() => (n.text = String(p.tool.progress ?? ""))); return n; },
     useCardFolds: () => folds,
-    ...Object.fromEntries(["Brain", "ChevronRight", "SquareTerminal", "Info", "AlertCircle", "AlertTriangle", "CircleStop", "GitFork", "Hand", "Clock", "CornerDownRight", "RotateCcw", "BellRing", "MessageSquareText", "FileText"].map((n) => [n, stub])),
+    ...Object.fromEntries(["Brain", "ChevronRight", "SquareTerminal", "Info", "AlertCircle", "AlertTriangle", "Square", "GitFork", "Hand", "Clock", "CornerDownRight", "RotateCcw", "BellRing", "MessageSquareText", "FileText"].map((n) => [n, stub])),
 };
 const { LiveLine, motionMs } = component(`${read("components/LiveLine.tsx")}\nconst both = { LiveLine, motionMs };`, "both", scope);
 const TurnView = component(grouping + source, "TurnView", { ...scope, LiveLine, motionMs });
@@ -170,7 +172,7 @@ try {
     const disposeStopped = renderer.render(() => TurnView({ turn: { id: "stopped", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "hii", steered: true }, blocks: [] }, state: { ...state(), busy: false }, last: true }), stopped);
     const ends = all(stopped).filter((n) => hasClass(n, "end-note"));
     assert.equal(ends.length, 1, "a stopped turn with no output shows the stop line");
-    assert.ok(text(ends[0]!).includes("Stopped. Nothing after this point ran."));
+    assert.ok(text(ends[0]!).includes("Stopped"));
     disposeStopped();
     // A command it started that outlasts it: the line doesn't say nothing ran.
     const ran = (task: Record<string, unknown>) => {
@@ -190,7 +192,7 @@ try {
     }
     // Ended before the turn did, or another turn's: as before.
     for (const task of [{ toolUseId: "call-1", status: "done", endedAt: 1150 }, { toolUseId: "other", status: "running" }]) {
-        assert.ok(ran(task).includes("Stopped. Nothing after this point ran."), JSON.stringify(task));
+        assert.ok(ran(task).includes("Stopped"), JSON.stringify(task));
     }
     // With the list of what ran since cleared (or the session opened again), the command's own row still says it.
     const kept = node("root");

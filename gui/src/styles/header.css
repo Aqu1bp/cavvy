@@ -1,7 +1,8 @@
 /* ---- Title bar ----------------------------------------------------------
-   Plain title on the sheet, the tools in one glass capsule at the far end.
-   The conversation scrolls under a soft blurred edge, like macOS's scroll
-   edge effect. (Where the bar sits in the sheet is the shell's.) */
+   A plain title on the glass and plain tools at the far end: nothing behind
+   them, no capsule. The conversation fades out before it reaches the bar
+   (transcript.css), so the bar needs no ground of its own. (Where the bar
+   sits in the window is the shell's.) */
 
 /* Its content sits on the window's top line (--top-line, tokens.css), level
    with the traffic lights and the rail's buttons. The bar starts --win-pad
@@ -14,7 +15,7 @@
     align-items: center;
     gap: 12px;
     height: var(--header-h);
-    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 9px 0 20px;
+    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 12px 0 24px;
     flex: none;
     min-width: 0;
     user-select: none;
@@ -22,24 +23,6 @@
     /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
        top line stays on it all the way, and its start moves with what opens before the title (.bar-rail, .proj-box). */
     transition: padding var(--dur-panel) var(--ease);
-}
-
-.header::before {
-    content: "";
-    position: absolute;
-    inset: 0 0 -18px 0;
-    z-index: -1;
-    pointer-events: none;
-    /* The bar itself is the sheet, so nothing under it reads through the title or beside the tools; what scrolls up
-       fades out in the 18px below it. Drawn with the page: a blur or a mask here would be worked out again on every
-       frame the column moves. */
-    background: linear-gradient(
-        var(--sheet) calc(100% - 18px),
-        color-mix(in srgb, var(--sheet) 82%, transparent) calc(100% - 13px),
-        color-mix(in srgb, var(--sheet) 36%, transparent) calc(100% - 8px),
-        color-mix(in srgb, var(--sheet) 9%, transparent) calc(100% - 3px),
-        color-mix(in srgb, var(--sheet) 0%, transparent)
-    );
 }
 
 /* The rail's two buttons, here while it's hidden or floating: on the lights'
@@ -101,11 +84,13 @@
 }
 
 /* A session needs you while the rail that lists it is hidden: an amber dot on Show sidebar. */
-.bar-rail .has-wait {
+.bar-rail .has-wait,
+.insp-lead .has-wait {
     position: relative;
 }
 
-.bar-rail .has-wait::after {
+.bar-rail .has-wait::after,
+.insp-lead .has-wait::after {
     content: "";
     position: absolute;
     top: 4px;
@@ -114,38 +99,41 @@
     height: 7px;
     border-radius: 50%;
     background: var(--warn);
-    box-shadow: 0 0 0 2px var(--sheet);
 }
 
-.header .hb {
+.header .hb,
+.insp-lead .hb {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     width: auto;
-    min-width: 28px;
-    height: 28px;
-    padding: 0 8px;
-    border-radius: var(--pill);
+    min-width: 30px;
+    height: 30px;
+    padding: 0 7px;
+    border-radius: 8px;
     color: var(--fg-2);
     transition: background 140ms, transform 160ms var(--ease), color 140ms;
 }
 
 .header .hb:hover:not(:disabled),
+.insp-lead .hb:hover:not(:disabled),
 .header .hb[aria-expanded="true"] {
     background: var(--hover);
     color: var(--fg);
 }
 
-.header .hb:active:not(:disabled) {
+.header .hb:active:not(:disabled),
+.insp-lead .hb:active:not(:disabled) {
     transform: scale(0.94);
     background: var(--press);
 }
 
+/* On: the pane it opens is showing. Said by weight, not by colour. */
 .header .hb.on,
 .header .hb[aria-pressed="true"] {
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--fg);
+    background: var(--press);
 }
 
 .header .hb:disabled {
@@ -219,9 +207,9 @@
     min-width: 0;
     padding: calc(2 * var(--sp)) calc(4 * var(--sp));
     border-radius: calc(6 * var(--sp));
-    font-size: 1rem;
-    font-weight: 650;
-    letter-spacing: -0.01em;
+    font-size: 1.036rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -238,9 +226,9 @@
     background: var(--hover);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
     color: var(--fg);
-    font-size: 1rem;
-    font-weight: 650;
-    letter-spacing: -0.01em;
+    font-size: 1.036rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
 }
 
 .title-input:focus {
@@ -255,7 +243,7 @@
     max-width: calc(240 * var(--sp));
     flex: 0 1600 auto;
     color: var(--fg-3);
-    font-size: 0.893rem;
+    font-size: 0.929rem;
     white-space: nowrap;
     align-self: center;
 }
@@ -297,8 +285,8 @@ button.bc:hover {
 
 .bc.current {
     color: var(--fg);
-    font-weight: 650;
-    letter-spacing: -0.01em;
+    font-weight: 600;
+    letter-spacing: -0.012em;
 }
 
 .bc-sep {
@@ -308,7 +296,7 @@ button.bc:hover {
     align-self: center;
 }
 
-/* ---- Tools: one glass capsule (a run's models get their own) ---------- */
+/* ---- Tools: plain buttons at the far end -------------------------------- */
 
 .bar-end {
     display: flex;
@@ -319,7 +307,7 @@ button.bc:hover {
 }
 
 /* ---- Needs you, in Settings' top line -----------------------------------
-   An amber glass pill beside Close (Settings covers the rail, where they're
+   An amber pill beside Close (Settings covers the rail, where they're
    listed): one session by name, or how many. Narrow, the words go. */
 
 .needs {
@@ -342,14 +330,9 @@ button.bc:hover {
     transition: filter 140ms;
 }
 
-:is(.header, .set-top) .needs.glass {
-    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
-}
-
-/* Following the end (base.css): its tint, over the same plain colour as the capsule beside it. */
-[data-following] :is(.header, .set-top) .needs.glass {
-    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent)), linear-gradient(var(--ctl), var(--ctl));
+.needs {
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 34%, transparent);
 }
 
 .needs:hover,
@@ -426,18 +409,13 @@ button.bc:hover {
 .cap {
     display: inline-flex;
     align-items: center;
-    gap: 1px;
-    height: 34px;
-    padding: 0 3px;
-    border-radius: var(--pill);
+    gap: 2px;
     flex: none;
 }
 
+/* Between the changes and the tools: room, not a rule. */
 .cap .sep {
-    width: 1px;
-    height: 16px;
-    margin: 0 3px;
-    background: var(--line);
+    width: 6px;
     flex: none;
 }
 

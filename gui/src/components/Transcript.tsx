@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
 import { activate, app, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
@@ -679,8 +679,6 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
     // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
-    createEffect(() => setFollowing(stick()));
-    onCleanup(() => setFollowing(false));
 
     createEffect(on(() => p.dock, (now, was) => {
         if (!takeDockGlide() || now === undefined || was === undefined || !scroller || !stick() || smoothScroll) return;
@@ -970,10 +968,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     return (
         <div class="transcript-wrap">
-            <div class="transcript-fade" aria-hidden="true" />
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
+            <div class="transcript" ref={scroller} style={{ "--dock-h": dock() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>
@@ -1025,8 +1022,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
-                {/* The fade "Latest" sits on; both have the dock's height themselves (it isn't inherited). */}
-                <div class="jump-shelf" style={{ "--dock-h": dock() }} aria-hidden="true" />
+                {/* It has the dock's height itself (it isn't inherited). */}
                 <button class="jump glass" style={{ "--dock-h": dock(), "--over": floatOver() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>

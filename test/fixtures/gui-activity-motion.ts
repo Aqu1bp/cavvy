@@ -23,7 +23,13 @@ const activity = process.env.ACTIVITY_BEFORE ? readFileSync(process.env.ACTIVITY
 const tool = (id: string, status = "running"): any => ({ t: "tool", id, name: "Monitor", title: "Monitor", input: { description: `watch ${id}` }, status, startedAt: 1000 });
 const command = (id: string, status = "running"): any => ({ t: "tool", id, name: "Bash", title: "Bash", input: { command: `echo ${id}` }, status, startedAt: 1000 });
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const row = (root: Node, id: string) => all(root).find((n) => n.props["data-find"] === id && !has(n, "det"))!;
+/** A run of steps is one line until it's opened (Activity.tsx WorkRun): its closed runs. */
+const closedRuns = (root: Node) => all(root).filter((n) => n.tag === "button" && has(n, "run-h") && n.props["aria-expanded"] === false);
+/** A call's row, as the reader finds it: in its run, opened if it wasn't. */
+const row = (root: Node, id: string) => {
+    for (const run of closedRuns(root)) run.props.onClick();
+    return all(root).find((n) => n.props["data-find"] === id && !has(n, "det"))!;
+};
 const liveLineOf = (root: Node) => all(root).find((n) => has(n, "live-line"));
 
 /** `busy` false: a turn left running (no live line), whose calls under way are rows like the others. */
@@ -48,9 +54,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     };
     // One copy of the module, as the app has: its components share its state (the command cards' folds).
     // The live line opens a running command into the rows' block and folds (a historical source may have neither).
-    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody, useCardFolds } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody: typeof LiveCommandBody === "undefined" ? undefined : LiveCommandBody, useCardFolds: typeof useCardFolds === "undefined" ? undefined : useCardFolds };`, "moduleExports", scope);
+    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody, useCardFolds, WorkRun } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody: typeof LiveCommandBody === "undefined" ? undefined : LiveCommandBody, useCardFolds: typeof useCardFolds === "undefined" ? undefined : useCardFolds, WorkRun: typeof WorkRun === "undefined" ? (p) => p.children : WorkRun };`, "moduleExports", scope);
     const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", { ...scope, LiveCommandBody, useCardFolds });
-    const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, Thinking, LiveLine, motionMs, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
+    const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, Thinking, WorkRun, LiveLine, motionMs, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
     /** Draws the turn again, as a session's transcript does when it's opened (in `session`'s folds, when given). */
     const mount = (session?: string) => {
         const root = node("root");
@@ -62,6 +68,36 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const op = (value: any) => setView(produce((v: any) => applyOp(v, { turnId: "turn", ...value })));
     return { root, view, setView, op, dispose, mount, setClock, setReveal, icons: () => icons, groups: () => groups, stops };
 }
+
+test("a run of steps is one line that says what it did, and opens into its rows; closed, they aren't built", () => {
+    const h = setup([tool("a")], false);
+    try {
+        const line = () => all(h.root).find((n) => n.tag === "button" && has(n, "run-h"));
+        // Its row among the steps (the live line names the call too, while it shows it).
+        const find = (id: string) => all(h.root).find((n) => n.props["data-find"] === id && has(n, "tool"));
+        // Under way: the live line's, and no line of its own yet.
+        expect(line()).toBeUndefined();
+        h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
+        // Done: one quiet line, the call said as itself; its row isn't drawn until the line is opened.
+        expect(line()!.props["aria-expanded"]).toBe(false);
+        expect(text(line()!)).toContain("watch a");
+        expect(find("a")).toBeUndefined();
+        // Another call joins the run: the line sums them up, still closed.
+        h.op({ op: "block", block: tool("b", "ok") });
+        expect(text(line()!)).toContain("Started 2 monitors");
+        expect(find("b")).toBeUndefined();
+        line()!.props.onClick();
+        expect(line()!.props["aria-expanded"]).toBe(true);
+        expect(has(find("a")!.parent!, "steps")).toBe(true);
+        expect(find("b")).toBeDefined();
+        // Closed again, and found by ⌘F: the match opens it.
+        line()!.props.onClick();
+        expect(find("a")).toBeUndefined();
+        h.setReveal({ turnId: "turn", part: "a" });
+        expect(find("a")).toBeDefined();
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
 
 test("a call under way is the live line's; done, it's a row of its own, the same through next calls, details and find", () => {
     const h = setup([tool("a")], false);
@@ -78,8 +114,8 @@ test("a call under way is the live line's; done, it's a row of its own, the same
         h.op({ op: "block", block: tool("b") });
         expect(row(h.root, "a")).toBe(first);
         expect(row(h.root, "b")).toBeUndefined();
-        // No summary line over the rows: the turn's "Worked for" folds them all once it ends.
-        expect(all(h.root).filter((n) => n.tag === "button" && has(n, "wrow") && !has(n, "tool-line"))).toHaveLength(0);
+        // One line over the rows, the run's (the turn's "Worked for" folds them all once it ends).
+        expect(all(h.root).filter((n) => n.tag === "button" && has(n, "run-h"))).toHaveLength(1);
         all(first).find((n) => n.tag === "button" && has(n, "tool-line"))!.props.onClick();
         const detail = all(first).find((n) => has(n, "tool-detail"));
         expect(detail).toBeDefined();
@@ -329,6 +365,9 @@ test("a group's sub-agents card follows its rows", () => {
         const list = all(h.root).find((n) => has(n, "steps"))!;
         const agents = all(h.root).find((n) => has(n, "subagents"))!;
         expect(list.children.indexOf(first)).toBeLessThan(list.children.indexOf(agents));
+        // One sub-agent: its row alone, which opens it, with no heading to open first.
+        expect(all(agents).some((n) => has(n, "ag-head"))).toBe(false);
+        expect(all(agents).some((n) => has(n, "agr"))).toBe(true);
         h.op({ op: "block", block: tool("b") });
         expect(row(h.root, "b")).toBeUndefined();
         h.op({ op: "block.patch", blockId: "b", patch: { status: "ok" } });
@@ -467,14 +506,12 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
         expect(text(card)).not.toContain("Done");
         expect(text(card)).not.toContain("kiwi output");
         expect(tailOf(card)).toBeUndefined();
-        // A multi-line command shows its first line (CSS adds " …"); the whole of it is in the body.
-        h.op({ op: "block", block: { ...finished("multi"), input: { command: "cd app\nmake all" } } });
+        // A multi-line command reads as its commands (a cd on its own line says only where); the whole of it is in the body.
+        h.op({ op: "block", block: { ...finished("multi"), input: { command: "cd app\nmake all\nmake test" } } });
         const multi = row(h.root, "multi");
-        expect(text(multi)).toContain("cd app");
-        expect(text(multi)).not.toContain("make all");
-        expect(all(multi).some((n) => has(n, "cmd-l") && has(n, "solo") && has(n, "more"))).toBe(true);
+        expect(text(all(multi).find((n) => has(n, "cmd-l"))!)).toBe("make all; make test");
         head(multi).props.onClick();
-        expect(text(body(multi)!)).toContain("cd app\nmake all");
+        expect(text(body(multi)!)).toContain("cd app\nmake all\nmake test");
         // Even with nothing printed, it opens: the whole command, "No output", and how it ended.
         h.op({ op: "block", block: { ...finished("quiet", "ok", ""), summary: "(no output)" } });
         const quiet = row(h.root, "quiet");
@@ -503,9 +540,8 @@ test("folded, a command's row says only its description; without one (Codex) the
         expect(text(body(desc)!)).toContain("bun test ./test/a.test.ts");
         const codex = row(h.root, "codex");
         const label = all(codex).find((n) => has(n, "cmd-l"))!;
-        expect(text(label)).toBe("bun run typecheck");
+        expect(text(label)).toBe("bun run typecheck; bun test");
         expect(has(label, "solo")).toBe(true);
-        expect(has(label, "more")).toBe(true);
         // The whole of it is in the row opened (and Copy), not a native tooltip: a long one made a wall of one (#389).
         expect(all(codex).some((n) => typeof n.props.title === "string" && n.props.title.includes("bun test"))).toBe(false);
         head(codex).props.onClick();

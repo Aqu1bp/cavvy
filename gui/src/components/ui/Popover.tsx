@@ -74,8 +74,11 @@ export function Popover(p: PopoverProps) {
         setPos(placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
     };
 
+    // Placed as it opens, and again when it asks for another width (the model picker's two views differ).
     createEffect(() => {
-        if (p.open) requestAnimationFrame(place);
+        if (!p.open) return;
+        void p.width;
+        requestAnimationFrame(place);
     });
 
     createEffect(() => {

@@ -4,7 +4,7 @@
    each a card under a sticky header that folds it, the comment boxes under
    their lines, Commit and Push at the foot. The diff's own look (.diff, .dl,
    .sl) is transcript.css's; the inspector's shared parts (.insp-body,
-   .insp-foot, .fs, pills) are panel.css's. */
+   .insp-foot, .fs-w, pills) are panel.css's. */
 
 /* A size container: the narrow rules below go by its width, the compact ones by its height. */
 .review {
@@ -24,7 +24,7 @@
     align-items: center;
     gap: calc(4 * var(--sp));
     height: calc(52 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp));
     flex: none;
     min-width: 0;
 }
@@ -164,13 +164,13 @@
 }
 
 .rv-fl-item.menu-item {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    display: flex;
     gap: calc(9 * var(--sp));
     align-items: center;
 }
 
 .rv-fl-item .nm {
+    flex: 1;
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -297,7 +297,8 @@
     margin-bottom: calc(10 * var(--sp));
     border: 1px solid var(--line);
     border-radius: calc(10 * var(--sp));
-    background: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
+    /* Opaque, like the diff in it: its header and gutters cover what scrolls under them. */
+    background: var(--well-solid);
 }
 
 .rf-h {
@@ -310,7 +311,7 @@
     height: calc(38 * var(--sp));
     padding: 0 calc(6 * var(--sp));
     border-radius: calc(9 * var(--sp)) calc(9 * var(--sp)) 0 0;
-    background: var(--insp-bg);
+    background: var(--well-solid);
     box-shadow: 0 1px 0 var(--line);
     font-size: 0.893rem;
     transition: border-radius 220ms var(--ease);

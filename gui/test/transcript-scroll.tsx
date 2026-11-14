@@ -168,6 +168,14 @@ async function checkOpenWhileRunning() {
         setView("turns", [{ id: "open", status: "running", startedAt: Date.now(), prompt: { text: "Go" }, blocks: [{ t: "text", id: "o0", text: text(30) }, bash, read, { t: "text", id: "o1", text: text(4) }] }]);
         setView("state", { ...state, busy: true, activity: { label: "Thinking", since: Date.now() } });
         await settle();
+        // The run's line, opened into its rows (it stays where it was clicked too); then to the row in it.
+        const line = row(".run-h");
+        const lineTop = line.getBoundingClientRect().top;
+        // Left open by the pass before: a run comes back as it was left.
+        if (line.getAttribute("aria-expanded") !== "true") line.click();
+        check(line.getAttribute("aria-expanded") === "true", `open ${id}: the run's line opens`);
+        near(line.getBoundingClientRect().top, lineTop, `open ${id}: the run's line stays where it was clicked`);
+        await frames(2);
         // Down to the end from above, as the reader would scroll (already there, no scroll event would come).
         await scroll(0);
         await scroll(scroller().scrollHeight);

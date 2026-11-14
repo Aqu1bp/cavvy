@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
@@ -9,7 +9,7 @@ import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPick
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
-import { EffortPicker, ModelPicker, type CompareOption } from "./ModelPicker";
+import { ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
@@ -66,7 +66,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** dragenters less dragleaves: entering a child comes before leaving its parent, so it's 0 only once the drag is out. */
     let dragDepth = 0;
     const [sending, setSending] = createSignal(false);
-    const [effortOpen, setEffortOpen] = createSignal(false);
     let histIdx = -1;
     let historyDraft = "";
     const menuId = `composer-menu-${createUniqueId()}`;
@@ -657,6 +656,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
+    // The model (with its effort) and the permission mode, in the card's bar; and the context.
+    const pickers = () => (
+        <>
+            <ModelPicker
+                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
+            />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+        </>
+    );
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;
     return (
         <div
             ref={root}
@@ -773,7 +783,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
-            <div class="composer-box glass" ref={box}>
+            <div class="composer-box card-surface" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
@@ -863,14 +873,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         }}
                     />
                     <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
-                        <Paperclip size={16} />
+                        <Plus size={17} />
                     </button>
-                    <span class="vsep" aria-hidden="true" />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
-                    <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
-                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+                    {pickers()}
                     <span class="grow" />
-                    <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
+                    {/* Home has no context yet: only a plan near its limit shows, here. In a session the context is under the card. */}
+                    <Show when={p.variant === "home"}>{meter()}</Show>
                     <span class="send-wrap">
                     <Show when={sendHint()}>
                         {(rows) => (
@@ -927,6 +935,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </button>
                 </Show>
             </div>
+            {/* How full the context is: a few quiet words under the card, at its far end. */}
+            <Show when={p.variant !== "home"}>
+                <div class="composer-under">{meter()}</div>
+            </Show>
             <Show when={p.strip}>
                 <div class="composer-strip">{p.strip}</div>
             </Show>

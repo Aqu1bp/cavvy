@@ -9,18 +9,6 @@
     inset: 0;
 }
 
-/* The conversation fades out under the title line. */
-.transcript-fade {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    height: calc(28 * var(--sp));
-    background: linear-gradient(var(--sheet), color-mix(in srgb, var(--sheet) 0%, transparent));
-    z-index: 2;
-    pointer-events: none;
-}
-
 /* While the panels slide, the conversation keeps one size (its width at the end, the taller height), where
    it ends up, and a translate takes it there from where it was (Transcript.tsx): it's laid out as the slide
    starts and as it ends, and on the frames between only the compositor moves it. */
@@ -119,20 +107,6 @@
 }
 
 /* "Latest": a small glass pill over the end of the conversation, above the composer. */
-/* Under it, the conversation fades out a little sooner than it does behind the dock alone, so the pill sits on a
-   quiet shelf rather than across a line someone is reading. */
-.jump-shelf {
-    position: absolute;
-    left: 0;
-    right: calc(14 * var(--sp));
-    bottom: var(--dock-h);
-    height: calc(64 * var(--sp));
-    z-index: 24;
-    background: linear-gradient(color-mix(in srgb, var(--sheet) 0%, transparent), var(--sheet) 32%);
-    pointer-events: none;
-    animation: ov-fade 300ms;
-}
-
 /* In the middle of what shows of the conversation: a side panel floating over it covers the rest (--over, its width,
    set on the pill itself by Transcript.tsx), and the pill would be half under its edge. */
 .jump {
@@ -172,8 +146,7 @@
 
 /* Too short to spare the room: the end is a scroll away anyway. */
 :where(.main[data-short~="360"]) {
-    .jump,
-    .jump-shelf {
+    .jump {
         display: none;
     }
 }
@@ -268,9 +241,8 @@
 }
 
 /* ---- What you said ----------------------------------------------------
-   At the right, as wide as its text (up to most of the column), so a
-   one-word "status?" is a small bubble, not a banner; the corner nearest the
-   reply is tighter. What came with it sits above it; when it was sent, Copy
+   A card at the right, as wide as its text (up to most of the column), so a
+   one-word "status?" is a small one, not a banner. What came with it sits above it; when it was sent, Copy
    and Rewind sit under it, shown on hover or focus, laid over the gap so
    nothing moves. */
 .user-row {
@@ -368,7 +340,8 @@
     min-width: 0;
     max-width: 100%;
     background: var(--bubble);
-    border-radius: calc(16 * var(--sp));
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke);
+    border-radius: var(--r-card);
     padding: calc(12 * var(--sp)) calc(16 * var(--sp));
     font-size: 1.036rem;
     line-height: 1.55;
@@ -378,14 +351,8 @@
 }
 
 .user-row > .user-bubble {
-    padding: calc(9 * var(--sp)) calc(15 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(20 * var(--sp)) calc(20 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp)) calc(11 * var(--sp));
     line-height: 1.5;
-}
-
-/* One short line: rounder, like a message. */
-.user-row > .user-bubble.short {
-    border-radius: calc(18 * var(--sp)) calc(18 * var(--sp)) calc(6 * var(--sp)) calc(18 * var(--sp));
 }
 
 .user-actions {
@@ -537,7 +504,6 @@
 
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
 .reply {
-    /* Where the live line's row fades as it steps aside (LiveLine.tsx fadeAway). */
     position: relative;
     display: flex;
     flex-direction: column;
@@ -648,12 +614,12 @@
 }
 
 /* ---- The live line ----------------------------------------------------
-   The running turn's one indicator, always its last row (LiveLine.tsx). Its
-   states share one grid cell and roll (the old one up and out, the new one up
-   from below, clipped to the row), so the row never changes height. Label,
-   what it's about (a file, a command, the thought being written), and its own
-   timer at the right. A running command's line is a button, like its row: it
-   opens to the block its row opens to (.cmd-body), under it. */
+   The running turn's one indicator, always its last row (LiveLine.tsx). One
+   glyph, then its states in one grid cell, crossfading in place, so the row
+   never moves or changes height. One sentence: the label, what it's about (a
+   file, a command, the thought being written), and its own time right after.
+   A running command's line is a button, like its row: it opens to the block
+   its row opens to (.cmd-body), under it. */
 
 .live-line {
     display: flex;
@@ -662,17 +628,24 @@
     margin-top: calc(2 * var(--sp));
 }
 
-/* The line's row fading where it was as it steps aside, over what took its place. */
-.live-line.ghost {
-    position: absolute;
-    margin: 0;
-    pointer-events: none;
-}
-
 .live-stack {
     display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
     height: calc(30 * var(--sp));
+    padding-left: calc(2 * var(--sp));
     overflow: hidden;
+}
+
+/* The hand, only while the line waits on the user. */
+.live-stack > .lic {
+    grid-area: 1 / 1;
+    margin-right: calc(8 * var(--sp));
+    width: calc(18 * var(--sp));
+    height: calc(22 * var(--sp));
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
 }
 
 /* Hover shows it's a button, as on a command row, and the chevron after the command. */
@@ -710,35 +683,65 @@
 }
 
 .live-line .layer {
-    grid-area: 1 / 1;
+    grid-area: 1 / 2;
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    /* Its timer ends where the rows above end what they came to (a command's chevron column, .cmd-h). */
-    padding: 0 calc(31 * var(--sp)) 0 calc(2 * var(--sp));
+    /* Its end stays clear of where the rows above end what they came to (a command's chevron column, .cmd-h). */
+    padding-right: calc(31 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-3);
     white-space: nowrap;
 }
 
-.layer .lic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    flex: none;
-    display: grid;
-    place-items: center;
-    color: var(--accent);
-}
-
-.layer.k-wait .lic,
-.layer.k-wait .lbl {
-    color: var(--warn);
-}
-
+/* The label leads, and holds still: the glyph says it's working. What it's about is quieter. */
 .layer .lbl {
     flex: none;
     font-weight: 500;
+    color: var(--fg-2);
+}
+
+/* The light sweeps the label for 1.2s, then rests for 1.2s. The label sits a little dimmer so the light shows. */
+.layer .lbl.shim {
+    position: relative;
+    color: color-mix(in srgb, var(--fg-2) 64%, transparent);
+}
+
+.shim-win {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+    animation: shim-win 2.4s steps(24) infinite;
+}
+
+.shim-hi {
+    display: block;
+    color: var(--fg);
+    animation: shim-hi 2.4s steps(24) infinite;
+}
+
+@keyframes shim-win {
+    0% { transform: translateX(-100%); }
+    50%, 100% { transform: translateX(100%); }
+}
+
+@keyframes shim-hi {
+    0% { transform: translateX(100%); }
+    50%, 100% { transform: translateX(-100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .shim-win { display: none; }
+    .layer .lbl.shim { color: var(--fg-2); }
+}
+
+.live-stack:has(.layer.k-wait:not(.leaving)) > .lic,
+.layer.k-wait .lbl {
+    color: var(--warn);
 }
 
 .layer .det {
@@ -751,35 +754,25 @@
 .layer .det.mono {
     font-family: var(--font-mono);
     font-size: 0.893rem;
-    color: var(--fg-2);
 }
 
 .layer .lend {
-    margin-left: auto;
     flex: none;
     display: flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
-    padding-left: calc(8 * var(--sp));
+    gap: calc(6 * var(--sp));
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
 
-/* Thinking: a breathing dot, where the others have a spinner. */
-.orb {
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    animation: orb 1.1s steps(22) infinite alternate;
+.layer .lend:not(:empty)::before,
+.layer .lend > * + *::before {
+    content: "·";
 }
 
-@keyframes orb {
-    to {
-        transform: scale(0.55);
-        opacity: 0.45;
-    }
+.layer .lend > * + *::before {
+    margin-right: calc(6 * var(--sp));
 }
 
 /* A sub-agent's view (Agents.tsx): its own one-line status under its log. */
@@ -861,39 +854,66 @@
 }
 
 .notice.error,
-.end-note.end-aborted,
 .end-note.end-error,
 .end-note.end-blocked {
     color: var(--danger);
 }
 
-/* ---- Notices (#426): drawn as what they are -----------------------------
-   The UI explains, not words: placement, icon, colour and state carry the meaning. Ported from the approved
-   mockup (cavvy-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
-   12px = 0.857rem, 11.5px = 0.821rem, 13.5px = 0.964rem. */
+/* Stopped by the user: not an error, so no colour; a small stop mark in the icon's place. */
+.end-note.end-aborted {
+    align-items: center;
+    font-weight: 500;
+}
 
-/* Info: one quiet line; the icon in a 22px gutter, the text where a step's verb starts. Cut short, it opens. */
-.nt {
+.end-note .end-stop {
+    margin: 0 calc(2.5 * var(--sp));
+}
+
+/* ---- Notices (#426): drawn as what they are -----------------------------
+   One system for all three. An info is a quiet line; a warning and an error are a card the width of the column,
+   tinted amber or red, with a hairline edge. Every one has its icon in one column (10px in from the reply's edge,
+   16px wide), its words from one edge after it, at one size and weight, and what it can do (open, copy) at its end.
+   Cut short, a notice opens on a click. At the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem. */
+.nt,
+.nw,
+.ne {
+    --n-x: calc(10 * var(--sp));
+    --n-ic: calc(16 * var(--sp));
+    --n-gap: calc(10 * var(--sp));
+}
+
+.nt,
+.nw,
+.ne {
     align-self: stretch;
-    display: flex;
-    align-items: flex-start;
-    gap: calc(9 * var(--sp));
     min-width: 0;
-    margin: 0 0 calc(2 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     font-size: 0.929rem;
     line-height: calc(20 * var(--sp));
-    color: var(--fg-3);
     text-align: left;
 }
 
-.nt .ic {
-    width: calc(22 * var(--sp));
+/* Info: no card, so it stays quiet; its icon and words where a card's are. */
+.nt {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--n-gap);
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    color: var(--fg-3);
+}
+
+.nt .ic,
+.nw-h .ic,
+.ne .ic {
+    width: var(--n-ic);
     height: calc(20 * var(--sp));
     flex: none;
     display: grid;
     place-items: center;
+}
+
+.nt .ic {
     color: var(--fg-3);
 }
 
@@ -916,17 +936,21 @@
 
 .nt-detail {
     display: block;
-    font-size: 0.857rem;
+    font-size: 0.893rem;
 }
 
-.nt .more {
-    height: calc(20 * var(--sp));
+.nt .more,
+.nw-h .chev {
     flex: none;
+    height: calc(20 * var(--sp));
     display: grid;
     place-items: center;
     color: var(--fg-3);
-    opacity: 0;
     transition: opacity 140ms, transform 200ms var(--ease);
+}
+
+.nt .more {
+    opacity: 0;
 }
 
 .nt.long {
@@ -943,7 +967,8 @@
     opacity: 1;
 }
 
-.nt.open .more {
+.nt.open .more,
+.nw.open .nw-h .chev {
     transform: rotate(90deg);
 }
 
@@ -959,66 +984,47 @@
     color: var(--fg-2);
 }
 
-/* A warning: a compact amber pill that hugs its title; what the CLI said, and its link, fold under it. Open, it
-   widens to the column. */
+/* A warning: an amber card. Its title (or its words, cut to a line) and who said it; what the CLI said, and its
+   link, fold under it. */
 .nw {
-    align-self: flex-start;
-    max-width: 100%;
-    min-width: 0;
-    margin: 0 0 calc(6 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--warn-bg);
-}
-
-.nw.open {
-    align-self: stretch;
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: color-mix(in srgb, var(--warn) 7%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 26%, transparent);
 }
 
 .nw-h {
     display: flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    max-width: 100%;
-    min-height: calc(30 * var(--sp));
-    padding: 0 calc(9 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    font-size: 0.929rem;
+    align-items: flex-start;
+    gap: var(--n-gap);
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    border-radius: inherit;
     color: var(--fg);
-    text-align: left;
+}
+
+.nw-h[role="button"] {
+    cursor: default;
 }
 
 .nw-h .ic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    flex: none;
-    display: grid;
-    place-items: center;
     color: var(--warn);
 }
 
 .nw-title {
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 500;
 }
 
-/* A title-only pill cut short: opened, it wraps. */
+/* Opened, a title cut short wraps. */
 .nw.open .nw-title {
     white-space: normal;
     overflow-wrap: anywhere;
 }
 
-.nw.open .nw-h {
-    padding-top: calc(4 * var(--sp));
-    padding-bottom: calc(4 * var(--sp));
-}
-
 .nw-src {
     flex: none;
+    height: calc(20 * var(--sp));
     display: grid;
     place-items: center;
     color: var(--fg-3);
@@ -1029,37 +1035,26 @@
     height: calc(13 * var(--sp));
 }
 
-.nw-h .chev {
-    flex: none;
-    color: var(--fg-3);
-    transition: transform 200ms var(--ease);
-}
-
-.nw.open .nw-h .chev {
-    transform: rotate(90deg);
-}
-
-/* Drawn only while open (Notices.tsx). */
+/* Drawn only while open (Notices.tsx), from the title's edge. */
 .nw-body {
-    padding: 0 calc(14 * var(--sp)) calc(11 * var(--sp)) calc(33 * var(--sp));
-    font-size: 0.929rem;
+    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp)) calc(var(--n-x) + var(--n-ic) + var(--n-gap));
+    font-size: 0.893rem;
     line-height: 1.55;
     color: var(--fg-2);
     animation: rise 220ms var(--ease) both;
 }
 
 .nw-body p {
-    margin: 0 0 calc(6 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
     text-wrap: pretty;
     white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
 .nw-details {
-    margin: 0 0 calc(6 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
     padding: 0;
     list-style: none;
-    font-size: 0.857rem;
     line-height: 1.6;
 }
 
@@ -1068,7 +1063,7 @@
     align-items: center;
     flex-wrap: wrap;
     gap: calc(10 * var(--sp));
-    margin-top: calc(8 * var(--sp));
+    margin-top: calc(6 * var(--sp));
 }
 
 .nlink {
@@ -1086,38 +1081,45 @@
     font-weight: 400;
 }
 
-/* An error: a card, never cut short: its sentence in red, then what to do. It ends the turn, so there's no
-   "Stopped with an error" line under it (TurnView). */
+/* An error: a red card, never cut short. Its sentence, Copy at its end, then what was said with it and what to
+   do. It ends the turn, so there's no "Stopped with an error" line under it (TurnView). */
 .ne {
     display: grid;
-    grid-template-columns: calc(22 * var(--sp)) minmax(0, 1fr);
-    column-gap: calc(7 * var(--sp));
-    margin: calc(2 * var(--sp)) 0 calc(10 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 34%, transparent);
+    grid-template-columns: var(--n-ic) minmax(0, 1fr) auto;
+    column-gap: var(--n-gap);
+    align-items: start;
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 .ne .ic {
-    height: calc(20 * var(--sp));
-    display: grid;
-    place-items: center;
     color: var(--danger);
 }
 
 .ne-title {
-    font-size: 0.964rem;
-    line-height: calc(20 * var(--sp));
-    font-weight: 600;
-    color: var(--danger);
+    color: var(--fg);
     overflow-wrap: anywhere;
 }
 
+/* Copy, on the sentence's line: the card's one action that isn't a choice. */
+.ne-copy.hb.sm {
+    grid-column: 3;
+    grid-row: 1;
+    margin: calc(-2 * var(--sp)) 0;
+    color: var(--fg-3);
+}
+
+.ne-body,
+.ne-resume,
+.ne-foot {
+    grid-column: 2 / -1;
+    padding-right: calc(4 * var(--sp));
+}
+
 .ne-body {
-    grid-column: 2;
-    margin-top: calc(2 * var(--sp));
-    font-size: 0.929rem;
+    margin: calc(2 * var(--sp)) 0 calc(2 * var(--sp));
+    font-size: 0.893rem;
     line-height: 1.55;
     color: var(--fg-2);
     white-space: pre-line;
@@ -1130,12 +1132,11 @@
 }
 
 .ne-foot {
-    grid-column: 2;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: calc(6 * var(--sp));
-    margin-top: calc(9 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 calc(2 * var(--sp));
 }
 
 .ne-foot .cbtn {
@@ -1144,8 +1145,6 @@
 
 /* A plan's limit: while the session waits to pick up again by itself, a line under its sentence says when. */
 .ne-resume {
-    grid-column: 2;
-    margin-top: calc(1 * var(--sp));
     font-size: 0.893rem;
     line-height: 1.5;
     color: var(--fg-3);
@@ -1257,56 +1256,166 @@
     font-size: 0.821rem;
 }
 
-/* ---- The work log ---------------------------------------------------- */
+/* ---- The work log ----------------------------------------------------
+   A run of the agent's steps is one quiet line in the reply: what it did,
+   what that added and removed, and a chevron ("Read 3 files and searched
+   twice ›"). The prose carries the conversation; the work is a line between
+   two things said. Opened, the line shows its steps in a card: a row per
+   step (its icon, what it did, to what in mono, and at the right what it
+   came to), a hairline between rows, and a step with something to show (an
+   edit's diff, a command's output) opening as a well under its row. */
 
 /* A grid of one column for most of what's in it; command rows split it into theirs (.cmd-h). */
 .worklog,
+.run-rows,
 .cmd-row > .cmd-h {
     /* The label keeps some room; short of room, the tags give way after it. */
     --cmd-cols: minmax(min(6rem, 30%), 1fr) minmax(0, auto) auto auto auto;
 }
 
 .worklog {
-    display: grid;
-    grid-template-columns: var(--cmd-cols);
-    row-gap: calc(2 * var(--sp));
+    /* A row's inset from the card's edge, the slot its icon sits in, and the gap after it. */
+    --row-x: calc(12 * var(--sp));
+    --row-ic: calc(18 * var(--sp));
+    --row-gap: calc(10 * var(--sp));
+    --row-h: calc(36 * var(--sp));
+    display: flex;
+    flex-direction: column;
     min-width: 0;
 }
 
-.worklog > * {
+/* The run's line: as quiet as a caption, its chevron after its words. */
+.run {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.run-h {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    max-width: 100%;
+    min-height: calc(28 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.964rem;
+    color: var(--fg-3);
+    text-align: left;
+    white-space: nowrap;
+    transition: color 140ms;
+    animation: step-in 320ms var(--ease) backwards;
+}
+
+.run-h:hover,
+.run.open > .run-h {
+    color: var(--fg-2);
+}
+
+.run-h:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
+.run-t {
+    min-width: 0;
+}
+
+.run-t code {
+    font: 0.893rem var(--font-mono);
+}
+
+.run-h .stat {
+    display: inline-flex;
+    gap: calc(5 * var(--sp));
+    flex: none;
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.run-h .chev {
+    flex: none;
+    color: var(--fg-4);
+    transition: transform 220ms var(--ease), color 140ms;
+}
+
+.run-h:hover .chev {
+    color: var(--fg-3);
+}
+
+.run.open > .run-h .chev {
+    transform: rotate(90deg);
+}
+
+/* Opened: the run's steps, in a card. */
+.run-rows {
+    display: grid;
+    grid-template-columns: var(--cmd-cols);
+    min-width: 0;
+    margin: calc(4 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
+    overflow: hidden;
+    animation: cmd-open var(--dur-panel) var(--ease);
+}
+
+.run-rows > * {
     grid-column: 1 / -1;
     min-width: 0;
 }
 
-/* A turn's steps: a quiet row each (icon, verb, what in mono, and on the right what it came to). */
+/* The hairline between two rows, whatever they are. */
+.run-rows > * + *,
+.run-rows .steps > * + * {
+    border-top: 1px solid var(--line);
+}
+
+/* A turn's steps: a row each. */
 .steps {
     display: flex;
     flex-direction: column;
     min-width: 0;
 }
 
+.steps:empty {
+    display: none;
+}
+
 .steps .tool-line {
-    gap: calc(9 * var(--sp));
-    min-height: calc(30 * var(--sp));
+    gap: var(--row-gap);
+    min-height: var(--row-h);
     width: 100%;
     margin-left: 0;
+    border-radius: 0;
     /* Its result ends where a command's does (.cmd-h: its chevron column), with the Open button's room after it. */
-    padding: 0 calc(5 * var(--sp)) 0 calc(2 * var(--sp));
+    padding: 0 calc(3 * var(--sp)) 0 var(--row-x);
     font-size: 0.964rem;
     color: var(--fg-2);
     /* Rows that land together come in one after another (lib/live-line.ts enterRow sets --enter). */
     animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
-.steps .tool-line:hover,
-.steps .tool.open > .tool-head > .tool-line {
-    color: var(--fg-2);
+/* The row is the whole width of the card: its Open button sits in it, not after it. */
+.steps .tool-head {
+    position: relative;
+    transition: background 140ms;
+}
+
+.steps .tool-head:hover,
+.steps .tool.open > .tool-head {
     background: var(--hover);
 }
 
+.steps .tool-line:hover,
+.steps .tool.open > .tool-head > .tool-line {
+    color: var(--fg-2);
+    background: none;
+}
+
 .steps .tool-icon {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
+    width: var(--row-ic);
+    height: var(--row-ic);
 }
 
 .steps .tool-arg {
@@ -1325,17 +1434,61 @@
 }
 
 .steps .tool-head > .row-open {
-    margin-left: calc(2 * var(--sp));
+    margin: 0 calc(8 * var(--sp)) 0 0;
 }
 
+/* What a call returned, opened: wells under its row, inset like the row. */
 .steps .tool-detail {
-    padding-left: calc(33 * var(--sp));
+    padding: calc(2 * var(--sp)) calc(10 * var(--sp)) calc(10 * var(--sp));
 }
 
-/* A finished thought, among the steps: "Thought for 4s". */
-.steps > .wgroup.thinking > .acts-h,
-.worklog > .wgroup.thinking > .acts-h {
-    min-height: calc(30 * var(--sp));
+/* A finished thought, among the steps: "Thought for 4s", a row like the others, its chevron where their icons are. */
+.run-rows .wgroup.thinking > .acts-h {
+    align-self: stretch;
+    max-width: none;
+    min-height: var(--row-h);
+    margin: 0;
+    padding: 0 var(--row-x);
+    gap: var(--row-gap);
+    border-radius: 0;
+    font-size: 0.964rem;
+}
+
+.run-rows .wgroup.thinking > .acts-h .chev {
+    width: var(--row-ic);
+}
+
+.run-rows .thinking-text,
+.run-rows .thinking-peek {
+    margin: 0 calc(10 * var(--sp)) calc(10 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    border-left: 0;
+    border-radius: var(--r-well);
+    background: var(--well);
+}
+
+/* Before any of its steps is done: what there is to show, with no card around it. */
+.run-bare {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* A thought on its own in the reply, no steps with it: a quiet line like a run's, its chevron after its words. */
+.run-bare > .wgroup.thinking > .acts-h {
+    flex-direction: row-reverse;
+    min-height: calc(28 * var(--sp));
+    margin-left: 0;
+    padding: 0;
+    font-size: 0.964rem;
+}
+
+.run-bare > .wgroup.thinking > .acts-h:hover {
+    background: none;
+}
+
+.run-bare > .wgroup.thinking > .acts-h .chev {
+    color: var(--fg-4);
 }
 
 .steps > .wgroup.thinking,
@@ -1457,8 +1610,8 @@
     padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     font: 0.786rem/1.6 var(--font-mono);
     color: var(--fg-2);
-    background: var(--sheet-2);
-    border-radius: calc(10 * var(--sp));
+    background: var(--well);
+    border-radius: var(--r-well);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-height: calc(96 * var(--sp));
@@ -1467,6 +1620,10 @@
 
 .activity-tail.nested {
     margin-left: calc(22 * var(--sp));
+}
+
+.steps .activity-tail.nested {
+    margin: 0 calc(10 * var(--sp)) calc(10 * var(--sp));
 }
 
 .tool {
@@ -1524,7 +1681,7 @@
 }
 
 .activity-step.live .tool-arg {
-    color: var(--accent);
+    color: var(--fg);
 }
 
 .tool-meta {
@@ -1597,7 +1754,7 @@
 }
 
 .steps .tool-head:not(:has(> .row-open))::after {
-    margin-left: calc(2 * var(--sp));
+    margin-right: calc(8 * var(--sp));
 }
 
 .tool-head:hover > .row-open,
@@ -1772,10 +1929,10 @@
 
 /* ---- Cards: an edit, a command ---------------------------------------- */
 
-/* An edit is a step like the others: no card, its row (icon, verb, file, +3 −2), and its diff under it. */
+/* An edit is a step like the others: its row (icon, verb, file, +3 −2), and its diff in a well under it. */
 .tcard.edit-card {
     margin: 0;
-    border-radius: calc(8 * var(--sp));
+    border-radius: 0;
     background: none;
     box-shadow: none;
     overflow: visible;
@@ -1783,10 +1940,10 @@
 }
 
 .edit-card > .tcard-h {
-    gap: calc(9 * var(--sp));
-    min-height: calc(30 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) 0 calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    gap: var(--row-gap);
+    min-height: var(--row-h);
+    padding: 0 calc(12 * var(--sp)) 0 var(--row-x);
+    border-radius: 0;
     font-size: 0.964rem;
     color: var(--fg-2);
     cursor: default;
@@ -1804,8 +1961,8 @@
 }
 
 .edit-card .tcard-ic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
+    width: var(--row-ic);
+    height: var(--row-ic);
     color: var(--fg-3);
 }
 
@@ -1816,11 +1973,6 @@
 .edit-card .tcard-p {
     min-width: 0;
     font-size: 0.893rem;
-}
-
-/* Under way: the file in the accent, as a running step's is. */
-.edit-card.live .tcard-p {
-    color: var(--accent);
 }
 
 /* Review and Open come in on hover or focus, after the file; until then they take no room. */
@@ -1889,19 +2041,20 @@
 }
 
 .edit-card > .tcard-body {
-    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp)) calc(33 * var(--sp));
+    margin: 0 calc(10 * var(--sp)) calc(10 * var(--sp));
     border-top: 0;
-    border-radius: calc(10 * var(--sp));
+    border-radius: var(--r-well);
     overflow: hidden;
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
 }
 
+/* A card on its own in the conversation: what a turn changed, a command you ran yourself. */
 .tcard {
     margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: var(--r-card);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
     overflow: hidden;
     min-width: 0;
     animation: step-in 380ms var(--ease) var(--enter, 0ms) backwards;
@@ -1973,7 +2126,7 @@
 
 .tcard.cmd-row {
     margin: 0;
-    border-radius: calc(8 * var(--sp));
+    border-radius: 0;
     background: none;
     box-shadow: none;
     overflow: visible;
@@ -1988,10 +2141,10 @@
     grid-template-columns: var(--cmd-cols);
     align-items: center;
     /* One line, always the same height: a glyph from a fallback font (✓) doesn't make one row taller. */
-    height: calc(30 * var(--sp));
+    height: var(--row-h, calc(38 * var(--sp)));
     min-width: 0;
-    padding: 0 calc(4 * var(--sp)) 0 calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 var(--row-x, calc(12 * var(--sp)));
+    border-radius: 0;
     font-size: 0.964rem;
     color: var(--fg-2);
     white-space: nowrap;
@@ -2000,23 +2153,23 @@
     transition: background 140ms;
 }
 
-.worklog > .cmd-row {
+.run-rows > .cmd-row {
     display: grid;
     grid-template-columns: subgrid;
 }
 
-.worklog > .cmd-row > * {
+.run-rows > .cmd-row > * {
     grid-column: 1 / -1;
 }
 
-.worklog > .cmd-row > .cmd-h {
+.run-rows > .cmd-row > .cmd-h {
     grid-template-columns: subgrid;
 }
 
 .cmd-what {
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: var(--row-gap, calc(10 * var(--sp)));
     min-width: 0;
     padding-right: calc(9 * var(--sp));
 }
@@ -2031,8 +2184,8 @@
 }
 
 .cmd-h .ic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
+    width: var(--row-ic, calc(18 * var(--sp)));
+    height: var(--row-ic, calc(18 * var(--sp)));
     flex: none;
     display: grid;
     place-items: center;
@@ -2040,7 +2193,7 @@
 }
 
 .cmd-row.bg .cmd-h .ic {
-    color: var(--accent);
+    color: var(--fg);
 }
 
 /* What it's for, in the model's words: said like any row's verb ("Read", "Search"), not brighter. */
@@ -2056,12 +2209,6 @@
 .cmd-l.solo {
     font: 0.893rem var(--font-mono);
     color: var(--fg);
-}
-
-/* More than one line: the first, and a hint there's more. */
-.cmd-l.more::after {
-    content: " …";
-    color: var(--fg-4);
 }
 
 /* The columns after the label: each part, when there is one, 8px from the one before. */
@@ -2199,7 +2346,7 @@
 
 /* Its last line, under the row while it's folded: a failure's (red), or what it's printing. */
 .cmd-tail {
-    margin: calc(-2 * var(--sp)) 0 calc(4 * var(--sp)) calc(33 * var(--sp));
+    margin: calc(-6 * var(--sp)) calc(12 * var(--sp)) calc(9 * var(--sp)) calc(var(--row-x, 12 * var(--sp)) + var(--row-ic, 18 * var(--sp)) + var(--row-gap, 10 * var(--sp)));
     font: 0.857rem/1.6 var(--font-mono);
     color: var(--fg-3);
     white-space: nowrap;
@@ -2218,10 +2365,10 @@
 }
 
 .cmd-body {
-    margin: calc(4 * var(--sp)) 0 calc(8 * var(--sp)) calc(33 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    margin: 0 calc(10 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
     overflow: hidden;
     font: 0.857rem/1.65 var(--font-mono);
     animation: cmd-open var(--dur-panel) var(--ease);
@@ -2430,9 +2577,17 @@
     min-width: 0;
     margin: calc(4 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: var(--r-card);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
     overflow: hidden;
+}
+
+/* Among a run's steps, the card is the run's: these are rows of it. */
+.run-rows .subagents {
+    margin: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
 }
 
 /* In a timeline, the card spans it rather than sitting on its line. */
@@ -2476,8 +2631,8 @@
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
     border-radius: 50%;
-    background: var(--sheet-2);
-    box-shadow: 0 0 0 2px var(--sheet), inset 0 0 0 0.5px var(--line);
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
     display: grid;
     place-items: center;
     color: var(--fg-2);
@@ -2565,6 +2720,13 @@
 
 .agr:hover {
     background: var(--hover);
+}
+
+/* One sub-agent: its row is the card, as tall as the heading of several, and opens it in one click. */
+.subagents.single > .agr {
+    min-height: calc(48 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
+    border-radius: 0;
 }
 
 .agr .av {
@@ -2663,8 +2825,8 @@
 .term {
     margin: 0;
     padding: calc(8 * var(--sp)) calc(12 * var(--sp));
-    background: var(--sheet-2);
-    border-radius: calc(10 * var(--sp));
+    background: var(--well);
+    border-radius: var(--r-well);
     font: 0.857rem/1.6 var(--font-mono);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -2682,14 +2844,11 @@
 
 .code {
     position: relative;
-    border-radius: var(--r-card);
-    background: var(--sheet-2);
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
     overflow: hidden;
     min-width: 0;
-}
-
-.code.bare {
-    border-radius: calc(10 * var(--sp));
 }
 
 /* The language and Copy appear on hover, over the code's top right. */
@@ -2751,10 +2910,10 @@
 /* ---- Diffs ---------------------------------------------------------- */
 
 .diff {
-    /* Code tint over a solid panel, shared by the code area and sticky gutters. */
-    --diff-bg: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
-    border-radius: var(--radius-md);
-    box-shadow: 0 0 0 1px var(--line);
+    /* Opaque: the sticky gutters cover the code that scrolls under them. */
+    --diff-bg: var(--well-solid);
+    border-radius: var(--r-well);
+    box-shadow: 0 0 0 0.5px var(--line-strong);
     overflow: hidden;
     background: var(--diff-bg);
     font-size: 0.82rem;
@@ -2875,7 +3034,7 @@
 }
 
 .dl.add .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
+    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, transparent);
     color: var(--add-fg);
 }
 
@@ -2889,7 +3048,7 @@
 }
 
 .dl.del .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
+    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, transparent);
     color: var(--del-fg);
 }
 
@@ -2940,7 +3099,7 @@
 }
 
 .sl .ln.add {
-    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
+    background: color-mix(in srgb, var(--add-bg-strong) 70%, transparent);
     color: var(--add-fg);
 }
 
@@ -2949,7 +3108,7 @@
 }
 
 .sl .ln.del {
-    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
+    background: color-mix(in srgb, var(--del-bg-strong) 70%, transparent);
     color: var(--del-fg);
 }
 
@@ -3010,7 +3169,7 @@
    the new one otherwise), whole rows tinted, long lines wrapped under
    themselves rather than cut off. The review pane's diff keeps its own look. */
 .diff.inline {
-    --diff-bg: var(--sheet);
+    --diff-bg: transparent;
     border-radius: 0;
     box-shadow: none;
     background: transparent;
@@ -3044,7 +3203,7 @@
     color: var(--fg-3);
 }
 
-.diff.inline .dl:not(.del) .ln:first-child,
+.diff.inline .dl:not(.del):not(.one) .ln:first-child,
 .diff.inline .dl.del .ln + .ln {
     visibility: hidden;
 }
@@ -3088,7 +3247,7 @@
 
 .diff.inline .dl.sep {
     margin: calc(2 * var(--sp)) 0;
-    background: var(--sheet-2);
+    background: var(--hover);
 }
 
 .diff.inline .dl.sep .txt {

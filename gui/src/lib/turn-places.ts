@@ -70,17 +70,10 @@ export function workers(places: readonly TurnPlace[], o: { turnId: string; agent
     return out;
 }
 
-/** The snapshot's policy, which every result carries: not news on a card. */
-const POLICY = /^Ignored files are not captured\./;
-
-/**
- * An incomplete snapshot in one line: how many paths it left out, else that it's incomplete; the reasons go
- * in its tooltip, without the snapshot's standing policy.
- */
+/** An incomplete snapshot in one line: how many paths it left out, else that it's incomplete; the reasons go in its tooltip. */
 export function incompleteLine(notes: readonly string[] = []): { text: string; detail: string } {
-    const said = notes.filter((n) => !POLICY.test(n));
-    const listed = said.filter((n) => n.startsWith("Not captured: ")).length;
-    const others = said.map((n) => /^(\d+) other paths were not captured\.$/.exec(n)?.[1]).find(Boolean);
+    const listed = notes.filter((n) => n.startsWith("Not captured: ")).length;
+    const others = notes.map((n) => /^(\d+) other paths were not captured\.$/.exec(n)?.[1]).find(Boolean);
     const left = listed + (others ? Number(others) : 0);
-    return { text: left ? `${left === 1 ? "1 path" : `${left} paths`} not captured` : "Snapshot incomplete", detail: said.join("\n") };
+    return { text: left ? `${left === 1 ? "1 path" : `${left} paths`} not captured` : "Snapshot incomplete", detail: notes.join("\n") };
 }

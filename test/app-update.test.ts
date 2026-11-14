@@ -101,7 +101,7 @@ describe("where it can't update itself", () => {
         const head = sh(work, "rev-parse", "HEAD");
         expect((await updates({ platform: "linux" }).u.check()).unavailable).toContain("macOS");
         expect((await updates({ bundle: undefined }).u.check()).unavailable).toContain("Only the installed desktop app");
-        expect((await updates().u.check()).unavailable).toContain("no record");
+        expect((await updates().u.check()).unavailable).toContain("desktop:install");
         record({ commit: head, source: work, app: "/Users/me/Applications/Cavvy.app" });
         expect((await updates().u.check()).unavailable).toContain("isn't the one last installed");
         record({ commit: head, source: join(dir, "gone") });

@@ -109,7 +109,8 @@ function toolState(t: ToolBlock): LiveLineState {
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
         return { ...base, label, detail: first || undefined, mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
-    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion", title: arg };
+    // A search's query is words, not code.
+    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion" && t.name !== "WebSearch", title: arg };
 }
 
 /**

@@ -3,6 +3,8 @@
 // public/theme-boot.js repeats migratePrefs, appearanceOf and showAppearance in plain JS so
 // the first paint is right; test/gui-prefs.test.ts keeps the two in step.
 
+import { DAYS, type DayLabel } from "../lib/session-order";
+
 export type Scheme = "system" | "light" | "dark";
 export type AccentId = "blue" | "indigo" | "violet" | "pink" | "red" | "orange" | "green" | "teal" | "graphite";
 /** Settings → Appearance → Window: how much of the desktop shows through. */
@@ -39,6 +41,8 @@ export interface Prefs {
     settledOpen: boolean;
     /** Grouped by project: the projects (by path) whose sessions are folded under their heading. */
     collapsedProjects: string[];
+    /** Listed by date: the days (Pinned, Today…) whose sessions are folded under their heading. */
+    foldedDays: DayLabel[];
     /** Enter sends (shift+enter for a newline); otherwise mod+enter sends. */
     enterSends: boolean;
     notifications: boolean;
@@ -71,6 +75,7 @@ export const PREF_DEFAULTS: Prefs = {
     groupBy: "date",
     settledOpen: true,
     collapsedProjects: [],
+    foldedDays: [],
     enterSends: true,
     notifications: true,
     expandActivity: false,
@@ -115,6 +120,7 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
     // Folded projects: a list of paths, or the default (none).
     if ("collapsedProjects" in out && !(Array.isArray(out.collapsedProjects) && out.collapsedProjects.every((c) => typeof c === "string"))) delete out.collapsedProjects;
+    if ("foldedDays" in out && !(Array.isArray(out.foldedDays) && out.foldedDays.every((d) => DAYS.includes(d as DayLabel)))) delete out.foldedDays;
     return out as Partial<Prefs>;
 }
 

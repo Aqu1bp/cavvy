@@ -47,7 +47,7 @@ A `LocalForward` in your SSH config for that host is opened along with Cavvy's o
 
 ### In the desktop app
 
-The **Servers** button beside Settings, at the foot of the sidebar, lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
+Under a new session's composer, the machine it will run on (**This Mac ▾**) lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
 
 The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, pin, settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server. Archiving a session that works in a worktree from another machine's window keeps the worktree and says so; a window on its own machine asks whether to remove it.
 
@@ -55,7 +55,7 @@ A new session starts on the machine named first in the strip under its composer 
 
 - Search (⌘K) finds text only in the sessions of the machine the open session is on.
 - Recently deleted lists that machine's too.
-- A server that can't be reached, was stopped, or needs your word says so above the Servers button; its sessions stay listed, none shown as working.
+- A server that can't be reached, was stopped, or needs your word says so at the foot of the sidebar; its sessions stay listed, none shown as working.
 
 To list a server's sessions this machine stays connected to it, as a window on it would: a Cavvy there that isn't running (the server rebooted) is started, one you stopped is left stopped, and nothing is installed or updated. When a session on a machine other than the open one's finishes or needs you, the notification names the machine first (`box: Fix the login test`), and a click on it opens that session.
 

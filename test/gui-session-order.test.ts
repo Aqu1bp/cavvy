@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../src/server/protocol";
-import { adjacentSession, holdSidebar, orderSessions, pageSessions, sidebarEntries, sidebarIds, type SidebarOptions } from "../gui/src/lib/session-order";
+import { adjacentSession, holdSidebar, listedOnce, orderSessions, pageSessions, revealDay, sidebarEntries, sidebarIds, type SidebarOptions } from "../gui/src/lib/session-order";
 import { projectColor, projectMonograms } from "../gui/src/lib/format";
 import { sessionStatus } from "../gui/src/lib/session-status";
 
@@ -49,6 +49,29 @@ test("listed by date: pinned, then each day's sessions under its heading; workin
     expect(sidebarIds(entries)).toEqual(["pin", "ask", "busy", "today", "late", "week", "old"]);
     expect(sidebarEntries(list, [], options()).some((e) => e.kind === "day")).toBe(false);
     expect(sidebarEntries(list, [], options({ now, groupBy: "project" })).some((e) => e.kind === "day")).toBe(false);
+});
+
+test("listed by date: a folded day keeps its heading and count, takes no page slots, and Show more stays above it", () => {
+    const now = new Date(2026, 9, 27, 8, 30).getTime();
+    const at = (d: number, h: number) => new Date(2026, 9, 27 - d, h).getTime();
+    const list = [
+        session("pin", { pinned: true, updatedAt: at(30, 9) }),
+        ...Array.from({ length: 4 }, (_, i) => session(`t${i}`, { updatedAt: at(0, 7) - i })),
+        ...Array.from({ length: 3 }, (_, i) => session(`y${i}`, { updatedAt: at(1, 12) - i })),
+        session("old", { updatedAt: at(30, 12) }),
+    ];
+    const show = (o: Partial<SidebarOptions>) => listedOnce(sidebarEntries(list, [], options({ now, ...o }))).map((e) =>
+        e.kind === "day" ? `# ${e.label}${e.collapsed ? ` (${e.ids?.length})` : ""}` : e.kind === "more" ? `more ${e.remaining}` : "id" in e ? e.id : e.kind);
+    expect(show({ foldedDays: ["Pinned", "Yesterday"] })).toEqual(["# Pinned (1)", "# Today", "t0", "t1", "t2", "t3", "# Yesterday (3)", "# Older", "old"]);
+    // Folded days' sessions don't use the page: Today and Older fill it; the rest of Today waits under Show more,
+    // and the folded day below it stays below.
+    expect(show({ foldedDays: ["Older"], cards: 2 })).toEqual(["# Pinned", "pin", "# Today", "t0", "more 6", "# Older (1)"]);
+    // Keys skip what's folded; opening a session under a folded day unfolds it. Listed by project, nothing folds by day.
+    expect(sidebarIds(sidebarEntries(list, [], options({ now, foldedDays: ["Today"] })))).not.toContain("t0");
+    expect(revealDay(["Today", "Older"], list[1], "date", now)).toEqual(["Older"]);
+    const kept: ("Today" | "Older")[] = ["Older"];
+    expect(revealDay(kept, list[1], "date", now)).toBe(kept);
+    expect(sidebarEntries(list, [], options({ now, groupBy: "project", foldedDays: ["Today"] })).some((e) => e.kind === "day")).toBe(false);
 });
 
 for (const groupBy of ["date", "project"] as const) {

@@ -26,11 +26,11 @@ function at(value: string | undefined, size: number): string {
 const KEY: [file: string, selector: string, property: string, at14: string][] = [
     ["base.css", ".hb", "height", "28px"],
     ["base.css", ".btn", "height", "32px"],
-    ["base.css", ".menu-item", "padding", "6px 8px"],
-    ["base.css", '.toggle.on .toggle-knob', "transform", "translateX(15px)"],
-    ["sidebar.css", ".side-search", "height", "32px"],
-    ["sidebar.css", ".card-hit", "padding", "7px 10px"],
-    ["composer.css", ".send", "width", "34px"],
+    ["overlays.css", ".menu-item", "padding", "7px 10px"],
+    ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(16px)"],
+    ["sidebar.css", ".nav-row", "height", "32px"],
+    ["sidebar.css", ".card-hit", "min-height", "32px"],
+    ["composer.css", ".send", "width", "32px"],
     ["composer.css", ".uq-row", "height", "34px"],
     ["transcript.css", ".tool-line", "min-height", "26px"],
     ["transcript.css", ".acts-h", "min-height", "26px"],
@@ -86,9 +86,8 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["tokens.css", ":root", "--r-window", "16px"],
     ["tokens.css", ":root", "--r-sheet", "12px"],
     ["tokens.css", ":root", "--gutter", "8px"],
-    ["shell.css", ".app", "--win-pad", "8px"],
-    ["header.css", ".header .hb", "height", "28px"],
-    ["header.css", ".cap", "height", "34px"],
+    ["shell.css", ".app", "--win-pad", "0px"],
+    ["header.css", ".header .hb", "height", "30px"],
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],
@@ -108,9 +107,10 @@ const SIZING = /^(width|height|min-width|min-height|max-width|max-height|padding
 /** Selectors whose sizes are the window's frame, or depend on it, by file. */
 const FRAME_RULES: Record<string, RegExp> = {
     "base.css": /^(html|::-webkit-scrollbar.*)$/,
-    "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.cap( \.sep)?)$/,
+    "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.insp-lead \.(hb|has-wait(::after)?)|\.cap( \.sep)?)$/,
     // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
-    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer)$/,
+    // Full screen with the sidebar hidden: the title bar's buttons and the rows after them clear the traffic lights.
+    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|insp-t|rv-h|br-bar|sim-bar))$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,

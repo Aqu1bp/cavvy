@@ -50,7 +50,7 @@ mock.module("../../gui/src/state/app", () => ({
             composer = mount(value ?? "home");
         }
     },
-    activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
+    activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, noModel: () => false, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop, serversUi: noop,
 }));
 // No servers here: the window is on this computer.
@@ -61,7 +61,7 @@ mock.module("../../gui/src/state/ui", () => ({
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
         "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setFolderPickerOpen", "setModePickerOpen",
-        "setModelPickerOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax", "railOpen", "setRailOpen",
+        "setModelPickerOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax", "railOpen", "setRailOpen", "freeRail",
     ].map((name) => [name, noop])),
     shellLayout: () => ({ railMode: "dock" }),
 }));

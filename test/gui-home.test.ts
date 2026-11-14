@@ -197,11 +197,12 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     const Home = componentCode("Home", {
         node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
-        ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert",
+        ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
+        noModel: () => (o.models ?? [{ models: [{}] }]).every((g: any) => !g.models.length),
         // No servers here: where a session runs isn't said (the servers code says it, when there are any).
-        createEffect: (fn: () => void) => fn(), machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
+        createEffect: (fn: () => void) => fn(), isElectron: false, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
         openProject: stub,
         trustAndContinue: async (...args: unknown[]) => void trusts.push(args),
@@ -274,11 +275,13 @@ test("with no folder Home asks for one, and the strip has no prefixes", () => {
 test("the trust card lists the folder's files and keeps both answers", async () => {
     const h = home({ needsTrust: [".mcp.json", ".claude/settings.json"] });
     const card = byClass(h.tree, "div", "trust")[0]!;
-    expect(card.props.class).toBe("hcard glass trust");
+    expect(card.props.class).toBe("hcard card-surface trust");
     expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
     expect(elements(card, "code").map(text)).toEqual([".mcp.json", ".claude/settings.json"]);
-    const [skip, trust] = elements(byClass(card, "div", "ask-row"), "button");
-    expect([text(skip), text(trust)]).toEqual(["Open without them", "Trust this folder"]);
+    // The answer that goes ahead first, filled; the way out at the far end.
+    const [trust, skip] = elements(byClass(card, "div", "ask-row"), "button");
+    expect([text(trust), text(skip)]).toEqual(["Trust this folder", "Open without them"]);
+    expect(skip!.props.class).toBe("pbtn quiet");
     expect(trust!.props.class).toBe("pbtn primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
@@ -287,24 +290,25 @@ test("the trust card lists the folder's files and keeps both answers", async () 
     expect(home({ needsTrust: [".mcp.json"], height: 600 }).cliProps[0]!.rows).toBeLessThan(home({ height: 600 }).cliProps[0]!.rows);
 });
 
-test("with no model the connect card offers the user's own plan and a key, and the composer says to connect one", async () => {
+test("with no model the question asks for one, and the ways to connect sit in a row under it", async () => {
     const h = home({ models: [{ models: [] }], providers: [{ id: "claude-code", name: "Claude Code", configured: false, agentCli: { installed: true, plan: "Claude subscription" } }] });
-    expect(h.composer.props.placeholder).toBe("Connect a model to start");
-    const card = byClass(h.tree, "div", "connect")[0]!;
-    expect(text(byClass(card, "span", "ask-title"))).toBe("Connect a model to start");
-    expect(text(elements(card, "p"))).toStartWith("Use the Claude subscription you already have through Claude Code, add an API key");
-    const [key, plan] = elements(card, "button");
-    expect(text(key)).toBe("Add an API key");
-    expect(text(plan)).toBe("Use my Claude subscription");
-    expect(plan!.props.class).toBe("pbtn primary");
+    expect(text(elements(h.tree, "h1"))).toBe("Connect a model to start");
+    expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
+    // A row, not a card.
+    expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
+    const [plan, key] = elements(byClass(h.tree, "div", "home-connect")[0]!, "button");
+    expect(text(plan)).toBe("Claude");
+    expect(plan!.props.title).toBe("Use your Claude subscription");
     expect(elements(plan, "ProviderIcon")[0]!.props.id).toBe("claude-code");
+    expect(text(key)).toBe("API key");
     await plan!.props.onClick();
     key!.props.onClick();
     expect(h.connected).toEqual(["claude-code"]);
     expect(h.tabs).toEqual(["providers"]);
     // No CLI to use: the key is the way.
-    const keyOnly = home({ models: [] });
-    expect(elements(byClass(keyOnly.tree, "div", "connect"), "button").map((b) => [text(b), b.props.class])).toEqual([["Add an API key", "pbtn primary"]]);
+    expect(elements(byClass(home({ models: [] }).tree, "div", "home-connect"), "button").map((b) => text(b))).toEqual(["API key"]);
+    // With a model, neither.
+    expect(byClass(home().tree, "div", "home-connect")).toHaveLength(0);
 });
 
 test("a short column shows fewer terminal rows, down to none, and a card in a narrow one takes more room", () => {
@@ -318,20 +322,28 @@ test("a short column shows fewer terminal rows, down to none, and a card in a na
     expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
 });
 
-test("a folder with nothing to protect, not yet trusted, is asked about once: trusting it is what turns on checking edits", async () => {
+test("a folder with nothing to protect, not yet trusted, is asked about in a bar on the composer, by name: trusting it turns on checking edits", async () => {
+    const bar = (h: ReturnType<typeof home>) => byClass(h.tree, "div", "home-tab")[0];
     const h = home({ askTrust: true });
-    const card = byClass(h.tree, "div", "trust")[0]!;
-    expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
-    expect(text(card)).toContain("Edits are checked for errors only in folders you trust");
-    const [later, trust] = elements(byClass(card, "div", "ask-row"), "button");
-    expect([text(later), text(trust)]).toEqual(["Not now", "Trust this folder"]);
-    await later!.props.onClick();
-    await trust!.props.onClick();
+    expect(byClass(h.tree, "div", "trust")).toEqual([]);
+    const tab = bar(h)!;
+    expect(tab.props["aria-label"]).toBe("Trust this folder");
+    expect(text(tab)).toContain("Trust cavvy?");
+    const [later, trust] = byClass(tab, "button", "strip-ctl");
+    expect([text(later), text(trust)]).toEqual(["Not now", "Trust"]);
+    // Not in the strip under the composer, where the folder and its branch are.
+    expect(text(h.strip)).not.toContain("trust");
+    later!.props.onClick();
+    trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
-    // Trusted, or never asked: no card.
-    expect(byClass(home().tree, "div", "trust")).toEqual([]);
-    // Settings that can run commands are asked about as before, by name: one card, not two.
-    expect(byClass(home({ askTrust: true, needsTrust: [".mcp.json"] }).tree, "div", "trust").length).toBe(1);
+    // Trusted, or never asked: nothing.
+    expect(bar(home())).toBeUndefined();
+    // No model yet: connecting one comes first.
+    expect(bar(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
+    // Settings that can run commands are asked about by name, in the card: not in the bar as well.
+    const settings = home({ askTrust: true, needsTrust: [".mcp.json"] });
+    expect(byClass(settings.tree, "div", "trust").length).toBe(1);
+    expect(bar(settings)).toBeUndefined();
 });
 
 test("Home shows the error cards above the trust and connect cards", () => {
@@ -406,13 +418,13 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         now: () => Date.now(), limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
-        Gauge: "Gauge", Ring: "Ring", Popover: tagged("Popover"),
+        Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
     }) as (p: { provider?: string; sessionId?: string; home?: boolean }) => unknown;
     const tree = ComposerMeter({ provider, sessionId, home });
     return { tree, trigger: elements(tree, "button")[0] };
 }
 
-test("on Home the ring gives way to the limit pill, which opens the same card; a session keeps its ring", () => {
+test("Home shows only the limit pill, which opens the same card; a session has its context in words", () => {
     // A new session has no context: below 80% Home shows nothing there.
     expect(meter(true, 60).trigger).toBeUndefined();
     const pill = meter(true, 94);
@@ -424,9 +436,10 @@ test("on Home the ring gives way to the limit pill, which opens the same card; a
     expect(pill.trigger!.props["aria-label"]).toBe("Claude subscription · Default usage: 5-hour 94%");
     expect(pill.trigger!.props["aria-haspopup"]).toBe("dialog");
     expect(elements(pill.tree, "Popover")).toHaveLength(1);
-    // A session's composer: the ring, at any usage.
-    const ring = meter(false, 94, "s1");
-    expect(ring.trigger!.props.class).toStartWith("ctx-btn");
-    expect(elements(ring.trigger, "Ring")).toHaveLength(1);
-    expect(elements(meter(false, 10, "s1").trigger, "Ring")).toHaveLength(1);
+    // A session's composer: the context in words, at any plan usage (no ring, no pill).
+    const words = meter(false, 94, "s1");
+    expect(words.trigger!.props.class).toStartWith("ctx-btn");
+    expect(elements(words.trigger, "Gauge")).toHaveLength(0);
+    expect(text(words.trigger)).toMatch(/context$|^Context$/);
+    expect(text(meter(false, 10, "s1").trigger)).toMatch(/context$|^Context$/);
 });

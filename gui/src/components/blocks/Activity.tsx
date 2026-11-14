@@ -1,7 +1,8 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-// Tool calls, the way the transcript shows them: a run of calls folds into
-// one line ("Read 3 files, searched 2 patterns · +13 −1"), which opens into
-// a row per call, which opens into the call's details.
+// Tool calls, the way the transcript shows them: a run of calls is one quiet
+// line that says what it did ("Read 3 files and searched twice", "Run the test
+// suite"), which opens into a card with a row per call, which opens into the
+// call's details.
 
 import { createContext, createEffect, createMemo, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
@@ -273,8 +274,81 @@ function Inline(p: { text: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// The work log: one sentence per run of tool calls, opening into a plain line
-// per call; sub-agents get their own row; the call running now shimmers.
+// A run of work in a turn: everything between two things the model said.
+
+/** One finished call, said as itself: what a command is for, the file an edit changed, else its verb and what it acted on. */
+function oneCall(t: ToolBlock): string {
+    if (t.status === "denied" || t.status === "error" || t.agent) return summarize([t]);
+    if (t.name === "Bash") return commandDescription(t) ?? summarize([t]);
+    const path = String(t.input?.file_path ?? t.input?.notebook_path ?? "");
+    if (path && EDIT_TOOLS.has(t.name)) return `${t.name === "Write" && t.diff?.status === "added" ? "Created" : "Edited"} ${short(path)}`;
+    const { verb, arg } = toolLabel(t);
+    return arg ? `${verb} ${arg}` : verb;
+}
+
+/**
+ * A run of a turn's work (`items`: its steps and the thoughts between them), as one line: what its finished steps
+ * came to, what they added and removed, and a chevron. It opens into `children`, the steps' own rows, in a card;
+ * closed, they aren't built. Whether it's open is kept with the session's other rows (CardFolds), so it comes back
+ * as it was left. Nothing finished in it yet (only thoughts, or calls under way): just `children`.
+ */
+export function WorkRun(p: { items: Item[]; /** The turn's live line says what's under way: calls still running aren't rows. */ hideLive?: boolean; children: JSX.Element }) {
+    const folds = useContext(CardFoldsContext);
+    const tools = createMemo(() => p.items.flatMap((it) => (it.kind === "activity" && it.card !== "plan" ? it.tools : [])));
+    const done = createMemo(() => tools().filter((t) => !isLive(t)));
+    const key = () => `run:${tools()[0]?.id ?? ""}`;
+    // A call under way with no live line to say so (a turn a steered message ended keeps the calls that began in
+    // it): its row is the only thing that does, so the run stays open while there is one.
+    const mustShow = createMemo(() => !p.hideLive && tools().some(isLive));
+    // Once shown that way it stays open (until the reader closes it): its row isn't taken away as the call ends.
+    createEffect(() => mustShow() && folds.get(key()) === undefined && folds.set(key(), true));
+    const open = () => mustShow() || (folds.get(key()) ?? prefs.expandActivity);
+    // Find's match in one of its steps, or in a thought among them, opens it.
+    createEffect(on(findReveal, (r) => r && p.items.some((it) => (it.kind === "activity" ? it.steps.some((b) => b.id === r.part) : it.block.id === r.part)) && folds.set(key(), true)));
+    const title = createMemo(() => (done().length === 1 ? oneCall(done()[0]!) : summarize(done())));
+    const stats = createMemo(() => done().reduce((a, t) => (t.diff && t.status === "ok" ? { added: a.added + t.diff.added, removed: a.removed + t.diff.removed } : a), { added: 0, removed: 0 }));
+    const failed = createMemo(() => done().filter((t) => t.status === "error").length);
+    const denied = createMemo(() => done().filter((t) => t.status === "denied").length);
+    // The line, once a step is done. The rows, while it's open; and before any step is done, whatever there is to
+    // show (a thought, a call with no live line), with no card around it. One place for the rows either way, so a
+    // row drawn before its run had a line is the same row after.
+    const lined = createMemo(() => done().length > 0);
+    return (
+        <div class={`run ${lined() && open() ? "open" : ""}`}>
+            <Show when={lined()}>
+                <button class="run-h" data-find-skip aria-expanded={open()} onClick={() => folds.set(key(), !open())}>
+                    <span class="run-t truncate">
+                        <Inline text={title()} />
+                    </span>
+                    <Show when={stats().added || stats().removed}>
+                        <span class="stat">
+                            <Counts added={stats().added} removed={stats().removed} />
+                        </span>
+                    </Show>
+                    <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
+                    <Show when={failed()}>
+                        <span class="wflag err" title={`${plural(failed(), "call")} failed`}>
+                            <AlertTriangle size={12} /> {failed()}
+                        </span>
+                    </Show>
+                    <Show when={denied()}>
+                        <span class="wflag warn" title={`${plural(denied(), "call")} declined`}>
+                            <X size={12} /> {denied()}
+                        </span>
+                    </Show>
+                    <ChevronRight size={14} class="chev" />
+                </button>
+            </Show>
+            <Show when={!lined() || open()}>
+                <div class={lined() ? "run-rows" : "run-bare"}>{p.children}</div>
+            </Show>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The rows of a run: a plain line per call; sub-agents get their own row; the
+// call running now shimmers.
 
 const elapsed = (ms: number) => duration(Math.max(0, ms)).replace(/^(\d+)ms$/, "0s");
 
@@ -510,46 +584,52 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
         return duration(Math.max(0, end - start)).replace(/^(\d+)ms$/, "0s");
     };
     return (
-        <div class="subagents">
-            <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <ProviderStack providers={p.runs.map(providerOf)} />
-                <span class="ag-text">
-                    <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
-                    <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
+        // One agent: its row alone, which opens it. Several: how many and how they're doing, opening into a row each.
+        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div>}>
+            <div class="subagents">
+                <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    <ProviderStack providers={p.runs.map(providerOf)} />
+                    <span class="ag-text">
+                        <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
+                        <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
+                    </span>
+                    <span class="grow" />
+                    <span class="ag-time num">{span()}</span>
+                    <ChevronRight size={14} class="chev" />
+                </button>
+                <Show when={open()}>
+                    <div class="agl">
+                        <For each={p.runs}>{(a) => <AgentRow a={a} providerOf={providerOf} />}</For>
+                    </div>
+                </Show>
+            </div>
+        </Show>
+    );
+}
+
+/** A sub-agent's row: what it's for, its model and what it's up to (or found), how long; it opens its own view. */
+function AgentRow(p: { a: AgentRun; providerOf: (a: AgentRun) => string | undefined }) {
+    const a = p.a;
+    const providerOf = p.providerOf;
+    const meta = () => `${a.model ? `${shortModelRef(a.model)} · ` : ""}${a.effort ? `${a.effort} effort · ` : ""}`;
+    // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
+    const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
+    return (
+        <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description ?? ""}\n${shortModelRef(a.model)}` : a.description}>
+            <span class="av">
+                <AgentMark provider={providerOf(a)} />
+                <span class={`nd st-${a.status}`} />
+            </span>
+            <span class="agr-text">
+                <span class="agr-name truncate">{a.description?.trim() || "Sub-agent"}</span>{" "}
+                <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
+                    {meta()}
+                    {agentLine(a)}
                 </span>
-                <span class="grow" />
-                <span class="ag-time num">{span()}</span>
-                <ChevronRight size={14} class="chev" />
-            </button>
-            <Show when={open()}>
-                <div class="agl">
-                    <For each={p.runs}>
-                        {(a) => {
-                            const meta = () => `${a.model ? `${shortModelRef(a.model)} · ` : ""}${a.effort ? `${a.effort} effort · ` : ""}`;
-                            // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
-                            const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
-                            return (
-                                <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
-                                    <span class="av">
-                                        <AgentMark provider={providerOf(a)} />
-                                        <span class={`nd st-${a.status}`} />
-                                    </span>
-                                    <span class="agr-text">
-                                        <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
-                                        <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
-                                            {meta()}
-                                            {agentLine(a)}
-                                        </span>
-                                    </span>
-                                    <span class="ag-time num">{agentElapsed(a)}</span>
-                                    <ChevronRight size={14} class="chev" />
-                                </button>
-                            );
-                        }}
-                    </For>
-                </div>
-            </Show>
-        </div>
+            </span>
+            <span class="ag-time num">{agentElapsed(a)}</span>
+            <ChevronRight size={14} class="chev" />
+        </button>
     );
 }
 
@@ -1004,7 +1084,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     {/* Folded, only what it's for: the command is in the row opened. Under way, find counts the command
                         (as on the live line, whose label the description is), so not this. */}
                     <Show when={rowLabel()}>
-                        <span class={`cmd-l ${description() ? "" : "solo"} ${!description() && command().includes("\n") ? "more" : ""}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
+                        <span class={`cmd-l ${description() ? "" : "solo"}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
                     </Show>
                     <span class="cmd-tools" data-find-skip>
                         <Show when={background() && task()!.stoppable && folds.sessionId}>

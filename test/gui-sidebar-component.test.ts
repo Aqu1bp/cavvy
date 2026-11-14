@@ -36,6 +36,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [groupBy, setGroupBy] = solid.createSignal("date");
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
+    const [foldedDays, setFoldedDays] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
     const [settingsTab, setSettingsTab] = solid.createSignal<string>();
     const [agentFocus, setAgentFocus] = solid.createSignal<string>();
@@ -43,7 +44,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), deleteSessions: mock((_ids: readonly string[]) => Promise.resolve([] as string[])) };
     let reduced = false;
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
-    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); } };
+    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); }, get foldedDays() { return foldedDays(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     // A menu's children may be a Show's accessor: read through it.
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].map(resolve).flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -72,7 +73,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Download", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
@@ -80,7 +81,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
         })),
-        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : setSettledOpen(value),
+        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : key === "foldedDays" ? setFoldedDays(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
@@ -98,7 +99,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -162,7 +163,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
     } finally { f.dispose(); }
 });
 
-test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; headings count their sessions", () => {
+test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; open project headings carry no count", () => {
     const f = fixture(6);
     const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
@@ -184,8 +185,8 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         expect(waiting.querySelector().props["aria-current"]).toBe("page");
         expect(idle.querySelector().props["aria-current"]).toBeUndefined();
         f.setGroupBy("project");
-        const counts = f.nodes.filter((n) => n.props.class === "n").map((n) => n.content);
-        expect(counts.slice(-3)).toEqual([2, 2, 2]);
+        // Open, a project's heading is its name: its rows show how many.
+        expect(f.nodes.filter((n) => n.props.class === "n" && f.nodes.some((h) => h.props.class === "shelf-toggle" && f.descendants(h).includes(n)))).toEqual([]);
     } finally { f.dispose(); }
 });
 
@@ -480,13 +481,35 @@ test("sidebar waits for the first list and retains loaded state across reconnect
         f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
         expect(empty()).toBe("Loading sessions…");
         f.setSessionsLoaded(true);
-        expect(empty()).toBe("Nothing archived.");
+        expect(empty()).toBe("Nothing archived");
         f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
-        expect(empty()).toBe("No sessions yet. Start one from the composer.");
+        expect(empty()).toBe("No sessions yet");
         for (const conn of ["connecting", "open"]) {
             f.setConn(conn);
-            expect(empty()).toBe("No sessions yet. Start one from the composer.");
+            expect(empty()).toBe("No sessions yet");
         }
+    } finally { f.dispose(); }
+});
+
+test("every session settled and folded: Settled alone, at the foot, and no word that there are none", () => {
+    const f = fixture(2);
+    const shown = () => f.descendants(f.nav);
+    try {
+        solid.batch(() => { f.setActiveId(undefined); f.setSettledOpen(false); f.setSessions(f.sessions().map((s) => ({ ...s, settled: true }))); });
+        expect(shown().some((n) => n.props?.class === "side-empty")).toBe(false);
+        const heads = shown().filter((n) => typeof n.props?.class === "string" && n.props.class.includes("settled-head"));
+        expect(new Set(heads).size).toBe(1);
+        // A gap that takes the room left goes before it.
+        expect(shown().some((n) => n.props?.class === "settled-gap")).toBe(true);
+    } finally { f.dispose(); }
+});
+
+test("every session archived: the list says it has none, not a blank list", () => {
+    const f = fixture(2);
+    const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty")?.content;
+    try {
+        solid.batch(() => { f.setArchived(f.sessions().map((s) => ({ ...s, archived: true }))); f.setSessions([]); });
+        expect(empty()).toBe("No sessions yet");
     } finally { f.dispose(); }
 });
 
@@ -503,25 +526,25 @@ for (const archived of [false, true]) {
                 f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
             }
             f.setSessionsError(true);
-            expect(contents()).toContain("Couldn't load sessions.");
+            expect(contents()).toContain("Couldn't load sessions");
             expect(contents()).not.toContain("Loading sessions…");
-            expect(contents()).not.toContain("No sessions yet. Start one from the composer.");
-            expect(contents()).not.toContain("Nothing archived.");
+            expect(contents()).not.toContain("No sessions yet");
+            expect(contents()).not.toContain("Nothing archived");
             const error = new Error("Still unavailable");
             f.refreshSessions.mockRejectedValueOnce(error);
             retry().props.onClick();
             await Promise.resolve();
             expect(f.refreshSessions).toHaveBeenCalledTimes(1);
             expect(f.reportError).toHaveBeenCalledWith(error);
-            expect(contents()).toContain("Couldn't load sessions.");
+            expect(contents()).toContain("Couldn't load sessions");
             f.refreshSessions.mockImplementationOnce(async () => {
                 solid.batch(() => { f.setSessionsLoaded(true); f.setSessionsError(false); });
             });
             retry().props.onClick();
             await Promise.resolve();
             expect(f.refreshSessions).toHaveBeenCalledTimes(2);
-            expect(empty().content).toBe(archived ? "Nothing archived." : "No sessions yet. Start one from the composer.");
-            expect(contents()).not.toContain("Couldn't load sessions.");
+            expect(empty().content).toBe(archived ? "Nothing archived" : "No sessions yet");
+            expect(contents()).not.toContain("Couldn't load sessions");
             expect(contents()).not.toContain("Retry");
         } finally { f.dispose(); }
     });
@@ -539,7 +562,7 @@ const key = (f: ReturnType<typeof fixture>, k: string, extra: Record<string, unk
 const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => ["card-hit", "slim-hit"].includes(n.props.class) && n.props.title?.startsWith(`Session ${id}\n`));
 const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^(card|slim) /.test(String(n.props.class)));
 // The last bar made is the one showing (one shows while two or more are selected).
-const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel glass");
+const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel card-surface");
 const barButtons = (f: ReturnType<typeof fixture>) => [...new Set(f.descendants(bar(f)).filter((n) => n.tag === "button"))].map((n) => n.props["aria-label"]).sort();
 
 for (const view of ["date", "project"]) {
@@ -663,6 +686,33 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
         key(f, "a", { target: { closest: () => ({}) } });
         expect(f.railSelection().ids).toEqual([]);
     } finally { f.dispose(); }
+});
+
+// ---- Folding a day under its heading -----------------------------------------
+
+test("listed by date, a day's heading folds and unfolds its sessions, and says how many when folded", () => {
+    const f = fixture(9);
+    try {
+        const head = () => f.nodes.findLast((n) => n.props.class === "shelf day-head");
+        expect(head()).toBeDefined();
+        const label = f.descendants(head()).find((n) => n.content !== undefined && typeof n.content === "string")?.content;
+        const before = f.ids.length;
+        expect(head().props["aria-expanded"]).toBe(true);
+        head().props.onClick();
+        expect(f.foldedDays()).toEqual([label]);
+        expect(head().props["aria-expanded"]).toBe(false);
+        expect(f.ids.length).toBeLessThan(before);
+        expect(f.descendants(head()).find((n) => n.props?.class === "n").content).toBe(before - f.ids.length);
+        head().props.onClick();
+        expect(f.foldedDays()).toEqual([]);
+        expect(f.ids.length).toBe(before);
+        // Every day folded: the headings and their counts, and no word that there are none.
+        for (const h of f.nodes.filter((n) => n.props.class === "shelf day-head" && n.props["aria-expanded"])) h.props.onClick();
+        expect(f.ids).toEqual([]);
+        expect(f.descendants(f.nav).some((n) => n.props?.class === "side-empty")).toBe(false);
+    } finally {
+        f.dispose();
+    }
 });
 
 // ---- Folding a project under its heading ----------------------------------

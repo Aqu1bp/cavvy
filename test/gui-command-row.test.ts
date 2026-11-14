@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commandCut, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
+import { commandCut, commandLabel, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
 
 // A command's row (gui/src/lib/command-row.ts): its command highlighted when it's opened, and what the row says
 // folded (its exit code, a test run's tally, its summary). Activity.tsx draws from these; find.ts counts the same words.
@@ -120,4 +120,17 @@ test("a Cavvy shell id used again after a restart doesn't link an old command's 
     // Its own shell, started while the call ran, still matches; a call with no start time can't be matched by id at all.
     expect(taskOf(old, [{ ...fresh, startedAt: 1010 }])?.id).toBe("bash_1");
     expect(taskOf({ ...old, startedAt: undefined }, [{ ...fresh, startedAt: 1010 }])).toBeUndefined();
+});
+
+test("a command's row label: past its cd, and a script as its commands without the lines that say nothing", () => {
+    const label = (command: string) => commandLabel({ t: "tool", id: "t", name: "Bash", title: "", status: "ok", input: { command } } as never);
+    expect(label("cd '/repo' && bun test")).toBe("bun test");
+    expect(label("set +e\npwd\nnproc\ncat /etc/os-release")).toBe("pwd; nproc; cat /etc/os-release");
+    expect(label("set -euo pipefail\n# look around\n\nls -la")).toBe("ls -la");
+    expect(label("docker run \\\n  --rm \\\n  alpine uname -a")).toBe("docker run --rm alpine uname -a");
+    // A heredoc's body isn't commands: the label ends at the line that opens it.
+    expect(label("cat <<'EOF' > notes.txt\nhello\nEOF\necho done")).toBe("cat <<'EOF' > notes.txt");
+    expect(label("cd app\nmake all")).toBe("make all");
+    expect(label("echo a\n  && echo b")).toBe("echo a && echo b");
+    expect(label("set -e\n")).toBeUndefined();
 });

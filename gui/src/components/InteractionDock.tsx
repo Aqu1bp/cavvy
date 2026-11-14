@@ -1,22 +1,23 @@
 // What the agent is waiting on you for: a permission, a question, a plan, a secret.
-// A glass card in the dock above the composer, ringed in the colour of what it
-// asks (amber for a permission or a secret, the accent for a plan or a
-// question, red for something destructive). Its buttons never take
-// focus by themselves, so an Enter meant for the input can't approve
-// anything; the number keys and Esc work when you're not typing.
+// A card in the dock above the composer. It opens with the question itself
+// ("Run `bun test auth`?"), then what you need to answer it, then the answers:
+// the one that goes ahead first, filled; the way out at the far end, plain.
+// Something destructive is ringed in red. Its buttons never take focus by
+// themselves, so an Enter meant for the input can't approve anything; the
+// number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, Smartphone, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
-import { approvalChoices } from "../lib/approval";
+import { approvalChoices, approvalQuestion } from "../lib/approval";
 import { cardsKey, typingIn } from "../lib/card-keys";
 import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
-import { DiffView } from "./blocks/DiffView";
+import { Counts, DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
 const typing = () => typingIn(document.activeElement as HTMLElement | null);
@@ -56,7 +57,7 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
             {(_id) => (
                 // A terminal that took the keyboard by itself gives it up, so the card's keys answer it.
                 cardArrived(),
-                <div class={`ask glass itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
+                <div class={`ask card-surface itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>
@@ -94,13 +95,18 @@ function FitLabel(p: { text: string }) {
     );
 }
 
-/** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
-function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: string }) {
+/**
+ * A card's question, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole.
+ * `end`: at the question's far end (what an edit adds and removes).
+ */
+function Head(p: { title: JSX.Element; sub?: JSX.Element; note?: string; end?: JSX.Element }) {
     return (
         <>
             <div class="ask-h">
-                <span class="ask-ic">{p.icon}</span>
                 <span class="ask-title selectable">{p.title}</span>
+                <Show when={p.end}>
+                    <span class="ask-end">{p.end}</span>
+                </Show>
             </div>
             <Show when={p.sub}>
                 <div class="itab-sub selectable">{p.sub}</div>
@@ -109,40 +115,6 @@ function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: s
                 <div class="itab-sub selectable">{p.note}</div>
             </Show>
         </>
-    );
-}
-
-function PermIcon(p: { it: PermissionInteraction }) {
-    return (
-        <Switch fallback={<ShieldAlert size={16} />}>
-            <Match when={p.it.toolName === "Bash"}>
-                <SquareTerminal size={16} />
-            </Match>
-            <Match when={p.it.toolName === "Monitor"}>
-                <Radar size={16} />
-            </Match>
-            <Match when={p.it.category === "edit"}>
-                <FilePen size={16} />
-            </Match>
-            <Match when={p.it.toolName === "WebFetch" || p.it.toolName.startsWith("Browser")}>
-                <Globe size={16} />
-            </Match>
-            <Match when={p.it.toolName.startsWith("Simulator")}>
-                <Smartphone size={16} />
-            </Match>
-            <Match when={p.it.category === "mcp"}>
-                <Plug size={16} />
-            </Match>
-            <Match when={p.it.toolName === "GitCommit"}>
-                <GitCommitHorizontal size={16} />
-            </Match>
-            <Match when={p.it.toolName === "GitPush"}>
-                <ArrowUpFromLine size={16} />
-            </Match>
-            <Match when={p.it.toolName === "CreatePullRequest"}>
-                <GitPullRequestArrow size={16} />
-            </Match>
-        </Switch>
     );
 }
 
@@ -164,6 +136,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         if (!(await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined }))) setBusy(false);
     };
     const choices = () => approvalChoices(p.it.options);
+    const question = () => approvalQuestion(p.it);
     useKeys((k) => {
         const opt = choices().keys[Number(k) - 1];
         if (opt) {
@@ -193,8 +166,24 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     return (
         <>
             <Head
-                icon={<PermIcon it={p.it} />}
-                title={p.it.heading}
+                title={
+                    <>
+                        {question().before}
+                        <Show when={question().code}>
+                            <code class="ask-code mono">{question().code}</code>
+                        </Show>
+                        ?
+                    </>
+                }
+                end={
+                    <Show when={p.it.diff}>
+                        {(d) => (
+                            <span class="stat">
+                                <Counts added={d().added} removed={d().removed} />
+                            </span>
+                        )}
+                    </Show>
+                }
                 note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
                     p.it.where && !p.it.agentLabel ? (
@@ -223,7 +212,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     </div>
                 </Show>
                 <Show when={p.it.command !== undefined}>
-                    <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
+                    <Show when={!question().inline}>
+                        <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
+                    </Show>
                     {/* Not a shell command's: those are the agent's own words for it, and the command is right there. */}
                     <Show when={p.it.description && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
                         <div class="itab-desc why selectable">{p.it.description}</div>
@@ -238,9 +229,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     </Show>
                 </Show>
                 <Show when={p.it.diff}>
-                    <DiffView diff={p.it.diff!} header maxLines={40} class="itab-diff" />
+                    <DiffView diff={p.it.diff!} maxLines={40} class="inline itab-diff" />
                 </Show>
-                <Show when={!p.it.diff && p.it.path}>
+                <Show when={!p.it.diff && p.it.path && !question().inline}>
                     <div class="itab-code mono">{p.it.path}</div>
                 </Show>
                 <Show when={p.it.url}>
@@ -311,7 +302,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -345,15 +336,15 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                 />
             </div>
             <div class="itab-actions ask-row">
-                <button class="pbtn quiet" onClick={() => void submit(undefined)}>
-                    Skip <kbd>Esc</kbd>
-                </button>
-                <span class="grow" />
                 <Show when={p.it.multi || other().trim()}>
                     <button class="pbtn primary" disabled={!picked().length && !other().trim()} onClick={() => void submit([...picked(), ...(other().trim() ? [other().trim()] : [])])}>
                         Answer
                     </button>
                 </Show>
+                <span class="grow" />
+                <button class="pbtn quiet" onClick={() => void submit(undefined)}>
+                    Skip <kbd>Esc</kbd>
+                </button>
             </div>
         </>
     );
@@ -401,7 +392,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} sub="Only its shell commands see the value" />
+            <Head title={<>Provide <code class="ask-code mono">{p.it.name}</code>?</>} sub="Only its shell commands see the value" />
             <div class="itab-body">
                 <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
@@ -439,12 +430,12 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                 </div>
             </div>
             <div class="itab-actions ask-row">
-                <button class="pbtn quiet" onClick={decline}>
-                    Decline <kbd>Esc</kbd>
-                </button>
-                <span class="grow" />
                 <button class="pbtn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
                     Provide
+                </button>
+                <span class="grow" />
+                <button class="pbtn quiet" onClick={decline}>
+                    Decline <kbd>Esc</kbd>
                 </button>
             </div>
         </>
@@ -473,7 +464,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" sub="Nothing has been changed yet" />
+            <Head title="Go ahead with this plan?" sub="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />
@@ -501,13 +492,22 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                     />
                 </Show>
             </div>
-            <div class="itab-actions ask-row plan-row quiet-row">
+            <div class="itab-actions ask-row plan-row">
+                <button class="pbtn primary" onClick={() => void approve("acceptEdits")}>
+                    Approve, auto-accept edits <kbd>1</kbd>
+                </button>
+                <button class="pbtn outlined" onClick={() => void approve("default")}>
+                    Approve, ask for edits <kbd>2</kbd>
+                </button>
+                <button class="pbtn outlined" onClick={() => void approve("auto")}>
+                    Auto mode <kbd>3</kbd>
+                </button>
+                <span class="grow" />
                 <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
                     {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
                 </button>
-                <button class="pbtn quiet" title="Save the plan as a Markdown file" onClick={save}>
-                    <Save size={13} /> Save… <kbd>6</kbd>
-                </button>
+            </div>
+            <div class="itab-actions ask-row plan-row quiet-row">
                 <button
                     class="pbtn quiet"
                     disabled={!info()?.git}
@@ -516,17 +516,8 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                 >
                     <FolderGit2 size={13} /> New worktree… <kbd>5</kbd>
                 </button>
-            </div>
-            <div class="itab-actions ask-row plan-row">
-                <span class="grow" />
-                <button class="pbtn outlined" onClick={() => void approve("auto")}>
-                    Auto mode <kbd>3</kbd>
-                </button>
-                <button class="pbtn outlined" onClick={() => void approve("default")}>
-                    Approve, ask for edits <kbd>2</kbd>
-                </button>
-                <button class="pbtn primary" onClick={() => void approve("acceptEdits")}>
-                    Approve, auto-accept edits <kbd>1</kbd>
+                <button class="pbtn quiet" title="Save the plan as a Markdown file" onClick={save}>
+                    <Save size={13} /> Save… <kbd>6</kbd>
                 </button>
             </div>
         </>

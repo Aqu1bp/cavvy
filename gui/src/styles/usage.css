@@ -235,6 +235,7 @@
 .u-state { padding: calc(18 * var(--sp)) calc(16 * var(--sp)); }
 .u-state b { display: block; font-size: 1rem; font-weight: 600; }
 .u-state p { margin: calc(6 * var(--sp)) 0 calc(14 * var(--sp)); max-width: 60ch; color: var(--fg-3); line-height: 1.5; }
+.u-state b + button { margin-top: calc(14 * var(--sp)); }
 .u-notes { margin-top: calc(18 * var(--sp)); max-width: 72ch; }
 
 @container usage (max-width: 600px) {
