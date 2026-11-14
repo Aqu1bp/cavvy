@@ -36,7 +36,6 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createEffect: (f: () => void) => f(),
         createResource: () => [() => ({ sessions, sources }), { refetch: () => void refetched++ }],
-        ArrowRight: "ArrowRight",
         Dialog: tagged("Dialog"),
         ProviderIcon: tagged("ProviderIcon"),
         app: { conn: "open", providers },
@@ -52,7 +51,7 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
     return { tree, continued, tabs, shown, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
-test("Home lists the three newest sessions not yet in Cavvy, each with its mark, messages and model", () => {
+test("Home lists the three newest sessions not yet in Cavvy, each with its mark, when and how long, and Import", () => {
     const r = cli([
         session("old", { updatedAt: Date.now() - 3 * 1440 * MIN }),
         session("new", { updatedAt: Date.now() - 6 * MIN, messages: 5, partial: true, model: "Opus 5.5", recent: true }),
@@ -65,11 +64,10 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     expect(r.shown).toEqual([3]);
     expect(elements(elements(r.tree, "section"), "ProviderIcon").map((i) => i.props.id)).toEqual(["claude-code", "codex", "claude-code"]);
     const [first, second] = r.rows();
-    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 5+ messages · Opus 5.5 · Still open in a terminal");
+    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 6m ago · 5+ messages · Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
     expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using it here and in the terminal at once mixes the two.");
-    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 1 message · GPT-6");
-    expect(text(byClass(first, "span", "cli-ago"))).toBe("6m ago");
+    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 2h ago · 1 message");
     expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
     expect(text(byClass(r.tree, "div", "cli-h"))).toBe("Continue from your terminalShow all 4");
 });
@@ -87,7 +85,7 @@ test("a row is a button: a click, Enter or Space imports it; one whose CLI is of
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a", "a"]);
     expect(prevented).toBe(2);
-    expect(text(b)).toContain("Turn on Codex in Settings → Providers");
+    expect(text(byClass(b, "span", "cli-off"))).toBe("Turn on in Settings");
     expect(byClass(b, "span", "cli-go")).toHaveLength(0);
     expect(b!.props["aria-label"]).toBe("Turn on Codex in Settings → Providers to import “Session b”");
     b!.props.onClick();
@@ -411,7 +409,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createEffect: stub, createMemo: (f: () => unknown) => f, createUniqueId: () => "u", on: stub, onCleanup: stub,
         planLimitKey,
-        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used }]) }, settings: {} },
+        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: Date.now() + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
         reportError: stub, rpc: {}, toast: stub,
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub,
@@ -421,10 +419,10 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
     }) as (p: { provider?: string; sessionId?: string; home?: boolean }) => unknown;
     const tree = ComposerMeter({ provider, sessionId, home });
-    return { tree, trigger: elements(tree, "button")[0] };
+    return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("ctx-limit")) : elements(tree, "button")[0] };
 }
 
-test("Home shows only the limit pill, which opens the same card; a session has its context in words", () => {
+test("Home shows only the limit pill, as status with no card; a session has its context in words", () => {
     // A new session has no context: below 80% Home shows nothing there.
     expect(meter(true, 60).trigger).toBeUndefined();
     const pill = meter(true, 94);
@@ -433,9 +431,13 @@ test("Home shows only the limit pill, which opens the same card; a session has i
     expect(elements(pill.trigger, "Gauge")).toHaveLength(1);
     expect(text(pill.trigger)).toBe("94%of 5-hour limit");
     expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
-    expect(pill.trigger!.props["aria-label"]).toBe("Claude subscription · Default usage: 5-hour 94%");
-    expect(pill.trigger!.props["aria-haspopup"]).toBe("dialog");
-    expect(elements(pill.tree, "Popover")).toHaveLength(1);
+    expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude subscription · Default usage: 5-hour 94% · resets /);
+    // Home has no session: nothing to compact or switch, so no card to open; when it resets is the tooltip.
+    expect(pill.trigger!.props.role).toBe("status");
+    expect(pill.trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M$/);
+    expect(meter(true, 100).trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M, in 1h 4[56]m$/);
+    expect(elements(pill.tree, "button")).toHaveLength(0);
+    expect(elements(pill.tree, "Popover")).toHaveLength(0);
     // A session's composer: the context in words, at any plan usage (no ring, no pill).
     const words = meter(false, 94, "s1");
     expect(words.trigger!.props.class).toStartWith("ctx-btn");

@@ -7,6 +7,7 @@
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
 import { sleepSeconds, turnDuration } from "./format";
+import { firstStep, liveCommand } from "./command-row";
 import { commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
 export type LiveKind = "think" | "tool" | "wait" | "bg" | "special" | "work";
@@ -63,9 +64,11 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
         case "confirm":
             return { label: "Waiting for your OK", detail: i.title };
         default: {
-            const what = i.command?.split("\n")[0] ?? i.path;
-            // No command or file: what the card asks, in its words (never the call as code, "BrowserAct(click e4)").
-            return { label: "Waiting for approval", detail: what ?? i.heading, mono: Boolean(what) };
+            // A command by what it's for, else its first step (the card has all of it); no command or file: what the card
+            // asks, in its words (never the call as code, "BrowserAct(click e4)").
+            const words = i.command !== undefined ? i.description?.trim() : undefined;
+            const what = words ? undefined : i.command !== undefined ? firstStep(i.command) : i.path;
+            return { label: "Waiting for approval", detail: words || what || i.heading, mono: Boolean(what) };
         }
     }
 }
@@ -98,20 +101,21 @@ function toolState(t: ToolBlock): LiveLineState {
     const { verb, arg } = toolLabel(t);
     const description = commandDescription(t);
     const command = t.name === "Bash" ? String(t.input?.command ?? "").trim() : "";
-    const first = command.split("\n")[0];
+    // A command reads as its description, else its first step: all of it is too long for a line (the card shows it).
     if (t.status === "awaiting") {
         const asks = t.name === "AskUserQuestion" || t.name === "ExitPlanMode";
-        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : [verb, description ?? arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : arg };
+        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : command ? (description ?? firstStep(command)) : [verb, arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : arg };
     }
     if (t.status === "streaming") {
-        return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: arg, mono: true, since: t.startedAt, toolId: t.id };
+        return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: t.name === "Bash" && arg ? firstStep(arg) : arg, mono: true, since: t.startedAt, toolId: t.id };
     }
     const wait = t.name === "Bash" && t.status === "running" ? sleepSeconds(t.input?.command) : undefined;
     const base = { key: `tool:${t.id}:${t.status}`, kind: "tool" as const, since: t.startedAt, toolId: t.id, jobSince: t.job?.startedAt };
     if (t.name === "Bash") {
-        // Its description is the label when it has one ("Run the transcript tests"), the command beside it.
+        // Its description is the label when it has one ("Run the transcript tests"), else "Running" and its first step;
+        // all of it a click away (opens).
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
-        return { ...base, label, detail: first || undefined, mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
+        return { ...base, label, detail: liveCommand(t), mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
     // A search's query is words, not code.
     return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion" && t.name !== "WebSearch", title: arg };

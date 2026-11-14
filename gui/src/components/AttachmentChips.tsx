@@ -1,6 +1,6 @@
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { ChevronDown, File, FileText, FileX, TextCursorInput, X } from "lucide-solid";
-import { formatSize, previewNow, previewOf, type Attachment, type ImageAttachment } from "../lib/attachments";
+import { FileText, FileX, File as FileIcon, TextCursorInput, X } from "lucide-solid";
+import { extensionOf, formatSize, previewNow, previewOf, tintOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 import { setViewedImage } from "../state/ui";
 
@@ -18,10 +18,9 @@ function Preview(p: { image: ImageAttachment }) {
 }
 
 /**
- * What's attached to the message being written: image thumbnails, and chips
- * for files (name, size, kind). A refused file says why; a PDF the model
- * can't read says so. An image opens full size, text to read, and a paste
- * can be turned back into text in the box.
+ * What's attached to the message being written, as tiles of one height: an image's thumbnail, and a card for a
+ * file (its kind on a tinted tile, its name, a few words on it). A refused one says why; a PDF the model can't
+ * read says so. An image opens full size, text to read, and a paste can go back into the box as text.
  */
 export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blocked?: string; onRemove: (i: number) => void; onToText: (i: number) => void }) {
     const [open, setOpen] = createSignal<Attachment>();
@@ -34,6 +33,11 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
         const a = open();
         return a && a.kind === "text" && p.items.includes(a) ? a : undefined;
     };
+    const Remove = (r: { name: string; i: number }) => (
+        <button class="att-x" title="Remove" aria-label={`Remove ${r.name}`} onClick={() => p.onRemove(r.i)}>
+            <X size={10} stroke-width={2.5} />
+        </button>
+    );
     return (
         <div class="attachments-wrap">
             <div class="attachments">
@@ -42,13 +46,11 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                         <Switch>
                             <Match when={a.kind === "image" && a}>
                                 {(img) => (
-                                    <div class="attachment" title={`${img().name} · ${formatSize(img().size)}`}>
-                                        <button class="attachment-open" aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
+                                    <div class="att att-image" title={`${img().name} · ${formatSize(img().size)}`}>
+                                        <button class="att-open" aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
                                             <Preview image={img()} />
                                         </button>
-                                        <button class="attachment-x" title="Remove" aria-label={`Remove ${img().name}`} onClick={() => p.onRemove(i())}>
-                                            <X size={11} />
-                                        </button>
+                                        <Remove name={img().name} i={i()} />
                                     </div>
                                 )}
                             </Match>
@@ -60,41 +62,47 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                         if (x.kind === "pdf" && !p.readsPdf) return "This model can't read PDFs";
                                         return undefined;
                                     };
+                                    const pasted = () => f().kind === "text" && Boolean((f() as { pasted?: boolean }).pasted);
                                     const meta = () => {
                                         const x = f();
-                                        if (x.kind === "text") return `${x.pasted ? "Pasted" : "Text"} · ${plural(x.lines, "line")} · ${formatSize(x.size)}`;
-                                        if (x.kind === "pdf") return `PDF · ${formatSize(x.size)}`;
-                                        return `Refused · ${formatSize(x.size)}`;
+                                        return x.kind === "text" ? `${plural(x.lines, "line")} · ${formatSize(x.size)}` : formatSize(x.size);
                                     };
-                                    return (
-                                        <div class={`file-chip ${problem() ? "refused" : ""} ${shown() === f() ? "open" : ""}`} title={problem() ? `${f().name}: ${problem()}` : f().name}>
-                                            <span class="file-chip-icon">
-                                                <Switch fallback={<File size={15} />}>
+                                    const ext = () => (pasted() ? undefined : extensionOf(f().name));
+                                    const isOpen = () => shown() === f();
+                                    const Body = () => (
+                                        <>
+                                            <span class="att-tile" data-tint={problem() ? "bad" : tintOf(f().name)} aria-hidden="true">
+                                                <Switch fallback={<FileIcon size={16} />}>
                                                     <Match when={problem()}>
-                                                        <FileX size={15} />
+                                                        <FileX size={16} />
                                                     </Match>
-                                                    <Match when={f().kind === "text"}>
-                                                        <FileText size={15} />
+                                                    <Match when={pasted()}>
+                                                        <FileText size={16} />
                                                     </Match>
+                                                    <Match when={ext()}>{(e) => <span class={`att-ext ${e().length > 3 ? "long" : ""}`}>{e()}</span>}</Match>
                                                 </Switch>
                                             </span>
-                                            <span class="file-chip-body">
-                                                <span class="file-chip-name truncate">{f().name}</span>
-                                                <span class="file-chip-meta truncate">{problem() ?? meta()}</span>
+                                            <span class="att-body">
+                                                <span class="att-name truncate">{f().name}</span>
+                                                {/* A model that can't read it: the note under the tiles says so, and what to do. */}
+                                                <span class="att-meta truncate">{f().kind === "refused" ? problem() : meta()}</span>
                                             </span>
-                                            <Show when={f().kind === "text"}>
-                                                <button class="hb sm" title={shown() === f() ? "Hide" : "Show what's in it"} aria-label={shown() === f() ? `Hide ${f().name}` : `Show ${f().name}`} aria-expanded={shown() === f()} onClick={() => setOpen(shown() === f() ? undefined : f())}>
-                                                    <ChevronDown size={13} class={shown() === f() ? "flip" : ""} />
+                                        </>
+                                    );
+                                    return (
+                                        <div class={`att att-file ${problem() ? "refused" : ""} ${isOpen() ? "open" : ""}`} title={problem() ? `${f().name}: ${problem()}` : f().name}>
+                                            {/* Text opens below to read; anything else is only what it is. */}
+                                            <Show when={f().kind === "text"} fallback={<span class="att-card"><Body /></span>}>
+                                                <button class="att-card" aria-expanded={isOpen()} aria-label={`${isOpen() ? "Hide" : "Show"} ${f().name}`} onClick={() => setOpen(isOpen() ? undefined : f())}>
+                                                    <Body />
                                                 </button>
                                             </Show>
-                                            <Show when={f().kind === "text" && (f() as { pasted?: boolean }).pasted}>
-                                                <button class="hb sm" title="Put it back in the box as text" aria-label="Put the pasted text back in the box" onClick={() => p.onToText(i())}>
-                                                    <TextCursorInput size={13} />
+                                            <Show when={pasted()}>
+                                                <button class="att-act" title="Put it back in the box as text" aria-label="Put the pasted text back in the box" onClick={() => p.onToText(i())}>
+                                                    <TextCursorInput size={14} />
                                                 </button>
                                             </Show>
-                                            <button class="hb sm" title="Remove" aria-label={`Remove ${f().name}`} onClick={() => p.onRemove(i())}>
-                                                <X size={13} />
-                                            </button>
+                                            <Remove name={f().name} i={i()} />
                                         </div>
                                     );
                                 }}

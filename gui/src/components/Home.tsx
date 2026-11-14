@@ -48,7 +48,7 @@ function typeInComposer(root: HTMLElement | undefined, text: string) {
 // Heights (px at text size 14) that decide how many terminal rows fit under the composer, as home.css
 // places the group: the title bar's row and the foot, the question and the composer with its strip, a
 // card above it (taller in a narrow column, its buttons stacked), the list's heading, and a row.
-const FRAME_H = 80, GROUP_H = 200, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 62, ROW_H = 47;
+const FRAME_H = 80, GROUP_H = 200, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 64, ROW_H = 55;
 
 /** How many terminal rows fit in the column with `cards` cards above the composer: 3 at most, down to none. */
 function rowsFitting(column: { w: number; h: number }, cards: number): number {

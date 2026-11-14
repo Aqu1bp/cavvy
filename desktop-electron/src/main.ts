@@ -6,8 +6,8 @@
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BrowserHost } from "./browser-host";
@@ -387,6 +387,38 @@ function bridge() {
     });
     ipcMain.handle("reveal_path", (e, path: string) => {
         if (fromGui(e) && typeof path === "string" && existsSync(path)) shell.showItemInFolder(path);
+    });
+    // A photo the page can't draw (HEIC, TIFF) as JPEG, for the composer to attach as an image: macOS's sips opens them
+    // (Electron 45's nativeImage doesn't, measured).
+    ipcMain.handle("convert_image", async (e, bytes: unknown) => {
+        if (process.platform !== "darwin" || !fromGui(e) || !(bytes instanceof Uint8Array) || bytes.length > 20 * 1024 * 1024) return undefined;
+        const head = Buffer.from(bytes.subarray(0, 12));
+        const ext = head.subarray(4, 8).toString("latin1") === "ftyp" ? "heic" : /^(II\*\0|MM\0\*)/.test(head.subarray(0, 4).toString("latin1")) ? "tiff" : undefined;
+        if (!ext) return undefined;
+        const dir = mkdtempSync(join(tmpdir(), "cavvy-image-"));
+        try {
+            const from = join(dir, `image.${ext}`);
+            const to = join(dir, "image.jpg");
+            writeFileSync(from, bytes);
+            const sips = (args: string[]) =>
+                new Promise<{ ok: boolean; out: string }>((done) => {
+                    const p = spawn("/usr/bin/sips", args, { stdio: ["ignore", "pipe", "ignore"] });
+                    let out = "";
+                    p.stdout.on("data", (d: Buffer) => (out += d.toString()));
+                    const timer = setTimeout(() => p.kill(), 20_000);
+                    p.on("error", () => (clearTimeout(timer), done({ ok: false, out })));
+                    p.on("exit", (code) => (clearTimeout(timer), done({ ok: code === 0, out })));
+                });
+            let ok = (await sips(["-s", "format", "jpeg", "-s", "formatOptions", "88", from, "--out", to])).ok;
+            // Its longest side at most 4096 (about the most a model takes in; a 48-megapixel photo stays under the image
+            // cap), never made larger: -Z alone scales a small one up.
+            const size = ok ? (await sips(["-g", "pixelWidth", "-g", "pixelHeight", to])).out : "";
+            const longest = Math.max(...[...size.matchAll(/pixel(?:Width|Height): (\d+)/g)].map((m) => Number(m[1])));
+            if (ok && longest > 4096) ok = (await sips(["-Z", "4096", to])).ok;
+            return ok && existsSync(to) ? new Uint8Array(readFileSync(to)) : undefined;
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
     ipcMain.on("set_theme", (e, scheme: string) => {
         if (fromGui(e) && (scheme === "light" || scheme === "dark")) nativeTheme.themeSource = scheme;

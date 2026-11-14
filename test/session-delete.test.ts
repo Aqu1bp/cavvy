@@ -426,6 +426,27 @@ describe("session.delete", () => {
         }
     });
 
+    test("files saved from a session's messages go when it's purged, and only its own", async () => {
+        const cwd = createDemoProject(tempDir("cavvy-del-proj-"), { git: false });
+        const { engine, c, id } = await setup(cwd);
+        const rt = engine.runtimes.get(id)!;
+        try {
+            await engine.handle(c, "session.send", { id, text: "look", files: [{ name: "app.bin", data: Buffer.from([0, 1, 2]).toString("base64") }] });
+            for (let i = 0; i < 200 && !(rt.idle && rt.session.messages.length >= 4); i++) await Bun.sleep(25);
+            const root = join(cwd, ".cavvy", "attachments");
+            expect(readdirSync(join(root, id))).toHaveLength(1);
+            mkdirSync(join(root, "other-session"), { recursive: true });
+            await engine.handle(c, "session.delete", { id });
+            // In the trash it can come back, with them.
+            expect(existsSync(join(root, id))).toBe(true);
+            expect(purgeTrash({ now: Date.now() + 8 * DAY })).toContain(id);
+            expect(gone(join(root, id))).toBe(true);
+            expect(existsSync(join(root, "other-session"))).toBe(true);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("file history that's a link: the link moves, what it points to stays", async () => {
         const { engine, c, id, f } = await setup();
         const outside = tempDir("cavvy-del-outside-");

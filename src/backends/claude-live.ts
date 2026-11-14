@@ -70,6 +70,7 @@ import {
     mediaBlocks,
     requestId,
     resultDisplay,
+    resultImages,
     resultText,
     splitPreamble,
     titleFor,
@@ -1698,7 +1699,7 @@ export class ClaudeConnection implements CliConnection {
                 if (this.commands.size > 64) this.commands.delete(this.commands.keys().next().value!);
             }
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
-            this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured, resultImages(b.content));
             const moved = blocks.length === 1 && !b.is_error ? claudeWorktreeMove(p.name, m.tool_use_result) : undefined;
             if (moved) this.events({ t: "cwd", cwd: moved });
         }
@@ -1748,14 +1749,14 @@ export class ClaudeConnection implements CliConnection {
             if (!p) continue;
             const content = (p.name === "Task" && (this.reports.get(b.tool_use_id) || (blocks.length === 1 && handedBack(m)))) || resultText(b.content);
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
-            this.endSubTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            this.endSubTool(b.tool_use_id, p, content, Boolean(b.is_error), structured, resultImages(b.content));
         }
     }
 
-    private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay) {
+    private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay, images?: ImagePart[]) {
         this.subTools.delete(id);
         const label = this.agentLabels.get(p.parent) ?? "sub-agent";
-        this.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started } });
+        this.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display, ...(images?.length ? { images } : {}) }, durationMs: Date.now() - p.started } });
     }
 
     private report(parent: string, text: string, replace = false): boolean {
@@ -1863,9 +1864,9 @@ export class ClaudeConnection implements CliConnection {
         this.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
     }
 
-    private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay) {
+    private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay, images?: ImagePart[]) {
         this.tools.delete(id);
-        this.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
+        this.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display, ...(images?.length ? { images } : {}) }, durationMs: Date.now() - p.started });
     }
 
     private noteLimits(limits: PlanLimits, partial: boolean) {

@@ -459,6 +459,33 @@ function codexTitles(root: string, limits: CliLimits): Map<string, string> {
     return titles;
 }
 
+/** Cavvy's own wrapper for the conversation so far, when a session moves to another model (agent.ts). */
+const SO_FAR_OPEN = "<conversation-so-far>", SO_FAR_CLOSE = "</conversation-so-far>";
+/** Stand-ins a client writes where a prompt had an image: "[Image #1]", Codex Desktop's "[external unsupported block: image]". */
+const PLACEHOLDERS = /^(?:\s*\[(?:image(?: #\d+)?|external unsupported block: [^\]\n]*)\])+/i;
+
+/**
+ * What a prompt says, as a title: after the conversation so far that a handoff puts before it and placeholders
+ * for its images, without Cavvy's reminders (a Codex prompt keeps them). Nothing when that's all it holds
+ * (a handoff cut short by the head read).
+ */
+function promptTitle(text: string): string | undefined {
+    let t = text.replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, "").trimStart();
+    if (t.startsWith(SO_FAR_OPEN)) {
+        const end = t.indexOf(SO_FAR_CLOSE);
+        if (end < 0) return undefined;
+        t = t.slice(end + SO_FAR_CLOSE.length);
+    }
+    // A slash command as Claude Code records it, typed through another client: as typed.
+    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim();
+    if (name) {
+        const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim();
+        return args ? `${name} ${args}` : name;
+    }
+    // Pasted text as a client wraps it: what was pasted.
+    return t.replace(/<\/?pasted_content\b[^>]*>/g, " ").replace(PLACEHOLDERS, "").trim() || undefined;
+}
+
 function shortTitle(text: string): string {
     const one = redact(text).replace(/\s+/g, " ").trim();
     return one.length > MAX_TITLE ? one.slice(0, MAX_TITLE - 1) + "…" : one;
@@ -516,10 +543,10 @@ function claudeEntry(c: Candidate, limits: CliLimits): CliSessionEntry | undefin
         const p = claudePromptText(e);
         if (p) {
             if (inTail) {
-                tailFirst ??= p.text;
+                tailFirst ??= promptTitle(p.text);
                 tailMessages++;
             } else {
-                first ??= p.text;
+                first ??= promptTitle(p.text);
                 messages++;
             }
         }
@@ -616,10 +643,10 @@ function codexEntry(c: Candidate, limits: CliLimits, titles: Map<string, string>
         const prompt = codexPrompt(e);
         if (prompt) {
             if (inTail) {
-                tailFirst ??= prompt;
+                tailFirst ??= promptTitle(prompt);
                 tailMessages++;
             } else {
-                first ??= prompt;
+                first ??= promptTitle(prompt);
                 messages++;
             }
         } else if (codexReply(e)) {

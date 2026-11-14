@@ -37,6 +37,28 @@ export function commandParts(command: string): string[] {
     return parts;
 }
 
+/** A command's first step, short: its first command (commandParts) up to a pipe, an &&, an || or a `;` outside quotes. */
+export function firstStep(command: string): string | undefined {
+    const first = commandParts(command)[0];
+    if (!first) return undefined;
+    let quote = "";
+    for (let i = 0; i < first.length; i++) {
+        const c = first[i]!;
+        if (quote) {
+            if (c === "\\" && quote === '"') i++;
+            else if (c === quote) quote = "";
+        } else if (c === "\\") i++;
+        else if (c === "'" || c === '"') quote = c;
+        else if (c === ";" || c === "|" || (c === "&" && first[i + 1] === "&")) return first.slice(0, i).trim() || undefined;
+    }
+    return first;
+}
+
+/** What the live line says of a command under way after its label: nothing when its description is the label, else its first step. */
+export function liveCommand(t: ToolBlock): string | undefined {
+    return commandDescription(t) ? undefined : firstStep(String(t.input?.command ?? ""));
+}
+
 /**
  * What a command's row says folded: what it's for (Claude Code's description), or, with none (Codex), the command
  * itself (commandParts), "; " between its commands: the row cuts it to its width. Its first line alone was often
