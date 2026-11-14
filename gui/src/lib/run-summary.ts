@@ -147,8 +147,9 @@ export function summarize(tools: ToolBlock[]): string {
     // Said once each, however many times it happened.
     parts.push(...new Set(misc));
     if (unchanged.size) parts.push(one ? `couldn't change ${short([...unchanged][0]!)}` : `couldn't change ${plural(unchanged.size, "file")}`);
-    if (failed && !parts.length) parts.push(`${plural(failed, "call")} failed`);
+    // Nothing was done. Declined comes first: what wasn't run beside it is the same no, not a failure of its own.
     if (declined && !parts.length) parts.push(`${plural(declined, "call")} declined`);
+    if (failed && !parts.length) parts.push(`${plural(failed, "call")} failed`);
     const shown = parts.length > 3 ? [...parts.slice(0, 3), `${parts.length - 3} more`] : parts;
     const text = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : (shown[0] ?? "");
     return text.charAt(0).toUpperCase() + text.slice(1);

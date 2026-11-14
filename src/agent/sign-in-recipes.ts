@@ -210,6 +210,15 @@ const GIT_PRINTS = new Set(["grep", "diff", "log", "show", "blame", "cat-file", 
 /** Redirections between a command's own streams (`2>&1`, `>&2`, `&>`): their `&` separates nothing. */
 const STREAMS = /[0-9]*[<>]&[0-9-]|&>>?/g;
 
+/** Which of git's commands a git invocation runs: its first plain word, past `-C <folder>` and `-c <setting>` (`git push origin log` pushes). */
+function gitCommand(rest: string[]): string {
+    for (let k = 0; k < rest.length; k++) {
+        if (rest[k] === "-C" || rest[k] === "-c") k++;
+        else if (!rest[k]!.startsWith("-")) return rest[k]!;
+    }
+    return "";
+}
+
 /**
  * A shell command's parts, each with the program it runs: its first word (after `;`, `&&`, `|`, a newline, an
  * opening bracket), past variables set for it and wrappers such as sudo. `piped`: it reads the part before it.
@@ -233,7 +242,7 @@ function partsOf(command: string): { program: string; piped: boolean; prints: bo
         const inOption = rest.some((w) => /^-[ef]|^--(?:regexp|file|expression)\b/.test(w));
         // Plain words after it, past options, their numbers (`tail -n 5`) and the word such an option takes (`grep -e error`).
         const plain = rest.filter((w, k) => w && !w.startsWith("-") && !/^\d+$/.test(w) && !(k > 0 && /^(?:-[ef]|--(?:regexp|file|expression))$/.test(rest[k - 1]!))).length;
-        if (word) parts.push({ program, piped, prints: program === "git" && rest.some((w) => GIT_PRINTS.has(w)), filters: piped && plain <= (inOption ? 0 : (FILTERS[program] ?? -1)) });
+        if (word) parts.push({ program, piped, prints: program === "git" && GIT_PRINTS.has(gitCommand(rest)), filters: piped && plain <= (inOption ? 0 : (FILTERS[program] ?? -1)) });
     }
     return parts;
 }
@@ -262,8 +271,9 @@ export function statusMasked(command: string): boolean {
  *
  * `failed` false: the command counts as having worked. It's looked at all the same when its status may not be the
  * CLI's own (`statusMasked`), as agents often write it, but only when everything in it is that CLI, a quiet shell
- * word or a filter of its output: beside `cat notes.md`, the words may be the file's, as they may be in what
- * `git grep` or `git show` prints.
+ * word or a filter of its output: beside `cat notes.md`, the words may be the file's, as they may be when all the
+ * CLI did was print what's in the repository (`git grep`, `git show`). A wrong hint costs a call that finds it
+ * signed in; a missed one loses the card, so `git push; git log -1` counts for its push.
  */
 export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string, failed = true): SignInRecipe | undefined {
     if (!failed && !statusMasked(command)) return undefined;
@@ -272,7 +282,12 @@ export function signedOutIn(output: string, recipes: readonly SignInRecipe[], co
     for (const r of recipes) {
         const own = r.commands ?? [r.id];
         if (!r.signedOut?.length || !parts.some((p) => own.includes(p.program))) continue;
-        if (!failed && !parts.every((p) => (p.filters || own.includes(p.program) || QUIET.has(p.program)) && !p.prints)) continue;
+        if (!failed) {
+            // Everything in it is the CLI's, quiet, or a filter of its output; and the CLI did more than print what's
+            // in the repository (`git push; git log -1` still has the push to speak for itself).
+            if (!parts.every((p) => p.filters || own.includes(p.program) || QUIET.has(p.program))) continue;
+            if (!parts.some((p) => own.includes(p.program) && !p.prints)) continue;
+        }
         let res = matchers.get(r);
         if (!res) {
             res = r.signedOut.flatMap((p) => { try { return [new RegExp(p)]; } catch { return []; } });

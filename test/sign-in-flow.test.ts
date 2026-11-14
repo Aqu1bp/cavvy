@@ -548,6 +548,15 @@ describe("the pieces", () => {
         expect(worked("gh pr list 2>&1 | grep -e error")).toBe("gh");
         // Quotes that run something are still looked into.
         expect(worked('echo "$(cat NOTES.md)"; git status --short')).toBeUndefined();
+        // But a push beside them still speaks for itself: "push, then show the last commit" is how agents write it.
+        expect(worked("git push origin main 2>&1; git log --oneline -1")).toBe("gh");
+        expect(worked("git commit -am wip && git push 2>&1 | tail -3; git log -1 --oneline")).toBe("gh");
+        expect(worked("git diff --stat; git push 2>&1 | tail -5")).toBe("gh");
+        expect(worked("git stash && git pull --rebase 2>&1 | tail -3 && git stash pop")).toBe("gh");
+        expect(worked("git show --stat HEAD | head -5; gh pr create --fill 2>&1 | tail -3")).toBe("gh");
+        // A branch named like one of them isn't the command.
+        expect(worked("git push origin log 2>&1 | tail")).toBe("gh");
+        expect(worked("git -C repo -c color.ui=never show HEAD:NOTES.md | cat")).toBeUndefined();
         // Run under a time limit, it's still the CLI's own.
         expect(worked('timeout 30 gh pr view 2>&1; echo "exit=$?"')).toBe("gh");
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "timeout -k 2 30s gh pr view")?.id).toBe("gh");
