@@ -8,6 +8,11 @@ export function svg(w: number, h: number, body: string, defs = ""): string {
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none">${defs ? `<defs>${defs}</defs>` : ""}${body}</svg>`;
 }
 
+/** A picture of the part `x`, `y`, `w` × `h` of the stage, drawn in the stage's own coordinates: a layer only as big as what's in it. */
+export function svgPart(x: number, y: number, w: number, h: number, body: string, defs = ""): string {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x} ${y} ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none">${defs ? `<defs>${defs}</defs>` : ""}${body}</svg>`;
+}
+
 /** A radial gradient from `color` at `peak` opacity in the middle to nothing at its edge. */
 export function glow(id: string, color: string, peak = 1, mid = 0.35): string {
     return `<radialGradient id="${id}"><stop offset="0" stop-color="${color}" stop-opacity="${peak}"/><stop offset="${mid}" stop-color="${color}" stop-opacity="${peak * 0.45}"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></radialGradient>`;
