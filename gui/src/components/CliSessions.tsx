@@ -4,7 +4,6 @@
 // Cavvy session on the same backend; one already in Cavvy just opens.
 
 import { createEffect, createResource, createSignal, For, Show } from "solid-js";
-import { ArrowRight } from "lucide-solid";
 import type { CliSessionInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
 import { continueCliSession } from "../state/actions";
@@ -84,20 +83,13 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             <span class="cli-main">
                 <span class="cli-title truncate">{s.title}</span>
                 <span class="cli-meta">
-                    {name(s)} · {count(s)}
-                    <Show when={s.model}> · {s.model}</Show>
+                    {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
                     <Show when={s.recent}> · <span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></Show>
                 </span>
             </span>
-            <span class="cli-end">
-                <Show when={enabled(s)} fallback={<span class="cli-off">{turnOn(s)}</span>}>
-                    <span class="cli-ago">{(now(), agoText(s.updatedAt))}</span>
-                    <span class="cli-go">
-                        {busy() === s.id ? "Importing…" : "Import"}
-                        <ArrowRight size={13} stroke-width={2.25} />
-                    </span>
-                </Show>
-            </span>
+            <Show when={enabled(s)} fallback={<span class="cli-off">Turn on in Settings</span>}>
+                <span class="cli-go">{busy() === s.id ? "Importing…" : "Import"}</span>
+            </Show>
         </div>
     );
 

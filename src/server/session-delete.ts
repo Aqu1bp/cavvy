@@ -13,6 +13,7 @@ import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, sessio
 import { forgetFileHistory } from "../agent/checkpoints";
 import { isInside } from "../util/files";
 import { RpcError } from "./rpc-error";
+import { attachmentsDir } from "./attachments";
 
 export const TRASH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Ids look like 20261016-093441-b7e986. */
@@ -49,6 +50,7 @@ export function pieces(dir: string, id: string): { live: string; trashed: string
         { live: join(dir, `${id}.jsonl`), trashed: "transcript.jsonl" },
         { live: join(dir, "ui", `${id}.jsonl`), trashed: "ui.jsonl" },
         { live: join(dir, "file-history", id), trashed: "file-history" },
+        { live: join(dir, "tool-images", id), trashed: "tool-images" },
         { live: join(dir, "queue", `${id}.json`), trashed: "queue.json" },
     ];
 }
@@ -211,7 +213,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
     const file = join(dir, `${id}.jsonl`);
     // Each folder is checked before anything is made in it.
     mkdirSync(paths.projectsDir(), { recursive: true, mode: 0o700 });
-    for (const d of [dir, join(dir, "ui"), join(dir, "file-history"), join(dir, "queue")]) {
+    for (const d of [dir, join(dir, "ui"), join(dir, "file-history"), join(dir, "tool-images"), join(dir, "queue")]) {
         mustBeInHome(d);
         if (!present(d)) mkdirSync(d, { mode: 0o700 });
     }
@@ -286,6 +288,18 @@ export function listTrash(limit = 200): TrashedSession[] {
     return out.sort((a, b) => b.deletedAt - a.deletedAt).slice(0, limit);
 }
 
+/** The files saved from a session's messages (attachments.ts), gone with it: its own folder, never through a link. */
+function removeSavedFiles(entry: string, id: string) {
+    try {
+        const { cwd } = sessionLabel(join(entry, "transcript.jsonl"));
+        if (!cwd) return;
+        const dir = join(attachmentsDir(cwd), id);
+        if (lstatSync(dir).isDirectory()) removeTree(dir);
+    } catch {
+        // none, or not ours to read
+    }
+}
+
 /** Remove trash entries deleted more than a week ago. Best effort, a bounded number per run. */
 export function purgeTrash(opts: { now?: number; maxAgeMs?: number } = {}): string[] {
     const now = opts.now ?? Date.now();
@@ -312,6 +326,7 @@ export function purgeTrash(opts: { now?: number; maxAgeMs?: number } = {}): stri
                 // the folder's time, then
             }
             if (now - at < maxAge) continue;
+            if (ID.test(name)) removeSavedFiles(entry, name);
             removeTree(entry);
             removed.push(name);
         } catch {

@@ -52,7 +52,7 @@ export interface WireFile {
 /** What a prompt shows of an attached file: never its contents. */
 export interface FileChip {
     name: string;
-    kind: "text" | "pdf";
+    kind: "text" | "pdf" | "saved";
     size: number;
     lines?: number;
     pasted?: boolean;
@@ -158,6 +158,8 @@ export interface ToolBlock {
     /** What the language server found after an edit. */
     diagnostics?: DiagnosticReport;
     images?: number;
+    /** Its result's images, kept (session.toolImage): what the model looked at. */
+    imageKeys?: string[];
     /** Live output while it runs (a shell command's tail). */
     progress?: string;
     /** Characters of input received while the model writes the call. */
@@ -2070,6 +2072,7 @@ export interface Methods {
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
+    "session.toolImage": { params: { id: string; key: string }; result: { mediaType: string; data: string } };
     /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
     "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
     /** Pick up again by itself once the usage limit that stopped the last turn resets (after "Don't continue"). Refused, with why, when it can't. */

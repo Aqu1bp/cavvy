@@ -142,6 +142,19 @@ describe("reading the stores", () => {
         expect(codex.sessions[0]).toMatchObject({ title: "Helper rename", named: true, model: "gpt-test", messages: 2 });
     });
 
+    test("a title is what the prompt says: past a handoff's conversation so far and images' placeholders, without reminders", () => {
+        const now = Date.now();
+        const so = (rest: string) => `<conversation-so-far>\nThis conversation started before you joined it. Here it is so far:\n\nUser: hi\n</conversation-so-far>\n\n${rest}`;
+        const a = codexSession(CODEX, { cwd: real, turns: [{ prompt: "[external unsupported block: image]\n\nMake the UI like this\n<system-reminder>\nThe permission mode is Auto.\n</system-reminder>", reply: "Ok." }], mtime: now - 3 * 60_000 });
+        const b = codexSession(CODEX, { cwd: real, turns: [{ prompt: so("[Image #1] [Image #2] review the plan"), reply: "Ok." }], mtime: now - 2 * 60_000 });
+        // All it holds is what came before: the next prompt names it.
+        const c = claudeSession(CLAUDE, { cwd: real, turns: [{ prompt: "<conversation-so-far>\nThis conversation started", reply: "Ok." }, { prompt: "carry on", reply: "Ok." }], mtime: now - 60_000 });
+        const d = codexSession(CODEX, { cwd: real, turns: [{ prompt: '<pasted_content id="7f">\nTest the app end to end\n</pasted_content>', reply: "Ok." }], mtime: now - 4 * 60_000 });
+        const e = codexSession(CODEX, { cwd: real, turns: [{ prompt: "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>PR 12</command-args>", reply: "Ok." }], mtime: now - 5 * 60_000 });
+        const titles = Object.fromEntries([...listCliSessions("codex", cwd).sessions, ...listCliSessions("claude-code", cwd).sessions].map((s) => [s.id, s.title]));
+        expect(titles).toEqual({ [a.id]: "Make the UI like this", [b.id]: "review the plan", [c.id]: "carry on", [d.id]: "Test the app end to end", [e.id]: "/review PR 12" });
+    });
+
     test("a fake key in a prompt never shows in the list", () => {
         claudeSession(CLAUDE, { cwd: real, turns: TURNS });
         const out = JSON.stringify(listCliSessions("claude-code", cwd));

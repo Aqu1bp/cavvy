@@ -1865,6 +1865,17 @@ describe("steering: a message sent while Claude Code works goes to it at once", 
     });
 });
 
+describe("a call's result images", () => {
+    for (const live of [true, false])
+        test(`${live ? "live" : "one process per turn"}: an image a Read brought reaches its call's end`, async () => {
+            process.env.FAKE_SCENARIO = "read-image";
+            const { run, events } = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+            expect(await run("Look at the screenshot.")).toBe("done");
+            const end = events.find((e) => e.type === "tool_end" && e.call.name === "Read");
+            expect(end?.type === "tool_end" && end.result.images?.map((i) => i.mediaType)).toEqual(["image/png"]);
+        });
+});
+
 describe("where the session works (AgentEvent cwd)", () => {
     test("live: each turn's system/init says where it works, and EnterWorktree and ExitWorktree say where it moved", async () => {
         process.env.FAKE_SCENARIO = "enter-worktree";

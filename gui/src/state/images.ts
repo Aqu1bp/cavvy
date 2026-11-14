@@ -46,6 +46,14 @@ function objectUrl(i: { mediaType: string; data: string }): string {
     return URL.createObjectURL(new Blob([fromBase64(i.data) as BlobPart], { type: i.mediaType }));
 }
 
+/** Images calls' results brought (session.toolImage), by their key: what the model looked at. */
+const tools = new ImageCache<PromptImage>(48);
+
+/** A call's result image, with its thumbnail. Rejects when it's gone. */
+export function toolImage(sessionId: string, key: string): Promise<PromptImage> {
+    return tools.get(`${sessionId}\0${key}`, () => rpc.call("session.toolImage", { id: sessionId, key }).then(async (i) => [await withThumb(i)])).then((a) => a[0]!);
+}
+
 /** A prompt's images, fetched by where it is and kept by what they are. Rejects when they're gone. */
 export function promptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, imagesKey: string): Promise<PromptImage[]> {
     return prompts.get(promptKey(sessionId, imagesKey), () => rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then((r) => Promise.all(r.images.map(withThumb))));

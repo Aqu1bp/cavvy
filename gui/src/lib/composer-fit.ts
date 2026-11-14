@@ -1,14 +1,13 @@
 // The composer's control row when it's tight: what's on it gives way a step at a time, so the model's
 // name isn't cut to a letter or two. Measured rather than by the column's width (`data-narrow`): the
-// name, the account and the pickers' labels are as long as they are. The row's `data-fit` holds the
+// name and the pickers' labels are as long as they are. The row's `data-fit` holds the
 // steps taken, as words ("1 2 3"), for composer.css:
 //   1. the effort after the model's name ("xhigh": its tooltip, and the picker, still say it)
 //   2. the pickers' chevrons
-//   3. the account after the model's name
-//   4. the model's name, once only a few letters of it would show (the provider's mark stays)
-//   5. the context ring
+//   3. the model's name, once only a few letters of it would show (the provider's mark stays)
+//   4. the context ring
 
-export const FIT_STEPS = 5;
+export const FIT_STEPS = 4;
 /** Cut shorter than this many of its letters' height, the model's name gives way to the provider's mark. */
 const NAME_LEAST_EM = 5;
 
@@ -28,15 +27,15 @@ const cut = (el: Element | null) => Boolean(el && el.scrollWidth > el.clientWidt
 
 /**
  * Whether the row fits with `steps` taken (applied): its last control (send) inside its end, and the model's
- * name and account whole, or the name cut no shorter than `NAME_LEAST_EM`. Its end, not its scrollWidth:
+ * name whole, or the name cut no shorter than `NAME_LEAST_EM`. Its end, not its scrollWidth:
  * the send button's hint card sticks out of the row while it shows.
  */
 function fits(bar: HTMLElement, steps: number): boolean {
     const end = bar.lastElementChild?.getBoundingClientRect().right ?? 0;
     if (end > bar.getBoundingClientRect().right + 0.5) return false;
     const name = bar.querySelector<HTMLElement>(".pick.model > .truncate");
-    if (steps < 3) return !cut(name) && !cut(bar.querySelector(".pick-acct"));
-    if (steps === 3 && name && cut(name)) return name.clientWidth >= NAME_LEAST_EM * parseFloat(getComputedStyle(name).fontSize);
+    if (steps < 2) return !cut(name);
+    if (steps === 2 && name && cut(name)) return name.clientWidth >= NAME_LEAST_EM * parseFloat(getComputedStyle(name).fontSize);
     return true;
 }
 
@@ -46,7 +45,7 @@ function apply(bar: HTMLElement, steps: number) {
 }
 
 /**
- * Keeps `bar` fitted as it's resized and as what its controls say changes (a model, an account, fast mode).
+ * Keeps `bar` fitted as it's resized and as what its controls say changes (a model, fast mode).
  * Each change in the DOM is read back at once, before the frame is painted. Returns the cleanup.
  */
 export function fitComposerBar(bar: HTMLElement): () => void {
