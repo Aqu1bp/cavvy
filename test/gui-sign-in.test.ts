@@ -443,6 +443,26 @@ describe("a sign-in in a GUI session", () => {
         c.close();
     });
 
+    test("Stop while Cavvy is still checking ends the turn at once, not when the check gives up", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        // A status check that never answers (its limit is 30 seconds).
+        writeFileSync(join(acme.home, "hold-status"), "");
+        try {
+            await c.call("session.send", { id, text: "signin acme" });
+            await c.until(id, (v) => v.turns.length > 0 && tools(lastTurn(v)).some((t) => t.name === "RequestSignIn" && t.status === "running"), "the call under way");
+            await Bun.sleep(200);
+            const at = Date.now();
+            await c.call("session.interrupt", { id });
+            await c.until(id, done, "the turn's end", 6000);
+            expect(Date.now() - at).toBeLessThan(6000);
+            expect(c.view(id).state.interactions).toEqual([]);
+        } finally {
+            rmSync(join(acme.home, "hold-status"), { force: true });
+        }
+        c.close();
+    });
+
     test("Done, and remember: the same session has a sign-in for it the next time it's asked", async () => {
         const c = await client();
         const id = await c.open({ cwd: project() });
