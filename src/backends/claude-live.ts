@@ -30,6 +30,7 @@ import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/h
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
 import { accountEnv } from "../providers/accounts";
+import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import type { ProviderDef } from "../providers/registry";
 import type { ModelInfo, Usage } from "../providers/types";
@@ -1612,7 +1613,7 @@ export class ClaudeConnection implements CliConnection {
         if (msg.usage) {
             const u = msg.usage;
             const tokens = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
-            if (tokens && tokens !== this.contextTokens && this.cur?.kind !== "hidden") this.host.context?.(tokens);
+            if (tokens && tokens !== this.contextTokens && this.cur?.kind !== "hidden") this.host.context?.(tokens, claudeCodeWindow(this.resolvedModel));
             this.contextTokens = tokens;
         }
         if (m.error) {

@@ -1,6 +1,6 @@
 // Static knowledge about Anthropic models, used when the Models API doesn't
 // tell us (pricing is never in the API; capabilities are, when it's reachable).
-// Source: Anthropic model catalog as of 2026-10.
+// Source: Anthropic model catalog as of 2026-11.
 
 import type { Effort } from "../config/settings";
 
@@ -46,6 +46,7 @@ function price(input: number, output: number, cacheRead = input * 0.1): Anthropi
 }
 
 const TABLE: [RegExp, AnthropicTraits][] = [
+    [/^claude-(fable|mythos)-5-2/, { adaptive: true, effort: ALL, displayUpdates: true, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(8, 40, 0.2) }],
     [/^claude-(fable|mythos)-5-1/, { adaptive: true, effort: ALL, displayUpdates: true, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(10, 50, 0.25) }],
     [/^claude-(fable|mythos)-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: true, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(10, 50, 1) }],
     [/^claude-opus-5-5/, { adaptive: true, effort: ALL, displayUpdates: true, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(4, 20, 0.2) }],
@@ -74,17 +75,46 @@ const UNKNOWN: AnthropicTraits = {
     pricing: price(3, 15),
 };
 
+/** A newer model of a family this table knows, sized and priced like the family's latest here until the table lists it. */
+const FAMILIES: [RegExp, string][] = [
+    [/^claude-(fable|mythos)-\d/, "claude-fable-5-2"],
+    [/^claude-opus-\d/, "claude-opus-5-5"],
+    [/^claude-sonnet-\d/, "claude-sonnet-5-5"],
+    [/^claude-haiku-\d/, "claude-haiku-5-5"],
+];
+
+const listed = (id: string) => TABLE.find(([re]) => re.test(id))?.[1];
+const latestOfFamily = (id: string) => {
+    const f = FAMILIES.find(([re]) => re.test(id));
+    return f ? listed(f[1]) : undefined;
+};
+
 export function anthropicTraits(id: string): AnthropicTraits {
-    return TABLE.find(([re]) => re.test(id))?.[1] ?? UNKNOWN;
+    const t = listed(id);
+    if (t) return t;
+    // Only size and price carry over: what a request may ask of the model stays conservative.
+    const f = latestOfFamily(id);
+    return f ? { ...UNKNOWN, contextWindow: f.contextWindow, maxOutput: f.maxOutput, pricing: f.pricing, pricingLong: f.pricingLong, longContextThreshold: f.longContextThreshold } : UNKNOWN;
 }
 
-/** A model's list price when it's one this table knows (not the guess anthropicTraits falls back to). */
-export function anthropicPricing(id: string): AnthropicTraits["pricing"] | undefined {
-    return TABLE.find(([re]) => re.test(id))?.[1].pricing;
+/** A model's list price, `estimated` when it's a family's newer model priced like its latest here; undefined for any other model. */
+export function anthropicPricing(id: string): { pricing: AnthropicTraits["pricing"]; estimated: boolean } | undefined {
+    const t = listed(id);
+    if (t) return { pricing: t.pricing, estimated: false };
+    const f = latestOfFamily(id);
+    return f && { pricing: f.pricing, estimated: true };
+}
+
+/** The window Claude Code gives a model: 1M when its id says so ("…[1m]"), else the model's; undefined when it's unknown. */
+export function claudeCodeWindow(id: string | undefined): number | undefined {
+    if (!id) return undefined;
+    if (/\[1m\]$/i.test(id)) return 1_000_000;
+    return (listed(id) ?? latestOfFamily(id))?.contextWindow;
 }
 
 /** Known current models, offered when the Models API can't be reached. */
 export const ANTHROPIC_FALLBACK_MODELS: { id: string; name: string }[] = [
+    { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
     { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
     { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
     { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },

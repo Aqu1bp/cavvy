@@ -185,8 +185,8 @@ export interface SessionHost {
     setMode(m: PermissionMode): void;
     /** Tokens and spend for this turn; `cost` 0 when it's covered by the user's plan. */
     usage(u: Usage, opts: { contextTokens?: number; contextWindow?: number }): void;
-    /** The context as the backend works (from its last request), before the turn's usage comes; nothing is counted. */
-    context?(contextTokens: number): void;
+    /** The context as the backend works (from its last request), before the turn's usage comes; nothing is counted. `window`: its size, until the usage says it. */
+    context?(contextTokens: number, window?: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
     /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */

@@ -39,6 +39,7 @@ import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
 import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import { accountProtectionFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
@@ -353,6 +354,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
                         backendModel(this.def.id, x.value, typeof x.displayName === "string" ? `${x.displayName}${x.resolvedModel && x.resolvedModel !== x.value ? ` (${x.resolvedModel})` : ""}` : undefined, {
                             supportsFastMode: x.supportsFastMode === true && claudeFastModeVersion(m.response.response?.claude_code_version),
                             effortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels : undefined,
+                            // Its result says the window; until then, the size it serves the model at.
+                            contextWindow: claudeCodeWindow(x.value) ?? claudeCodeWindow(typeof x.resolvedModel === "string" ? x.resolvedModel : undefined),
                         }),
                     );
             }
@@ -1721,7 +1724,7 @@ class ClaudeTurn {
             const u = msg.usage;
             const tokens = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
             // Shown as it works: a long turn's context doesn't wait for its result.
-            if (tokens && tokens !== this.contextTokens) this.cliSession.context?.(tokens);
+            if (tokens && tokens !== this.contextTokens) this.cliSession.context?.(tokens, claudeCodeWindow(this.resolvedModel));
             this.contextTokens = tokens;
         }
         if (m.error) {

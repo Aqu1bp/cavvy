@@ -1234,6 +1234,8 @@ export interface UsageCostTypes { input: number; cacheRead: number; cacheWrite: 
 export interface UsageTotals {
     inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
     cost: number; planEquivalent: number; unknown: boolean;
+    /** Part of the cost is at a guessed price: a newer model, priced like its family's latest Cavvy knows. */
+    estimated?: boolean;
     costByType: UsageCostTypes; cacheSavings: number;
 }
 export interface UsageSourceRow extends UsageTotals { source: UsageSource; label: string; sessions: number }
