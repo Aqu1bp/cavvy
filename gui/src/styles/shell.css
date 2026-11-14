@@ -526,3 +526,18 @@ body.resizing .insp,
         transition: none;
     }
 }
+
+/* Two live conversations, with the inspector belonging to the focused one. */
+.session-panes { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.session-pane { isolation: isolate; position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+[data-split="on"] .session-pane + .session-pane { border-left: 1px solid var(--line); }
+[data-split="on"] .session-pane::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; pointer-events: none; background: transparent; }
+[data-split="on"] .session-pane.focused::after { background: var(--accent); }
+.split-close { position: absolute; top: calc(var(--top-line) - 15px); right: 6px; z-index: 10; width: 30px; height: 30px; font-size: 20px; }
+[data-split="on"] .session-pane:last-child > .header { padding-right: 44px; }
+.split-drop { position: absolute; inset: 8px; z-index: 80; display: grid; place-items: center; border: 2px solid var(--accent); border-radius: 12px; background: var(--sheet); opacity: .94; pointer-events: none; font-size: 18px; }
+.split-status { position: absolute; top: 54px; right: 16px; z-index: 80; padding: 8px 12px; background: var(--sheet); border-radius: 8px; }
+
+[data-split="on"] .session-pane:last-child .bar-rail { display: none; }
+[data-split="on"] .session-pane:last-child > .header { padding-left: 16px; }
+[data-split="on"] .session-pane .proj-box { display: none; }

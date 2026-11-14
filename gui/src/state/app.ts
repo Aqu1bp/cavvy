@@ -1,3 +1,4 @@
+import { splitSessions } from "./split";
 // The GUI's state: the connection, the sidebar's sessions, models, providers
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
@@ -432,7 +433,7 @@ function letGo(h: SessionHandle) {
 /** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
 function trim() {
     if (handles.size <= KEEP_OPEN) return;
-    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
+    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !splitSessions()?.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
     for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);

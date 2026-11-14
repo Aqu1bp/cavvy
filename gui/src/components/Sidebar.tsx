@@ -1,3 +1,4 @@
+import { dragSession } from "../state/split";
 // The session rail, straight on the window glass. Every session is one line:
 // a dot that says how it's doing, what it's about, and when it last moved.
 // Where it is (project, branch) is in its tooltip, and in the title bar once
@@ -394,7 +395,7 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     const unread = () => isUnread(p.s) && !current();
     return (
         <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
-            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
+            <button draggable={!r.editing()} onDragStart={(e) => dragSession(e, p.s.id)} class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
                 <RowLead s={p.s} unread={unread()} />
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
                 <span class="end"><RowEnd s={p.s} /></span>
@@ -432,7 +433,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
-            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
+            <button draggable={!r.editing()} onDragStart={(e) => dragSession(e, p.s.id)} class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
                 <RowLead s={p.s} unread={unread()} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
@@ -484,7 +485,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
             >
                 <button
                     class="slim-hit"
-                    onClick={(e) => p.pick.click(e, p.s.id)}
+                    draggable={!r.editing()} onDragStart={(e) => dragSession(e, p.s.id)} onClick={(e) => p.pick.click(e, p.s.id)}
                     onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
                     aria-label={rowLabel(p.s, unread(), picked())}

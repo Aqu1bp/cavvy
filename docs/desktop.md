@@ -8,6 +8,12 @@ cavvy gui                # opens it in your browser (cavvy serve: server only)
 bun run gui:demo           # try it without API keys: a mock model and a demo project
 ```
 
+## Split sessions
+
+Drag a session from the sidebar onto an open conversation to view both side by side. The original stays on the left; dropping a third session replaces the right one. Dropping either visible session again does nothing. Both sessions must be on the same machine. If the new session cannot open, the existing view stays in place.
+
+Click or tab into a pane to focus it (the blue top edge marks it). Keyboard actions and the right panel follow the focused session; each session remembers its panel tab and open review while the window is open. Each conversation keeps its own draft and scroll position. Close the split with the right pane's × to return to the original. Reloading restores the pair; choosing a different session from the sidebar leaves the split.
+
 ## The desktop app
 
 The desktop app wraps the same GUI in a window of its own ([Electron](https://www.electronjs.org)), where the Browser pane is a real Chromium page that you use directly and the agent drives too (`desktop-electron/`). The agent runs alongside it, the CLI compiled with `bun build --compile`:

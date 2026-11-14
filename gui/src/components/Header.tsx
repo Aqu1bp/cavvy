@@ -231,7 +231,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <PanelBottom size={16} />
                         </button>
                         <Show when={st()}>
-                            <button class={`hb ${prefs.panel || review() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel || !!review()} onClick={() => togglePanel()}>
+                            <button class={`hb ${app.activeId === p.handle?.id && (prefs.panel || review()) ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={app.activeId === p.handle?.id && (prefs.panel || !!review())} onClick={() => togglePanel()}>
                                 <PanelRight size={16} />
                             </button>
                             <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>

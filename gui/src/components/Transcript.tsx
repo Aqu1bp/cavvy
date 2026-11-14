@@ -1,3 +1,4 @@
+import { splitSessions } from "../state/split";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
@@ -63,7 +64,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     // What a side panel floating over the conversation covers, with its gap to the edge: "Latest" centres in the rest.
     const floatOver = () => {
         const i = shellLayout().inspector;
-        return i.open && i.mode === "float" ? `${i.width + 8}px` : "0px";
+        return app.activeId === p.handle.id && i.open && i.mode === "float" ? `${i.width + 8}px` : "0px";
     };
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
@@ -881,7 +882,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
     // reconnect that came with fewer).
-    createEffect(on([findOpen, () => p.handle.view.earlier], ([open, earlier]) => {
+    createEffect(on([() => findOpen() && app.activeId === p.handle.id, () => p.handle.view.earlier], ([open, earlier]) => {
         if (open && earlier) void loadEarlier(p.handle, { all: true });
     }));
 
@@ -929,7 +930,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
         const held = panelHold();
-        return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
+        return held && { width: `${held.column.w / (splitSessions() ? 2 : 1)}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
     // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
     // following the end any more), it's scrolled by as much, so what's read stays where it is.
@@ -1018,7 +1019,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 </div>
             </div>
             </div>
-            <Show when={findOpen()}>
+            <Show when={findOpen() && app.activeId === p.handle.id}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
