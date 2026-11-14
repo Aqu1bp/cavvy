@@ -11,6 +11,7 @@ import { signedOutIn, signInRecipes } from "../agent/sign-in-recipes";
 import type { Settings } from "../config/settings";
 import { teardownCommandError, type ServerSetup } from "../tools/server-tools";
 import { childEnv } from "../util/env";
+import { runBounded } from "../util/run-bounded";
 import { redact } from "../util/redact";
 import { expectHostKey, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines } from "./keys";
 import type { ServerLinks } from "./manager";
@@ -104,16 +105,10 @@ async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code:
     if (!bin) return { code: 127, out: "", missing: true };
     // In a folder of its own, with nothing in it: no word of the command can name a file of the user's.
     const cwd = mkdtempSync(join(tmpdir(), "cavvy-teardown-"));
-    const proc = Bun.spawn([bin, ...argv.slice(1)], { cwd, env: childEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const kill = () => proc.kill();
-    const timer = setTimeout(kill, setupTiming.teardownMs);
-    signal.addEventListener("abort", kill, { once: true });
     try {
-        const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-        return { code, out: out + err };
+        // Stopped, or at its limit, it ends with whatever it started: a CLI that's a wrapper doesn't delete on behind a "stopped".
+        return await runBounded([bin, ...argv.slice(1)], { cwd, env: childEnv(), timeoutMs: setupTiming.teardownMs, signal });
     } finally {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", kill);
         rmSync(cwd, { recursive: true, force: true });
     }
 }

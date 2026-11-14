@@ -45,7 +45,7 @@ process.env.PATH = `${mine}:${process.env.PATH}`;
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
-const { expectHostKey, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines, startupScript } = await import("../src/servers/keys");
+const { expectHostKey, forgetOldScripts, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines, startupScript } = await import("../src/servers/keys");
 const { setupTiming } = await import("../src/servers/agent-setup");
 const { ownKnownHosts } = await import("../src/servers/ssh");
 const { checkedCloud, getServer, listServers } = await import("../src/servers/store");
@@ -130,6 +130,18 @@ describe("the keys Cavvy makes for a new server", () => {
         const long = new Date(Date.now() - 7 * 3_600_000);
         utimesSync(join(serverKeysDir(), "keys-three.script"), long, long);
         expect(freshKey("keys-three")).toBe(false);
+        // Its start-up script holds a private host key: it goes the next time a server is prepared, and the key stays
+        // (a machine that was made with it is still reached). One approved just now is left alone.
+        const stale = readFileSync(join(serverKeysDir(), "keys-three.script"), "utf-8").trim();
+        expect(existsSync(stale)).toBe(true);
+        const other = await makeServerKey("keys-four");
+        expect(existsSync(stale)).toBe(false);
+        expect(existsSync(join(serverKeysDir(), "keys-three.script"))).toBe(false);
+        expect(madeKey("keys-three")).toBeDefined();
+        expect(existsSync(other.userDataFile)).toBe(true);
+        forgetOldScripts();
+        expect(existsSync(other.userDataFile)).toBe(true);
+        forgetServerKey("keys-four");
         // Added (the script is done with): the key stays for the server, as no sign of a new machine.
         await makeServerKey("keys-three");
         forgetScript("keys-three");
@@ -270,12 +282,14 @@ describe("the tools, by themselves", () => {
         const not = "can't be a teardown command. Each one is the CLI, what kind of thing it deletes";
         for (const c of [
             "aws configure set region us-east-1", "aws configure set default.x delete", "aws ec2 describe-instances", "aws ec2 run-instances --image-id ami-1", "aws ec2 create-tags delete", "aws lightsail --region us-east-1 delete-instance", "aws s3 cp bucket x", "aws ec2 wait instance-running",
+            // aws: only the services that rent machines, and only a server or what's made with one.
+            "aws rds delete-db-instance --db-instance-identifier db", "aws s3api delete-bucket --bucket b", "aws iam delete-user --user-name u", "aws ec2 delete-tags --resources i-1", "aws lightsail delete-relational-database --relational-database-name db", "aws rds wait db-instance-deleted",
             "az extension add --name x --yes", "az extension remove --name x", "gcloud components install alpha --quiet", "gcloud config set project delete", "gcloud auth login", "gcloud compute ssh box delete",
             "gcloud compute instances create delete --zone us-central1-a", "doctl compute droplet create delete --size s-1vcpu-1gb", "gcloud run deploy delete", "gcloud builds submit delete", "fly deploy delete", "doctl serverless deploy delete",
             "linode-cli register-plugin delete", "ibmcloud cf install-plugin delete -f", "gcloud projects add-iam-policy-binding delete --member user:x --role owner", "hcloud context delete default", "gcloud projects delete p", "ibmcloud plugin-delete x",
         ]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain(not);
         for (const c of [
-            "aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1",
+            "aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1", "aws lightsail delete-key-pair --key-pair-name box", "aws lightsail delete-disk --disk-name box-disk", "aws ec2 delete-volume --volume-id vol-1",
             "gcloud compute instances delete box --zone us-central1-a --quiet", "gcloud compute firewall-rules delete allow-ssh --quiet", "gcloud compute addresses delete box-ip --region us-central1 --quiet",
             "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "az network public-ip delete --resource-group rg --name box-ip",
             "hcloud server delete box", "hcloud ssh-key delete cavvy-box", "hcloud primary-ip delete box-ip", "doctl compute droplet delete box --force", "doctl compute ssh-key delete 123 --force",

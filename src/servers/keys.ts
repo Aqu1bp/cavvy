@@ -9,7 +9,7 @@
 // (it has to: that's how the server gets it), in a file the provider's CLI is
 // given; it's deleted once the server is added.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome } from "../config/paths";
@@ -109,6 +109,7 @@ export async function makeServerKey(name: string): Promise<MadeKey> {
     if (!NAME.test(name)) throw new ServerError("A server's name is lowercase letters, digits and dashes, up to 40 (like build-box).");
     mkdirSync(serverKeysDir(), { recursive: true, mode: 0o700 });
     chmodSync(serverKeysDir(), 0o700);
+    forgetOldScripts();
     forgetScript(name);
     await keygen(keyFile(name), `cavvy-${name}`);
     await keygen(hostKeyFile(name), `cavvy-${name}-host`);
@@ -121,6 +122,8 @@ export async function makeServerKey(name: string): Promise<MadeKey> {
     writeFileSync(scriptNote(name), userDataFile, { mode: 0o600 });
     // The private host key is in the script now, and nowhere else here.
     rmSync(hostKeyFile(name), { force: true });
+    // No server came of it in the time one takes: the script goes then (the key stays, for a machine that was made).
+    setTimeout(forgetOldScripts, FRESH_MS + 60_000).unref?.();
     return { identityFile: keyFile(name), publicKey, hostPublicKey, userDataFile };
 }
 
@@ -197,6 +200,28 @@ export function forgetScript(name: string) {
         // already gone
     }
     rmSync(note, { force: true });
+}
+
+/**
+ * Start-up scripts of approvals that went nowhere: no server was added within the time one counts as being
+ * created (FRESH_MS). Each holds a private host key, so it doesn't stay. Their keys do: a machine that was made
+ * and never added is still reached with them.
+ */
+export function forgetOldScripts(now = Date.now()) {
+    let notes: string[];
+    try {
+        notes = readdirSync(serverKeysDir()).filter((f) => f.endsWith(".script"));
+    } catch {
+        return;
+    }
+    for (const f of notes) {
+        const name = f.slice(0, -".script".length);
+        try {
+            if (NAME.test(name) && now - statSync(scriptNote(name)).mtimeMs >= FRESH_MS) forgetScript(name);
+        } catch {
+            // gone meanwhile
+        }
+    }
 }
 
 /** The server is gone: so are its keys, and what Cavvy's list said its address shows. */

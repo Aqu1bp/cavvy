@@ -65,9 +65,13 @@ const ELSEWHERE = /(?:^|=)@|:\/\/|^--?(?:cli-input-[a-z]+|flags-file)\b/i;
  */
 const KIND = /^(?:alpha|beta|compute|cloud|is|network|vpc|instances?|vms?|servers?|droplets?|linodes?|machines?|apps?|disks?|volumes?|storage|snapshots?|images?|address(?:es)?|ips?|ip-address(?:es)?|(?:public|floating|reserved|primary|static|elastic)-ips?|firewalls?|firewall-rules?|security-groups?|nsg|networks?|vnet|vcn|subnets?|nic|network-interfaces?|ssh-keys?|sshkeys?|keys?|key-?pairs?|group|resource-group|load-balancers?|lb)$/;
 const DELETE = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassociate|deallocate|purge)$/;
-/** aws: `aws <service> <operation>`, the operation being the deletion ("delete-instance", "terminate-instances", "release-static-ip"). */
-const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister|remove)-[a-z0-9-]+$/;
-const AWS_SERVICE = /^(?!(?:configure|help)$)[a-z][a-z0-9-]*$/;
+/**
+ * aws: `aws <service> <operation>`, the service one that rents machines and the operation the deletion of a server
+ * or of what's made with one ("delete-instance", "terminate-instances", "release-static-ip", "delete-key-pair").
+ * A closed list, as KIND is: a database, a bucket or a user isn't part of a server.
+ */
+const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister)-(?:instances?|instance-snapshots?|disks?|disk-snapshots?|static-ips?|address(?:es)?|key-pairs?|volumes?|snapshots?|images?|security-groups?|network-interfaces?|subnets?|vpcs?|internet-gateways?|route-tables?|load-balancers?)$/;
+const AWS_SERVICE = /^(?:lightsail|ec2)$/;
 /** Waiting for a deletion to finish, which the next one may need: it reads, and changes nothing. */
 const AWS_GONE = /-(?:terminated|deleted|not-exists)$/;
 
@@ -106,7 +110,7 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
     const bad = words.slice(1).find((w) => ELSEWHERE.test(w) || pathLike(w));
     if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted by its name or id in the command itself, not by a file, a path, a link or another place it's read from.`;
     const flag = words.findIndex((w, i) => i > 0 && w.startsWith("-"));
-    if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws <service> delete-…" ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
+    if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws lightsail delete-…" or "aws ec2 terminate-…" of the same kinds ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;
 }
 
@@ -394,3 +398,8 @@ To create one: sign the provider's CLI in if needed (request_sign_in), find what
 To add a server the user already has, call server_add with its name and address: Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.
 
 When you tell the user what happens next, say what you'll do ("I'll add it to Cavvy"), not the tools' names.`;
+
+/** For a session on a server, which has none of these tools: asked to add one, an agent there offered a sign-in instead. */
+export const SERVERS_ELSEWHERE_INSTRUCTIONS = `# Servers (cavvy)
+
+This session runs on one of the user's servers. Adding, creating or deleting a server is done from the user's own machine, in a session there: say so if they ask for it. Signing in isn't a way to add one.`;
