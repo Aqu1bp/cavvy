@@ -55,12 +55,34 @@ describe("a sign-in's card, for each kind", () => {
         expect(x.views).toEqual([]);
     });
 
-    test("already signed in: what makes the sign-in usable still runs (git may not have been told to use it)", async () => {
+    test("already signed in on a server: what makes the sign-in usable still runs (git may not have been told to use it)", async () => {
         acme.signIn("me@example.com");
-        const x = flow(acmeRecipe("device", { then: "acme setup" }));
+        const x = flow(acmeRecipe("device", { then: "acme setup" }), { away: true });
         expect((await x.done).end).toBe("done");
         expect(x.views).toEqual([]);
         expect(acme.ranSetup()).toBe(true);
+    });
+
+    test("already signed in on the user's own machine: nothing of theirs is changed without a step they took", async () => {
+        acme.signIn("me@example.com");
+        const x = flow(acmeRecipe("device", { then: "acme setup" }));
+        expect((await x.done).end).toBe("done");
+        expect(acme.ranSetup()).toBe(false);
+    });
+
+    test("a stop doesn't wait for that step", async () => {
+        acme.signIn("me@example.com");
+        const real = localSignInHost({ away: true });
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const host: typeof real = { ...real, run: async (r, w, o) => { if (w.join(" ") === "acme setup") await held; return real.run(r, w, o); } };
+        const stop = new AbortController();
+        const done = new SignInFlow({ wants: [{ target: "acme", recipe: acmeRecipe("device", { then: "acme setup" }) as SignInRecipe }], host, show: () => undefined }).run(stop.signal);
+        // Past the first look, into the step that never ends.
+        await Bun.sleep(300);
+        stop.abort();
+        expect((await done).end).toBe("stopped");
+        release();
     });
 
     test("a device code: the question, then the code and where to enter it, then done by itself", async () => {
@@ -267,23 +289,32 @@ describe("how often a card looks whether it's signed in", () => {
         let checks = 0;
         let shown = false;
         const host: typeof real = { ...real, run: (r, w, o) => { checks++; return real.run(r, w, o); } };
-        const f = new SignInFlow({ wants: [{ target: "acme", recipe: acmeRecipe("device") as SignInRecipe }], host, show: () => void (shown = true), pollMs: 25, quickForMs: 250, idlePollMs: 60_000 });
+        // The flow's clock is the test's: "two minutes later" is a line here, not a wait.
+        let clock = 0;
+        const f = new SignInFlow({ wants: [{ target: "acme", recipe: acmeRecipe("device") as SignInRecipe }], host, show: () => void (shown = true), pollMs: 25, quickForMs: 1000, idlePollMs: 600_000, now: () => clock });
         const stop = new AbortController();
         const done = f.run(stop.signal);
-        const end = Date.now() + 8000;
-        while (!shown && Date.now() < end) await Bun.sleep(10);
-        // Past the time it counts as "at it", with room for a look that was under way.
-        await Bun.sleep(900);
+        const until = async (ok: () => boolean, what: string) => {
+            const end = Date.now() + 15_000;
+            while (!ok()) {
+                if (Date.now() > end) throw new Error(`never ${what}; ${checks} checks`);
+                await Bun.sleep(10);
+            }
+        };
+        await until(() => shown, "showed the card");
+        // While the card is new: look after look.
+        const first = checks;
+        await until(() => checks >= first + 3, "looked three more times");
+        // Left sitting. A look already due or under way lands; the one after it is ten minutes off.
+        clock = 5000;
+        const left = checks;
+        await Bun.sleep(700);
+        expect(checks).toBeLessThanOrEqual(left + 1);
+        // Anything the user does in the card: often again.
         const sitting = checks;
-        // The first look, and several while the card was new.
-        expect(sitting).toBeGreaterThan(2);
-        await Bun.sleep(500);
-        expect(checks).toBe(sitting);
-        // Anything the user does in the card. (The idle look is still a minute off: the next press's own run looks.)
-        f.act({ action: "start" });
-        const more = Date.now() + 8000;
-        while (checks === sitting && Date.now() < more) await Bun.sleep(20);
-        expect(checks).toBeGreaterThan(sitting);
+        f.act({ action: "ran" });
+        f.act({ action: "back" });
+        await until(() => checks >= sitting + 3, "looked often again");
         stop.abort();
         await done;
     });

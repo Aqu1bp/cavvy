@@ -22,7 +22,7 @@ The card closes by itself when the service says it's signed in. Cavvy decides th
 - **Use a token** is offered where the service takes one (GitHub).
 - **Later** puts it off. The agent is told, does what doesn't need the sign-in, and says what's left. The sign-in stays above the message box with its own **Sign in**; when you do sign in (there, or any other way), Cavvy tells the agent and it picks up where it left off. Dismissing it there tells the agent not to ask again, and ends whatever of Cavvy's own was waiting on it (a watched pull request stops and says why). While it's listed Cavvy keeps looking: every minute or two for the first two hours, every ten minutes after. Whatever asks for the same sign-in meanwhile shares the one card and the one line, and all of it hears when you sign in.
 - A code that expired offers **New code**. A sign-in that failed shows the CLI's own words and **Try again**. The agent hears nothing until you're done or choose Later.
-- If something is already signed in, there's no card: the agent is told at once. The sign-in's follow-up step still runs (for GitHub, `gh auth setup-git`, so `git push` uses the sign-in).
+- If something is already signed in, there's no card: the agent is told at once. On a server the sign-in's follow-up step still runs (for GitHub, `gh auth setup-git`, so `git push` uses the sign-in). On your own machine it doesn't: your git settings change only after a sign-in you did in the card. If a push is still refused there, the agent is told that git isn't using the sign-in and to ask before running `gh auth setup-git`.
 - On a server, the card for GitHub adds `Agents there can push as you`: a server runs agents without asking, and they act as whoever is signed in.
 
 A notification says what needs signing in, and names the machine.
@@ -60,7 +60,7 @@ For anything else, the agent can offer the CLI's own sign-in command. The card t
 - `reads` are patterns over what the sign-in prints: `url`, `code`, `prompt` (it's waiting for the pasted code), `expired`.
 - `answers` reply to questions on the way: `[{ "when": "Press Enter", "send": "\r" }]`.
 - `token.run` reads a token from its input; `token.url` is where to make one.
-- `then` runs once it's signed in, however that happened (also when a request finds it signed in already). `env` sets variables for all of them. `warning` is a line for the card on a server.
+- `then` runs once it's signed in through the card or noticed while its card is up; on a server, also when a request finds it signed in already. `env` sets variables for all of them. `warning` is a line for the card on a server.
 - `signedOut` are patterns, matched as written, for what its own failed commands print when it isn't signed in (see below). `commands` are the programs those commands start with; left out, it's the `id`.
 
 Commands are words, not shell: no pipes, quotes or variables. Only your own settings file counts. A project's settings can't add or change a sign-in, since these are commands Cavvy runs outside any sandbox.

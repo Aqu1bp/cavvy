@@ -35,7 +35,7 @@ afterAll(() => iso.cleanup());
 beforeEach(() => acme.reset());
 
 /** A session's sign-ins with `acme` as its only recipe, the cards it showed, and what would wake its agent. */
-function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { machine?: (name?: string) => never; laterForMs?: number; laterSlowPollMs?: number } = {}) {
+function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { machine?: (name?: string) => never; laterPollMs?: number; laterForMs?: number; laterSlowPollMs?: number } = {}) {
     const cards = new Map<string, SignInView & { machine?: string }>();
     const shown: string[] = [];
     const wakes = new WakeQueue({ coalesceMs: 0 });
@@ -50,7 +50,7 @@ function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { ma
         watchers: () => watchers,
         save: (r) => void saved.push(r),
         pollMs: 40,
-        laterPollMs: 60,
+        laterPollMs: o.laterPollMs ?? 60,
         laterForMs: o.laterForMs,
         laterSlowPollMs: o.laterSlowPollMs,
         cards: {
@@ -263,7 +263,8 @@ describe("Later", () => {
     });
 
     test("asked again and signed in through the new card: the row goes, and the agent isn't woken for what it was just told", async () => {
-        const x = session();
+        // The put-off one is looked at far more often than the card looks: left running beside the card, it would see the sign-in first.
+        const x = session(undefined, { laterPollMs: 5 });
         const first = x.s.request(ask(), never);
         x.s.act(await x.card("ask"), { action: "later" });
         await first;

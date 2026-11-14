@@ -255,8 +255,7 @@ export class SignInFlow {
         signal?.addEventListener("abort", stop, { once: true });
         try {
             await Promise.all(this.entries.map((e) => this.refresh(e)));
-            // Already signed in: what makes the sign-in usable (git told to use it) may still be missing, so that runs all the same.
-            if (!signal?.aborted) await Promise.all(this.entries.filter((e) => e.state === "in" && e.recipe?.then).map((e) => this.o.host.run(e.recipe!, words(e.recipe!.then!), { timeoutMs: 30_000 }).catch(() => undefined)));
+            await this.finishSignedIn(signal);
             this.touched = this.now();
             if (signal?.aborted) this.end("stopped");
             else if (!this.entries.some((e) => e.state === "out")) this.end("done");
@@ -266,6 +265,22 @@ export class SignInFlow {
         } finally {
             signal?.removeEventListener("abort", stop);
         }
+    }
+
+    /**
+     * Already signed in on a server: what makes the sign-in usable there (git told to use it) may still be missing,
+     * so the recipe's next step runs all the same. Never on the user's own machine, where nothing of theirs is
+     * changed without a step they took in a card. A stop doesn't wait for it.
+     */
+    private async finishSignedIn(signal?: AbortSignal) {
+        if (signal?.aborted || !(this.o.host.away || this.o.host.far)) return;
+        const ran = Promise.all(this.entries.filter((e) => e.state === "in" && e.recipe?.then).map((e) => this.o.host.run(e.recipe!, words(e.recipe!.then!), { timeoutMs: 30_000 }).catch(() => undefined)));
+        if (!signal) return void (await ran);
+        let stopped!: () => void;
+        const stop = new Promise<void>((resolve) => { stopped = resolve; });
+        signal.addEventListener("abort", stopped, { once: true });
+        await Promise.race([ran, stop]);
+        signal.removeEventListener("abort", stopped);
     }
 
     /** A step the user took in the card. Throws what the card should say when it can't be taken. */

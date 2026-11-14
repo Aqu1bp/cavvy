@@ -240,7 +240,11 @@ Never forces and never pushes tags. Refuses the repository's main branch: work o
                 if (!PUSH_SIGNED_OUT.test(message(e))) throw e;
                 const no = await signInToGitHub(ctx);
                 if (no) throw new Error(`${message(e)}\n${no}`);
-                return push();
+                return push().catch((again) => {
+                    // Signed in, and git still has nothing to offer GitHub: git isn't using that sign-in.
+                    if (PUSH_SIGNED_OUT.test(message(again))) throw new Error(`${message(again)}\nGitHub is signed in, but git here isn't set up to use that sign-in. \`gh auth setup-git\` does it; it changes the user's git settings, so run it only with their yes.`);
+                    throw again;
+                });
             });
             const commits = info.hasUpstream ? (info.ahead ?? 0) : undefined;
             const what = commits === undefined ? "" : commits === 0 ? " (already up to date)" : ` (${commits} commit${commits === 1 ? "" : "s"})`;

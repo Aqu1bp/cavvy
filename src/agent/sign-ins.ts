@@ -376,12 +376,15 @@ export class SessionSignIns {
         if (l.timer) clearTimeout(l.timer);
         if (this.disposed || !this.later.has(l.id)) return;
         const every = Date.now() > l.until ? (this.o.laterSlowPollMs ?? 10 * 60_000) : (this.o.laterPollMs ?? (l.machine.name || l.machine.host.away ? 120_000 : 60_000));
+        // Not while a card for it is up (its own, or one asked for again): that looks for itself, and says how it ended.
+        const up = () => [...this.active.values()].some((a) => a.later === l.id || a.key === l.key);
         l.timer = setTimeout(async () => {
             l.timer = undefined;
-            // Not while its card is up: that looks for itself.
-            if ([...this.active.values()].some((a) => a.later === l.id)) return;
+            if (up()) return this.poll(l);
             const now = await Promise.all(l.wants.map(async (w) => ({ target: w.target, name: w.recipe!.name, ...(await signInStatus(l.machine.host, w.recipe!)) })));
             if (this.disposed || !this.later.has(l.id)) return;
+            // A card that came up while this looked: what it finds is that card's to tell.
+            if (up()) return this.poll(l);
             if (now.every((r) => r.state === "in")) this.signedInLater(l, { end: "done", results: now }, true);
             else this.poll(l);
         }, every);

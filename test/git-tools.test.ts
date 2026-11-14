@@ -3,7 +3,7 @@
 // fake gh: no network. Also who may run them in which permission mode.
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
@@ -209,6 +209,29 @@ describe("GitPush", () => {
         const second = await run(GitPushTool, {}, ctx);
         expect(second.content).toContain("Pushed feature to origin/feature (1 commit).");
         expect(second.content).toContain("Not included: 1 uncommitted change");
+    });
+
+    test("GitHub wants a sign-in: the user is asked and the push goes again; signed in and still refused, the model hears git isn't using the sign-in", async () => {
+        const { cwd, remote } = repo();
+        // The remote refuses until `allow` exists, in the words git has when it has nothing to offer GitHub.
+        const hook = join(remote, "hooks", "pre-receive");
+        mkdirSync(join(remote, "hooks"), { recursive: true });
+        writeFileSync(hook, `#!/bin/sh\n[ -e "${join(remote, "allow")}" ] && exit 0\necho "fatal: could not read Username for 'https://github.com': terminal prompts disabled" >&2\nexit 1\n`);
+        chmodSync(hook, 0o755);
+        const ctx = ctxFor(cwd);
+        let asked = 0;
+        ctx.ui.requestSignIn = async () => (asked++, { text: "Signed in to GitHub as octo.", summary: "Signed in as octo", signedIn: true });
+        const refused = await run(GitPushTool, {}, ctx);
+        expect(asked).toBe(1);
+        expect(refused.isError).toBe(true);
+        expect(refused.content).toContain("could not read Username");
+        expect(refused.content).toContain("GitHub is signed in, but git here isn't set up to use that sign-in. `gh auth setup-git` does it; it changes the user's git settings, so run it only with their yes.");
+        // Signing in was what it took: the same push goes through.
+        ctx.ui.requestSignIn = async () => (asked++, writeFileSync(join(remote, "allow"), ""), { text: "Signed in to GitHub as octo.", summary: "Signed in as octo", signedIn: true });
+        const pushed = await run(GitPushTool, {}, ctx);
+        expect(asked).toBe(2);
+        expect(pushed.content).toStartWith("Pushed feature to origin/feature.");
+        expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
     });
 
     test("refuses the main branch without pushing anything", async () => {

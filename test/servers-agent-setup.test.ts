@@ -256,7 +256,11 @@ describe("the tools, by themselves", () => {
         const gh = { id: "gh", name: "GitHub", here: { flow: "device", run: "gh auth login" }, status: { run: "gh auth status" } };
         for (const c of ["gh repo delete acme/app --yes", "claude -p hello", "codex exec hello"]) expect(v({ ...base, provider: "AWS", teardown: [c] }, [gh])).toContain("starts with the provider's own CLI");
         // What's deleted is in the command the user is shown, not in a file that can change after.
-        for (const w of ["--cli-input-json file:///tmp/x.json", "--cli-input-yaml x", "--parameters @/tmp/x.json", "--parameters=@x.json", "--flags-file=/tmp/f", "--user-data fileb:///tmp/x"]) expect(v({ ...base, provider: "AWS", teardown: [`aws ec2 terminate-instances ${w}`] })).toContain("can't be in a teardown command");
+        for (const w of ["--cli-input-json file:///tmp/x.json", "--cli-input-yaml x", "--parameters @/tmp/x.json", "--parameters=@x.json", "--flags-file=/tmp/f", "--user-data fileb:///tmp/x", "--instance-ids https://example.com/ids", "s3://bucket/key"]) expect(v({ ...base, provider: "AWS", teardown: [`aws ec2 terminate-instances ${w}`] })).toContain("can't be in a teardown command");
+        // Each one deletes, and does nothing else: what sets a CLI up, extends it, signs it in or moves files isn't a teardown.
+        const not = "each one deletes something made for the server";
+        for (const c of ["aws configure set region us-east-1", "aws configure set default.x delete", "az extension add --name x --yes", "az extension remove --name x", "gcloud components install alpha --quiet", "gcloud config set project delete", "gcloud auth login", "aws s3 cp bucket/x /tmp/x", "aws ec2 describe-instances", "aws ec2 run-instances --image-id ami-1", "gcloud compute ssh box delete", "aws lightsail --region us-east-1 delete-instance"]) expect(v({ ...base, provider: "AWS", teardown: [c] })).toContain(not);
+        for (const c of ["aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "gcloud compute instances delete box --zone us-central1-a --quiet", "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "hcloud server delete box", "doctl compute droplet delete box --force", "fly apps destroy box --yes", "linode-cli linodes delete 123", "oci compute instance terminate --instance-id ocid1.instance.oc1 --force"]) expect(v({ ...base, provider: "X", teardown: [c] })).toBeUndefined();
 
         const added: unknown[] = [];
         const s = servers({ add: async (spec) => (added.push(spec), { lacks: ["git"] }) });
@@ -609,11 +613,16 @@ exit 0
         const usual = readFileSync(join(mine, "aws"), "utf-8");
         saveServer({ ...getServer("box")!, name: "cut-short", cloud: { provider: "AWS Lightsail", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "cut-short"], ["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]] } });
         // The pretend CLI finishes its delete whatever it's told meanwhile, as a request already sent does.
-        writeFileSync(join(mine, "aws"), `#!/bin/sh\ntrap '' TERM\nsleep 0.4\nexit 0\n`);
+        const started = join(cloud, "cut-short-started");
+        writeFileSync(join(mine, "aws"), `#!/bin/sh\ntrap '' TERM\ntouch ${JSON.stringify(started)}\nsleep 0.4\nexit 0\n`);
         try {
             const stop = new AbortController();
-            setTimeout(() => stop.abort(), 100);
-            await expect(setup.remove("cut-short", { signal: stop.signal, progress: () => undefined, signIn: async () => false })).rejects.toThrow("Stopped part way");
+            const removing = setup.remove("cut-short", { signal: stop.signal, progress: () => undefined, signIn: async () => false });
+            // Interrupted once it's under way, and not before.
+            const end = Date.now() + 15_000;
+            while (!existsSync(started) && Date.now() < end) await Bun.sleep(10);
+            stop.abort();
+            await expect(removing).rejects.toThrow("Stopped part way");
             expect(getServer("cut-short")!.cloud!.teardown).toEqual([["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]]);
         } finally {
             writeFileSync(join(mine, "aws"), usual);
