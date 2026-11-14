@@ -22,6 +22,11 @@ export function BrowserHostLayer() {
                 // Asleep (the app froze it: nobody sees it or has used it a while): hidden, so Chromium stops drawing it.
                 const view = document.querySelector<HTMLElement>(`webview[data-key="${e.key}"]`);
                 if (view) view.style.visibility = e.asleep ? "hidden" : "";
+            } else if (e.type === "canvas") {
+                // Behind the page, its own canvas's colour (desktop-electron/src/browser-host.ts): where it hasn't drawn yet,
+                // as its pane widens, there's no line of another colour.
+                const view = document.querySelector<HTMLElement>(`webview[data-key="${e.key}"]`);
+                if (view?.parentElement) view.parentElement.style.backgroundColor = e.color;
             } else if (e.type === "destroy") {
                 setHostedTabs((tabs) => tabs.filter((t) => t.key !== e.key));
                 setHostedTargets(({ [e.key]: _, ...ids }) => ids);

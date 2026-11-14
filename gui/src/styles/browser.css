@@ -265,6 +265,7 @@
     pointer-events: none;
 }
 
+/* White behind a page until the app has read its own canvas's colour (BrowserHostLayer sets it). */
 .br-host-tab.shown {
     z-index: 35;
     pointer-events: auto;

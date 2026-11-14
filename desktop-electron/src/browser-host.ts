@@ -23,6 +23,23 @@ import { createHash } from "node:crypto";
 import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
+/**
+ * The colour a browser paints a page's canvas: its root's background, else its body's, else the canvas of the colour
+ * scheme it asks for (Chrome's dark one, or white). Read in a world of its own, so the page neither sees nor changes it.
+ */
+const CANVAS_JS = `(() => {
+    const seen = (c) => c && c !== "transparent" && !/^rgba\\(.*,\\s*0\\)$/.test(c);
+    const root = getComputedStyle(document.documentElement);
+    if (seen(root.backgroundColor)) return root.backgroundColor;
+    const body = document.body && getComputedStyle(document.body).backgroundColor;
+    if (seen(body)) return body;
+    const asks = (root.colorScheme + " " + (document.querySelector('meta[name="color-scheme"]')?.content ?? "")).toLowerCase();
+    const dark = asks.includes("dark") && (!asks.includes("light") || matchMedia("(prefers-color-scheme: dark)").matches);
+    return dark ? "rgb(18, 18, 18)" : "rgb(255, 255, 255)";
+})()`;
+/** The world CANVAS_JS runs in: not the page's (0), nor Electron's own (999). */
+const CANVAS_WORLD = 1001;
+
 interface Tab {
     targetId: string;
     sid: string;
@@ -657,6 +674,23 @@ export class BrowserHost {
         wc.on("page-title-updated", changed);
         wc.on("did-navigate", changed);
         wc.on("did-navigate-in-page", changed);
+        // What the window paints behind the page (BrowserHostLayer): its canvas's colour, so where the page hasn't drawn
+        // yet (a strip as its pane widens, until it draws at the new width) is the page's colour, not a white line.
+        let canvasColor = "";
+        const canvas = () => {
+            if (tab.closed || wc.isDestroyed()) return;
+            void wc.executeJavaScriptInIsolatedWorld(CANVAS_WORLD, [{ code: CANVAS_JS }]).then(
+                (color: unknown) => {
+                    if (typeof color !== "string" || color === canvasColor || tab.closed) return;
+                    canvasColor = color;
+                    this.toGui({ type: "canvas", key, color });
+                },
+                () => {},
+            );
+        };
+        wc.on("dom-ready", canvas);
+        wc.on("did-finish-load", canvas);
+        wc.on("did-navigate-in-page", canvas);
         // The person's popup is a window (above); otherwise a page opening another opens a tab of the same session, as in
         // Chrome (the pool adopts it by its opener).
         wc.setWindowOpenHandler(({ url, disposition }) => {
