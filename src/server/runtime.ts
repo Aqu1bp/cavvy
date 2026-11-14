@@ -393,6 +393,8 @@ export class Runtime {
     private toolTurn = new Map<string, string>();
     /** The start of each call's arguments while they arrive, to name its file or command before they're all in (partialInput). */
     private argsSoFar = new Map<string, string>();
+    /** The call whose start set the activity, and what it set it to: once it ends, its title would no longer be true. */
+    private activityCall?: { id: string; label: string };
     /** Background shell id -> the description of the call that started it, whole (a block's input is cut). */
     private shellDescriptions = new Map<string, string>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
@@ -1951,6 +1953,7 @@ export class Runtime {
                 // A sub-agent's call reads as what it's doing, not as Task(…).
                 if (runsAgent(e.call.name)) this.activity("Agent working", String((e.call.input as { description?: unknown })?.description ?? ""));
                 else this.activity(e.title);
+                this.activityCall = { id: e.call.id, label: this.view.state.activity!.label };
                 break;
             }
             case "tool_progress": {
@@ -1963,6 +1966,12 @@ export class Runtime {
                 break;
             case "tool_end":
                 this.toolEnded(e.call, e.result, e.durationMs, e.title);
+                // The model works out its next step: say so, not the call that just ended (as at a turn's start). A
+                // call started since has the activity, and says itself.
+                if (this.activityCall?.id === e.call.id) {
+                    if (this.view.state.activity?.label === this.activityCall.label) this.activity("Thinking");
+                    this.activityCall = undefined;
+                }
                 break;
             case "notice":
                 this.notice(e.message, e.level, e.data);
