@@ -95,7 +95,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
-        prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},
+        prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
         isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string, action: string) => (action === "chat:modelPicker" ? `${label} (Ctrl+/)` : label), ProviderIcon: () => node("icon"),
         ...Object.fromEntries(["Brain", "Check", "ChevronDown", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "UserRound", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
