@@ -666,13 +666,6 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.sc-action {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-    user-select: all;
-    -webkit-user-select: all;
-}
-
 .sc-file-actions {
     display: inline-flex;
     flex-wrap: wrap;

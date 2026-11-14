@@ -499,6 +499,8 @@ export function App() {
             data-inspmode={layout().inspector.mode}
             data-inspshort={layout().inspector.short ? "on" : "off"}
             data-inspfull={layout().inspector.full ? "on" : "off"}
+            // Full screen with no sidebar beside it: the panel's top row starts with the sidebar's buttons (shell.css).
+            data-lead={layout().inspector.full && (!prefs.sidebar || layout().railMode === "overlay") ? "" : undefined}
             data-inspdocking={inspectorDocking() ? "on" : undefined}
             data-sliding={tracksSliding() ? "on" : undefined}
             data-term={layout().terminal.shown ? "on" : "off"}
