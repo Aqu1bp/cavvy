@@ -28,7 +28,8 @@
 //   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
 //                    the states a call goes through, and the moves between them
 //   "livecmd"        runs a command that prints a line every half second for 6s (the live line opens to it)
-//   "readimage P"    reads the image at path P (its row shows what the model looked at), then describes it
+//   "readimage P"    reads the image at path P (its row shows what the model looked at), then describes it; "... with ls"
+//                    lists the folder in the same step
 //   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
@@ -481,7 +482,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return steps[toolRounds];
     }
     const image = /\breadimage\s+(\S+)/.exec(p);
-    if (image) return toolRounds === 0 ? { text: "Looking at it.", calls: [{ name: "Read", args: { file_path: image[1] } }] } : { text: "It's a gradient from blue to purple." };
+    if (image) {
+        const calls = [{ name: "Read", args: { file_path: image[1] } }, ...(/\bwith ls\b/.test(p) ? [{ name: "Bash", args: { command: "ls", description: "List the folder" } }] : [])];
+        return toolRounds === 0 ? { text: "Looking at it.", calls } : { text: "It's a gradient from blue to purple." };
+    }
     if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.

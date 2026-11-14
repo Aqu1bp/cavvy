@@ -4,7 +4,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // suite"), which opens into a card with a row per call, which opens into the
 // call's details.
 
-import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
+import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -46,7 +46,6 @@ import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
 import { imagesReady, toolImage } from "../../state/images";
-import { fromBase64 } from "../../lib/attachments";
 import { CopyButton, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
@@ -317,15 +316,20 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     const lined = createMemo(() => done().length > 0);
     // What its calls looked at (an image read, a screenshot): at the line's far right, the viewer a click away.
     const looked = createMemo(() => done().flatMap((t) => (t.imageKeys ?? []).map((_, index) => ({ tool: t, index }))).slice(0, 3));
+    /** Its one step is an image read, and the image is all there is to see: the line opens the viewer, not a card. */
+    const pictured = createMemo(() => {
+        const only = done().length === 1 && tools().length === 1 && !p.items.some((it) => it.kind !== "activity") ? done()[0]! : undefined;
+        return only?.imageKeys?.length && !only.diff && only.status === "ok" ? only : undefined;
+    });
     return (
-        <div class={`run ${lined() && open() ? "open" : ""} ${looked().length ? "looked" : ""}`}>
+        <div class={`run ${lined() && open() && !pictured() ? "open" : ""} ${looked().length ? "looked" : ""}`}>
             <Show when={lined() && looked().length}>
                 <span class="run-thumbs">
                     <For each={looked()}>{(l) => <ToolImage tool={l.tool} index={l.index} />}</For>
                 </span>
             </Show>
             <Show when={lined()}>
-                <button class="run-h" data-find-skip aria-expanded={open()} onClick={() => folds.set(key(), !open())}>
+                <button class={`run-h ${pictured() ? "pictured" : ""}`} data-find-skip aria-expanded={pictured() ? undefined : open()} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, pictured()!, 0, e.currentTarget) : folds.set(key(), !open()))}>
                     <span class="run-t truncate">
                         <Inline text={title()} />
                     </span>
@@ -345,10 +349,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
                             <X size={12} /> {denied()}
                         </span>
                     </Show>
-                    <ChevronRight size={14} class="chev" />
+                    <Show when={!pictured()}>
+                        <ChevronRight size={14} class="chev" />
+                    </Show>
                 </button>
             </Show>
-            <Show when={!lined() || open()}>
+            <Show when={!lined() || (open() && !pictured())}>
                 <div class={lined() ? "run-rows" : "run-bare"}>{p.children}</div>
             </Show>
         </div>
@@ -705,6 +711,9 @@ export function ToolRow(p: ToolRowProps) {
 
 function ToolRowContent(p: ToolRowProps) {
     const [open, setOpen] = createSignal(false);
+    const folds = useContext(CardFoldsContext);
+    /** What it brought is an image, and the image is all there is to see: its row opens the viewer, not itself. */
+    const pictured = () => Boolean(p.tool.imageKeys?.length) && !p.tool.diff && !p.also?.length;
     createEffect(() => { if (p.detailsOnly) setOpen(true); });
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
@@ -734,7 +743,7 @@ function ToolRowContent(p: ToolRowProps) {
     return (
         <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
-                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, p.tool, 0, e.currentTarget) : setOpen(!open()))} aria-expanded={pictured() ? undefined : open()}>
                     <span class="tool-icon" title={p.tool.sandboxed ? "Ran in the sandbox" : undefined}>
                         <Switch fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />}>
                             <Match when={p.activity && p.tool.status === "awaiting"}><Hand size={14} /></Match>
@@ -756,7 +765,7 @@ function ToolRowContent(p: ToolRowProps) {
                         <Show when={p.activity && isLive(p.tool) && liveTime(p.tool)}>
                             {(time) => <span class="wtime num" data-find-skip>{time()}</span>}
                         </Show>
-                        <Show when={meta()}>
+                        <Show when={meta() && !pictured()}>
                             <span class={`truncate ${p.tool.status === "error" ? "tone-err" : p.tool.status === "denied" ? "tone-warn" : ""}`}>{meta()}</span>
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
@@ -773,14 +782,13 @@ function ToolRowContent(p: ToolRowProps) {
                         <Show when={!p.activity || !isLive(p.tool)}><StatusIcon tool={p.tool} /></Show>
                     </span>
                 </button>
-                {/* An image it brought is shown, under it: the file itself may be one the session can't open. */}
-                <Show when={!p.tool.imageKeys?.length && toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
+                {/* What it brought, in place of its result's words (the file itself may be one the session can't open). */}
+                <Show when={pictured()} fallback={<Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>}>
+                    <span class="tool-thumbs">
+                        <For each={p.tool.imageKeys!.slice(0, 3)}>{(_, i) => <ToolImage tool={p.tool} index={i()} />}</For>
+                    </span>
+                </Show>
             </div>
-            <Show when={!open() && p.tool.imageKeys?.length && !p.activity}>
-                <div class="tool-images under">
-                    <For each={p.tool.imageKeys}>{(_, i) => <ToolImage tool={p.tool} index={i()} full />}</For>
-                </div>
-            </Show>
             <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
                 <pre class={p.activity ? "activity-tail" : "activity-tail nested"} data-find-skip>
                     {stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(p.activity ? -4 : -6).join("\n")}
@@ -795,45 +803,40 @@ function ToolRowContent(p: ToolRowProps) {
     );
 }
 
-/**
- * An image a call's result brought: what the model looked at. A thumbnail at its row's end, or (`full`) as large as the
- * row allows once it's open; either opens the viewer on all of them. Nothing while it's fetched, or once it's gone.
- */
-function ToolImage(p: { tool: ToolBlock; index: number; full?: boolean }) {
+/** The name an image a call brought goes by: its file's, else "Image". */
+const imageName = (t: ToolBlock) => toolLabel(t).arg?.split("/").pop() || "Image";
+
+/** The viewer on the images a call's result brought, at `index`: each as it comes in. */
+function viewToolImages(sessionId: string | undefined, t: ToolBlock, index: number, from: Element) {
+    const keys = t.imageKeys ?? [];
+    if (!sessionId || !keys.length) return;
+    void Promise.all(keys.map((k) => toolImage(sessionId, k).catch(() => undefined))).then((got) => {
+        const shown = keys.flatMap((_, i) => (got[i] ? [{ name: keys.length > 1 ? `${imageName(t)} (${i + 1})` : imageName(t), full: got[i]!, preview: got[i]!.thumb }] : []));
+        if (shown.length) setViewedImage({ images: shown, index: Math.max(0, Math.min(index, shown.length - 1)), from });
+    });
+}
+
+/** An image a call's result brought (what the model looked at), as a thumbnail that opens the viewer. Nothing while it's fetched, or once it's gone. */
+function ToolImage(p: { tool: ToolBlock; index: number }) {
     const folds = useContext(CardFoldsContext);
-    const keys = () => p.tool.imageKeys ?? [];
-    const load = (key: string) => (folds.sessionId ? toolImage(folds.sessionId, key) : Promise.reject(new Error("no session")));
     const [img] = createResource(
-        () => (folds.sessionId && imagesReady(folds.sessionId) ? keys()[p.index] : undefined),
-        (key) => load(key).catch(() => undefined),
+        () => (folds.sessionId && imagesReady(folds.sessionId) ? p.tool.imageKeys?.[p.index] : undefined),
+        (key) => toolImage(folds.sessionId!, key).catch(() => undefined),
     );
-    const name = () => toolLabel(p.tool).arg?.split("/").pop() || "Image";
-    // Opened, the image itself as an object URL (a data: URL of a whole image costs the main thread per MB), let go with it.
-    let url: string | undefined;
-    const fullUrl = (i: { mediaType: string; data: string }) => (url ??= URL.createObjectURL(new Blob([fromBase64(i.data) as BlobPart], { type: i.mediaType })));
-    onCleanup(() => url && URL.revokeObjectURL(url));
-    const view = (from: Element) => {
-        // The others as they come: the viewer shows each one's thumbnail until it's in.
-        const all = keys().map((k, i) => ({ name: keys().length > 1 ? `${name()} (${i + 1})` : name(), full: load(k), preview: i === p.index ? img()?.thumb : undefined }));
-        void Promise.all(all.map((a) => a.full.catch(() => undefined))).then((got) => {
-            const shown = all.flatMap((a, i) => (got[i] ? [{ name: a.name, full: got[i]!, preview: got[i]!.thumb }] : []));
-            if (shown.length) setViewedImage({ images: shown, index: Math.max(0, Math.min(p.index, shown.length - 1)), from });
-        });
-    };
     return (
         <Show when={img()}>
             {(i) => (
                 <button
-                    class={p.full ? "tool-image-full" : "tool-thumb"}
+                    class="tool-thumb"
                     title="View full size"
-                    aria-label={`View ${name()}`}
+                    aria-label={`View ${imageName(p.tool)}`}
                     data-find-skip
                     onClick={(e) => {
                         e.stopPropagation();
-                        view(e.currentTarget);
+                        viewToolImages(folds.sessionId, p.tool, p.index, e.currentTarget);
                     }}
                 >
-                    <img src={p.full ? fullUrl(i()) : i().thumb} alt="" />
+                    <img src={i().thumb} alt="" />
                 </button>
             )}
         </Show>
@@ -1470,11 +1473,6 @@ function ToolDetailsContent(p: { tool: ToolBlock; openLink?: boolean }) {
                     </>
                 }
             >
-                <Match when={t().imageKeys?.length && !t().diff}>
-                    <div class="tool-images">
-                        <For each={t().imageKeys}>{(_, i) => <ToolImage tool={t()} index={i()} full />}</For>
-                    </div>
-                </Match>
                 <Match when={t().diff}>
                     <DiffView diff={t().diff!} maxLines={80} header headerAction={<Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>} />
                     <Show when={t().diagnostics}>{(r) => <Diagnostics report={r()} />}</Show>
