@@ -9,6 +9,7 @@ import { homedir } from "os";
 import { dirname, join, relative } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { Replay } from "./helpers/acp-replay";
+import { fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -49,7 +50,7 @@ afterAll(() => {
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
 
-const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const logLines = (): any[] => fakeLog(LOG);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 const answers = () => logLines().flatMap((l) => (l.permissionAnswer ? [l.permissionAnswer] : []));
 const hookAnswers = (): any[] => logLines().flatMap((l) => (l.hookAnswer ? [l.hookAnswer] : []));

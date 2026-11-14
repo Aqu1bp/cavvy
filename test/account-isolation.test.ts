@@ -6,6 +6,7 @@ import { createHash } from "crypto";
 import { homedir, tmpdir } from "os";
 import { join, resolve, sep } from "path";
 import type { Method, Methods, ServerEvent } from "../src/server/protocol";
+import { fakeLog } from "./helpers/fake-env";
 
 const selectors = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"] as const;
 // Expected identity comes from the driving operation, never the observed folder.
@@ -99,7 +100,7 @@ if (!scenario) {
     const providers = ["claude-code", "codex"] as const;
     for (const provider of providers) saveAgentConfig(provider, {});
     writeFileSync(join(process.env.CAVVY_HOME!, "settings.json"), JSON.stringify({ delegation: false }));
-    const starts = (): any[] => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    const starts = (): any[] => fakeLog(log);
     const until = async (check: () => boolean) => {
         const end = Date.now() + 10000;
         while (!check()) { if (Date.now() > end) throw new Error(`Timed out: ${process.env.CAVVY_TEST_ISOLATION_PHASE}`); await Bun.sleep(10); }

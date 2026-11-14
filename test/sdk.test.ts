@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const { home: CAVVY_HOME, cleanup } = isolate();
 const sdk = await import("../src/sdk/index");
@@ -888,7 +889,7 @@ describe("found in the Codex review", () => {
         const all = { FAKE_LOG: log, ...env };
         for (const [k, v] of Object.entries(all)) process.env[k] = v;
         return {
-            lines: () => (existsSync(log) ? readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l)) : []),
+            lines: () => fakeLog(log),
             restore: () => {
                 for (const k of Object.keys(all)) delete process.env[k];
             },

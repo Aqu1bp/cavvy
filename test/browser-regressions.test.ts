@@ -18,9 +18,9 @@ const session = (opts: object = {}) => {
     const b = new BrowserSession({ root, settings: () => ({}), pool: { startupMs: 90_000 }, ...opts });
     sessions.push(b); return b;
 };
-const until = async (fn: () => boolean, what: string) => {
+const until = async (fn: () => boolean, what: string | (() => string)) => {
     const until = Date.now() + 8000;
-    while (!fn()) { if (Date.now() > until) throw new Error(`Timed out: ${what}`); await Bun.sleep(20); }
+    while (!fn()) { if (Date.now() > until) throw new Error(`Timed out: ${typeof what === "string" ? what : what()}`); await Bun.sleep(20); }
 };
 afterAll(async () => { await Promise.all(sessions.map(s => s.dispose())); iso.cleanup(); });
 
@@ -187,14 +187,16 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         const pa = await a.page(), pb = await b.page();
         const ka = {}, kb = {};
         let countA = 0, countB = 0;
+        const sent = (p: unknown) => (p as { fullFrames: number }).fullFrames;
         a.watch(ka, (_, frameId) => { countA++; queueMicrotask(() => a.ack(ka, frameId)); }, { width: 400, height: 300, scale: 1 });
         b.watch(kb, (_, frameId) => { countB++; queueMicrotask(() => b.ack(kb, frameId)); }, { width: 500, height: 400, scale: 2 });
         try {
             await until(() => countA > 0 && countB > 0, "both first frames");
             for (const color of ["red", "blue", "green"]) {
-                const beforeA = countA, beforeB = countB;
+                const beforeA = countA, beforeB = countB, sentA = sent(pa), sentB = sent(pb);
                 await Promise.all([pa.evaluate(`document.body.style.background = '${color}'`), pb.evaluate(`document.body.style.background = '${color}'`)]);
-                await until(() => countA > beforeA && countB > beforeB, "both updated frames");
+                // Which pane got none, and whether Chrome sent its page a frame at all (#126).
+                await until(() => countA > beforeA && countB > beforeB, () => `both updated frames after ${color}: a got ${countA - beforeA} (Chrome sent its page ${sent(pa) - sentA}), b got ${countB - beforeB} (Chrome sent its page ${sent(pb) - sentB})`);
             }
             expect((a as any).pool).toBe((b as any).pool);
         } finally { a.unwatch(ka); b.unwatch(kb); }

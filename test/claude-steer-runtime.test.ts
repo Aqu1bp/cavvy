@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const { createDemoProject } = await import("../scripts/demo-project");
@@ -54,11 +55,7 @@ async function cleanup(engine: { stop(): Promise<void> }) {
     removeAgentConfig("claude-code");
 }
 
-// Whole lines only: the fake may be partway through writing one, and with an image in it one is long.
-const log = () => {
-    const text = existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8") : "";
-    return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((l) => JSON.parse(l));
-};
+const log = () => fakeLog(process.env.FAKE_LOG);
 const sent = (text: string) => log().find((l) => l.received?.type === "user" && JSON.stringify(l.received.message.content).includes(text))?.received;
 
 async function until(check: () => boolean, ms = 15_000) {

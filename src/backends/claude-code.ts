@@ -1025,7 +1025,8 @@ class ClaudeTurn {
 
     private async forwardWaiting(): Promise<boolean> {
         if (this.aborted || this.finishing || !this.sink.drainWaiting) return false;
-        const p = await this.sink.drainWaiting(() => this.progress(), () => !this.aborted && !this.finishing);
+        // Gone counts too: reading its output (what sets `finishing`) may itself be waiting on this message's hooks.
+        const p = await this.sink.drainWaiting(() => this.progress(), () => !this.aborted && !this.finishing && !this.proc.hasExited);
         if (!p) return false;
         if (this.aborted || this.finishing) {
             // Not expected: nothing is awaited between its "go" (see AgentHost.drainWaiting) and here. Should

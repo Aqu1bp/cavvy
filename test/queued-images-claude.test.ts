@@ -3,7 +3,7 @@
 // what it was sent on stdin.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -11,6 +11,7 @@ const iso = isolate();
 const { createDemoProject } = await import("../scripts/demo-project");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 import type { SessionSnapshot } from "../src/server/protocol";
+import { fakeLog } from "./helpers/fake-env";
 
 mkdirSync(iso.home, { recursive: true });
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({}));
@@ -58,9 +59,7 @@ async function cleanup(engine: { stop(): Promise<void> }) {
 
 /** The user messages the fake Claude Code got on stdin. */
 function received(): { content: any[] }[] {
-    const file = process.env.FAKE_LOG!;
-    if (!existsSync(file)) return [];
-    return readFileSync(file, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user").map((l) => l.received.message);
+    return fakeLog(process.env.FAKE_LOG).filter((l) => l.received?.type === "user").map((l) => l.received.message);
 }
 const withText = (text: string) => received().find((m) => m.content.some((b) => b.type === "text" && b.text.includes(text)));
 const images = (m: { content: any[] } | undefined) => (m?.content ?? []).filter((b) => b.type === "image");
@@ -81,9 +80,7 @@ function expectDelivered(rt: { session: { messages: { role: string; content: any
 
 /** What the fake folded into its running turn (the steering scenario), as it logged it. */
 function folded(): string[] {
-    const file = process.env.FAKE_LOG!;
-    if (!existsSync(file)) return [];
-    return readFileSync(file, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).flatMap((l) => l.foldedBeforeResult ?? []);
+    return fakeLog(process.env.FAKE_LOG).flatMap((l) => l.foldedBeforeResult ?? []);
 }
 
 describe("steering a running Claude Code turn with an image", () => {
@@ -130,7 +127,7 @@ describe("steering a running Claude Code turn twice in the same words", () => {
 });
 
 const PDF = Buffer.from("%PDF-1.4\n% a test document\n%%EOF\n").toString("base64");
-const log = () => (existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const log = () => fakeLog(process.env.FAKE_LOG);
 
 // Claude Code drops a mid-turn message's document blocks (claude-2.1.304-steer-pdf-dropped.jsonl): a PDF waits.
 describe("steering a running Claude Code turn with a PDF", () => {

@@ -139,6 +139,11 @@ export class JsonLinesProcess {
         }
     }
 
+    /** Whether the process has exited: nothing more can be sent to it. */
+    get hasExited(): boolean {
+        return this.gone;
+    }
+
     /** What the CLI wrote to stderr (the end of it), redacted. */
     stderr(): string {
         return redact(this.err);
