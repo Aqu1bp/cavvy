@@ -106,6 +106,7 @@
 // FAKE_SCENARIO=steer-live  messages written mid-turn, taken as 2.1.310 takes them, plain or "now" (see steerLive)
 // FAKE_SCENARIO=enter-worktree / exit-worktree  the session moves into .claude/worktrees/wt (EnterWorktree) or back
 //                    (ExitWorktree), with the structured results 2.1.311 gives; each turn's system/init has its cwd
+// FAKE_SCENARIO=compact-midway  Claude Code compacts its context partway through the turn: a Read, the boundary, a Read, the answer
 // FAKE_SCENARIO=chat  (or any name not listed) the turn says something and answers, with nothing done
 // Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
@@ -1183,6 +1184,15 @@ async function turn(content: any[], uuid?: string) {
             toolUse(id, "ExitWorktree", { action: "keep" });
             here = cwd;
             toolResult(id, `Exited worktree. Session is now back in “${cwd}”.`, false, { action: "keep", originalCwd: cwd, worktreePath, worktreeBranch: "worktree-wt", restoredCwd: cwd, originalCwdMissing: false });
+        }
+        text("done");
+        return result("success");
+    }
+    if (scenario === "compact-midway") {
+        for (const [i, file] of ["a.ts", "b.ts"].entries()) {
+            if (i) out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
+            toolUse(`toolu_cm${prompts}_${i}`, "Read", { file_path: join(cwd, file) });
+            toolResult(`toolu_cm${prompts}_${i}`, "(read)", false);
         }
         text("done");
         return result("success");

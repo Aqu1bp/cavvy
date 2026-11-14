@@ -184,7 +184,7 @@ const lastText = (m: Message | undefined) => (m?.content ?? []).map((p: any) => 
 
 describe("a running agent", () => {
     test("a wake raised during a tool call rides along with the results", async () => {
-        const { agent, wakes, requests, notices, data } = setup((_req, n) =>
+        const { agent, session, wakes, requests, notices, data } = setup((_req, n) =>
             n === 0 ? reply([{ type: "tool_call", id: "c1", name: "Poke", input: { label: "PR #3: checks failed" } }], "tool_use") : reply([{ type: "text", text: "on it" }]),
         );
         const reason = await agent.run([{ type: "text", text: "watch it" }], { signal: new AbortController().signal });
@@ -197,6 +197,8 @@ describe("a running agent", () => {
         expect(notices).toContain("↻ PR #3: checks failed");
         // The GUI draws its own bell over the text without the terminal's mark.
         expect(data).toContainEqual({ wake: true, text: "PR #3: checks failed" });
+        // Kept with the session, where it joined: after the call's message, before its results.
+        expect(session.notices).toMatchObject([{ index: 2, level: "info", text: "PR #3: checks failed", wake: true }]);
         wakes.dispose();
     });
 

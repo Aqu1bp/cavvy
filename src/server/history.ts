@@ -502,6 +502,8 @@ function keptBlock(b: Block, output?: number): Block {
 export function shownStep(b: Block): Block | undefined {
     // A message from another session that joined the turn: kept as it was shown (and dropped if it was taken back).
     if (b.t === "peer") return b;
+    // What happened to the work while it ran (a compaction, a wake that joined it): kept in its place.
+    if (b.t === "notice" && (b.compacted || b.wake)) return b;
     return b.t === "text" || b.t === "thinking" || b.t === "tool" ? keptBlock(b) : undefined;
 }
 

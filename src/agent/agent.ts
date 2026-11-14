@@ -999,7 +999,7 @@ export class Agent {
                     continue;
                 }
                 // Events (a watched PR, a monitor) that came in during the last request: answer them in this turn.
-                const woke = this.takeWakes();
+                const woke = this.takeWakes(true);
                 if (woke) {
                     this.session.push({ role: "user", content: [reminder(woke.text)], meta: { kind: "reminder", ...(woke.peers ? { peers: woke.peers } : {}) } });
                     continue;
@@ -1049,7 +1049,7 @@ export class Agent {
                 const queued = steer.texts;
                 // Not into a round that ends the turn (the user denied a call, a hook stopped it or blocked the batch): the wake
                 // would go unanswered, shown as taken. It waits for the next turn instead.
-                const woke = denied || this.hookStop || batchBlocked ? undefined : this.takeWakes();
+                const woke = denied || this.hookStop || batchBlocked ? undefined : this.takeWakes(true);
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
                 if (woke) {
                     extra.push(reminder(woke.text));
@@ -1097,13 +1097,18 @@ export class Agent {
      * Wakes that may join the running turn, as one reminder. Events are noted in the transcript; a message from another
      * session is shown there whole, from whom (peer_message), and kept with what's stored (meta.peers, joinedPeers).
      */
-    private takeWakes(): { text: string; wakes: Wake[]; peers?: PeerNote[] } | undefined {
+    /** `save`: its line is kept with the session's notices, for a reopened session to show where it joined. */
+    private takeWakes(save: boolean): { text: string; wakes: Wake[]; peers?: PeerNote[] } | undefined {
         if (this.o.isSubagent) return undefined;
         const wakes = this.state.wakes?.drainRunning() ?? [];
         if (!wakes.length) return undefined;
         const events = wakes.filter((w) => !w.from);
         // The terminal marks it with ↻; the GUI draws its own icon for a wake, over the text without the mark.
-        if (events.length) this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(events)}`, data: { wake: true, text: wakeDisplay(events) } });
+        if (events.length) {
+            const said = wakeDisplay(events);
+            this.emit({ type: "notice", level: "info", message: `↻ ${said}`, data: { wake: true, text: said } });
+            if (save) this.session.recordNotice("info", said, { wake: true });
+        }
         const peers = wakes.filter((w) => w.from).map((w) => ({ from: w.from!, text: w.message ?? w.text }));
         for (const w of wakes) if (w.from) this.emit({ type: "peer_message", key: peerKey(w), from: w.from, text: w.message ?? w.text });
         return { text: formatWakes(wakes), wakes, ...(peers.length ? { peers } : {}) };
@@ -2479,7 +2484,8 @@ export class Agent {
                 const steer = await this.drainSteering(signal, record, live, true, id);
                 const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
-                const woke = this.takeWakes();
+                // Its line is kept with the backend's turn, among the steps the GUI logs (Runtime.syncTurn).
+                const woke = this.takeWakes(false);
                 if (!queued.length && !woke) return [];
                 const display = joinSteered(queued, "\n");
                 const content: UserContent[] = [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)];

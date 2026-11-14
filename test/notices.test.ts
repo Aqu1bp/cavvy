@@ -147,6 +147,9 @@ test("a session file from before structured notices reads its plain ones as line
 
 test("a notice's data is read back only when it's well formed", () => {
     expect(noticeData({ source: "codex", title: "", link: "javascript:alert(1)" })).toEqual({ source: "codex" });
+    // What it is, read back: a CLI's compaction, a wake that joined a turn.
+    expect(noticeData({ compacted: true, wake: true })).toEqual({ compacted: true, wake: true });
+    expect(noticeData({ compacted: "yes", wake: 1 } as any)).toEqual({});
     expect(noticeData({ account: { provider: "codex", cli: "Codex", name: "X", how: "sideways" } as any })).toEqual({});
     expect(noticeData({ account: { provider: "codex", cli: "Codex", name: "X", how: "native", stopped: [{ label: "a", command: 3 }, null, { label: "" }] } as any })).toEqual({ account: { provider: "codex", cli: "Codex", name: "X", how: "native", stopped: [{ label: "a" }] } });
     expect(noticeData({ limit: { provider: "codex", accountId: "second", name: "Second", window: "5-hour", resetsAt: 5, credits: "yes" } as any })).toEqual({ limit: { provider: "codex", accountId: "second", name: "Second", window: "5-hour", resetsAt: 5 } });
