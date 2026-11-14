@@ -2851,7 +2851,11 @@ export class Runtime {
         windowForwards: () => this.engine.away,
         wakes: () => this.toolState.wakes,
         watchers: () => this.toolState.watchers,
-        save: (recipe) => updateSettings("user", this.ws.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; }),
+        save: (recipe) => {
+            updateSettings("user", this.ws.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; });
+            // Read again, so the next request in this session (or any other that's open) finds it.
+            this.engine.reloadSettings();
+        },
         cards: {
             show: (id, view) => {
                 const had = this.pending.get(id);

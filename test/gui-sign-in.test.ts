@@ -442,4 +442,26 @@ describe("a sign-in in a GUI session", () => {
         await c.call("terminal.close", { id: "signin-term-2" });
         c.close();
     });
+
+    test("Done, and remember: the same session has a sign-in for it the next time it's asked", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        await c.call("session.send", { id, text: "signin zzkeep: zzkeep auth login" });
+        const card = await c.card(id, "command");
+        await step(c, id, card.id, { action: "ran" });
+        await c.card(id, "command", (i) => i.ran === true);
+        await step(c, id, card.id, { action: "done", save: true });
+        await c.until(id, done, "the turn's end");
+        // Kept as the user's settings hold one, and read again by the session that saved it.
+        expect((JSON.parse(readFileSync(join(iso.home, "settings.json"), "utf8")).signIns as { id: string }[]).map((r) => r.id)).toContain("zzkeep");
+        await c.call("session.send", { id, text: "signin zzkeep" });
+        await c.until(id, (v) => v.state.interactions.some((i) => i.kind === "signin") || done(v), "a card, or the turn's end");
+        const asked = tools(lastTurn(c.view(id)))[0]!;
+        expect(JSON.stringify([asked.output ?? "", c.view(id).state.interactions])).not.toContain("has no sign-in for");
+        // It's Cavvy's to run now: the card offers to, or says the CLI isn't installed here (it isn't).
+        const up = c.view(id).state.interactions.find((i): i is SignInInteraction => i.kind === "signin");
+        if (up) await step(c, id, up.id, { action: "later" });
+        await c.until(id, done, "the turn's end");
+        c.close();
+    });
 });
