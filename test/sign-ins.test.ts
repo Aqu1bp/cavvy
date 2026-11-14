@@ -279,6 +279,28 @@ describe("Later", () => {
         expect(x.wakes.size).toBe(0);
     });
 
+    test("asked again for more than was put off: that card answers for what was put off too", async () => {
+        const x = session(undefined, { laterPollMs: 5 });
+        // Acme, and one Cavvy can't check: only Acme is listed when both are put off.
+        const both: SignInRequest = { targets: [{ target: "acme" }, { target: "fly", command: "fly auth login" }] };
+        const first = x.s.request(both, never);
+        x.s.act(await x.card("list"), { action: "later" });
+        await first;
+        expect(x.watchers.info().map((w) => w.id)).toEqual(["sign-in::acme"]);
+        const again = x.s.request(both, never);
+        const id = await x.card("list");
+        x.s.act(id, { action: "pick", target: "acme" });
+        await x.card("code");
+        acme.approve("more@example.com");
+        // Back at the list, with the other still to do: left for later.
+        await x.card("list");
+        x.s.act(id, { action: "later" });
+        expect((await again).text).toContain("Signed in to Acme as more@example.com.");
+        expect(x.watchers.size).toBe(0);
+        await Bun.sleep(150);
+        expect(x.wakes.size).toBe(0);
+    });
+
     test("one Cavvy can't check isn't listed, and the model isn't promised news of it", async () => {
         const x = session();
         const answer = x.s.request({ targets: [{ target: "fly", command: "fly auth login" }] }, never);

@@ -256,11 +256,26 @@ describe("the tools, by themselves", () => {
         const gh = { id: "gh", name: "GitHub", here: { flow: "device", run: "gh auth login" }, status: { run: "gh auth status" } };
         for (const c of ["gh repo delete acme/app --yes", "claude -p hello", "codex exec hello"]) expect(v({ ...base, provider: "AWS", teardown: [c] }, [gh])).toContain("starts with the provider's own CLI");
         // What's deleted is in the command the user is shown, not in a file that can change after.
-        for (const w of ["--cli-input-json file:///tmp/x.json", "--cli-input-yaml x", "--parameters @/tmp/x.json", "--parameters=@x.json", "--flags-file=/tmp/f", "--user-data fileb:///tmp/x", "--instance-ids https://example.com/ids", "s3://bucket/key"]) expect(v({ ...base, provider: "AWS", teardown: [`aws ec2 terminate-instances ${w}`] })).toContain("can't be in a teardown command");
-        // Each one deletes, and does nothing else: what sets a CLI up, extends it, signs it in or moves files isn't a teardown.
-        const not = "each one deletes something made for the server";
-        for (const c of ["aws configure set region us-east-1", "aws configure set default.x delete", "az extension add --name x --yes", "az extension remove --name x", "gcloud components install alpha --quiet", "gcloud config set project delete", "gcloud auth login", "aws s3 cp bucket/x /tmp/x", "aws ec2 describe-instances", "aws ec2 run-instances --image-id ami-1", "gcloud compute ssh box delete", "aws lightsail --region us-east-1 delete-instance"]) expect(v({ ...base, provider: "AWS", teardown: [c] })).toContain(not);
-        for (const c of ["aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "gcloud compute instances delete box --zone us-central1-a --quiet", "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "hcloud server delete box", "doctl compute droplet delete box --force", "fly apps destroy box --yes", "linode-cli linodes delete 123", "oci compute instance terminate --instance-id ocid1.instance.oc1 --force"]) expect(v({ ...base, provider: "X", teardown: [c] })).toBeUndefined();
+        for (const w of ["--cli-input-json file:///tmp/x.json", "--cli-input-yaml x", "--parameters @/tmp/x.json", "--parameters=@x.json", "--flags-file=/tmp/f", "--user-data fileb:///tmp/x", "--instance-ids https://example.com/ids", "s3://bucket/key", "--ca-bundle /tmp/ca.pem", "--metadata-from-file startup-script=/Users/me/.cavvy/server-keys/box", "--source ..", "--key-file=.netrc", "--config .aws"]) expect(v({ ...base, provider: "AWS", teardown: [`aws ec2 terminate-instances ${w}`] })).toContain("can't be in a teardown command");
+        // A home path isn't even a plain word.
+        expect(v({ ...base, provider: "AWS", teardown: ["aws ec2 terminate-instances --user-data-file ~/.aws/credentials"] })).toContain("plain words only");
+        // One shape: the CLI, the kind of thing, the deleting verb, then names and options. Anything else isn't a teardown,
+        // whatever it calls what it works on.
+        const not = "can't be a teardown command. Each one is the CLI, what kind of thing it deletes";
+        for (const c of [
+            "aws configure set region us-east-1", "aws configure set default.x delete", "aws ec2 describe-instances", "aws ec2 run-instances --image-id ami-1", "aws ec2 create-tags delete", "aws lightsail --region us-east-1 delete-instance", "aws s3 cp bucket x", "aws ec2 wait instance-running",
+            "az extension add --name x --yes", "az extension remove --name x", "gcloud components install alpha --quiet", "gcloud config set project delete", "gcloud auth login", "gcloud compute ssh box delete",
+            "gcloud compute instances create delete --zone us-central1-a", "doctl compute droplet create delete --size s-1vcpu-1gb", "gcloud run deploy delete", "gcloud builds submit delete", "fly deploy delete", "doctl serverless deploy delete",
+            "linode-cli register-plugin delete", "ibmcloud cf install-plugin delete -f", "gcloud projects add-iam-policy-binding delete --member user:x --role owner", "hcloud context delete default", "gcloud projects delete p", "ibmcloud plugin-delete x",
+        ]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain(not);
+        for (const c of [
+            "aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1",
+            "gcloud compute instances delete box --zone us-central1-a --quiet", "gcloud compute firewall-rules delete allow-ssh --quiet", "gcloud compute addresses delete box-ip --region us-central1 --quiet",
+            "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "az network public-ip delete --resource-group rg --name box-ip",
+            "hcloud server delete box", "hcloud ssh-key delete cavvy-box", "hcloud primary-ip delete box-ip", "doctl compute droplet delete box --force", "doctl compute ssh-key delete 123 --force",
+            "fly apps destroy box --yes", "fly machine destroy 123 --force", "flyctl ips release 203.0.113.9", "linode-cli linodes delete 123", "vultr-cli instance delete 123", "scw instance server terminate 123 with-ip=true",
+            "oci compute instance terminate --instance-id ocid1.instance.oc1 --force", "exo compute instance delete box --force", "civo instance remove box --yes", "yc compute instance delete box", "upctl server delete 123", "ibmcloud is instance-delete 123 --force", "ibmcloud is floating-ip-release 123 --force",
+        ]) expect(v({ ...base, provider: "X", teardown: [c] })).toBeUndefined();
 
         const added: unknown[] = [];
         const s = servers({ add: async (spec) => (added.push(spec), { lacks: ["git"] }) });
@@ -614,7 +629,8 @@ exit 0
         saveServer({ ...getServer("box")!, name: "cut-short", cloud: { provider: "AWS Lightsail", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "cut-short"], ["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]] } });
         // The pretend CLI finishes its delete whatever it's told meanwhile, as a request already sent does.
         const started = join(cloud, "cut-short-started");
-        writeFileSync(join(mine, "aws"), `#!/bin/sh\ntrap '' TERM\ntouch ${JSON.stringify(started)}\nsleep 0.4\nexit 0\n`);
+        const finish = join(cloud, "cut-short-finish");
+        writeFileSync(join(mine, "aws"), `#!/bin/sh\ntrap '' TERM\n{ pwd; ls -A; } > ${JSON.stringify(join(cloud, "cut-short-where"))}\ntouch ${JSON.stringify(started)}\ni=0; while [ ! -e ${JSON.stringify(finish)} ]; do sleep 0.05; i=$((i+1)); [ $i -gt 400 ] && exit 1; done\nexit 0\n`);
         try {
             const stop = new AbortController();
             const removing = setup.remove("cut-short", { signal: stop.signal, progress: () => undefined, signIn: async () => false });
@@ -622,7 +638,11 @@ exit 0
             const end = Date.now() + 15_000;
             while (!existsSync(started) && Date.now() < end) await Bun.sleep(10);
             stop.abort();
+            // Only now does it finish: after the interruption, whatever the machine was busy with.
+            writeFileSync(finish, "");
             await expect(removing).rejects.toThrow("Stopped part way");
+            // It ran in a folder of its own with nothing in it, not in the user's home.
+            expect(readFileSync(join(cloud, "cut-short-where"), "utf-8").trim()).toMatch(/^\S*cavvy-teardown-\S+$/);
             expect(getServer("cut-short")!.cloud!.teardown).toEqual([["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]]);
         } finally {
             writeFileSync(join(mine, "aws"), usual);

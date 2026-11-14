@@ -4,7 +4,9 @@
 // shell may not. The same code behind the desktop app's Add server… does the
 // adding (ServerLinks), so a server an agent adds shows up like any other.
 
-import { homedir } from "os";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { signedOutIn, signInRecipes } from "../agent/sign-in-recipes";
 import type { Settings } from "../config/settings";
 import { teardownCommandError, type ServerSetup } from "../tools/server-tools";
@@ -75,7 +77,9 @@ async function settled(e: ServerEntry, signal: AbortSignal, progress: (text: str
 async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code: number; out: string; missing?: boolean }> {
     const bin = Bun.which(argv[0]!, { PATH: process.env.PATH ?? "" });
     if (!bin) return { code: 127, out: "", missing: true };
-    const proc = Bun.spawn([bin, ...argv.slice(1)], { cwd: homedir(), env: childEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    // In a folder of its own, with nothing in it: no word of the command can name a file of the user's.
+    const cwd = mkdtempSync(join(tmpdir(), "cavvy-teardown-"));
+    const proc = Bun.spawn([bin, ...argv.slice(1)], { cwd, env: childEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const kill = () => proc.kill();
     const timer = setTimeout(kill, setupTiming.teardownMs);
     signal.addEventListener("abort", kill, { once: true });
@@ -85,6 +89,7 @@ async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code:
     } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", kill);
+        rmSync(cwd, { recursive: true, force: true });
     }
 }
 

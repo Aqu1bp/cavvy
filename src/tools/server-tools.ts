@@ -58,15 +58,44 @@ const line = (v: unknown) => typeof v === "string" && LINE.test(v.trim());
 /** A word that has the CLI take what it does from somewhere else: the user is shown the command, and that's all it may be. */
 const ELSEWHERE = /(?:^|=)@|:\/\/|^--?(?:cli-input-[a-z]+|flags-file)\b/i;
 
-/** What a teardown command does, as providers' CLIs word it ("delete", "delete-instance", "terminate-instances", "release-static-ip"). */
-const DELETES = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassociate|deallocate|purge)(?:-[a-z0-9-]+)?$/;
-/** What a CLI is set up, extended or signed in with, and what moves files: none of it deletes a server. */
-const NOT_A_DELETE = /^(?:configure|config|extensions?|plugins?|components?|auth|login|logout|cp|mv|sync|ssh|scp|exec|shell|interactive|alias|install|upgrade)$/;
+/**
+ * The kinds of thing a server's teardown deletes, as providers' CLIs name them and the groups they sit under
+ * ("compute instances", "network public-ip", "ssh-key"). A closed list: a word that isn't on it and isn't the
+ * deleting verb means the command does something else.
+ */
+const KIND = /^(?:alpha|beta|compute|cloud|is|network|vpc|instances?|vms?|servers?|droplets?|linodes?|machines?|apps?|disks?|volumes?|storage|snapshots?|images?|address(?:es)?|ips?|ip-address(?:es)?|(?:public|floating|reserved|primary|static|elastic)-ips?|firewalls?|firewall-rules?|security-groups?|nsg|networks?|vnet|vcn|subnets?|nic|network-interfaces?|ssh-keys?|sshkeys?|keys?|key-?pairs?|group|resource-group|load-balancers?|lb)$/;
+const DELETE = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassociate|deallocate|purge)$/;
+/** aws: `aws <service> <operation>`, the operation being the deletion ("delete-instance", "terminate-instances", "release-static-ip"). */
+const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister|remove)-[a-z0-9-]+$/;
+const AWS_SERVICE = /^(?!(?:configure|help)$)[a-z][a-z0-9-]*$/;
+/** Waiting for a deletion to finish, which the next one may need: it reads, and changes nothing. */
+const AWS_GONE = /-(?:terminated|deleted|not-exists)$/;
+
+/** Whether the words before a command's options say a deletion and nothing else: the kinds, then the verb, then names. */
+function deletes(program: string, path: string[]): boolean {
+    if (program === "aws") {
+        const [service, operation, ...more] = path;
+        if (!service || !operation || !AWS_SERVICE.test(service)) return false;
+        if (operation === "wait") return more.length === 1 && AWS_GONE.test(more[0]!);
+        return AWS_DELETE.test(operation) && !more.length;
+    }
+    let i = 0;
+    while (i < path.length && i < 4 && KIND.test(path[i]!)) i++;
+    const verb = path[i];
+    if (!verb) return false;
+    // Some say both in one word ("instance-delete", "floating-ip-release").
+    const joined = /^(.+)-(?:delete|remove|destroy|terminate|release)$/.exec(verb);
+    return DELETE.test(verb) || Boolean(joined && KIND.test(joined[1]!));
+}
+
+/** A word that names a file or a folder (whole, or after an `=`): nothing a teardown deletes is on this machine. */
+const pathLike = (w: string) => /[\/\\]/.test(w) || w.split("=").some((part) => /^[.~]/.test(part));
 
 /**
  * Why Cavvy won't run `words` as a teardown command, or undefined. Checked when it's recorded and again when it's
  * run. Its program is a provider's CLI, or one the user wrote a sign-in for in their settings: never one of
- * Cavvy's built-in sign-ins (GitHub's CLI and the agent CLIs aren't what deletes a server).
+ * Cavvy's built-in sign-ins (GitHub's CLI and the agent CLIs aren't what deletes a server). It has one shape:
+ * the CLI, what kind of thing it deletes, the deleting verb, then names and options, none of them a path or a link.
  */
 export function teardownCommandError(words: string[], mine: unknown): string | undefined {
     const text = words.join(" ");
@@ -74,12 +103,10 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
     const built = new Set(SIGN_IN_RECIPES.map((r) => r.id));
     const own = signInRecipes(mine).filter((r) => !built.has(r.id) && r.status.run).map((r) => r.id);
     if (![...PROVIDER_CLIS, ...own].includes(words[0]!)) return `A teardown command starts with the provider's own CLI (${PROVIDER_CLIS.slice(0, 6).join(", ")}, …), not "${words[0]}".`;
-    const bad = words.slice(1).find((w) => ELSEWHERE.test(w));
-    if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted in the command itself, not in a file, a link or another place it's read from.`;
-    // What it does is said before its options: it has to be deleting something, and nothing else.
+    const bad = words.slice(1).find((w) => ELSEWHERE.test(w) || pathLike(w));
+    if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted by its name or id in the command itself, not by a file, a path, a link or another place it's read from.`;
     const flag = words.findIndex((w, i) => i > 0 && w.startsWith("-"));
-    const does = words.slice(1, flag < 0 ? words.length : flag);
-    if (!does.some((w) => DELETES.test(w)) || does.some((w) => NOT_A_DELETE.test(w))) return `"${text.slice(0, 60)}" can't be a teardown command: each one deletes something made for the server (delete, terminate, release, destroy, remove, detach), and does nothing else.`;
+    if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws <service> delete-…" ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;
 }
 
@@ -193,7 +220,7 @@ export const ServerAddTool: Tool<AddInput> = {
             provider: { type: "string", description: 'For a rented machine: who from ("AWS Lightsail")' },
             where: { type: "string", description: 'Its region, in plain words ("Mumbai")' },
             cost: { type: "string", description: 'What it costs, as the user approved it ("$12/month")' },
-            teardown: { type: "array", items: { type: "string" }, description: "The provider CLI's commands that delete it and what was created with it, each as plain words. Each one only deletes (delete, terminate, release, destroy, remove, detach) and names what it deletes itself: no links, files or set-up commands" },
+            teardown: { type: "array", items: { type: "string" }, description: "The provider CLI's commands that delete it and what was created with it, each as plain words in one shape: the CLI, the kind of thing (compute instances, server, ssh-key, …), then delete/terminate/release/destroy/remove, then its name or id and options (aws: \"aws <service> delete-…\"). No paths, links or files" },
             copy_settings: { type: "boolean", description: "Also copy the user's settings, memory, skills and commands there (only if they asked)" },
         },
         required: ["name", "address"],

@@ -75,6 +75,9 @@ interface Active {
     later?: string;
     /** The machine, account and services it's for: a second request for the same joins this card. */
     key: string;
+    /** The machine and account, and the services, apart. */
+    on: string;
+    targets: string[];
     run: Promise<SignInOutcome>;
     /** Calls in a turn still waiting on it. */
     holders: number;
@@ -84,6 +87,7 @@ interface Active {
 interface Later {
     id: string;
     key: string;
+    on: string;
     wants: SignInWant[];
     machine: SignInMachine;
     timer?: ReturnType<typeof setTimeout>;
@@ -165,9 +169,9 @@ export class SessionSignIns {
             const what = names(wants.map((w) => ({ name: w.recipe?.name ?? w.target })));
             return { text: `The user hasn't signed in to ${what}${machine.where ? ` on ${machine.where}` : ""} yet; the request is still in front of them. End your turn now, saying what's waiting on it. Cavvy tells you when they've signed in: don't ask again or check in the meantime.`, summary: "Still waiting", signedIn: false };
         }
+        // The agent has its answer here: whoever else waited on what's now signed in hears too, and it isn't woken for it.
+        if (o.end !== "stopped") this.heard(req, o, false);
         if (o.end === "later") this.putOff(o, wants, machine, req);
-        // The agent has its answer here: whoever else waited on the same sign-in hears too, and it isn't woken for it.
-        else if (o.end === "done") this.heard(req, o, false);
         const r = signInReport(o, machine.where, tool);
         return { ...r, signedIn: o.end === "done" && o.results.every((x) => x.state === "in" || x.state === "unverified") };
     }
@@ -191,6 +195,8 @@ export class SessionSignIns {
         a.kept = true;
         const o = await a.run;
         if (o.end === "later") {
+            // Some of it may have been signed in before the rest was put off.
+            this.heard(req, o, a.holders <= 0);
             this.putOff(o, wants, machine, req, then ?? (() => undefined));
             return "later";
         }
@@ -223,8 +229,8 @@ export class SessionSignIns {
         const l = this.later.get(laterId);
         if (!l || this.disposed) return false;
         // One card for it at a time.
-        if ([...this.active.values()].some((a) => a.later === laterId || a.key === l.key)) return true;
-        const a = this.start(l.key, l.wants, l.machine, true);
+        if (this.cardFor(l)) return true;
+        const a = this.start(l.on, l.wants, l.machine, true);
         a.later = laterId;
         a.kept = true;
         void a.run.then((o) => {
@@ -276,20 +282,26 @@ export class SessionSignIns {
         return `${req.machine?.toLowerCase() ?? ""}${req.account ? `/${req.account}` : ""}`;
     }
 
-    private key(req: SignInRequest, wants: SignInWant[]): string {
-        return `${this.on(req)}:${wants.map((w) => w.target).sort().join(",")}`;
+    private key(on: string, wants: SignInWant[]): string {
+        return `${on}:${wants.map((w) => w.target).sort().join(",")}`;
+    }
+
+    /** Whether a card is up that answers for a put-off sign-in: its own, or one on the same machine and account that asks for all of it (and maybe more). */
+    private cardFor(l: Later): boolean {
+        return [...this.active.values()].some((a) => a.later === l.id || (a.on === l.on && l.wants.every((w) => a.targets.includes(w.target))));
     }
 
     /** The card for a request: the one already up for the same sign-in, or a new one. */
     private open(req: SignInRequest, wants: SignInWant[], machine: SignInMachine): Active {
-        const key = this.key(req, wants);
-        return [...this.active.values()].find((a) => a.key === key) ?? this.start(key, wants, machine);
+        const on = this.on(req);
+        const key = this.key(on, wants);
+        return [...this.active.values()].find((a) => a.key === key) ?? this.start(on, wants, machine);
     }
 
-    private start(key: string, wants: SignInWant[], machine: SignInMachine, asked = false): Active {
+    private start(on: string, wants: SignInWant[], machine: SignInMachine, asked = false): Active {
         const id = this.o.newId();
         const stop = new AbortController();
-        const entry: Active = { stop, kept: false, key, holders: 0, shown: false, flow: undefined as unknown as SignInFlow, run: undefined as unknown as Promise<SignInOutcome> };
+        const entry: Active = { stop, kept: false, key: this.key(on, wants), on, targets: wants.map((w) => w.target), holders: 0, shown: false, flow: undefined as unknown as SignInFlow, run: undefined as unknown as Promise<SignInOutcome> };
         if (this.disposed) stop.abort();
         entry.flow = new SignInFlow({
             wants,
@@ -342,8 +354,8 @@ export class SessionSignIns {
     /** A card that outlived its tool call is over: the agent is told, or it's put off like any other. */
     private settled(o: SignInOutcome, wants: SignInWant[], machine: SignInMachine, req: SignInRequest) {
         if (this.disposed || o.end === "stopped") return;
-        if (o.end === "later") return this.putOff(o, wants, machine, req);
         this.heard(req, o, false);
+        if (o.end === "later") return this.putOff(o, wants, machine, req);
         this.wake(o, machine);
     }
 
@@ -353,11 +365,12 @@ export class SessionSignIns {
         // Only what can be checked later: one Cavvy has no status command for would never be seen to change.
         const left = wants.filter((w) => w.recipe?.status.run && o.results.some((r) => r.target === w.target && r.state === "out"));
         if (!left.length) return;
-        const key = this.key(req, left);
+        const on = this.on(req);
+        const key = this.key(on, left);
         const id = `sign-in:${key}`;
         let l = this.later.get(id);
         if (!l) {
-            l = { id, key, wants: left, machine, until: Date.now() + (this.o.laterForMs ?? 2 * 3_600_000), thens: [], wake: false };
+            l = { id, key, on, wants: left, machine, until: Date.now() + (this.o.laterForMs ?? 2 * 3_600_000), thens: [], wake: false };
             this.later.set(id, l);
             const label = `Sign in to ${names(left.map((w) => ({ name: w.recipe!.name })))}${machine.name ? ` on ${machine.name}` : ""}`;
             this.o.watchers?.()?.set(id, { id, kind: "sign-in", label, stop: () => this.drop(id) });
@@ -377,7 +390,7 @@ export class SessionSignIns {
         if (this.disposed || !this.later.has(l.id)) return;
         const every = Date.now() > l.until ? (this.o.laterSlowPollMs ?? 10 * 60_000) : (this.o.laterPollMs ?? (l.machine.name || l.machine.host.away ? 120_000 : 60_000));
         // Not while a card for it is up (its own, or one asked for again): that looks for itself, and says how it ended.
-        const up = () => [...this.active.values()].some((a) => a.later === l.id || a.key === l.key);
+        const up = () => this.cardFor(l);
         l.timer = setTimeout(async () => {
             l.timer = undefined;
             if (up()) return this.poll(l);
@@ -393,9 +406,9 @@ export class SessionSignIns {
 
     /** A card ended signed in: whatever was put off for the same sign-in is over too. `wake`: the agent hasn't heard yet. */
     private heard(req: SignInRequest, o: SignInOutcome, wake: boolean) {
-        const on = `${this.on(req)}:`;
+        const on = this.on(req);
         for (const l of [...this.later.values()]) {
-            if (l.key.startsWith(on) && l.wants.every((w) => o.results.some((r) => r.target === w.target && r.state === "in"))) this.signedInLater(l, { end: "done", results: o.results.filter((r) => l.wants.some((w) => w.target === r.target)) }, wake);
+            if (l.on === on && l.wants.every((w) => o.results.some((r) => r.target === w.target && r.state === "in"))) this.signedInLater(l, { end: "done", results: o.results.filter((r) => l.wants.some((w) => w.target === r.target)) }, wake);
         }
     }
 

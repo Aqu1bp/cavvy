@@ -75,7 +75,8 @@ describe("a sign-in's card, for each kind", () => {
         const real = localSignInHost({ away: true });
         let release!: () => void;
         const held = new Promise<void>((resolve) => { release = resolve; });
-        const host: typeof real = { ...real, run: async (r, w, o) => { if (w.join(" ") === "acme setup") await held; return real.run(r, w, o); } };
+        // Held, and never run for real: the pretend CLI's note that it ran stays unwritten for the tests after this one.
+        const host: typeof real = { ...real, run: async (r, w, o) => (w.join(" ") === "acme setup" ? (await held, { code: 0, out: "" }) : real.run(r, w, o)) };
         const stop = new AbortController();
         const done = new SignInFlow({ wants: [{ target: "acme", recipe: acmeRecipe("device", { then: "acme setup" }) as SignInRecipe }], host, show: () => undefined }).run(stop.signal);
         // Past the first look, into the step that never ends.
@@ -83,6 +84,7 @@ describe("a sign-in's card, for each kind", () => {
         stop.abort();
         expect((await done).end).toBe("stopped");
         release();
+        expect(acme.ranSetup()).toBe(false);
     });
 
     test("a device code: the question, then the code and where to enter it, then done by itself", async () => {
