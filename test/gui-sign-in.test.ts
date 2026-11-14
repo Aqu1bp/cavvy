@@ -3,7 +3,7 @@
 // follows, and that the code and the token reach windows but never the model or the session's files.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { acmeRecipe, fakeSignInCli } from "../scripts/fake-signin-cli";
@@ -160,6 +160,29 @@ function filesUnder(dir: string): string[] {
 }
 
 describe("a sign-in in a GUI session", () => {
+    test("while Cavvy is still checking whether it's signed in, the call runs; it waits on the user from when the card is up", async () => {
+        const a = await client();
+        const id = await a.open({ cwd: project() });
+        // The status check takes its time (a server's goes over SSH).
+        writeFileSync(join(acme.home, "hold-status"), "");
+        try {
+            await a.call("session.send", { id, text: "signin acme" });
+            const call = (v: { turns: Turn[] }) => (v.turns.length ? tools(lastTurn(v)).find((t) => t.name === "RequestSignIn") : undefined);
+            await a.until(id, (v) => call(v)?.status === "running", "the call under way");
+            await Bun.sleep(300);
+            // Nothing to approve and no card: the line says it's checking, not "Waiting for approval".
+            expect(call(a.view(id))).toMatchObject({ status: "running" });
+            expect(a.view(id).state.interactions).toEqual([]);
+        } finally {
+            rmSync(join(acme.home, "hold-status"), { force: true });
+        }
+        const ask = await a.card(id, "ask");
+        expect(tools(lastTurn(a.view(id)))[0]).toMatchObject({ name: "RequestSignIn", status: "awaiting" });
+        await step(a, id, ask.id, { action: "later" });
+        await a.until(id, done, "the turn's end");
+        a.close();
+    });
+
     test("the card changes in place, every window sees it, and the turn carries on once it's signed in", async () => {
         const a = await client();
         const b = await client();

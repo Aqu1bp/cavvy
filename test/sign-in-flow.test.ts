@@ -517,6 +517,22 @@ describe("the pieces", () => {
         expect(statusMasked('git push -u origin master 2>&1; echo "exit=$?"')).toBe(true);
         expect(statusMasked("gh pr view | tail")).toBe(true);
         expect(statusMasked("git push -u origin master 2>&1")).toBe(false);
+        // `a && b` hides nothing: it only works when both did.
+        expect(statusMasked("cat CONTRIB.md && git status --short")).toBe(false);
+        expect(statusMasked("cd repo && git push 2>&1 | tail -5")).toBe(true);
+        // A command that counts as having worked: only when its status may not be the CLI's own, and nothing in it
+        // prints words of its own (a file that quotes the advice, beside a git command that worked).
+        const worked = (command: string) => signedOutIn(quoted, SIGN_IN_RECIPES, command, false)?.id;
+        expect(worked("git push -u origin master 2>&1")).toBeUndefined();
+        expect(worked('git push -u origin master 2>&1; echo "exit=$?"')).toBe("gh");
+        expect(worked("cd repo && gh pr view 2>&1 | tail -5")).toBe("gh");
+        expect(worked("git push || true")).toBe("gh");
+        expect(worked("cat CONTRIB.md && git status --short")).toBeUndefined();
+        expect(worked("cat NOTES.md; git status --short")).toBeUndefined();
+        expect(worked("git status --short; cat NOTES.md")).toBeUndefined();
+        expect(worked('grep -rn "gh auth login" docs | head; git log -1')).toBeUndefined();
+        // Failed, it's the CLI's own failure as before.
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cat NOTES.md; git push", true)?.id).toBe("gh");
         // A file named after the CLI isn't the CLI.
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cat notes/gh-setup.md")).toBeUndefined();
         // The CLI's own command, mentioning the login command in passing (a README it printed), isn't its sign-out message.

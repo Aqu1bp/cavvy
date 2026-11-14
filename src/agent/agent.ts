@@ -71,13 +71,14 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
-import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, servedServerName, serverServerTools } from "../tools/server-tools";
-import { findRecipe, signedOutIn, signInRecipes, statusMasked, type SignInRecipe } from "./sign-in-recipes";
+import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, SERVERS_ELSEWHERE_INSTRUCTIONS, servedServerName, serverServerTools } from "../tools/server-tools";
+import { findRecipe, signedOutIn, signInRecipes, type SignInRecipe } from "./sign-in-recipes";
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
+import { onServer } from "../servers/role";
 import { nativeSessionCall, servedSessionName, servedSessionTool, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
@@ -1804,7 +1805,7 @@ export class Agent {
         if (servers) {
             tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
             instructions.push(SERVER_INSTRUCTIONS);
-        }
+        } else if (!acp && !this.oneShot && onServer()) instructions.push(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
             tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
@@ -2916,8 +2917,8 @@ export class Agent {
      * when its status may not be the CLI's own: agents end a command with `; echo "exit=$?"` or pipe it into tail.
      */
     private sawSignedOut(command: unknown, output: string, failed: boolean): SignInRecipe | undefined {
-        if (typeof command !== "string" || this.o.isSubagent || this.oneShot || (!failed && !statusMasked(command))) return undefined;
-        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns), command);
+        if (typeof command !== "string" || this.o.isSubagent || this.oneShot) return undefined;
+        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns), command, failed);
         if (recipe && !this.askedSignIns.has(recipe.id)) this.signedOutUnasked = { target: recipe.id, name: recipe.name };
         return recipe;
     }

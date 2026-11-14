@@ -54,7 +54,8 @@ export interface SessionSignInsOptions {
     wakes?(): WakeQueue | undefined;
     watchers?(): Map<string, Watcher> | undefined;
     /** Keeps a sign-in Cavvy didn't know, as the user's own. */
-    save?(recipe: SignInRecipe): void;
+    /** Keeps a sign-in of the user's own in their settings, as written there (`status` left out: Cavvy can't check it). */
+    save?(recipe: Omit<SignInRecipe, "status"> & { status?: SignInRecipe["status"] }): void;
     newId(): string;
     /** Windows on this session can bring a port over for a sign-in's card (it runs on a server the user reaches from another machine). */
     windowForwards?(): boolean;
@@ -358,7 +359,8 @@ export class SessionSignIns {
         if (!w.command || offeredCommandError(w.target, w.command)) return;
         const id = w.target.toLowerCase();
         if (!/^[a-z0-9][a-z0-9._-]{0,39}$/.test(id)) return;
-        this.o.save?.({ id, name: w.target, status: { run: "" }, here: { flow: "typed", run: w.command.trim().split(/\s+/).join(" ") } });
+        // As settings hold one: no status at all (an empty one isn't a recipe, and the saved sign-in would be dropped).
+        this.o.save?.({ id, name: w.target, here: { flow: "typed", run: w.command.trim().split(/\s+/).join(" ") } });
     }
 
     /** A card that outlived its tool call is over: the agent is told, or it's put off like any other. */

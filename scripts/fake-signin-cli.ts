@@ -25,6 +25,7 @@ who() { cat "$ACME_HOME/approve" 2>/dev/null || cat "$ACME_HOME/approve.auto"; }
 signed() { printf '%s\\n' "$1" > "$state"; }
 case "$1 $2" in
 "status ")
+    while [ -e "$ACME_HOME/hold-status" ]; do sleep 0.05; done
     if [ -s "$state" ]; then echo "Logged in as $(cat "$state")"; exit 0; fi
     echo "Not logged in. Run: acme login"; exit 1 ;;
 "login --device")
@@ -101,7 +102,7 @@ export function fakeSignInCli(dir: string): FakeSignInCli {
     const f = (name: string) => join(home, name);
     const reset = () => {
         // Every pretend service's state (state-<service>), and what the tests left to steer a sign-in.
-        for (const n of readdirSync(home)) if (n.startsWith("state") || ["approve", "approve.auto", "expire", "refuse", "log", "setup"].includes(n)) rmSync(f(n), { force: true });
+        for (const n of readdirSync(home)) if (n.startsWith("state") || ["approve", "approve.auto", "expire", "refuse", "log", "setup", "hold-status"].includes(n)) rmSync(f(n), { force: true });
     };
     return {
         bin,

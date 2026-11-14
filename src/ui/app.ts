@@ -1992,7 +1992,7 @@ export class App {
     /** The turn stopped on something signed out: its prompt, and once it's signed in the agent carries on (as the GUI does). */
     private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
         const name = findRecipe(out.target, signInRecipes(this.settings.signIns))?.name ?? out.target;
-        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const why = unasked ? "Something you ran earlier needed it" : "A turn of yours stopped because it wasn't signed in";
         const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
         void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
             if (r === "signed-in") carryOn(true);

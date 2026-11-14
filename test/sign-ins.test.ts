@@ -19,7 +19,7 @@ const { WakeQueue, WatcherMap } = await import("../src/agent/wakes");
 const { RequestSignInTool, signInServerTools, signInHint, signInToolTitle } = await import("../src/tools/sign-in-tools");
 const { BashTool } = await import("../src/tools/bash");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
-const { SIGN_IN_RECIPES } = await import("../src/agent/sign-in-recipes");
+const { SIGN_IN_RECIPES, recipeError, signInRecipes } = await import("../src/agent/sign-in-recipes");
 const { loadSettings, settingsPath } = await import("../src/config/settings");
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
@@ -383,7 +383,10 @@ describe("a sign-in Cavvy didn't know", () => {
         x.s.act(id, { action: "ran" });
         x.s.act(id, { action: "done", save: true });
         expect((await first).text).toBe("The sign-in to acme2 was done, but Cavvy has no way to check it. Try what needed it.");
-        expect(x.saved).toEqual([{ id: "acme2", name: "acme2", status: { run: "" }, here: { flow: "typed", run: "acme2 login --typed" } }]);
+        expect(x.saved).toEqual([{ id: "acme2", name: "acme2", here: { flow: "typed", run: "acme2 login --typed" } }]);
+        // What's saved is a sign-in Cavvy takes from settings: next time it has one for acme2.
+        expect(recipeError(x.saved[0])).toBeUndefined();
+        expect(signInRecipes(x.saved).find((r) => r.id === "acme2")?.here.run).toBe("acme2 login --typed");
     });
 });
 

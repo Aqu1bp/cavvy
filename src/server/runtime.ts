@@ -2793,13 +2793,21 @@ export class Runtime {
     /** RequestSignIn: the card is the flow's, changed in place as the sign-in goes; this waits for what the model is told. */
     private async requestSignIn(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
         const toolId = this.runningTool("RequestSignIn") ?? this.runningTool(`mcp__${MCP_SERVER_NAME}__request_sign_in`);
-        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        // Its call waits on the user from when a card is up (cards.show below), not while Cavvy is still checking
+        // whether it's signed in already: until then there's nothing for them to do.
+        if (toolId) this.signInCalls.add(toolId);
         try {
             return await this.signIns.request(req, signal);
         } finally {
-            if (toolId) this.patchBlock(toolId, { status: "running" });
+            if (toolId) {
+                this.signInCalls.delete(toolId);
+                this.patchBlock(toolId, { status: "running" });
+            }
         }
     }
+
+    /** The calls asking for a sign-in right now. */
+    private signInCalls = new Set<string>();
 
     /** A sign-in one of Cavvy's own features needs for this session: the same card, with no tool call behind it. */
     askSignIn(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot"> {
@@ -2815,7 +2823,7 @@ export class Runtime {
     private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
         const name = findRecipe(out.target, signInRecipes(this.settings().signIns))?.name ?? out.target;
         // Dismissed instead: nothing to carry on with, and the user knows.
-        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const why = unasked ? "Something you ran earlier needed it" : "A turn of yours stopped because it wasn't signed in";
         const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
         void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
             if (this.closed) return;
@@ -2851,7 +2859,10 @@ export class Runtime {
                 if (had) {
                     had.interaction = interaction;
                     this.setState({ interactions: this.pendingList() });
-                } else void this.interact(interaction);
+                } else {
+                    for (const call of this.signInCalls) this.patchBlock(call, { status: "awaiting" });
+                    void this.interact(interaction);
+                }
             },
             hide: (id) => this.settle(id, undefined),
         },

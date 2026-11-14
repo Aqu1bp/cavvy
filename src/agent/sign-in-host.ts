@@ -7,6 +7,7 @@ import { accountEnv } from "../providers/accounts";
 import { extraArgs, findCli } from "../backends/cli";
 import { agentCli } from "../backends/defs";
 import { childEnv } from "../util/env";
+import { runBounded } from "../util/run-bounded";
 import type { SignInHost, SignInProcess } from "./sign-in";
 import type { SignInRecipe } from "./sign-in-recipes";
 
@@ -46,14 +47,8 @@ export function localSignInHost(o: { away: boolean; account?: string; signedIn?:
         async run(recipe, words, opts = {}) {
             const cmd = resolve(recipe, words, account);
             if (!cmd) return { code: 127, out: "", missing: true };
-            const proc = Bun.spawn(cmd.argv, { cwd: homedir(), env: cmd.env, stdin: opts.stdin === undefined ? "ignore" : Buffer.from(opts.stdin), stdout: "pipe", stderr: "pipe" });
-            const timer = setTimeout(() => proc.kill(), opts.timeoutMs ?? 30_000);
-            try {
-                const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-                return { code, out: out + err };
-            } finally {
-                clearTimeout(timer);
-            }
+            // A status command that hangs ends at its limit with whatever it started (a wrapper's real CLI), and the card comes up.
+            return runBounded(cmd.argv, { cwd: homedir(), env: cmd.env, stdin: opts.stdin, timeoutMs: opts.timeoutMs ?? 30_000 });
         },
         start(recipe, words, opts): SignInProcess {
             const cmd = resolve(recipe, words, account);

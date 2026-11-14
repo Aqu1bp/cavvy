@@ -107,10 +107,11 @@ export const SIGN_IN_INSTRUCTIONS = `# Sign-ins (${MCP_SERVER_NAME})
 When something isn't signed in (gh, aws, gcloud, another CLI, on this machine or one of the user's servers), don't tell the user to run a login command and stop: call request_sign_in with the target (gh, aws, gcloud, claude, codex, …) and, for a server, its name as machine. Cavvy runs the sign-in and shows the user what to do; the call waits, then you carry on in the same turn. You get back whether it's signed in and as whom, never a code or a token. If they choose Later, or you're told it's still waiting, do what doesn't need it or end your turn: Cavvy tells you when they've signed in.`;
 
 /**
- * A line for the end of a failed command's output, when the command ran a CLI that says it isn't signed in: tool
- * descriptions alone don't get an agent to ask. `tool`: the name the agent knows the tool by.
+ * A line for the end of a command's output, when the command ran a CLI that says it isn't signed in: tool
+ * descriptions alone don't get an agent to ask. `tool`: the name the agent knows the tool by. `failed` false: it
+ * counts as having worked, and is only looked at when that may not be the CLI's own status (signedOutIn).
  */
-export function signInHint(command: string, output: string, recipes: readonly SignInRecipe[], tool: "RequestSignIn" | "request_sign_in"): string | undefined {
-    const r = signedOutIn(output, recipes, command);
+export function signInHint(command: string, output: string, recipes: readonly SignInRecipe[], tool: "RequestSignIn" | "request_sign_in", failed = true): string | undefined {
+    const r = signedOutIn(output, recipes, command, failed);
     return r ? `${r.name} isn't signed in. Ask the user to sign in: call ${tool} with target "${r.id}", then run this again.` : undefined;
 }

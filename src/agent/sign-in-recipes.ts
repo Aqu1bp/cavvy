@@ -204,40 +204,54 @@ const matchers = new WeakMap<SignInRecipe, RegExp[]>();
 
 const WRAPPERS = new Set(["sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"]);
 
+/** Redirections between a command's own streams (`2>&1`, `>&2`, `&>`): their `&` separates nothing. */
+const STREAMS = /[0-9]*[<>]&[0-9-]|&>>?/g;
+
 /**
- * The programs a shell command runs: the first word of each of its parts (after `;`, `&&`, `|`, a newline, an
- * opening bracket), past variables set for it and wrappers such as sudo. A CLI's name among another program's
- * arguments (`grep -r "gh auth login" docs`) isn't that CLI running.
+ * A shell command's parts, each with the program it runs: its first word (after `;`, `&&`, `|`, a newline, an
+ * opening bracket), past variables set for it and wrappers such as sudo. `piped`: it reads the part before it.
  */
-function programsIn(command: string): Set<string> {
-    const ran = new Set<string>();
-    for (const part of command.split(/[;&|\n(`]+/)) {
-        const words = part.trim().split(/\s+/);
+function partsOf(command: string): { program: string; piped: boolean }[] {
+    const pieces = command.replace(STREAMS, " ").split(/(\|\||&&|\|&|[;&|\n(`])/);
+    const parts: { program: string; piped: boolean }[] = [];
+    for (let k = 0; k < pieces.length; k += 2) {
+        const words = pieces[k]!.trim().split(/\s+/);
         let i = 0;
         while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || WRAPPERS.has(words[i]!) || (i > 0 && words[i]!.startsWith("-")))) i++;
         const word = (words[i] ?? "").replace(/^[$"']+|["']+$/g, "");
-        if (word) ran.add(word.slice(word.lastIndexOf("/") + 1));
+        const before = pieces[k - 1];
+        if (word) parts.push({ program: word.slice(word.lastIndexOf("/") + 1), piped: before === "|" || before === "|&" });
     }
-    return ran;
+    return parts;
 }
 
+/** Shell words that print nothing of another program's: beside a CLI in a command, the output is still the CLI's. */
+const QUIET = new Set(["echo", "printf", "true", "false", ":", "exit", "cd", "pushd", "popd", "set", "export", "unset", "sleep", "wait", "test", "["]);
+
 /**
- * Whether a shell command's status may not be its CLI's own: several commands, or a pipe (`git push 2>&1; echo
- * "exit=$?"`, `gh pr view | tail`). What such a command printed is looked at even when it counts as having worked.
+ * Whether a shell command's status may not be its CLI's own: a command after it, or a pipe (`git push 2>&1; echo
+ * "exit=$?"`, `gh pr view | tail`). `a && b` hides nothing: it only works when both did.
  */
 export function statusMasked(command: string): boolean {
-    return /[;|&\n]/.test(command.replace(/[0-9]?>&[0-9-]/g, ""));
+    return /[;|&\n]/.test(command.replace(STREAMS, " ").replace(/&&/g, " "));
 }
 
 /**
- * The recipe a command's output says is signed out, if any. `command`: what was run (the caller decides whether it failed, or may have: `statusMasked`). Only a recipe whose own
+ * The recipe a command's output says is signed out, if any. `command`: what was run. Only a recipe whose own
  * program the command ran is considered, and only the output's first and last parts: these lines come at an edge.
+ *
+ * `failed` false: the command counts as having worked. It's looked at all the same when its status may not be the
+ * CLI's own (`statusMasked`), as agents often write it, but only when everything in it is that CLI, a quiet shell
+ * word or a filter of its output: beside `cat notes.md`, the words may be the file's.
  */
-export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string): SignInRecipe | undefined {
+export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string, failed = true): SignInRecipe | undefined {
+    if (!failed && !statusMasked(command)) return undefined;
     const text = output.length > 8000 ? `${output.slice(0, 4000)}\n${output.slice(-4000)}` : output;
-    const ran = programsIn(command);
+    const parts = partsOf(command);
     for (const r of recipes) {
-        if (!r.signedOut?.length || !(r.commands ?? [r.id]).some((c) => ran.has(c))) continue;
+        const own = r.commands ?? [r.id];
+        if (!r.signedOut?.length || !parts.some((p) => own.includes(p.program))) continue;
+        if (!failed && !parts.every((p) => p.piped || own.includes(p.program) || QUIET.has(p.program))) continue;
         let res = matchers.get(r);
         if (!res) {
             res = r.signedOut.flatMap((p) => { try { return [new RegExp(p)]; } catch { return []; } });
