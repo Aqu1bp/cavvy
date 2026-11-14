@@ -14,10 +14,12 @@ const sandboxArgs = (uid: number | undefined, ci = false) => uid === 0 || ci ? [
 
 // Chrome's startup and the page get separate limits (see test/helpers/chrome.ts). Measured on GitHub's 2-core Linux runners
 // (#150): Chrome's install is 667 MB, and the first launch on a fresh runner reads it from a cold disk, taking 6-20 s to open
-// DevTools (reading the install beforehand takes 12-19 s; it is not D-Bus). Later launches take 0.25 s. The page takes 7-9 s
-// from load to result, about 6 s of which are the fixture's own waits, and the same cold or warm. Each limit is several times the
-// slowest measurement, so a slow runner passes and a stuck Chrome or page still fails.
-const chromeLimits = { startupMs: 90_000, fixtureMs: 30_000 };
+// DevTools (reading the install beforehand takes 12-19 s; it is not D-Bus). Later launches take 0.25 s. The page takes 20-21 s
+// from load to result, nearly all of it the fixture's own waits, and the same cold or warm (it took 7-9 s when it checked
+// less: at 30 s, its limit then, a start that took 10 s to load the page failed it, #129). A page that adds checks moves
+// its limit with it. Each limit is several times the slowest measurement, so a slow runner passes and a stuck Chrome or
+// page still fails.
+const chromeLimits = { startupMs: 90_000, fixtureMs: 90_000 };
 const buildLimitMs = 30_000;
 type Browser = Pick<ReturnType<typeof Bun.spawn>, "exitCode" | "exited" | "kill">;
 
