@@ -1016,17 +1016,18 @@ export function Sidebar() {
                         </div>;
                     }
                     if (kind === "day") return <div class="day-head" data-head={key}>{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
-                    if (kind === "settled") return <button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
+                    // At the foot of the list, under a gap that takes the room left: it stays put as sessions come and go above it.
+                    if (kind === "settled") return <><div class="settled-gap" aria-hidden="true" /><button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
                         <span>Settled</span>
                         {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
                         <Show when={!prefs.settledOpen}><span class="n">{settledCount()}</span></Show>
                         <ChevronRight size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
-                    </button>;
+                    </button></>;
                     if (kind === "archived") return <div class="shelf"><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={app.sessionsError || !sidebarIds(layout()).length}>
+                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled"))}>
                     {/* In the place of the first day's heading, the size of one: where the first session's "Today" comes. */}
                     <div class="side-empty">
                         <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived" : "No sessions yet"}>

@@ -287,6 +287,15 @@
 
 /* The fold's chevron: after the words, there while you point at the heading (or it's folded, so it says why
    nothing is under it). */
+/* Settled sits at the foot of the list: the gap above it takes what room is left, and is a heading's gap at least. */
+.settled-gap {
+    flex: 1 0 calc(16 * var(--sp));
+}
+
+.side-list > .settled-head {
+    margin-top: 0;
+}
+
 /* Open, it points down at its rows; folded, along the heading. */
 .settled-chev {
     flex: none;

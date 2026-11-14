@@ -490,6 +490,19 @@ test("sidebar waits for the first list and retains loaded state across reconnect
     } finally { f.dispose(); }
 });
 
+test("every session settled and folded: Settled alone, at the foot, and no word that there are none", () => {
+    const f = fixture(2);
+    const shown = () => f.descendants(f.nav);
+    try {
+        solid.batch(() => { f.setActiveId(undefined); f.setSettledOpen(false); f.setSessions(f.sessions().map((s) => ({ ...s, settled: true }))); });
+        expect(shown().some((n) => n.props?.class === "side-empty")).toBe(false);
+        const heads = shown().filter((n) => typeof n.props?.class === "string" && n.props.class.includes("settled-head"));
+        expect(new Set(heads).size).toBe(1);
+        // A gap that takes the room left goes before it.
+        expect(shown().some((n) => n.props?.class === "settled-gap")).toBe(true);
+    } finally { f.dispose(); }
+});
+
 test("every session archived: the list says it has none, not a blank list", () => {
     const f = fixture(2);
     const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty")?.content;
