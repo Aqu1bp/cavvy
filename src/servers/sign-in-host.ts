@@ -30,12 +30,18 @@ command -v "$1" >/dev/null 2>&1 || exit ${MISSING}
 exec env "$@"
 `;
 
-function command(recipe: SignInRecipe, words: string[], extra: Record<string, string> = {}): string {
+/**
+ * `limitSec`: the command is ended there after that long, with what it started. Ending the connection from here
+ * leaves it running on the server, and every later look would start one more beside it.
+ */
+function command(recipe: SignInRecipe, words: string[], extra: Record<string, string> = {}, limitSec?: number): string {
     // An agent CLI is the one on the server's PATH: this machine's path and options for it mean nothing there.
     const program = recipe.provider ? (agentCli(recipe.provider)?.cli.command ?? words[0]!) : words[0]!;
     const env = Object.entries({ ...recipe.env, ...extra }).map(([k, v]) => `${k}=${v}`);
     // `env` takes the assignments first, then the program: the check above is on the program's name.
-    return remoteSh(RUN.replace('command -v "$1"', `command -v ${shQuote(program)}`), [...env, program, ...words.slice(1)]);
+    const run = RUN.replace('command -v "$1"', `command -v ${shQuote(program)}`);
+    const bounded = limitSec ? run.replace('exec env "$@"', `command -v timeout >/dev/null 2>&1 && exec timeout -k 2 ${Math.max(1, Math.floor(limitSec))} env "$@"\nexec env "$@"`) : run;
+    return remoteSh(bounded, [...env, program, ...words.slice(1)]);
 }
 
 export function serverSignInHost(e: ServerEntry): SignInHost {
@@ -43,7 +49,9 @@ export function serverSignInHost(e: ServerEntry): SignInHost {
         away: true,
         far: true,
         async run(recipe, words, o = {}) {
-            const r = await ssh(e, command(recipe, words), { stdin: o.stdin === undefined ? undefined : new TextEncoder().encode(o.stdin), timeoutMs: o.timeoutMs ?? 30_000 });
+            const timeoutMs = o.timeoutMs ?? 30_000;
+            // The server's own limit comes a little before this connection's, so its answer is the one that comes back.
+            const r = await ssh(e, command(recipe, words, {}, timeoutMs / 1000 - 2), { stdin: o.stdin === undefined ? undefined : new TextEncoder().encode(o.stdin), timeoutMs, signal: o.signal });
             return { code: r.code, out: r.stdout + r.stderr, missing: r.code === MISSING && !r.stdout && !r.stderr };
         },
         start(recipe, words, o): SignInProcess {

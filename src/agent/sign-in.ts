@@ -25,7 +25,7 @@ export interface SignInHost {
     /** Each of its commands is a connection of its own (a server reached over SSH): its status is looked at less often. */
     readonly far?: boolean;
     /** Runs one of a recipe's commands to its end. `missing`: its program isn't installed there. */
-    run(recipe: SignInRecipe, words: string[], o?: { stdin?: string; timeoutMs?: number }): Promise<{ code: number; out: string; missing?: boolean }>;
+    run(recipe: SignInRecipe, words: string[], o?: { stdin?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ code: number; out: string; missing?: boolean }>;
     /** Starts one in a terminal of its own. `opens`: it may open the browser itself. */
     start(recipe: SignInRecipe, words: string[], o: { opens: boolean; onData(text: string): void }): SignInProcess;
     /** The line that runs a command there from a terminal on the user's own machine. Left out: the command itself does. */
@@ -186,9 +186,10 @@ export function siteOf(url: string): string {
 }
 
 /** Whether a recipe's service is signed in on that machine, by its status command: the one thing that decides. */
-export async function signInStatus(host: SignInHost, r: SignInRecipe): Promise<{ state: "in" | "out" | "none"; who?: string }> {
+export async function signInStatus(host: SignInHost, r: SignInRecipe, signal?: AbortSignal): Promise<{ state: "in" | "out" | "none"; who?: string }> {
     if (!r.status.run) return { state: "out" };
-    const res = await host.run(r, words(r.status.run), { timeoutMs: 30_000 }).catch(() => ({ code: 1, out: "", missing: false }));
+    // `signal`: whoever asked stopped. The check ends then, not at its limit.
+    const res = await host.run(r, words(r.status.run), { timeoutMs: 30_000, signal }).catch(() => ({ code: 1, out: "", missing: false }));
     if (res.missing) return { state: "none" };
     const out = plain(res.out);
     const signedIn = r.status.signedIn ? Boolean(first(r.status.signedIn, out)) : res.code === 0;
@@ -227,6 +228,8 @@ export class SignInFlow {
     private startedAt = 0;
     private finish!: (o: SignInOutcome) => void;
     private over = false;
+    /** The turn (or the card) this runs for was stopped: a status check under way ends with it. */
+    private stopped?: AbortSignal;
     private readonly done: Promise<SignInOutcome>;
     private readonly pollMs: number;
     private readonly idlePollMs: number;
@@ -251,6 +254,7 @@ export class SignInFlow {
 
     /** Checks what's already signed in, then shows the card for the rest. Resolves when it's over; `signal` stops it. */
     async run(signal?: AbortSignal): Promise<SignInOutcome> {
+        this.stopped = signal;
         const stop = () => this.end("stopped");
         signal?.addEventListener("abort", stop, { once: true });
         try {
@@ -356,7 +360,7 @@ export class SignInFlow {
     /** How one stands now, by its status check. */
     private async refresh(e: Entry): Promise<boolean> {
         if (!e.recipe?.status.run) return false;
-        const now = await signInStatus(this.o.host, e.recipe);
+        const now = await signInStatus(this.o.host, e.recipe, this.stopped);
         if (this.over) return false;
         if (now.state === "out" && e.state === "unverified") return false;
         e.state = now.state;

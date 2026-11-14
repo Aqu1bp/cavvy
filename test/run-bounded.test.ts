@@ -23,8 +23,9 @@ test("a wrapper whose real program hangs ends at the limit, and the program with
     // The wrapper waits on a child that holds its output open: killing the wrapper alone leaves the child, and the pipe.
     const wrapper = script("hang", `sleep 60 &\necho $! > ${join(dir, "child.pid")}\necho started\nwait`);
     const at = Date.now();
-    const r = await runBounded([wrapper], { cwd: dir, env, timeoutMs: 300 });
-    expect(Date.now() - at).toBeLessThan(5000);
+    // A limit the script reaches its wait well within, on a busy machine too (at 300 ms it sometimes hadn't printed yet).
+    const r = await runBounded([wrapper], { cwd: dir, env, timeoutMs: 2000 });
+    expect(Date.now() - at).toBeLessThan(10_000);
     expect(r.out).toBe("started\n");
     expect(r.code).not.toBe(0);
     const child = Number(await Bun.file(join(dir, "child.pid")).text());
@@ -32,10 +33,10 @@ test("a wrapper whose real program hangs ends at the limit, and the program with
     expect(alive(child)).toBe(false);
 });
 
-test("stopped, it ends at once; and something it leaves running by itself isn't waited for", async () => {
+test("stopped, it ends at once; and something it leaves running by itself isn't waited for, and goes with it", async () => {
     const stop = new AbortController();
     const run = runBounded([script("long", "sleep 60")], { cwd: dir, env, timeoutMs: 60_000, signal: stop.signal });
-    setTimeout(() => stop.abort(), 100);
+    setTimeout(() => stop.abort(), 500);
     const at = Date.now();
     expect((await run).code).not.toBe(0);
     expect(Date.now() - at).toBeLessThan(5000);
@@ -44,5 +45,8 @@ test("stopped, it ends at once; and something it leaves running by itself isn't 
     const began = Date.now();
     expect(await runBounded([left], { cwd: dir, env, timeoutMs: 60_000 })).toEqual({ code: 0, out: "done\n" });
     expect(Date.now() - began).toBeLessThan(2000);
-    try { process.kill(Number(await Bun.file(join(dir, "left.pid")).text()), "SIGKILL"); } catch { /* gone */ }
+    // And what it left running is ended with it: one per status check would add up.
+    const leftover = Number(await Bun.file(join(dir, "left.pid")).text());
+    for (let i = 0; i < 40 && alive(leftover); i++) await Bun.sleep(50);
+    expect(alive(leftover)).toBe(false);
 });

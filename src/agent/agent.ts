@@ -1805,7 +1805,9 @@ export class Agent {
         if (servers) {
             tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
             instructions.push(SERVER_INSTRUCTIONS);
-        } else if (!acp && !this.oneShot && onServer()) instructions.push(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        }
+        // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
+        else if (!acp && !this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
             tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));

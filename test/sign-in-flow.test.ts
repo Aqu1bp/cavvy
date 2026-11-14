@@ -531,6 +531,13 @@ describe("the pieces", () => {
         expect(worked("cat NOTES.md; git status --short")).toBeUndefined();
         expect(worked("git status --short; cat NOTES.md")).toBeUndefined();
         expect(worked('grep -rn "gh auth login" docs | head; git log -1')).toBeUndefined();
+        // git printing what's in the repository isn't git speaking for itself.
+        expect(worked("git grep -n 'auth login' | head")).toBeUndefined();
+        expect(worked("git show HEAD:NOTES.md; echo done")).toBeUndefined();
+        expect(worked("git -C repo log --format=%B | cat")).toBeUndefined();
+        // Run under a time limit, it's still the CLI's own.
+        expect(worked('timeout 30 gh pr view 2>&1; echo "exit=$?"')).toBe("gh");
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "timeout -k 2 30s gh pr view")?.id).toBe("gh");
         // Failed, it's the CLI's own failure as before.
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cat NOTES.md; git push", true)?.id).toBe("gh");
         // A file named after the CLI isn't the CLI.

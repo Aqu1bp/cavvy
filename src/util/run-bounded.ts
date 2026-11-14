@@ -7,6 +7,24 @@ const DRAIN_MS = 300;
 /** Asked to end, then made to. */
 const KILL_AFTER_MS = 2000;
 
+/** The groups under way: ended with Cavvy, which they'd otherwise outlive (a group of its own isn't its parent's). */
+const live = new Set<number>();
+let onExit = false;
+function track(pid: number) {
+    live.add(pid);
+    if (onExit) return;
+    onExit = true;
+    process.once("exit", () => {
+        for (const g of live) {
+            try {
+                process.kill(-g, "SIGKILL");
+            } catch {
+                // already gone
+            }
+        }
+    });
+}
+
 export interface BoundedRun {
     code: number;
     /** What it printed, its errors after its output. */
@@ -15,8 +33,9 @@ export interface BoundedRun {
 
 /**
  * Runs `argv` and answers when it exits, when `timeoutMs` passes or when `signal` aborts, whichever is first.
- * It runs in a process group of its own, and the whole group is ended at the limit: a wrapper script's child
- * (the real CLI) doesn't run on, and doesn't keep this waiting by holding the output open.
+ * It runs in a process group of its own, and the whole group is ended at the limit, and when its first process
+ * exits: a wrapper script's child (the real CLI) doesn't run on, and doesn't keep this waiting by holding the
+ * output open.
  */
 export async function runBounded(argv: string[], o: { cwd: string; env: Record<string, string>; stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<BoundedRun> {
     const proc = Bun.spawn(argv, { cwd: o.cwd, env: o.env, stdin: o.stdin === undefined ? "ignore" : Buffer.from(o.stdin), stdout: "pipe", stderr: "pipe", detached: true });
@@ -27,6 +46,7 @@ export async function runBounded(argv: string[], o: { cwd: string; env: Record<s
             // Nothing of it is left.
         }
     };
+    track(proc.pid);
     let force: ReturnType<typeof setTimeout> | undefined;
     const end = () => {
         group("SIGTERM");
@@ -61,10 +81,13 @@ export async function runBounded(argv: string[], o: { cwd: string; env: Record<s
         await Promise.race([Promise.all([out, err]), new Promise((r) => { drain = setTimeout(r, DRAIN_MS); })]);
         clearTimeout(drain);
         for (const r of readers) void r.cancel().catch(() => {});
+        // What it left running goes too: one such per status check would add up.
+        group("SIGTERM");
         return { code, out: (await out) + (await err) };
     } finally {
         clearTimeout(timer);
         o.signal?.removeEventListener("abort", end);
+        live.delete(proc.pid);
         // Still to come, when it was ended: the group is made to go, whatever became of its first process.
         force?.unref?.();
     }

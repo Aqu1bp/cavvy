@@ -202,7 +202,10 @@ export function findRecipe(target: string, recipes: readonly SignInRecipe[]): Si
 
 const matchers = new WeakMap<SignInRecipe, RegExp[]>();
 
-const WRAPPERS = new Set(["sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"]);
+const WRAPPERS = new Set(["sudo", "env", "command", "exec", "time", "timeout", "nohup", "nice", "builtin"]);
+
+/** git's commands that print what's in the repository (a note that quotes a login command), not what git has to say for itself. */
+const GIT_PRINTS = new Set(["grep", "diff", "log", "show", "blame", "cat-file", "stash", "format-patch", "whatchanged"]);
 
 /** Redirections between a command's own streams (`2>&1`, `>&2`, `&>`): their `&` separates nothing. */
 const STREAMS = /[0-9]*[<>]&[0-9-]|&>>?/g;
@@ -211,16 +214,18 @@ const STREAMS = /[0-9]*[<>]&[0-9-]|&>>?/g;
  * A shell command's parts, each with the program it runs: its first word (after `;`, `&&`, `|`, a newline, an
  * opening bracket), past variables set for it and wrappers such as sudo. `piped`: it reads the part before it.
  */
-function partsOf(command: string): { program: string; piped: boolean }[] {
+function partsOf(command: string): { program: string; piped: boolean; prints: boolean }[] {
     const pieces = command.replace(STREAMS, " ").split(/(\|\||&&|\|&|[;&|\n(`])/);
-    const parts: { program: string; piped: boolean }[] = [];
+    const parts: { program: string; piped: boolean; prints: boolean }[] = [];
     for (let k = 0; k < pieces.length; k += 2) {
         const words = pieces[k]!.trim().split(/\s+/);
         let i = 0;
-        while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || WRAPPERS.has(words[i]!) || (i > 0 && words[i]!.startsWith("-")))) i++;
+        // Past a wrapper's own options and its time limit ("timeout -k 2 30 gh pr view").
+        while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || WRAPPERS.has(words[i]!) || (i > 0 && (words[i]!.startsWith("-") || /^\d+(?:\.\d+)?[smhd]?$/.test(words[i]!))))) i++;
         const word = (words[i] ?? "").replace(/^[$"']+|["']+$/g, "");
         const before = pieces[k - 1];
-        if (word) parts.push({ program: word.slice(word.lastIndexOf("/") + 1), piped: before === "|" || before === "|&" });
+        const program = word.slice(word.lastIndexOf("/") + 1);
+        if (word) parts.push({ program, piped: before === "|" || before === "|&", prints: program === "git" && words.slice(i + 1).some((w) => GIT_PRINTS.has(w)) });
     }
     return parts;
 }
@@ -242,7 +247,8 @@ export function statusMasked(command: string): boolean {
  *
  * `failed` false: the command counts as having worked. It's looked at all the same when its status may not be the
  * CLI's own (`statusMasked`), as agents often write it, but only when everything in it is that CLI, a quiet shell
- * word or a filter of its output: beside `cat notes.md`, the words may be the file's.
+ * word or a filter of its output: beside `cat notes.md`, the words may be the file's, as they may be in what
+ * `git grep` or `git show` prints.
  */
 export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string, failed = true): SignInRecipe | undefined {
     if (!failed && !statusMasked(command)) return undefined;
@@ -251,7 +257,7 @@ export function signedOutIn(output: string, recipes: readonly SignInRecipe[], co
     for (const r of recipes) {
         const own = r.commands ?? [r.id];
         if (!r.signedOut?.length || !parts.some((p) => own.includes(p.program))) continue;
-        if (!failed && !parts.every((p) => p.piped || own.includes(p.program) || QUIET.has(p.program))) continue;
+        if (!failed && !parts.every((p) => (p.piped || own.includes(p.program) || QUIET.has(p.program)) && !p.prints)) continue;
         let res = matchers.get(r);
         if (!res) {
             res = r.signedOut.flatMap((p) => { try { return [new RegExp(p)]; } catch { return []; } });

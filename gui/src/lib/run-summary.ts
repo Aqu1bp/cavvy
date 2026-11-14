@@ -1,4 +1,5 @@
 import type { ToolBlock } from "@shared/protocol";
+import { exitCode } from "./command-row";
 import { plural } from "./format";
 import { toolKind, toolLabel } from "./tool-words";
 
@@ -6,8 +7,8 @@ import { toolKind, toolLabel } from "./tool-words";
  * What a run's finished steps came to, for its one line. Several steps are counted, never named: no path, no
  * command, no skill's name. The line is what's left when the steps are folded away; the rows under it say which.
  * One step alone says what it was. A call that failed isn't said to have done its thing (two reads that failed
- * aren't "Read 2 files"): the line's own mark counts those. A command that failed still ran, and an edit that
- * failed is "couldn't change".
+ * aren't "Read 2 files"): the line's own mark counts those. A command that failed still ran (one that was never
+ * run didn't), and an edit that failed is "couldn't change".
  */
 export function summarize(tools: ToolBlock[]): string {
     const one = tools.length === 1;
@@ -46,7 +47,7 @@ export function summarize(tools: ToolBlock[]): string {
             continue;
         }
         const kind = toolKind(t.name);
-        if (t.status === "error" && kind !== "Bash") {
+        if (t.status === "error" && (kind !== "Bash" || (!one && !ran(t)))) {
             if (one) misc.push(said(t));
             else failed++;
             continue;
@@ -152,6 +153,9 @@ export function summarize(tools: ToolBlock[]): string {
     const text = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : (shown[0] ?? "");
     return text.charAt(0).toUpperCase() + text.slice(1);
 }
+
+/** Whether a command that counts as failed ran at all: it has an exit code, or was cut short. One declined beside it, or never reached, didn't. */
+const ran = (t: ToolBlock) => exitCode(t) !== undefined || /^(?:Timed out|Interrupted)$/.test(t.summary ?? "") || /Terminated by signal/.test((t.output ?? "").slice(-400));
 
 /** One call in its own words: what it does, and what to. */
 function said(t: ToolBlock): string {

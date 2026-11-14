@@ -48,7 +48,7 @@ export function localSignInHost(o: { away: boolean; account?: string; signedIn?:
             const cmd = resolve(recipe, words, account);
             if (!cmd) return { code: 127, out: "", missing: true };
             // A status command that hangs ends at its limit with whatever it started (a wrapper's real CLI), and the card comes up.
-            return runBounded(cmd.argv, { cwd: homedir(), env: cmd.env, stdin: opts.stdin, timeoutMs: opts.timeoutMs ?? 30_000 });
+            return runBounded(cmd.argv, { cwd: homedir(), env: cmd.env, stdin: opts.stdin, timeoutMs: opts.timeoutMs ?? 30_000, signal: opts.signal });
         },
         start(recipe, words, opts): SignInProcess {
             const cmd = resolve(recipe, words, account);

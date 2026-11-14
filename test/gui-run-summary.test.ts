@@ -31,8 +31,11 @@ test("a call that failed isn't said to have done its thing", () => {
     expect(summarize([failed(read("/a")), failed(read("/b")), tool("Grep")])).toBe("Searched once");
     expect(summarize([failed(read("/a")), failed(read("/b"))])).toBe("2 calls failed");
     expect(summarize([read("/a"), failed(read("/b")), bash("ls")])).toBe("Read 1 file and ran 1 command");
-    // A command that failed still ran.
-    expect(summarize([failed(bash("false")), read("/a")])).toBe("Read 1 file and ran 1 command");
+    // A command that failed still ran; one that never ran (declined beside another, or not reached) didn't.
+    expect(summarize([{ ...failed(bash("false")), output: "Exit code: 1" }, read("/a")])).toBe("Read 1 file and ran 1 command");
+    expect(summarize([{ ...failed(bash("make")), summary: "Timed out" }, read("/a")])).toBe("Read 1 file and ran 1 command");
+    expect(summarize([{ ...bash("rm -rf x"), status: "denied" }, { ...failed(bash("ls")), summary: "Not run" }])).toBe("1 call failed");
+    expect(summarize([{ ...failed(bash("a")), output: "The user doesn't want to proceed with this tool use." }, { ...failed(bash("b")), output: "Not run" }])).toBe("2 calls failed");
     // Declined calls aren't counted in the words either.
     expect(summarize([{ ...read("/a"), status: "denied" }, bash("ls")])).toBe("Ran 1 command");
 });
