@@ -188,10 +188,18 @@
     flex: none;
 }
 
+/* Nothing in the list: one quiet line where the first day's heading goes, and a retry at its end when loading failed. */
 .side-empty {
-    padding: calc(14 * var(--sp)) var(--row-pad);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(8 * var(--sp));
+    min-height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 var(--row-pad);
+    font-size: 0.929rem;
+    font-weight: 500;
+    white-space: nowrap;
     color: var(--fg-3);
-    line-height: 1.5;
 }
 
 /* ---- Headings: a day, a project, Needs you, Settled, Archived -----------

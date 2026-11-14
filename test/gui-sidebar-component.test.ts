@@ -480,13 +480,22 @@ test("sidebar waits for the first list and retains loaded state across reconnect
         f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
         expect(empty()).toBe("Loading sessions…");
         f.setSessionsLoaded(true);
-        expect(empty()).toBe("Nothing archived.");
+        expect(empty()).toBe("Nothing archived");
         f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
-        expect(empty()).toBe("No sessions yet. Start one from the composer.");
+        expect(empty()).toBe("No sessions yet");
         for (const conn of ["connecting", "open"]) {
             f.setConn(conn);
-            expect(empty()).toBe("No sessions yet. Start one from the composer.");
+            expect(empty()).toBe("No sessions yet");
         }
+    } finally { f.dispose(); }
+});
+
+test("every session archived: the list says it has none, not a blank list", () => {
+    const f = fixture(2);
+    const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty")?.content;
+    try {
+        solid.batch(() => { f.setArchived(f.sessions().map((s) => ({ ...s, archived: true }))); f.setSessions([]); });
+        expect(empty()).toBe("No sessions yet");
     } finally { f.dispose(); }
 });
 
@@ -503,25 +512,25 @@ for (const archived of [false, true]) {
                 f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
             }
             f.setSessionsError(true);
-            expect(contents()).toContain("Couldn't load sessions.");
+            expect(contents()).toContain("Couldn't load sessions");
             expect(contents()).not.toContain("Loading sessions…");
-            expect(contents()).not.toContain("No sessions yet. Start one from the composer.");
-            expect(contents()).not.toContain("Nothing archived.");
+            expect(contents()).not.toContain("No sessions yet");
+            expect(contents()).not.toContain("Nothing archived");
             const error = new Error("Still unavailable");
             f.refreshSessions.mockRejectedValueOnce(error);
             retry().props.onClick();
             await Promise.resolve();
             expect(f.refreshSessions).toHaveBeenCalledTimes(1);
             expect(f.reportError).toHaveBeenCalledWith(error);
-            expect(contents()).toContain("Couldn't load sessions.");
+            expect(contents()).toContain("Couldn't load sessions");
             f.refreshSessions.mockImplementationOnce(async () => {
                 solid.batch(() => { f.setSessionsLoaded(true); f.setSessionsError(false); });
             });
             retry().props.onClick();
             await Promise.resolve();
             expect(f.refreshSessions).toHaveBeenCalledTimes(2);
-            expect(empty().content).toBe(archived ? "Nothing archived." : "No sessions yet. Start one from the composer.");
-            expect(contents()).not.toContain("Couldn't load sessions.");
+            expect(empty().content).toBe(archived ? "Nothing archived" : "No sessions yet");
+            expect(contents()).not.toContain("Couldn't load sessions");
             expect(contents()).not.toContain("Retry");
         } finally { f.dispose(); }
     });

@@ -1005,10 +1005,11 @@ export function Sidebar() {
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={app.sessionsError || !all().length || (showArchived() && !sidebarIds(layout()).length)}>
+                <Show when={app.sessionsError || !sidebarIds(layout()).length}>
+                    {/* In the place of the first day's heading, the size of one: where the first session's "Today" comes. */}
                     <div class="side-empty">
-                        <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived." : "No sessions yet. Start one from the composer."}>
-                            <div>Couldn't load sessions.</div>
+                        <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived" : "No sessions yet"}>
+                            <span>Couldn't load sessions</span>
                             <button class="ghost-btn" onClick={() => void refreshSessions().catch(reportError)}>Retry</button>
                         </Show>
                     </div>
