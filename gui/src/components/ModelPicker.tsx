@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
-import { app, handleFor, refreshModels, toast } from "../state/app";
+import { app, handleFor, noModel, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -113,7 +113,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const [edges, setEdges] = createSignal("");
     /** The heading's list of accounts is open. */
     const [acctOpen, setAcctOpen] = createSignal(false);
-    const currentRef = () => p.current?.ref ?? p.currentRef;
+    // The saved model, when nothing is connected, is no model: the chip doesn't name what can't run.
+    const currentRef = () => p.current?.ref ?? (noModel() ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];

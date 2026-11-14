@@ -200,6 +200,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
         ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
+        noModel: () => (o.models ?? [{ models: [{}] }]).every((g: any) => !g.models.length),
         // No servers here: where a session runs isn't said (the servers code says it, when there are any).
         createEffect: (fn: () => void) => fn(), isElectron: false, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),

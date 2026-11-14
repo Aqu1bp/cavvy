@@ -6,7 +6,7 @@
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
-import { app, refreshProjects, reportError, rpc, serversUi } from "../state/app";
+import { app, noModel, refreshProjects, reportError, rpc, serversUi } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
@@ -75,9 +75,6 @@ export function Home() {
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
     const [connecting, setConnecting] = createSignal<string>();
-    // Once known, kept while the lists load again (opening the model picker does that): the row under the question
-    // would otherwise go and come back.
-    const noModel = () => Boolean(app.modelsLoaded && app.models.every((g) => !g.models.length));
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
     // Only the edits' checks wait on it, so it's asked in a bar on the composer's top edge, not a card; and only once
