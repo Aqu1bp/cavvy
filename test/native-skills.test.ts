@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const { cleanup, home } = isolate();
 const registry = await import("../src/providers/registry");
@@ -66,7 +67,7 @@ function fake(name: string, extra: Partial<Skill> = {}): Skill {
     return { name, description: `${name} does things`, modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir, ...extra };
 }
 
-const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const logLines = (): any[] => fakeLog(LOG);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 
 describe("the folder the CLIs are given", () => {

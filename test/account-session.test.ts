@@ -35,6 +35,7 @@ const { readAgentConfig, saveAgentConfig } = await import("../src/providers/regi
 const { addAccount, removeAccount, setDefaultAccount } = await import("../src/providers/accounts");
 const { clientFor, forgetClient } = await import("../src/providers/models");
 import type { AgentEvent } from "../src/agent/agent";
+import { fakeLog } from "./helpers/fake-env";
 
 const prior = { log: process.env.FAKE_LOG, scenario: process.env.FAKE_SCENARIO, codexScenario: process.env.FAKE_CODEX_SCENARIO, claudeHome: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME };
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -71,7 +72,7 @@ async function cavvy(provider: "claude-code" | "codex", live: boolean, log: stri
         host: { emit: (e) => events.push(e), ui: {}, askPermission: async () => ({ allow: false }) },
     });
     const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal });
-    const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    const lines = () => fakeLog(log);
     const starts = () => lines().filter((l) => l.argv && l.argv[0] !== "auth");
     const received = () => lines().filter((l) => l.received).map((l) => l.received);
     /** What each start (Claude Code) or thread request (Codex) opened: "new", or the id it resumed. */

@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
-import { stopLiveCodex } from "./helpers/fake-env";
+import { stopLiveCodex, fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const restoreSecrets = await secretsSnapshot();
@@ -58,7 +58,7 @@ beforeEach(() => {
     forgetClient("codex");
 });
 
-const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const logLines = (): any[] => fakeLog(LOG);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 /** Whether the fake Codex has read a turn/interrupt: Cavvy sends it without waiting, so it can land just after the turn. */
 const interrupted = async (ms = 5000) => {

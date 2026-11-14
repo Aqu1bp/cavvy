@@ -20,6 +20,7 @@ const { readAgentConfig, saveAgentConfig } = await import("../src/providers/regi
 const { clientFor, forgetClient } = await import("../src/providers/models");
 const { stopTiming } = await import("../src/backends/cli");
 import { backendModel, type BackendResult, type BackendTurn } from "../src/backends/types";
+import { fakeLog } from "./helpers/fake-env";
 
 const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
@@ -228,7 +229,7 @@ async function cavvy(provider: "claude-code" | "codex", live: boolean, name: str
         host: { emit: () => {}, ui: {}, askPermission: async () => ({ allow: false }), ...(live ? { wake: () => {} } : {}) },
     });
     const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
-    const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    const lines = () => fakeLog(log);
     /** Each prompt the CLI received (Claude Code's user messages, Codex's turn/start), as JSON. */
     const prompts = () => lines().filter((l) => l.received && (provider === "codex" ? l.received.method === "turn/start" : l.received.type === "user")).map((l) => JSON.stringify(l.received));
     /** Another model's turn: the user's message with TOKEN, and its answer. */

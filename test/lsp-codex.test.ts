@@ -4,10 +4,10 @@
 // and a fake language server (test/fixtures); no network.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
-import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
+import { fakeEnvFile, stopLiveCodex, fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -59,7 +59,7 @@ afterAll(() => {
     for (const k of [...FAKE_ENV, "FAKE_LOG", "FAKE_ENV_FILE"]) delete process.env[k];
 });
 
-const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const logLines = (): any[] => fakeLog(LOG);
 const steers = () => logLines().flatMap((l) => (l.received?.method === "turn/steer" ? [l.received.params.input[0].text as string] : []));
 const turnStarts = () => logLines().filter((l) => l.received?.method === "turn/start");
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [e.message] : []));

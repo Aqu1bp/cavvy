@@ -9,6 +9,7 @@ import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
 import type { Admitted } from "../src/agent/agent";
+import { fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const restoreSecrets = await secretsSnapshot();
@@ -97,7 +98,7 @@ beforeEach(() => {
 });
 
 function logLines(): any[] {
-    return existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    return fakeLog(LOG);
 }
 const starts = () => logLines().filter((l) => l.argv);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
