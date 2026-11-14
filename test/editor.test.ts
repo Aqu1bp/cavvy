@@ -622,23 +622,39 @@ describe("render", () => {
 describe("stash", () => {
     const png = { data: "AAAA", mediaType: "image/png" } as never;
 
-    test("puts the prompt away, brings it back, and trades two", () => {
+    test("puts prompts away one on another, and brings the newest back first", () => {
         const e = new Editor();
-        expect(e.swapStash()).toBe(false);
-        expect(e.stashPreview).toBeUndefined();
+        expect(e.pushStash()).toBe(false);
+        expect(e.takeStash()).toBeUndefined();
         e.insert("long  prompt\nsecond line");
-        expect(e.swapStash()).toBe(true);
+        expect(e.pushStash()).toBe(true);
         expect(e.text).toBe("");
-        expect(e.stashPreview).toBe("long prompt second line");
-        e.insert("quick one");
-        expect(e.swapStash()).toBe(true);
-        expect(e.text).toBe("long  prompt\nsecond line");
-        expect(e.cursor).toBe(e.text.length);
-        expect(e.stashPreview).toBe("quick one");
+        e.insert("ls");
+        e.pushStash("!");
+        expect(e.stashes).toEqual(["!ls", "long prompt second line"]);
+        expect(e.takeStash()).toBe("!");
+        expect(e.text).toBe("ls");
+        expect(e.cursor).toBe(2);
         e.clear();
-        expect(e.swapStash()).toBe(true);
-        expect(e.text).toBe("quick one");
-        expect(e.stashPreview).toBeUndefined();
+        expect(e.takeStash()).toBe("");
+        expect(e.text).toBe("long  prompt\nsecond line");
+        expect(e.stashes).toEqual([]);
+    });
+
+    test("one picked from the list trades places with what's in the box", () => {
+        const e = new Editor();
+        for (const t of ["oldest", "middle", "newest"]) {
+            e.insert(t);
+            e.pushStash();
+        }
+        e.insert("in the box");
+        expect(e.takeStash(2, "#")).toBe("");
+        expect(e.text).toBe("oldest");
+        expect(e.stashes).toEqual(["#in the box", "newest", "middle"]);
+        e.dropStash(1);
+        expect(e.stashes).toEqual(["#in the box", "middle"]);
+        expect(e.takeStash(5)).toBeUndefined();
+        expect(e.text).toBe("oldest");
     });
 
     test("a stashed prompt keeps its pasted text and images while others are written and sent", () => {
@@ -648,14 +664,16 @@ describe("stash", () => {
         e.insert(" and ");
         e.attachImage(png);
         const shown = e.text;
-        e.swapStash();
-        // Another prompt is written, sent and cleared meanwhile: nothing of the stashed one is dropped.
+        e.pushStash();
+        // Other prompts are written, stashed, sent and cleared meanwhile: nothing of the stashed one is dropped.
         e.insert("something else");
+        e.pushStash();
+        e.insert("sent");
         e.pushHistory(e.value());
         e.clear();
         e.insert("x");
         e.clear();
-        e.swapStash();
+        e.takeStash(1);
         expect(e.text).toBe(shown);
         expect(e.value()).toContain(big);
         expect(e.attachedImages()).toHaveLength(1);
@@ -666,41 +684,44 @@ describe("stash", () => {
         e.insert("one");
         e.killToStart();
         e.insert("two");
-        e.swapStash();
+        e.pushStash();
         // Nothing to undo in the fresh box: the stashed prompt doesn't come back by undo as well.
         e.undo();
         expect(e.text).toBe("");
         e.insert("other");
-        e.swapStash();
+        e.takeStash();
         expect(e.text).toBe("two");
         e.undo();
         e.undo();
         expect(e.text).toBe("one");
-        e.swapStash();
+        e.takeStash();
         expect(e.text).toBe("other");
         e.undo();
         expect(e.text).toBe("");
     });
 
-    test("an image that never came leaves the stashed prompt too", () => {
+    test("an image that never came leaves the stashed prompts too", () => {
         const e = new Editor();
         e.insert("see ");
         const uid = e.reserveImage();
-        e.swapStash();
+        e.pushStash();
+        const lone = e.reserveImage();
+        e.pushStash();
+        expect(e.stashes).toHaveLength(2);
+        e.dropImage(lone);
         e.dropImage(uid);
-        expect(e.stashPreview).toBe("see");
-        const only = new Editor();
-        const lone = only.reserveImage();
-        only.swapStash();
-        only.dropImage(lone);
-        expect(only.stashPreview).toBeUndefined();
+        // One that was only that image is nothing to bring back.
+        expect(e.stashes).toEqual(["see"]);
     });
 
     test("a secret being typed is never stashed", () => {
         const e = new Editor();
+        e.insert("stashed");
+        e.pushStash();
         e.secret = true;
         e.insert("sk-secret");
-        expect(e.swapStash()).toBe(false);
+        expect(e.pushStash()).toBe(false);
+        expect(e.takeStash()).toBeUndefined();
         expect(e.text).toBe("sk-secret");
     });
 });

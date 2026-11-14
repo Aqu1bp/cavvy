@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
-import { composerStorage } from "./drafts";
+import { composerStorage, STASH_LIMIT } from "./drafts";
 import type { Attachment } from "./attachments";
 
 interface Draft {
@@ -8,31 +8,45 @@ interface Draft {
 }
 
 export const composerDrafts = new Map<string, Draft>();
-/** What's attached to each stashed prompt. Its text is in composerStorage, so it outlives a reload; these don't, like a draft's. */
-export const stashedAttachments = new Map<string, Attachment[]>();
+/**
+ * Each composer's stashed prompts, newest first, with what's attached. Their texts are in composerStorage too, so they
+ * outlive a reload; attachments don't, like a draft's (and a stash that was only attachments goes with them).
+ */
+export const composerStashes = new Map<string, Draft[]>();
 const empty = (): Draft => ({ text: "", attachments: [] });
 const filled = (d: Draft) => Boolean(d.text.trim() || d.attachments.length);
 /** Counts every change to a stash, so each composer showing it (Home's comes and goes) reads it again. */
 const [stashChanges, setStashChanges] = createSignal(0);
-function stashOf(key: string): Draft | undefined {
-    const d: Draft = { text: composerStorage.stash(key), attachments: stashedAttachments.get(key) ?? [] };
-    return filled(d) ? d : undefined;
+function stashesOf(key: string): Draft[] {
+    const saved = composerStorage.stashes(key);
+    const held = composerStashes.get(key) ?? [];
+    const texts = held.filter((d) => d.text.trim()).map((d) => d.text);
+    if (texts.length === saved.length && texts.every((text, i) => text === saved[i])) return held;
+    // Saved ones this page hasn't seen (a reload, another window): as saved, each keeping what was attached to it here.
+    const pool = [...held];
+    const next = saved.map((text) => {
+        const i = pool.findIndex((d) => d.text === text);
+        return i < 0 ? { text, attachments: [] } : pool.splice(i, 1)[0]!;
+    });
+    if (next.length) composerStashes.set(key, next);
+    else composerStashes.delete(key);
+    return next;
+}
+function putStashes(key: string, list: Draft[]) {
+    if (list.length) composerStashes.set(key, list);
+    else composerStashes.delete(key);
+    composerStorage.setStashes(key, list.filter((d) => d.text.trim()).map((d) => d.text));
+    setStashChanges((n) => n + 1);
 }
 
 export function createComposerDraft(key: () => string, wasDeleted: (key: string) => boolean = () => false) {
     const [draft, setDraft] = createSignal<Draft>(empty());
     let disposed = false;
     const shows = (k: string) => !disposed && key() === k;
-    const putStash = (k: string, d: Draft | undefined) => {
-        composerStorage.setStash(k, d?.text ?? "");
-        if (d?.attachments.length) stashedAttachments.set(k, d.attachments);
-        else stashedAttachments.delete(k);
-        setStashChanges((n) => n + 1);
-    };
-    /** The prompt put away with the stash key, for the draft shown. */
-    const stash = createMemo(() => {
+    /** The prompts put away with the stash key, newest first, for the draft shown. */
+    const stashes = createMemo(() => {
         stashChanges();
-        return wasDeleted(key()) ? undefined : stashOf(key());
+        return wasDeleted(key()) ? [] : stashesOf(key());
     });
     /** In the box, whether or not this composer still shows it (Home is gone once its send opens the session). */
     const putDraft = (k: string, d: Draft) => {
@@ -47,7 +61,7 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         else composerDrafts.delete(key);
         if (wasDeleted(key)) {
             composerStorage.delete(key);
-            stashedAttachments.delete(key);
+            composerStashes.delete(key);
         }
     };
     createEffect(on(key, (key, prev) => {
@@ -82,11 +96,13 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
             composerStorage.setDraft(submitted.key, "");
             emptied = true;
         }
-        // The box this send left free takes the stashed prompt back. Never over something newer in it.
-        const back = emptied && !filled(cleared) && !wasDeleted(submitted.key) ? stashOf(submitted.key) : undefined;
-        if (back) {
-            putStash(submitted.key, undefined);
-            putDraft(submitted.key, back);
+        // The box this send left free takes the newest stashed prompt back. Never over something newer in it.
+        if (emptied && !filled(cleared) && !wasDeleted(submitted.key)) {
+            const [back, ...rest] = stashesOf(submitted.key);
+            if (back) {
+                putStashes(submitted.key, rest);
+                putDraft(submitted.key, back);
+            }
         }
         // Successful sends must be removed even if the window closes before the debounce.
         composerStorage.flush();
@@ -102,32 +118,39 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         setDraft((d) => ({ ...d, attachments: typeof value === "function" ? value(d.attachments) : value }));
         keep(key());
     };
-    /**
-     * The stash key: what's in the box is put away, and what was put away comes back; with both, they trade
-     * places. False with neither.
-     */
-    const swapStash = () => {
+    /** Puts what's in the box away, on top of the others stashed. "full": there are as many as it keeps. */
+    const pushStash = (): boolean | "full" => {
         const k = key();
-        if (disposed || wasDeleted(k)) return false;
-        const away = filled(draft()) ? draft() : undefined;
-        const back = stash();
-        if (!away && !back) return false;
-        putStash(k, away);
-        putDraft(k, back ?? empty());
+        if (disposed || wasDeleted(k) || !filled(draft())) return false;
+        const list = stashesOf(k);
+        if (list.length >= STASH_LIMIT) return "full";
+        putStashes(k, [draft(), ...list]);
+        putDraft(k, empty());
         return true;
     };
-    /** Throws the stashed prompt away. Returns the way back (Undo): to the stash, or after what's in the box if another prompt is stashed by then. */
-    const dropStash = () => {
+    /** Brings a stashed prompt back into the box (the newest by default). What was in the box, if anything, is stashed in its place, as the newest. */
+    const takeStash = (which?: Draft) => {
         const k = key();
-        const dropped = stash();
-        if (disposed || !dropped) return undefined;
-        putStash(k, undefined);
+        if (disposed || wasDeleted(k)) return false;
+        const list = stashesOf(k);
+        const back = which ?? list[0];
+        if (!back || !list.includes(back)) return false;
+        const rest = list.filter((d) => d !== back);
+        putStashes(k, filled(draft()) ? [draft(), ...rest] : rest);
+        putDraft(k, back);
+        return true;
+    };
+    /** Throws a stashed prompt away. Returns the way back (Undo): to where it was in the list. */
+    const dropStash = (which: Draft) => {
+        const k = key();
+        const at = stashesOf(k).indexOf(which);
+        if (disposed || at < 0) return undefined;
+        putStashes(k, stashesOf(k).filter((d) => d !== which));
         return () => {
             if (wasDeleted(k)) return;
-            if (!stashOf(k)) return putStash(k, dropped);
-            const box: Draft = { text: composerStorage.draft(k), attachments: composerDrafts.get(k)?.attachments ?? [] };
-            putDraft(k, { text: [box.text.trimEnd(), dropped.text].filter(Boolean).join("\n\n"), attachments: [...box.attachments, ...dropped.attachments] });
+            const list = stashesOf(k);
+            if (!list.includes(which)) putStashes(k, [...list.slice(0, at), which, ...list.slice(at)]);
         };
     };
-    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent, holds, stash, swapStash, dropStash };
+    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent, holds, stashes, pushStash, takeStash, dropStash };
 }

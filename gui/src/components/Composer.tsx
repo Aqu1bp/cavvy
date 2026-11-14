@@ -450,10 +450,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         finish(ok);
     };
 
-    /** The stash key, or a click on the stashed row: the prompt is put away, or the one put away comes back. */
-    const swapStash = () => {
-        // A send under way clears what it sent: put away meanwhile, that prompt would come back after it went.
-        if (sending() || !draft.swapStash()) return;
+    /** A prompt was put away or brought back: the box as a fresh draft shows it, with the focus. */
+    const afterStash = () => {
         histIdx = -1;
         setExpanded(false);
         setMenuDismissedFor(undefined);
@@ -463,9 +461,23 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta?.focus();
         });
     };
-    const discardStash = () => {
-        const undo = draft.dropStash();
-        if (undo) toast("Stash discarded", "info", { label: "Undo", run: undo });
+    /** The stash key: the prompt is put away, on top of the others; with nothing written, the newest comes back. */
+    const stashKey = () => {
+        // A send under way clears what it sent: put away meanwhile, that prompt would come back after it went.
+        if (sending()) return;
+        const done = text().trim() || attachments().length ? draft.pushStash() : draft.takeStash();
+        if (done === "full") toast("Stash is full", "warn");
+        else if (done) afterStash();
+    };
+    /** One picked from the stashed list: it comes back, and what's written is stashed in its place. */
+    const restoreStash = (item: ReturnType<typeof draft.stashes>[number]) => {
+        if (!sending() && draft.takeStash(item)) afterStash();
+    };
+    const discardStash = (item: ReturnType<typeof draft.stashes>[number]) => {
+        const undo = draft.dropStash(item);
+        if (!undo) return;
+        toast("Stash discarded", "info", { label: "Undo", run: undo });
+        requestAnimationFrame(() => ta?.focus());
     };
 
     /** Adds a line where the caret is, keeping the box's own undo. */
@@ -531,7 +543,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             case "chat:stash":
                 // The key is taken either way: with nothing to stash it isn't the browser's Save.
                 e.preventDefault();
-                swapStash();
+                stashKey();
                 return;
             case "chat:submitOtherWay":
                 // While a turn runs, with the / and @ menu open too: the message goes the other way, or the first queued one now.
@@ -807,8 +819,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
-            <Show when={draft.stash()}>
-                {(stashed) => <StashChip text={stashed().text} attached={stashed().attachments.length} onRestore={swapStash} onDiscard={discardStash} />}
+            <Show when={draft.stashes().length}>
+                <StashChip items={draft.stashes()} placement={menuSide()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
             </Show>
             <div class="composer-box card-surface" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>

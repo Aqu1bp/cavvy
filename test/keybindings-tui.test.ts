@@ -315,6 +315,13 @@ describe("a keybindings file", () => {
 });
 
 describe("the stash key", () => {
+    const shown = (a: any) => {
+        const live: string[][] = [];
+        a.screen.setLive = (lines: string[]) => void live.push(lines);
+        Object.getPrototypeOf(a).renderLive.call(a);
+        return stripAnsi(live.at(-1)!.join("\n"));
+    };
+
     test("puts the prompt away with its mode, and it comes back once the next one is sent", async () => {
         const { app, a, press } = testApp();
         a.submitText = async () => {};
@@ -323,32 +330,65 @@ describe("the stash key", () => {
         expect(app.editor.text).toBe("");
         expect(a.inputMode).toBe("prompt");
         // What's put away is said above the prompt, as it was typed.
-        const live: string[][] = [];
-        a.screen.setLive = (lines: string[]) => void live.push(lines);
-        Object.getPrototypeOf(a).renderLive.call(a);
-        expect(stripAnsi(live.at(-1)!.join("\n"))).toContain("⏷ stashed (ctrl+s): !ls -la");
+        expect(shown(a)).toContain("⏷ stashed (ctrl+s): !ls -la");
         expect(stripAnsi(a.footer(160))).toContain("Stashed · comes back after you send, or with ctrl+s");
         press("quick question", "\r");
         await Bun.sleep(0);
         expect(app.editor.text).toBe("ls -la");
         expect(a.inputMode).toBe("bash");
-        expect(app.editor.stashPreview).toBeUndefined();
+        expect(app.editor.stashes).toEqual([]);
     });
 
-    test("pressed again it brings the prompt back, or trades it with what's typed", () => {
+    test("several are kept: each press with something typed adds one, and with nothing typed the newest comes back", () => {
         const { app, a, press } = testApp();
         // Nothing typed, nothing stashed: the key does nothing.
         press("\x13");
-        expect(app.editor.stashPreview).toBeUndefined();
-        press("first", "\x13", "#", "note", "\x13");
-        expect(app.editor.text).toBe("first");
-        expect(a.inputMode).toBe("prompt");
-        expect(app.editor.stashPreview).toBe("note");
+        expect(app.editor.stashes).toEqual([]);
+        press("first", "\x13", "#", "note", "\x13", "third", "\x13");
+        expect(app.editor.stashes).toEqual(["third", "#note", "first"]);
+        expect(shown(a)).toContain("⏷ stashed (ctrl+s): third · +2 more (/stash)");
+        press("\x13");
+        expect(app.editor.text).toBe("third");
         app.editor.clear();
         press("\x13");
         expect(app.editor.text).toBe("note");
         expect(a.inputMode).toBe("memory");
-        expect(app.editor.stashPreview).toBeUndefined();
+        expect(app.editor.stashes).toEqual(["first"]);
+    });
+
+    test("/stash lists them: enter brings one back in place of what's typed, x removes one", async () => {
+        const { app, a, press, text } = testApp();
+        await runCommand(app, "/stash");
+        expect(text()).toContain("Nothing is stashed. ctrl+s puts the prompt away");
+        press("oldest", "\x13", "!", "ls", "\x13", "newest", "\x13");
+        // Typed and sent like any command: that isn't a prompt going out, so none of them comes back for it.
+        press("/stash", "\r");
+        for (let i = 0; i < 50 && !a.dialogs.length; i++) await Bun.sleep(5);
+        expect(app.editor.text).toBe("");
+        expect(a.dialogs.at(-1).list.items).toHaveLength(3);
+        a.dialogs.at(-1).choose(undefined);
+        for (let i = 0; i < 50 && a.dialogs.length; i++) await Bun.sleep(5);
+        expect(app.editor.stashes).toEqual(["newest", "!ls", "oldest"]);
+        press("in the box");
+        const open = runCommand(app, "/stash");
+        const dialog = a.dialogs.at(-1);
+        expect(stripAnsi(dialog.render(100, 20).join("\n"))).toContain("Stashed prompts");
+        expect(dialog.list.items.map((i: any) => i.label)).toEqual(["newest", "!ls", "oldest"]);
+        // x on the first removes it; down then enter picks the last.
+        press("x");
+        expect(app.editor.stashes).toEqual(["!ls", "oldest"]);
+        press("\x1b[B", "\r");
+        await open;
+        expect(app.editor.text).toBe("oldest");
+        expect(a.inputMode).toBe("prompt");
+        expect(app.editor.stashes).toEqual(["in the box", "!ls"]);
+        // The last one removed closes the list.
+        app.editor.clear();
+        const again = runCommand(app, "/stash");
+        press("x", "x");
+        await again;
+        expect(app.editor.stashes).toEqual([]);
+        expect(a.dialogs).toHaveLength(0);
     });
 
     test("a prompt waiting on its images: the stash comes back once it goes, never over something typed since or a prompt handed back", async () => {
@@ -361,12 +401,12 @@ describe("the stash key", () => {
             const submit = a.submit();
             // Still stashed while the images are read: Esc there hands the prompt back to the box.
             expect(app.editor.text).toBe("");
-            expect(app.editor.stashPreview).toBe("keep me");
+            expect(app.editor.stashes).toEqual(["keep me"]);
             if (how === "typed since") app.editor.insert("typed since");
             if (how === "cancelled") a.pendingSubmit.cancel();
             await submit;
             expect(app.editor.text).toStartWith(how === "sent" ? "keep me" : how === "typed since" ? "typed since" : "send me ");
-            expect(app.editor.stashPreview).toBe(how === "sent" ? undefined : "keep me");
+            expect(app.editor.stashes).toEqual(how === "sent" ? [] : ["keep me"]);
         }
     });
 
@@ -374,9 +414,10 @@ describe("the stash key", () => {
         write([{ context: "Chat", bindings: { "ctrl+s": null, "ctrl+r": "chat:stash" } }]);
         const { a, press } = testApp();
         press("later", "\x13");
-        expect(a.editor.stashPreview).toBeUndefined();
+        expect(a.editor.stashes).toEqual([]);
         press("\x12");
-        expect(a.editor.stashPreview).toBe("later");
+        expect(a.editor.stashes).toEqual(["later"]);
+        expect(shown(a)).toContain("⏷ stashed (ctrl+r): later");
         a.showHelp = true;
         expect(stripAnsi(a.renderInput(160).join("\n"))).toContain("ctrl+r to stash the prompt");
     });

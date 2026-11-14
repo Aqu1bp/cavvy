@@ -1381,6 +1381,31 @@ async function queueCommand(app: App) {
     await app.showDialog(d);
 }
 
+async function stashCommand(app: App) {
+    if (!app.editor.stashes.length) return app.notice(`Nothing is stashed. ${app.keys.label("chat:stash") ?? "The stash key"} puts the prompt away, to send something else first.`);
+    const items = () => app.editor.stashes.map((text, i): SelectItem<number> => ({ label: truncate(text || "(images)", 70), value: i }));
+    const d = new SelectDialog<number>({
+        title: "Stashed prompts",
+        items: items(),
+        numbers: false,
+        hint: "enter bring back · x remove · esc close",
+        onExtraKey: (k, dlg) => {
+            const cur = dlg.list.current()?.value;
+            if (cur === undefined || !(k.name === "delete" || k.name === "backspace" || (k.name === "text" && k.text === "x"))) return false;
+            app.editor.dropStash(cur);
+            const next = items();
+            if (!next.length) return dlg.choose(undefined), true;
+            dlg.list.items = next;
+            dlg.list.index = Math.min(dlg.list.index, next.length - 1);
+            app.renderLive();
+            return true;
+        },
+    });
+    const picked = await app.showDialog(d);
+    if (typeof picked === "number") app.takeStash(picked);
+    app.renderLive();
+}
+
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
@@ -2120,6 +2145,7 @@ const BUILTIN: Command[] = [
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
     { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
+    { name: "stash", description: "Prompts you've stashed: bring one back or remove it", whileBusy: true, run: (app) => stashCommand(app) },
     { name: "tasks", description: "Background work: sub-agents, shells and monitors, and tasks delegated to other models (stop them with /tasks stop)", args: "[stop <task-id|all> | restart]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },

@@ -167,8 +167,9 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* ---- The stashed prompt: a small chip over the box's top right corner ---------
-   Its own small card, like the tray: waiting to go back into this box. */
+/* ---- Stashed prompts: a small chip over the box's top right corner ------------
+   Its own small card, like the tray: waiting to go back into this box. It opens
+   their list. */
 
 .stash-chip {
     position: relative;
@@ -177,14 +178,32 @@
     flex: none;
     align-items: center;
     align-self: flex-end;
+    gap: calc(6 * var(--sp));
     height: calc(28 * var(--sp));
     /* 6px above the box, as the tray is. */
     margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp)) 0;
-    padding: 0 calc(3 * var(--sp));
+    padding: 0 calc(11 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
+    font: inherit;
     font-size: 0.857rem;
     color: var(--fg-2);
     animation: c-in 260ms var(--ease);
+    transition: color 140ms;
+}
+
+.stash-chip:hover,
+.stash-chip.open {
+    color: var(--fg);
+}
+
+.stash-chip:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* How many, past one. */
+.stash-n {
+    color: var(--fg-3);
 }
 
 /* Home: it takes no room in the column, so the composer doesn't move when it comes and goes. */
@@ -202,38 +221,37 @@
     margin-right: calc(22 * var(--sp));
 }
 
-.stash-back,
-.stash-drop {
-    display: inline-flex;
+/* The list: a row brings its prompt back; the ✕ at its end throws it away. */
+.stash-row {
+    position: relative;
+    display: flex;
     align-items: center;
-    justify-content: center;
-    height: calc(22 * var(--sp));
-    border-radius: var(--pill);
-    font: inherit;
-    color: inherit;
+}
+
+.stash-row .menu-item {
+    padding-right: calc(36 * var(--sp));
+}
+
+.stash-row .menu-label {
+    flex: 1;
+    font-weight: 400;
+}
+
+.stash-drop {
+    position: absolute;
+    right: calc(5 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    color: var(--fg-3);
     transition: background 140ms, color 140ms;
 }
 
-.stash-back {
-    gap: calc(6 * var(--sp));
-    padding: 0 calc(7 * var(--sp)) 0 calc(8 * var(--sp));
-}
-
-.stash-drop {
-    width: calc(22 * var(--sp));
-    color: var(--fg-3);
-}
-
-.stash-back:hover,
 .stash-drop:hover {
-    background: var(--hover);
+    background: var(--press);
     color: var(--fg);
-}
-
-.stash-back:focus-visible,
-.stash-drop:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 /* ---- Up next: steers and queued messages, in a tray on top of the box -------

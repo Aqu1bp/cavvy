@@ -1,7 +1,8 @@
 // Browser-condition Solid runs the same effects and cleanup as Composer, without needing a DOM.
 import { strict as assert } from "node:assert";
 import { createRoot } from "../../gui/node_modules/solid-js/dist/solid.js";
-import { composerDrafts, createComposerDraft, stashedAttachments } from "../../gui/src/lib/composer-draft";
+import { composerDrafts, composerStashes, createComposerDraft } from "../../gui/src/lib/composer-draft";
+import { STASH_LIMIT } from "../../gui/src/lib/drafts";
 import { isLongPaste, pastedText, readAttachment } from "../../gui/src/lib/attachments";
 
 function mount(key: string, wasDeleted?: (key: string) => boolean) {
@@ -213,116 +214,145 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
 }
 
 // ---- The stash key
-// Put away, the prompt leaves the box with its files; the key again brings both back.
+// Put away, the prompt leaves the box with its files; brought back, both return.
 const stashing = mount("stash");
-assert.equal(stashing.swapStash(), false);
+assert.equal(stashing.pushStash(), false);
+assert.equal(stashing.takeStash(), false);
 stashing.setText("long prompt");
 stashing.setAttachments(files);
-assert.equal(stashing.swapStash(), true);
+assert.equal(stashing.pushStash(), true);
 assert.equal(stashing.text(), "");
 assert.deepEqual(stashing.attachments(), []);
-assert.deepEqual(stashing.stash(), { text: "long prompt", attachments: files });
-assert.equal(stashing.swapStash(), true);
+assert.deepEqual(stashing.stashes(), [{ text: "long prompt", attachments: files }]);
+assert.equal(stashing.takeStash(), true);
 assert.equal(stashing.text(), "long prompt");
 assert.deepEqual(stashing.attachments(), files);
-assert.equal(stashing.stash(), undefined);
-// With both, they trade places; a session switch away and back keeps each where it was.
-stashing.swapStash();
-stashing.setText("quick one");
-stashing.swapStash();
-assert.equal(stashing.text(), "long prompt");
-assert.equal(stashing.stash()?.text, "quick one");
+assert.deepEqual(stashing.stashes(), []);
+// Several are kept, newest first; a session switch away and back keeps each where it was.
+stashing.pushStash();
+stashing.setText("second");
+stashing.pushStash();
+stashing.setAttachments([image]);
+stashing.pushStash();
+stashing.setText("in the box");
+assert.deepEqual(stashing.stashes().map((d) => d.text), ["", "second", "long prompt"]);
 stashing.dispose();
 const stashKept = mount("stash");
+assert.equal(stashKept.text(), "in the box");
+assert.deepEqual(stashKept.stashes(), [{ text: "", attachments: [image] }, { text: "second", attachments: [] }, { text: "long prompt", attachments: files }]);
+assert.deepEqual(mount("stash-other").stashes(), []);
+// One picked from the list comes back, and what was in the box is stashed in its place, as the newest.
+assert.equal(stashKept.takeStash(stashKept.stashes()[2]), true);
 assert.equal(stashKept.text(), "long prompt");
 assert.deepEqual(stashKept.attachments(), files);
-assert.deepEqual(stashKept.stash(), { text: "quick one", attachments: [] });
-assert.equal(mount("stash-other").stash(), undefined);
+assert.deepEqual(stashKept.stashes().map((d) => d.text), ["in the box", "", "second"]);
+// One that's no longer there is not brought back twice.
+assert.equal(stashKept.takeStash({ text: "long prompt", attachments: files }), false);
 stashKept.dispose();
 
-// Sent, the box takes the stashed prompt back (text and files), once.
+// Sent, the box takes the newest stashed prompt back (text and files), one per send.
 const sentWith = mount("stash-send");
+sentWith.setText("older");
+sentWith.pushStash();
 sentWith.setText("comes back");
 sentWith.setAttachments([image]);
-sentWith.swapStash();
+sentWith.pushStash();
 sentWith.setText("goes first");
 const first = sentWith.capture();
 sentWith.clearSent(first);
 assert.equal(sentWith.text(), "comes back");
 assert.deepEqual(sentWith.attachments(), [image]);
-assert.equal(sentWith.stash(), undefined);
-// The same send confirmed again (accepted, then done) finds a newer draft and a newer stash: both stay.
-sentWith.swapStash();
+assert.deepEqual(sentWith.stashes().map((d) => d.text), ["older"]);
+// The same send confirmed again (accepted, then done) finds a newer draft: nothing more comes back.
+sentWith.pushStash();
 sentWith.clearSent(first);
 assert.equal(sentWith.text(), "");
-assert.equal(sentWith.stash()?.text, "comes back");
+assert.deepEqual(sentWith.stashes().map((d) => d.text), ["comes back", "older"]);
 sentWith.dispose();
 
 // Typed while it was sending: that stays in the box, and the stash waits.
 const typedSince = mount("stash-typed");
 typedSince.setText("stashed");
-typedSince.swapStash();
+typedSince.pushStash();
 typedSince.setText("sending");
 const sending = typedSince.capture();
 typedSince.setText("sending, and more");
 typedSince.clearSent(sending);
 assert.equal(typedSince.text(), "sending, and more");
-assert.equal(typedSince.stash()?.text, "stashed");
+assert.deepEqual(typedSince.stashes().map((d) => d.text), ["stashed"]);
 // A failed send clears nothing, so nothing comes back either; a local command leaves its files in the box, so the stash waits too.
 typedSince.setText("/context");
 typedSince.setAttachments([image]);
 typedSince.clearSent(typedSince.capture(), true);
 assert.equal(typedSince.text(), "");
 assert.deepEqual(typedSince.attachments(), [image]);
-assert.equal(typedSince.stash()?.text, "stashed");
+assert.deepEqual(typedSince.stashes().map((d) => d.text), ["stashed"]);
 typedSince.dispose();
 
 // Home is gone by the time its send has opened the session: its stash is in the box when it's next shown.
 const stashHome = mount("stash-home");
 stashHome.setText("for the next session");
-stashHome.swapStash();
+stashHome.pushStash();
 stashHome.setText("this session first");
 const homeSend = stashHome.capture();
 stashHome.dispose();
 stashHome.clearSent(homeSend);
 const homeAgain = mount("stash-home");
 assert.equal(homeAgain.text(), "for the next session");
-assert.equal(homeAgain.stash(), undefined);
+assert.deepEqual(homeAgain.stashes(), []);
 homeAgain.dispose();
 
-// Discarded, it's gone; Undo puts it back, or after what's in the box when another prompt was stashed meanwhile.
+// Discarded, one is gone; Undo puts it back where it was in the list, whatever was stashed meanwhile.
 const dropping = mount("stash-drop");
-assert.equal(dropping.dropStash(), undefined);
-dropping.setText("thrown away");
-dropping.setAttachments([image]);
-dropping.swapStash();
-const undo = dropping.dropStash()!;
-assert.equal(dropping.stash(), undefined);
+for (const text of ["oldest", "thrown away", "newest"]) {
+    dropping.setText(text);
+    if (text === "thrown away") dropping.setAttachments([image]);
+    dropping.pushStash();
+}
+const undo = dropping.dropStash(dropping.stashes()[1]!)!;
+assert.deepEqual(dropping.stashes().map((d) => d.text), ["newest", "oldest"]);
 assert.equal(dropping.text(), "");
 undo();
-assert.deepEqual(dropping.stash(), { text: "thrown away", attachments: [image] });
-const undoLate = dropping.dropStash()!;
+assert.deepEqual(dropping.stashes(), [{ text: "newest", attachments: [] }, { text: "thrown away", attachments: [image] }, { text: "oldest", attachments: [] }]);
+undo();
+assert.equal(dropping.stashes().length, 3);
+const undoLate = dropping.dropStash(dropping.stashes()[1]!)!;
 dropping.setText("stashed since");
-dropping.swapStash();
-dropping.setText("in the box");
+dropping.pushStash();
 undoLate();
-assert.equal(dropping.stash()?.text, "stashed since");
-assert.equal(dropping.text(), "in the box\n\nthrown away");
-assert.deepEqual(dropping.attachments(), [image]);
+assert.deepEqual(dropping.stashes().map((d) => d.text), ["stashed since", "thrown away", "newest", "oldest"]);
+assert.equal(dropping.dropStash({ text: "never stashed", attachments: [] }), undefined);
 dropping.dispose();
 
-// A deleted session's stash goes with it, and nothing is stashed there afterwards.
+// It keeps so many and no more: the prompt stays in the box, until one is brought back or thrown away.
+const full = mount("stash-full");
+for (let i = 0; i < STASH_LIMIT; i++) {
+    full.setText(`prompt ${i}`);
+    assert.equal(full.pushStash(), true);
+}
+full.setText("one too many");
+assert.equal(full.pushStash(), "full");
+assert.equal(full.text(), "one too many");
+assert.equal(full.stashes().length, STASH_LIMIT);
+// Picked from the list at the limit, the two still trade places.
+assert.equal(full.takeStash(full.stashes()[3]), true);
+assert.equal(full.stashes()[0]!.text, "one too many");
+assert.equal(full.stashes().length, STASH_LIMIT);
+full.dispose();
+
+// A deleted session's stashes go with it, and nothing is stashed there afterwards.
 const stashDeleted = mount("stash-deleted", wasDeleted);
 stashDeleted.setText("never again");
 stashDeleted.setAttachments([image]);
-stashDeleted.swapStash();
+stashDeleted.pushStash();
 deleted.add("stash-deleted");
 stashDeleted.setText("typed after");
-assert.equal(stashDeleted.swapStash(), false);
+assert.equal(stashDeleted.pushStash(), false);
+assert.equal(stashDeleted.takeStash(), false);
 stashDeleted.dispose();
 deleted.delete("stash-deleted");
 const stashGone = mount("stash-deleted", wasDeleted);
-assert.equal(stashGone.stash(), undefined);
+assert.deepEqual(stashGone.stashes(), []);
 stashGone.dispose();
 
 // Persistence follows live edits, without serializing any attachment content.
@@ -347,17 +377,19 @@ assert.equal(composerStorage.draft("mounted-replacement"), "new typed work");
 assert.equal(liveReplacement.text(), "new typed work");
 liveReplacement.dispose();
 
-// A stash is saved as its text alone, like a draft.
+// Stashes are saved as their text alone, like a draft: one that was only files doesn't outlive a reload.
 const stashReload = mount("stash-reload");
 stashReload.setText("stashed across a reload");
 stashReload.setAttachments(files);
-stashReload.swapStash();
-assert.equal(composerStorage.stash("stash-reload"), "stashed across a reload");
+stashReload.pushStash();
+stashReload.setAttachments([image]);
+stashReload.pushStash();
+assert.deepEqual(composerStorage.stashes("stash-reload"), ["stashed across a reload"]);
 assert.equal(composerStorage.draft("stash-reload"), "");
 stashReload.dispose();
-stashedAttachments.clear();
+composerStashes.clear();
 const stashReloaded = mount("stash-reload");
-assert.deepEqual(stashReloaded.stash(), { text: "stashed across a reload", attachments: [] });
+assert.deepEqual(stashReloaded.stashes(), [{ text: "stashed across a reload", attachments: [] }]);
 stashReloaded.dispose();
 
 // Reload drops attachments, but restores the persisted text synchronously.

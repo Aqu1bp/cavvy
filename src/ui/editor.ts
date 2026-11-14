@@ -128,8 +128,8 @@ export class Editor {
     private history: HistoryEntry[] = [];
     private histIdx = -1;
     private draft = "";
-    /** The prompt put away with the stash key, as it was in the box (placeholders and all). */
-    private stashed?: { text: string; undo: { text: string; cursor: number }[] };
+    /** The prompts put away with the stash key, newest first, each as it was in the box (placeholders and all). */
+    private stashed: { text: string; undo: { text: string; cursor: number }[]; tag: string }[] = [];
     private killRing = "";
     private undoStack: { text: string; cursor: number }[] = [];
     private pastes = new Map<number, string>();
@@ -188,29 +188,49 @@ export class Editor {
     }
 
     /**
-     * The stash key: what's in the box is put away, and what was put away comes back; with both, they trade
-     * places. Each keeps its pasted text, its images and its own undo steps. False with neither.
+     * Puts what's in the box away, on top of the others put away. It keeps its pasted text, its images and its own
+     * undo steps. `tag`: what the caller needs back with it (the app's ! or # mode). False with nothing in the box.
      */
-    swapStash(): boolean {
-        if (this.secret || (!this.text && !this.stashed)) return false;
-        const back = this.stashed;
-        this.stashed = this.text ? { text: this.text, undo: this.undoStack } : undefined;
-        this.undoStack = back?.undo ?? [];
-        this.set(back?.text ?? "");
+    pushStash(tag = ""): boolean {
+        if (this.secret || !this.text) return false;
+        this.stashed.unshift({ text: this.text, undo: this.undoStack, tag });
+        this.undoStack = [];
+        this.set("");
         this.histIdx = -1;
         return true;
     }
 
-    /** The stashed prompt as one line of plain text; undefined with none. */
-    get stashPreview(): string | undefined {
-        return this.stashed && plainText(this.stashed.text).replace(/\s+/g, " ").trim();
+    /**
+     * Brings a stashed prompt back into the box (`i`: which, the newest by default) and returns its tag. What was in
+     * the box, if anything, is put away in its place, as the newest (`tag`: its own). Undefined when there's none.
+     */
+    takeStash(i = 0, tag = ""): string | undefined {
+        const back = this.stashed[i];
+        if (this.secret || !back) return undefined;
+        this.stashed.splice(i, 1);
+        if (this.text) this.stashed.unshift({ text: this.text, undo: this.undoStack, tag });
+        this.undoStack = back.undo;
+        this.set(back.text);
+        this.histIdx = -1;
+        return back.tag;
+    }
+
+    /** Throws a stashed prompt away, with what only it held. */
+    dropStash(i: number) {
+        this.stashed.splice(i, 1);
+        this.prunePastes();
+    }
+
+    /** The stashed prompts, newest first, each as one line of plain text behind its tag. */
+    get stashes(): string[] {
+        return this.stashed.map((s) => s.tag + plainText(s.text).replace(/\s+/g, " ").trim());
     }
 
     /** Drop pasted text and images nothing can bring back; undo (or a yank) can restore a placeholder. */
     private prunePastes() {
         const live = new Set<number>();
         const liveImages = new Set<number>();
-        for (const t of [this.text, this.draft, this.killRing, ...this.undoStack.map((u) => u.text), ...(this.stashed ? [this.stashed.text, ...this.stashed.undo.map((u) => u.text)] : [])]) {
+        for (const t of [this.text, this.draft, this.killRing, ...this.undoStack.map((u) => u.text), ...this.stashed.flatMap((st) => [st.text, ...st.undo.map((u) => u.text)])]) {
             for (const m of t.matchAll(/\[Pasted text #(\d+) \+\d+ lines\]/g)) live.add(Number(m[1]));
             for (const m of t.matchAll(MARKS)) liveImages.add(uidOf(m[0]));
         }
@@ -258,11 +278,9 @@ export class Editor {
     dropImage(uid: number, replacement = "") {
         this.attachments.delete(uid);
         ({ text: this.text, cursor: this.cursor } = replaceTokens(this.text, uid, replacement, this.cursor));
-        if (this.stashed) {
-            this.stashed.text = replaceTokens(this.stashed.text, uid, replacement).text;
-            // One that was only this image is nothing to bring back.
-            if (!this.stashed.text.trim()) this.stashed = undefined;
-        }
+        for (const st of this.stashed) st.text = replaceTokens(st.text, uid, replacement).text;
+        // One that was only this image is nothing to bring back.
+        this.stashed = this.stashed.filter((st) => st.text.trim());
         for (let i = this.history.length - 1; i >= 0; i--) {
             const h = this.history[i]!;
             if (!h.attachments?.has(uid)) continue;

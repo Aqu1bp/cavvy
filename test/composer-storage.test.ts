@@ -47,43 +47,46 @@ test("history is session-local, deduplicated, bounded and persisted; deletion re
     expect(createComposerStorage(() => disk).history("a")).toEqual([]);
 });
 
-test("a stashed prompt is kept apart from the draft, survives a reload, and goes with its session", () => {
+test("stashed prompts are kept apart from the draft, in order, survive a reload, and go with their session", () => {
     const disk = storage();
     const state = createComposerStorage(() => disk);
     state.setDraft("a", "in the box");
-    state.setStash("a", "put away");
+    state.setStashes("a", ["newest", "older"]);
     state.flush();
     const restored = createComposerStorage(() => disk);
     expect(restored.draft("a")).toBe("in the box");
-    expect(restored.stash("a")).toBe("put away");
-    expect(restored.stash("b")).toBe("");
+    expect(restored.stashes("a")).toEqual(["newest", "older"]);
+    expect(restored.stashes("b")).toEqual([]);
     // Read back as it was written: loading it doesn't save it again.
     const writes = disk.writes;
     restored.flush();
     expect(disk.writes).toBe(writes);
-    restored.setStash("a", "");
+    restored.setStashes("a", []);
     restored.flush();
     expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("stash");
-    restored.setStash("a", "again");
+    restored.setStashes("a", ["again"]);
     restored.delete("a");
-    expect(createComposerStorage(() => disk).stash("a")).toBe("");
+    expect(createComposerStorage(() => disk).stashes("a")).toEqual([]);
 });
 
-test("a stashed credential stays in memory, and a stash alone keeps its entry", () => {
+test("a stashed credential stays in memory, and stashes alone keep their entry", () => {
     const disk = storage();
     const state = createComposerStorage(() => disk);
-    state.setStash("a", "sk-" + "a".repeat(30));
-    state.setStash("b", "only a stash");
+    const key = "sk-" + "a".repeat(30);
+    state.setStashes("a", ["fine to save", key]);
+    state.setStashes("b", ["only a stash"]);
     state.flush();
-    expect(state.stash("a")).toContain("sk-");
+    expect(state.stashes("a")).toEqual(["fine to save", key]);
     expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("sk-");
     const restored = createComposerStorage(() => disk);
-    expect(restored.stash("a")).toBe("");
-    expect(restored.stash("b")).toBe("only a stash");
-    // Saved by a version that wrote something else there: not text, not restored.
-    disk.data.set(COMPOSER_STORAGE_KEY, JSON.stringify([["c", { draft: "", history: [], updated: Date.now(), stash: { data: "SECRET" } }]]));
+    expect(restored.stashes("a")).toEqual(["fine to save"]);
+    expect(restored.stashes("b")).toEqual(["only a stash"]);
+    // Saved by a version that wrote something else there: only its text is restored.
+    disk.data.set(COMPOSER_STORAGE_KEY, JSON.stringify([["c", { draft: "", history: [], updated: Date.now(), stash: ["text", { data: "SECRET" }, ""] }], ["d", { draft: "kept", history: [], updated: Date.now(), stash: "not a list" }]]));
     const odd = createComposerStorage(() => disk);
-    expect(odd.stash("c")).toBe("");
+    expect(odd.stashes("c")).toEqual(["text"]);
+    expect(odd.stashes("d")).toEqual([]);
+    expect(odd.draft("d")).toBe("kept");
     expect(disk.data.get(COMPOSER_STORAGE_KEY) ?? "").not.toContain("SECRET");
 });
 
