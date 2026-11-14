@@ -20,11 +20,14 @@ export type ImagePart = { type: "image"; mediaType: string; data: string /* base
 /**
  * A file the user attached to a prompt. Text is stored redacted and framed
  * only when sent (src/providers/files.ts); a PDF's bytes are stored as they
- * came, since redacting base64 would corrupt it.
+ * came, since redacting base64 would corrupt it. Anything else (a .docx, a
+ * zip, text too long to inline) is saved in the project (`path`), and the
+ * model is told where, to open it with its own tools.
  */
 export type FilePart =
     | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean }
-    | { type: "file"; kind: "pdf"; name: string; size: number; mediaType: "application/pdf"; data: string /* base64 */ };
+    | { type: "file"; kind: "pdf"; name: string; size: number; mediaType: "application/pdf"; data: string /* base64 */ }
+    | { type: "file"; kind: "saved"; name: string; size: number; path: string };
 
 export type ThinkingPart = {
     type: "thinking";

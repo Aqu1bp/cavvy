@@ -19,7 +19,7 @@ import { redact } from "../util/redact";
 import { isInside } from "../util/files";
 import type { Billing, PermissionModeId, RunOutcome, RunResult } from "./protocol";
 import { RpcError } from "./rpc-error";
-import { checkFiles, checkMedia } from "./attachments";
+import { checkFiles, checkMedia, fileSaver } from "./attachments";
 import { checkCreate, createWorktreeWithHooks, listWorktrees, runGitAsync, WORKTREES_DIR, type Log } from "./worktrees";
 
 export const MIN_MODELS = 2;
@@ -165,7 +165,8 @@ export function parseRunRequest(p: Record<string, unknown>, o: { validImage: (i:
         if (!p.images.every((i) => o.validImage(i) && whole(i))) throw bad("An attached image isn't one Cavvy can send (PNG, JPEG, GIF or WebP, under 15 MB).");
         images = (p.images as { mediaType: string; data: string }[]).map((i) => ({ type: "image", mediaType: i.mediaType as ImagePart["mediaType"], data: i.data }));
     }
-    const files = checkFiles(p.files);
+    // Saved in the project the runs start from: each run's folder is made from it.
+    const files = checkFiles(p.files, fileSaver(o.resolvePath(p.path), "compare"));
     checkMedia([...images, ...files]);
     if (!p.text.trim() && !images.length && !files.length) throw bad("Write the task first: every model gets the same prompt.");
     if (p.mode !== undefined && p.mode !== null && !PERMISSION_MODES.includes(p.mode as PermissionModeId)) throw bad("Unknown mode");

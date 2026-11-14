@@ -13,6 +13,7 @@ import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, sessio
 import { forgetFileHistory } from "../agent/checkpoints";
 import { isInside } from "../util/files";
 import { RpcError } from "./rpc-error";
+import { attachmentsDir } from "./attachments";
 
 export const TRASH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Ids look like 20261016-093441-b7e986. */
@@ -286,6 +287,18 @@ export function listTrash(limit = 200): TrashedSession[] {
     return out.sort((a, b) => b.deletedAt - a.deletedAt).slice(0, limit);
 }
 
+/** The files saved from a session's messages (attachments.ts), gone with it: its own folder, never through a link. */
+function removeSavedFiles(entry: string, id: string) {
+    try {
+        const { cwd } = sessionLabel(join(entry, "transcript.jsonl"));
+        if (!cwd) return;
+        const dir = join(attachmentsDir(cwd), id);
+        if (lstatSync(dir).isDirectory()) removeTree(dir);
+    } catch {
+        // none, or not ours to read
+    }
+}
+
 /** Remove trash entries deleted more than a week ago. Best effort, a bounded number per run. */
 export function purgeTrash(opts: { now?: number; maxAgeMs?: number } = {}): string[] {
     const now = opts.now ?? Date.now();
@@ -312,6 +325,7 @@ export function purgeTrash(opts: { now?: number; maxAgeMs?: number } = {}): stri
                 // the folder's time, then
             }
             if (now - at < maxAge) continue;
+            if (ID.test(name)) removeSavedFiles(entry, name);
             removeTree(entry);
             removed.push(name);
         } catch {

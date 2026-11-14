@@ -167,7 +167,7 @@ const KIND_NAMES: Record<AttachmentKind, string> = { image: "images", text: "tex
  * kind what runs the turn can't take mid-turn (`kinds`, CliCapabilities.steersAttachments): the whole message.
  */
 function waitsFor(q: Queued, kinds: readonly AttachmentKind[], who: string): string | undefined {
-    const cant = [...new Set((q.attachments ?? []).map((a) => (a.type === "image" ? "image" : a.kind)))].filter((k) => !kinds.includes(k));
+    const cant = [...new Set((q.attachments ?? []).map((a) => (a.type === "image" ? "image" : a.kind === "saved" ? "text" : a.kind)))].filter((k) => !kinds.includes(k));
     if (cant.length) return `${who} can't take ${cant.map((k) => KIND_NAMES[k]).join(" or ")} in a running turn: this runs once it ends.`;
     if (q.literal) return undefined;
     const t = q.text.trim();

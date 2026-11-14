@@ -118,7 +118,7 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, toWire } from "./attachments";
+import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
@@ -2638,7 +2638,7 @@ export class Engine {
                     if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
                     return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
                 }) : [];
-                const attached: AttachedPart[] = [...images, ...checkFiles(p.files)];
+                const attached: AttachedPart[] = [...images, ...checkFiles(p.files, fileSaver(rt.ws.cwd, rt.id))];
                 checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.

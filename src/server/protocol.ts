@@ -52,7 +52,7 @@ export interface WireFile {
 /** What a prompt shows of an attached file: never its contents. */
 export interface FileChip {
     name: string;
-    kind: "text" | "pdf";
+    kind: "text" | "pdf" | "saved";
     size: number;
     lines?: number;
     pasted?: boolean;
