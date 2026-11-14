@@ -129,8 +129,12 @@ function rootAt(t: string): number {
 
 /** Why an SVG can't be a layer, or undefined. It's drawn as an image either way: these are told so nothing is silently missing. */
 export function svgProblem(svg: string): string | undefined {
-    const t = svg.trim();
-    if (rootAt(t) < 0 || !/<\/svg>\s*$/i.test(t)) return "isn't one <svg>…</svg> document";
+    const raw = svg.trim();
+    if (rootAt(raw) < 0 || !/<\/svg>\s*$/i.test(raw)) return "isn't one <svg>…</svg> document";
+    if (/<!(?:DOCTYPE|ENTITY)/i.test(raw)) return "has a DOCTYPE or ENTITY, which a layer doesn't need";
+    if (/<\?xml-stylesheet/i.test(raw)) return "has an xml-stylesheet, which a layer doesn't need: use <style>";
+    // As the image's parser reads it: a character reference can spell a word the checks below look for.
+    const t = decodeRefs(raw);
     if (/<script[\s/>]/i.test(t)) return "has a <script>, which an image never runs";
     if (/<foreignObject[\s/>]/i.test(t)) return "has a <foreignObject>, which isn't drawn";
     if (/\son[a-z]+\s*=/i.test(t)) return "has an event handler attribute, which an image never runs";
@@ -139,10 +143,53 @@ export function svgProblem(svg: string): string | undefined {
     if (/@import/i.test(t)) return "has an @import, which an image can't load";
     // An image runs these on its own, every frame and out of the window's reach: motion goes in the layer's "motion".
     if (/<(?:[\w-]+:)?(?:animate\w*|set|discard)[\s/>]/i.test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
-    if (/@keyframes|animation|transition/i.test(t)) return "animates itself with CSS: move the layer with \"motion\" instead";
-    // CSS escapes could spell either of the above.
-    if (/\\[0-9a-f]/i.test(t)) return "has a CSS escape (\\ and a hex digit), which a layer doesn't need";
+    if (/data:\s*image\/(?:svg|gif)/i.test(t)) return "has an SVG or GIF inside it, which may animate itself: draw it in the layer";
+    for (const css of styles(t)) {
+        // An escape can spell any word in CSS.
+        if (css.includes("\\")) return "has a backslash in its CSS, which a layer doesn't need";
+        const plain = withoutComments(css);
+        if (/@[\w-]*keyframes|(?:animation|transition)[\w-]*\s*:/i.test(plain)) return "animates itself with CSS: move the layer with \"motion\" instead";
+    }
     return undefined;
+}
+
+/** The text with XML character references (&#97; &#x61;) as the characters they stand for. */
+function decodeRefs(t: string): string {
+    return t.replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));/gi, (ref, hex: string | undefined, dec: string | undefined) => {
+        const code = hex ? parseInt(hex, 16) : Number(dec);
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
+    });
+}
+
+/** The CSS in an SVG: each <style> element's text and each style="…" attribute's value. Linear in the text. */
+function styles(t: string): string[] {
+    const out: string[] = [];
+    const open = /<(?:[\w-]+:)?style(?=[\s>/])/gi;
+    const close = /<\/(?:[\w-]+:)?style\s*>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = open.exec(t))) {
+        close.lastIndex = open.lastIndex;
+        const end = close.exec(t);
+        out.push(t.slice(open.lastIndex, end ? end.index : t.length));
+        if (!end) break;
+        open.lastIndex = close.lastIndex;
+    }
+    for (const a of t.matchAll(/\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) out.push(a[1] ?? a[2] ?? "");
+    return out;
+}
+
+/** CSS with its /* comments *\/ taken out (a comment can sit between a property and its colon). */
+function withoutComments(css: string): string {
+    let out = "";
+    let at = 0;
+    for (;;) {
+        const start = css.indexOf("/*", at);
+        if (start < 0) return out + css.slice(at);
+        out += css.slice(at, start) + " ";
+        const end = css.indexOf("*/", start + 2);
+        if (end < 0) return out;
+        at = end + 2;
+    }
 }
 
 /** The SVG with the namespace it needs to be drawn as an image. */

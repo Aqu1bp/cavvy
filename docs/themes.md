@@ -29,10 +29,10 @@ The theme tools aren't offered to Cavvy's own sub-agents, in sessions on a serve
 ```
 
 - **Colours.** A look gives three: background, text and an optional accent. Cavvy derives every other colour from them (dimmer text, cards, lines, popovers, diffs, status colours) and keeps all text at WCAG AA. Text on the background must reach 5.5:1, so dimmer text derived from it still reads. A light look's background must be light and a dark look's dark.
-- **Layers** are still SVG pictures on a 1600 × 1000 stage scaled to cover the window, back to front. Each is drawn as an image, so it can't run scripts, load anything from the network or animate itself. Cavvy refuses `<script>`, `<foreignObject>`, event attributes and external references anyway, and SVG or CSS animation inside a layer (motion goes in `motion`, where Cavvy controls it). Up to 60 layers, 120,000 characters per SVG, 800,000 in all.
+- **Layers** are still SVG pictures on a 1600 × 1000 stage scaled to cover the window, back to front. Each is drawn as an image, so it can't run scripts, load anything from the network or animate itself. Cavvy refuses `<script>`, `<foreignObject>`, event attributes and external references anyway, and SVG or CSS animation inside a layer, including an SVG or GIF embedded in it (motion goes in `motion`, where Cavvy controls it). Up to 60 layers, 120,000 characters per SVG, 800,000 in all.
 - **Motion** is keyframes of position, rotation, scale and opacity. Cavvy turns them into CSS animations of transform and opacity only, stepped at 20 a second like the app's other endless animations, so the compositor moves the layers without redrawing anything.
 - **`when`**: `"working"` shows a layer only while the session on screen works, `"idle"` only while it doesn't. They fade in and out.
-- **The veil.** For text to read, Cavvy lays the theme's background over the scene, measured per region from the scene's own pixels at several points of its motion: a dark corner gets none, a bright cloud that drifts behind text gets as much as it needs where it passes. `"veil"` sets a minimum.
+- **The veil.** For text to read, Cavvy lays the theme's background over the scene, measured per region from the scene's own pixels, posed through its motion often enough that nothing skips a region: a dark corner gets none, a bright cloud that drifts behind text gets as much as it needs where it passes. `"veil"` sets a minimum.
 
 The full guide an agent reads is `THEME_GUIDE` in `src/themes/tools.ts`.
 

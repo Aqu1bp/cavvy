@@ -26,7 +26,7 @@ Cavvy works out every other colour (dimmer text, cards, lines, popovers, diff an
 
 Layer = { "svg": "<svg …>…</svg>", "x": 0, "y": 0, "width": ${STAGE.width}, "height": ${STAGE.height}, "opacity": 1, "origin": [0.5, 0.5], "motion": Motion, "when": "working" }
 - Layers sit on a ${STAGE.width} × ${STAGE.height} stage scaled to cover the window (the edges are cropped when the window's shape differs; a 1440 × 900 window shows it all). x, y, width and height are in stage units; the default is the whole stage. A box may reach past the stage (a rain sheet taller than it, a cloud drifting in from off the edge). origin is the point rotate and scale turn about, as fractions of the box: [0.5, 1] is the middle of its bottom edge.
-- Each svg is a still picture, drawn as an image: no scripts, no external links or fonts, no CSS or SMIL animation (<animate>, @keyframes and transitions are refused: move layers with motion). Gradients, paths, patterns, masks and filters are fine; <text> works in the system's fonts, though words behind a conversation distract. Give it a viewBox; preserveAspectRatio="none" makes it fill its box exactly.
+- Each svg is a still picture, drawn as an image: no scripts, no external links or fonts, no CSS or SMIL animation (<animate>, @keyframes, transitions, and SVG or GIF images embedded in a layer are refused: move layers with motion). Gradients, paths, patterns, masks and filters are fine; <text> works in the system's fonts, though words behind a conversation distract. Give it a viewBox; preserveAspectRatio="none" makes it fill its box exactly.
 - An svg with a filter (a blur, a glow) is drawn at its own size and then scaled, so it goes soft when its box is bigger than its width and height: give it width and height near its box, and keep crisp shapes in a layer of their own, without the filter.
 - Make the first layer a full-stage picture that doesn't move (sky, walls, ground). Make each moving thing its own small layer with a box just big enough for it: the compositor moves it without redrawing anything. Every moving layer holds its picture in graphics memory for as long as the theme shows, so a few full-stage moving layers are fine and dozens are not: group small things that move together into one layer.
 - Up to ${LIMITS.layers} layers, ${LIMITS.svg} characters per svg, ${LIMITS.total} in all.
@@ -90,7 +90,12 @@ async function withCopies(raw: unknown): Promise<{ theme: unknown; problems: str
     const problems: string[] = [];
     if (!raw || typeof raw !== "object") return { theme: raw, problems };
     const out = { ...(raw as Record<string, unknown>) };
-    const themes = new Map<string, Theme | undefined>();
+    const themes = new Map<string, { theme?: Theme; problems?: string[] }>();
+    // A copy that can't be made keeps its place (so later layers keep their numbers) and its other keys, to be checked.
+    const stand = (l: unknown) => {
+        const { copy: _, ...rest } = l as Record<string, unknown>;
+        return { ...rest, svg: "<svg viewBox='0 0 1 1'></svg>" };
+    };
     for (const scheme of ["light", "dark"] as const) {
         const look = out[scheme] as Record<string, unknown> | undefined;
         if (!look || typeof look !== "object" || !Array.isArray(look.layers)) continue;
@@ -104,12 +109,16 @@ async function withCopies(raw: unknown): Promise<{ theme: unknown; problems: str
             const m = typeof copy === "string" ? /^([a-z0-9][a-z0-9-]{0,47}):(light|dark):(\d{1,3})$/.exec(copy.trim()) : null;
             if (!m) {
                 problems.push(`${scheme}.layers[${i}].copy must be "<theme id>:<light or dark>:<layer index>", like "night-rain:dark:4"`);
+                layers.push(stand(l));
                 continue;
             }
-            if (!themes.has(m[1]!)) themes.set(m[1]!, (await themeById(m[1]!)).theme);
-            const from = themes.get(m[1]!)?.[m[2] as "light" | "dark"]?.layers?.[Number(m[3])];
+            if (!themes.has(m[1]!)) themes.set(m[1]!, await themeById(m[1]!));
+            const source = themes.get(m[1]!)!;
+            const from = source.theme?.[m[2] as "light" | "dark"]?.layers?.[Number(m[3])];
             if (!from) {
-                problems.push(`${scheme}.layers[${i}].copy: "${copy}" isn't a layer of a theme there is`);
+                const broken = !source.theme && source.problems?.length && !source.problems[0]!.startsWith("can't be read");
+                problems.push(broken ? `${scheme}.layers[${i}].copy: theme "${m[1]}" doesn't check out: ${source.problems![0]}` : `${scheme}.layers[${i}].copy: "${copy}" isn't a layer of a theme there is`);
+                layers.push(stand(l));
                 continue;
             }
             const { copy: _, ...rest } = l as Record<string, unknown>;
@@ -190,9 +199,9 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
             }
         }
         const copies = await withCopies(raw);
-        if (copies.problems.length) return { text: `Not saved. To fix:\n- ${copies.problems.join("\n- ")}`, isError: true };
         const checked = checkTheme(copies.theme);
-        if (!checked.theme) return { text: `Not saved. To fix:\n- ${checked.problems.join("\n- ")}`, isError: true };
+        const problems = [...copies.problems, ...checked.problems];
+        if (!checked.theme || copies.problems.length) return { text: `Not saved. To fix:\n- ${problems.join("\n- ")}`, isError: true };
         theme = checked.theme;
         path = saveTheme(id, theme);
         entry = { id, theme };

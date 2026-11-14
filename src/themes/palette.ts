@@ -152,15 +152,20 @@ export function palette(look: Look, scheme: Scheme, o: PaletteOptions = {}): Pal
  * least veil. Answers 0–0.96: never quite opaque, or the scene would be pointless.
  */
 export function veilFor(text: Rgb[], background: Rgb, pixels: Rgb[], floor = 0, spare = 0.02): number {
+    return veilWeighted(text, background, pixels, undefined, pixels.length, floor, spare);
+}
+
+/** veilFor over colours that each stand for `weights[i]` pixels (one each without weights), of a ground `total` pixels big. */
+function veilWeighted(text: Rgb[], background: Rgb, pixels: Rgb[], weights: number[] | undefined, total: number, floor: number, spare: number): number {
     if (!pixels.length) return Math.max(floor, 0.5);
     // Contrast is a ratio of luminances: the text's are worked out once, each ground's once per try.
     const lums = text.map(luminance);
+    const most = total * spare;
     const reads = (alpha: number) => {
         let bad = 0;
-        const most = pixels.length * spare;
-        for (const p of pixels) {
-            const g = luminance(over(background, alpha, p));
-            if (lums.some((t) => (Math.max(t, g) + 0.05) / (Math.min(t, g) + 0.05) < AA) && ++bad > most) return false;
+        for (let i = 0; i < pixels.length; i++) {
+            const g = luminance(over(background, alpha, pixels[i]!));
+            if (lums.some((t) => (Math.max(t, g) + 0.05) / (Math.min(t, g) + 0.05) < AA) && (bad += weights ? weights[i]! : 1) > most) return false;
         }
         return true;
     };
@@ -179,26 +184,8 @@ export function veilFor(text: Rgb[], background: Rgb, pixels: Rgb[], floor = 0, 
 /** Whether the theme's background reads as a light window: decides which of the app's built-in hues it starts from. */
 export const lightBackground = (hex: string) => isLight(parseHex(hex));
 
-/**
- * The veil as a map: `cols` × `rows` cells over the scene, each as much as the pixels in and around it need (veilFor
- * on its own pixels, then the most of it and its eight neighbours). Drawn as a tiny image stretched over the stage,
- * which blends each cell into the next: between two cells' centres the blend is never below either one's own need,
- * because each holds the most its neighbours need too. Busy corners get covered; a calm sky stays clear.
- * `pixels` is row-major, `width` × `height`.
- */
-export function veilMap(text: Rgb[], background: Rgb, pixels: Rgb[], width: number, height: number, cols: number, rows: number, floor = 0): number[] {
-    const own: number[] = [];
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const cell: Rgb[] = [];
-            const x0 = Math.floor((c * width) / cols);
-            const x1 = Math.floor(((c + 1) * width) / cols);
-            const y0 = Math.floor((r * height) / rows);
-            const y1 = Math.floor(((r + 1) * height) / rows);
-            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) cell.push(pixels[y * width + x]!);
-            own.push(veilFor(text, background, cell, floor));
-        }
-    }
+/** Each cell as the most of it and its eight neighbours. */
+function dilate(own: number[], cols: number, rows: number): number[] {
     const out: number[] = [];
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -212,4 +199,51 @@ export function veilMap(text: Rgb[], background: Rgb, pixels: Rgb[], width: numb
         }
     }
     return out;
+}
+
+/**
+ * The colours one cell of a scene shows across its motion, gathered pose by pose (ThemeBackdrop): each colour, to 6
+ * bits a channel, with the most of the cell it covered in any one pose. A thing that passes through a cell counts
+ * as much as it covered there, however briefly it stays.
+ */
+export class CellColors {
+    readonly seen = new Map<number, number>();
+    /** The cell's size, in pixels of one pose. */
+    size = 0;
+    private pose = new Map<number, number>();
+    private count = 0;
+    /** One pixel of the pose being gathered. */
+    add(r: number, g: number, b: number) {
+        const key = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
+        this.pose.set(key, (this.pose.get(key) ?? 0) + 1);
+        this.count++;
+    }
+    /** The pose is done: its colours join what the cell has shown. */
+    endPose() {
+        for (const [key, n] of this.pose) if (n > (this.seen.get(key) ?? 0)) this.seen.set(key, n);
+        this.size = Math.max(this.size, this.count);
+        this.pose.clear();
+        this.count = 0;
+    }
+}
+
+const level = (q: number) => Math.round((q * 255) / 63);
+
+/**
+ * The veil as a map: `cols` × `rows` cells over the scene, each as much as all the cell shows across the scene's
+ * motion needs (CellColors), then the most of it and its eight neighbours. Drawn as a tiny image stretched over the
+ * stage, which blends each cell into the next: between two cells' centres the blend is never below either one's own
+ * need, because each holds the most its neighbours need too. Busy corners get covered; a calm sky stays clear.
+ */
+export function veilCells(text: Rgb[], background: Rgb, cells: CellColors[], cols: number, rows: number, floor = 0): number[] {
+    const own = cells.map((cell) => {
+        const pixels: Rgb[] = [];
+        const weights: number[] = [];
+        for (const [key, n] of cell.seen) {
+            pixels.push({ r: level(key >> 12), g: level((key >> 6) & 63), b: level(key & 63) });
+            weights.push(n);
+        }
+        return veilWeighted(text, background, pixels, weights, cell.size, floor, 0.02);
+    });
+    return dilate(own, cols, rows);
 }

@@ -6,8 +6,8 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import type { Layer, Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
-import { veilMap, WINDOW_TEXT } from "../../../src/themes/palette";
-import { parseHex, rgba, type Rgb } from "../../../src/themes/color";
+import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette";
+import { parseHex, rgba } from "../../../src/themes/color";
 import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { app } from "../state/app";
@@ -30,8 +30,8 @@ const ROWS = 10;
 
 /**
  * Draws the scene small and finds how much of the background must lie over it for the window's text to read: in each
- * part of the window, the most any pose of its motion needs (a drop falling, a twinkle at its peak), so moving things
- * never pass behind text unveiled. The layers that couldn't be drawn are left out, and said. Each layer's image is
+ * part of the window, as much as all it shows across the scene's motion needs (a drop falling, a twinkle at its
+ * peak), posed often enough that nothing skips a part (phases). The layers that couldn't be drawn are left out, and said. Each layer's image is
  * decoded on the way, so the scene shows whole when it shows.
  */
 async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
@@ -50,17 +50,27 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     let cells: number[] | undefined;
     if (ctx) {
         try {
+            const w = canvas.width;
+            const gathered = Array.from({ length: COLS * ROWS }, () => new CellColors());
+            // Which cell each pixel falls in, worked out once.
+            const cellOf = new Int32Array(w * canvas.height);
+            for (let y = 0; y < canvas.height; y++) for (let x = 0; x < w; x++) cellOf[y * w + x] = Math.floor((y * ROWS) / canvas.height) * COLS + Math.floor((x * COLS) / w);
+            let since = performance.now();
             for (const t of phases(layers)) {
                 ctx.globalAlpha = 1;
                 ctx.fillStyle = look.colors.background;
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 drawLayers(ctx, layers, images, k, undefined, poseAtPhase(t));
                 const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-                const pixels: Rgb[] = [];
-                for (let i = 0; i < data.length; i += 4) pixels.push({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! });
-                const these = veilMap(text, background, pixels, canvas.width, canvas.height, COLS, ROWS, floor);
-                cells = cells ? cells.map((a, i) => Math.max(a, these[i]!)) : these;
+                for (let i = 0, p = 0; i < data.length; i += 4, p++) gathered[cellOf[p]!]!.add(data[i]!, data[i + 1]!, data[i + 2]!);
+                for (const c of gathered) c.endPose();
+                // A scene with a lot of motion takes many poses: the window keeps answering between them.
+                if (performance.now() - since > 8) {
+                    await new Promise((go) => setTimeout(go, 0));
+                    since = performance.now();
+                }
             }
+            cells = veilCells(text, background, gathered, COLS, ROWS, floor);
         } catch {
             // A picture the canvas may not read back: measured as the worst case below.
             cells = undefined;

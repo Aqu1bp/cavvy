@@ -29,11 +29,13 @@ export function localThemes(): ThemeEntry[] {
     }
 }
 
-/** Whether the server's list has come (a user theme can't be shown before it has). */
-export const listKnown = () => entries() !== undefined;
-
 /** The user's themes as the server last listed them; undefined until it has. */
 const [entries, setEntries] = createSignal<ThemeEntry[] | undefined>(undefined);
+/** Whether the server's whole list has come: one theme added ahead of it (addThemeEntry) isn't the list. */
+let listed = false;
+
+/** Whether the server's list has come (a user theme can't be shown before it has). */
+export const listKnown = () => listed;
 /** Built-ins loaded so far, by id. */
 const [loaded, setLoaded] = createSignal<Readonly<Record<string, Theme>>>({});
 const pending = new Map<string, Promise<Theme>>();
@@ -85,7 +87,8 @@ function resolve(id: string | undefined): Current {
     }
     const kept = lastGood.get(id);
     if (kept) return { state: "ready", id, theme: kept };
-    return list ? { state: "none" } : { state: "loading", id };
+    // `listed` is set with the list (setThemeEntries), so this runs again when it comes.
+    return listed ? { state: "none" } : { state: "loading", id };
 }
 
 /** What's showing: the theme and the look the window's scheme picks from it, with its palette. */
@@ -120,6 +123,7 @@ export function setThemeEntries(list: ThemeEntry[]) {
     const id = prefs.themeId;
     const before = entries()?.find((e) => e.id === id);
     const after = list.find((e) => e.id === id);
+    listed = true;
     batch(() => {
         setEntries(list);
         // Deleted (here, in another window, by hand or by an agent): nothing to show. One that's there but doesn't

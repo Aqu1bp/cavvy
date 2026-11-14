@@ -143,21 +143,24 @@ export function ThemeGallery(): JSX.Element {
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
                 <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={machine ? undefined : () => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
-                <div class="tg-tile">
-                    <button
-                        class="tg-pick tg-make"
-                        onClick={() => {
-                            setSettingsTab(undefined);
-                            newSession();
-                            setHomeDraft(ASK);
-                        }}
-                    >
-                        <span class="tg-pv">
-                            <Plus size={18} />
-                        </span>
-                        <span class="tg-name">Make one</span>
-                    </button>
-                </div>
+                {/* A session on a server has no theme tools: themes are made in this Mac's own sessions. */}
+                <Show when={!machine}>
+                    <div class="tg-tile">
+                        <button
+                            class="tg-pick tg-make"
+                            onClick={() => {
+                                setSettingsTab(undefined);
+                                newSession();
+                                setHomeDraft(ASK);
+                            }}
+                        >
+                            <span class="tg-pv">
+                                <Plus size={18} />
+                            </span>
+                            <span class="tg-name">Make one</span>
+                        </button>
+                    </div>
+                </Show>
         </div>
     );
 }

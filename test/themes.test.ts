@@ -9,7 +9,7 @@ import { join } from "path";
 import { BUILTINS } from "../src/themes/builtin";
 import { contrast, mix, over, parseHex, type Rgb } from "../src/themes/color";
 import { checkTheme, lookFor, onlyScheme, svgProblem, withNamespace, type Theme } from "../src/themes/format";
-import { palette, veilFor, veilMap, WINDOW_TEXT } from "../src/themes/palette";
+import { CellColors, palette, veilCells, veilFor, WINDOW_TEXT } from "../src/themes/palette";
 import { listThemes, removeTheme, restoreTheme, saveTheme } from "../src/themes/store";
 import { STEP_MS } from "../gui/src/lib/stream-clock";
 import { layerAnimation, poseAt } from "../gui/src/lib/theme-motion";
@@ -76,7 +76,26 @@ describe("checking a theme", () => {
             "<svg><style>@keyframes a{to{opacity:0}} rect{animation:a 1s infinite}</style><rect/></svg>",
             '<svg><rect style="transition: opacity 1s"/></svg>',
             "<svg><style>rect{\\61nimation:a 1s}</style><rect/></svg>",
+            // Spelled past a plain search: character references, a CSS escape that isn't hex, a comment before the colon.
+            "<svg><style>@&#107;eyframes a{to{opacity:0}}</style><rect/></svg>",
+            '<svg><rect style="&#97;nimation: a 1s infinite"/></svg>',
+            '<svg><rect style="&#x61;nimation: a 1s infinite"/></svg>',
+            "<svg><style>@\\keyframes a{to{opacity:0}}</style></svg>",
+            "<svg><style>rect{a\\nimation:a 1s}</style><rect/></svg>",
+            "<svg><style>rect{animation/**/:a 1s}</style><rect/></svg>",
+            "<svg><svg:style>rect{-webkit-animation:a 1s}</svg:style><rect/></svg>",
+            '<svg><image href="data:image/svg+xml,%3Csvg%3E%3C/svg%3E"/></svg>',
+            '<!DOCTYPE svg [<!ENTITY a "animation">]><svg><rect style="&a;:x 1s"/></svg>',
+            '<?xml-stylesheet href="data:text/css,rect{animation:a 1s}"?><svg><rect/></svg>',
         ]) expect(svgProblem(svg)).toBeDefined();
+    });
+
+    test("words that only look like animation are fine outside CSS", () => {
+        for (const svg of [
+            '<svg><defs><radialGradient id="transition-glow"/></defs><rect class="animation" fill="url(#transition-glow)"/></svg>',
+            "<svg><text x='10' y='20'>Animation: transition</text></svg>",
+            "<svg><style>.transition-glow{fill:#fff}</style><rect class='transition-glow'/></svg>",
+        ]) expect(svgProblem(svg)).toBeUndefined();
     });
 
     test("a crafted SVG can't keep the check busy (each check is a scan, not a pattern that backtracks)", () => {
@@ -85,6 +104,7 @@ describe("checking a theme", () => {
         const started = performance.now();
         expect(svgProblem(comments)).toContain("isn't one <svg>");
         withNamespace(tags);
+        for (const body of ["<style>".repeat(17_000), "<style>/*".repeat(13_000), ' style="'.repeat(14_000), "&#x61".repeat(24_000)]) svgProblem(`<svg>${body}</svg>`);
         checkTheme(minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ svg: tags }] } }));
         expect(performance.now() - started).toBeLessThan(500);
         // Comments before the root are still fine.
@@ -195,7 +215,10 @@ describe("the veil over a scene", () => {
         for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) pixels.push(x < 10 ? parseHex("#d8d8d8") : parseHex("#0c1014"));
         const cols = 8;
         const rows = 4;
-        const map = veilMap(text, bg, pixels, w, h, cols, rows);
+        const cells = Array.from({ length: cols * rows }, () => new CellColors());
+        pixels.forEach((c, i) => cells[Math.floor(Math.floor(i / w) / (h / rows)) * cols + Math.floor((i % w) / (w / cols))]!.add(c.r, c.g, c.b));
+        for (const c of cells) c.endPose();
+        const map = veilCells(text, bg, cells, cols, rows);
         const need = veilFor(text, bg, fill(parseHex("#d8d8d8"), 10));
         // Cells over the band and next to it are covered as much as the band needs; the far side is clear.
         expect(map[0]).toBeGreaterThanOrEqual(need);
@@ -217,11 +240,45 @@ describe("a scene's motion", () => {
         const { phases, poseAtPhase } = await import("../gui/src/lib/theme-draw");
         const fade = { svg: SVG, motion: { duration: 10, keyframes: [{ at: 0, opacity: 0 }, { at: 0.05, opacity: 1 }, { at: 0.9, opacity: 1 }, { at: 1, opacity: 0 }] } };
         const at = phases([{ svg: SVG }, fade]);
-        expect(at).toContain(0.05);
-        expect(at).toContain(0.5);
         expect(Math.max(...at.map((t) => poseAtPhase(t)(fade).opacity))).toBe(1);
         expect(phases([{ svg: SVG }])).toEqual([0]);
-        expect(phases(Array.from({ length: 40 }, (_, i) => ({ svg: SVG, motion: { duration: 5, keyframes: [{ at: 0 }, { at: (i + 1) / 50 }, { at: 1 }] } }))).length).toBeLessThanOrEqual(16);
+        // Six flashes, each at its peak somewhere: every one is seen at full.
+        const flashes = Array.from({ length: 6 }, (_, i) => ({ svg: SVG, motion: { duration: 4, loop: "repeat" as const, keyframes: [{ at: 0, opacity: 0 }, { at: 0.1 + i * 0.12, opacity: 1 }, { at: 0.12 + i * 0.12, opacity: 0 }, { at: 1, opacity: 0 }] } }));
+        const seen = phases(flashes);
+        for (const f of flashes) expect(Math.max(...seen.map((t) => poseAtPhase(t)(f).opacity))).toBeCloseTo(1, 5);
+    });
+
+    test("a fast mover is posed every stretch of its path, delays counted", async () => {
+        const { phases, poseAtPhase } = await import("../gui/src/lib/theme-draw");
+        const star = { svg: SVG, x: -100, y: 300, width: 60, height: 20, motion: { duration: 3, loop: "repeat" as const, easing: "linear" as const, keyframes: [{ x: 0 }, { x: 2000 }] } };
+        const xs = phases([star]).map((t) => poseAtPhase(t)(star).x);
+        for (let i = 1; i < xs.length; i++) expect(xs[i]! - xs[i - 1]!).toBeLessThanOrEqual(100);
+        // Two copies a half cycle apart are posed apart, as the window runs them.
+        const half = { ...star, motion: { ...star.motion, delay: -1.5 } };
+        expect(poseAtPhase(0)(half).x).toBeCloseTo(1000, 0);
+        expect(poseAtPhase(0)(star).x).toBe(0);
+        // There and back: a cycle is two passes.
+        const swing = { svg: SVG, motion: { duration: 2, easing: "linear" as const, keyframes: [{ x: 0 }, { x: 100 }] } };
+        expect(poseAtPhase(0.5)(swing).x).toBeCloseTo(100, 5);
+        expect(poseAtPhase(0.75)(swing).x).toBeCloseTo(50, 5);
+    });
+
+    test("a cell's veil covers what passes through it in any pose", () => {
+        const text = [parseHex("#e8e8e8")];
+        const bg = parseHex("#0c1014");
+        const fill = (c: Rgb, n: number) => Array.from({ length: n }, () => c);
+        const cell = (bright: number) => {
+            const c = new CellColors();
+            for (let pose = 0; pose < 8; pose++) {
+                for (let i = 0; i < 100; i++) (pose === 3 && i < bright ? c.add(255, 255, 255) : c.add(12, 16, 20));
+                c.endPose();
+            }
+            return c;
+        };
+        // In one pose of eight, a tenth of the cell: veiled. One pixel of a hundred: let through, as in a still scene.
+        expect(veilCells(text, bg, [cell(10)], 1, 1)[0]).toBeGreaterThan(0.3);
+        expect(veilCells(text, bg, [cell(1)], 1, 1)[0]).toBe(0);
+        expect(veilCells(text, bg, [cell(10)], 1, 1)[0]).toBe(veilFor(text, bg, [...fill(parseHex("#ffffff"), 10), ...fill(bg, 90)]));
     });
 
     test("is transform and opacity only, in whole steps of the window's grid, from a start on it", () => {
@@ -392,6 +449,15 @@ describe("the theme tools", () => {
         const bad = await themeSet({ id: "bad-copy", theme: { name: "B", dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ copy: "nope:dark:0" }, { copy: "night-rain" }] } } }, { ui });
         expect(bad.text).toContain("layers[0].copy");
         expect(bad.text).toContain("layers[1].copy must be");
+        // Every problem at once: a bad copy doesn't hide the rest, and later layers keep their numbers.
+        const both = await themeSet({ id: "bad-copy", theme: { name: "B", dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ copy: "nope:dark:0" }, { svg: "<svg><script/></svg>" }] } } }, { ui });
+        expect(both.text).toContain("layers[0].copy");
+        expect(both.text).toContain("dark.layers[1]");
+        // A source that's there but broken says so.
+        writeFileSync(join(home, "themes", "broken-src.json"), JSON.stringify({ name: "Broken", dark: { colors: { background: "#ffffff", text: "#000000" } } }));
+        const from = await themeSet({ id: "bad-copy", theme: { name: "B", dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ copy: "broken-src:dark:0" }] } } }, { ui });
+        expect(from.text).toContain('theme "broken-src" doesn\'t check out');
+        expect(existsSync(join(home, "themes", "bad-copy.json"))).toBe(false);
     });
 });
 
