@@ -633,6 +633,8 @@
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     height: calc(30 * var(--sp));
+    /* Room for the hover's rounded edge, without setting the words in from the rows above: they share a left edge. */
+    margin-left: calc(-2 * var(--sp));
     padding-left: calc(2 * var(--sp));
     overflow: hidden;
 }
