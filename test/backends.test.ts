@@ -1021,6 +1021,24 @@ describe("Claude Code's background work (live test findings)", () => {
             }
         }, 30_000);
 
+        test("so does one already queued as the wait begins, whose hooks hold up reading what Claude Code says", async () => {
+            process.env.FAKE_EXIT_AFTER_MS = "1500";
+            try {
+                Object.assign(process.env, { FAKE_SCENARIO: "agent-background", FAKE_SECOND_SCENARIO: "none", FAKE_BACKGROUND_MS: "2000" });
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                const q = queue([{ text: "late one", mode: "queue", images: [image] }]);
+                // Only the queued message's hook is slow: the run's own prompt goes at once.
+                const settings = { hooks: { UserPromptSubmit: [{ command: "grep -q 'late one' && sleep 3; exit 0" }] } };
+                const a = await makeAgent({ provider: "claude-code", settings, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+                await a.run("map the auth module");
+                expect(q.items).toEqual([{ text: "late one", mode: "queue", images: [image] }]);
+                expect(userSent("late one")).toBeUndefined();
+                expect(JSON.stringify(a.session.messages)).not.toContain("late one");
+            } finally {
+                delete process.env.FAKE_EXIT_AFTER_MS;
+            }
+        }, 30_000);
+
         test("what a UserPromptSubmit hook adds goes with it", async () => {
             const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });
             q.items.push({ text: "and the tests?", mode: "queue" });
