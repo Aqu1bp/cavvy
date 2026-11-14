@@ -158,7 +158,7 @@ describe("a sign-in's card, for each kind", () => {
         const o = await x.done;
         expect(o.end).toBe("done");
         expect(state(o)).toBe("unverified");
-        expect(signInReport(o, undefined, "RequestSignIn")).toMatchObject({ text: "The sign-in to Acme was done, but Cavvy has no way to check it. Try what needed it.", summary: "Signed in" });
+        expect(signInReport(o, undefined, "RequestSignIn")).toMatchObject({ text: "The sign-in to Acme was done, but Cavvy has no way to check it. Try what needed it.", summary: "Done, not checked" });
 
         acme.reset();
         const y = flow({ ...unchecked, token: { run: "acme login --token" } });

@@ -632,6 +632,8 @@ export function signInReport(o: SignInOutcome, where: string | undefined, tool: 
         }
     });
     const left = o.results.filter((r) => r.state !== "in" && r.state !== "unverified");
-    const summary = !left.length ? (o.results.length === 1 && o.results[0]!.who ? `Signed in as ${o.results[0]!.who}` : "Signed in") : o.results.some((r) => r.state === "none" || r.state === "unknown") && left.length === o.results.length ? "Can't sign in" : "Not signed in";
+    // "Signed in" is the status check's word alone: what nothing could check is said as that.
+    const unchecked = o.results.some((r) => r.state === "unverified");
+    const summary = !left.length ? (unchecked ? "Done, not checked" : o.results.length === 1 && o.results[0]!.who ? `Signed in as ${o.results[0]!.who}` : "Signed in") : o.results.some((r) => r.state === "none" || r.state === "unknown") && left.length === o.results.length ? "Can't sign in" : "Not signed in";
     return { text: lines.join("\n"), isError: left.some((r) => r.state === "unknown" || r.state === "none") && left.length === o.results.length ? true : undefined, summary };
 }
