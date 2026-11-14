@@ -372,11 +372,12 @@ export function bwrapArgs(p: SandboxPolicy): string[] {
     // replaced; a `.git` pointer file is bound read-only.
     for (const g of gits) if (existsSync(g)) args.push(statSync(g).isDirectory() ? "--bind" : "--ro-bind", g, g);
     for (const r of [...p.readOnly, ...cliInWorktrees(p), ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
-    // bwrap can't hide contents and keep names, so those folders are hidden whole.
+    // bwrap can't hide contents and keep names, so those folders are hidden whole: an empty folder over each, read-only
+    // as Seatbelt has them (a write there fails, not lands in a throwaway folder and seems to work).
     const hidden = p.contentsUnreadable ?? [];
     for (const u of [...hidden, ...p.unreadable.filter((u) => !hidden.some((h) => isWithin(u, h)))]) {
         if (!existsSync(u)) continue;
-        if (statSync(u).isDirectory()) args.push("--tmpfs", u);
+        if (statSync(u).isDirectory()) args.push("--tmpfs", u, "--remount-ro", u);
         else args.push("--ro-bind", "/dev/null", u);
     }
     for (const d of hostSocketDirs()) args.push("--tmpfs", d);
