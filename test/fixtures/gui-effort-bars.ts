@@ -125,9 +125,10 @@ test("the model picker's effort: a change the server refuses goes back to the le
         // On Home the picker shows the saved default, which only a saved change moves.
         app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
-        ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground"]),
+        ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
     }));
-    mock.module("../../gui/src/lib/platform", () => names(["copyText", "pickFolder"]));
+    // No servers here: the window is on this computer.
+    mock.module("../../gui/src/lib/platform", () => ({ ...names(["copyText", "pickFolder"]), machine: undefined }));
     mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: stub }));
     mock.module("../../gui/src/state/ui", () => ({
         ...names(["railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),

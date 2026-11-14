@@ -51,9 +51,10 @@ mock.module("../../gui/src/state/app", () => ({
         }
     },
     activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
-    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop,
+    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop, serversUi: noop,
 }));
-mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
+// No servers here: the window is on this computer.
+mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop, machine: undefined }));
 mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));
 mock.module("../../gui/src/state/ui", () => ({
     setContextCardOpen: (open: boolean) => contextOpenings.push(open),

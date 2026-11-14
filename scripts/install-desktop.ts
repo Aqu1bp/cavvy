@@ -62,7 +62,8 @@ run(["bun", "install"], join(root, "desktop-electron"));
 const { pack } = await import("../desktop-electron/pack.ts");
 let built: string;
 try {
-    built = await pack();
+    // With this build for Linux servers in it: the installed app is what sets a server up.
+    built = await pack({ serverBuilds: true });
 } catch (e) {
     console.error(`Building the app failed: ${(e as Error).message}`);
     process.exit(1);

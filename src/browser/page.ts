@@ -13,6 +13,7 @@ import { TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
+import { FarStream } from "./far-stream";
 import { frameSize, pictureSize } from "./frame-size";
 
 /** A failure the agent can act on: its message says what to do. */
@@ -52,6 +53,19 @@ export interface PendingDialog {
     defaultPrompt?: string;
 }
 
+/**
+ * A dropdown (a <select> that opens a list) the person clicked in the pane: its options, for the pane to show. The
+ * list Chrome opens for it is a window of its own, which takes no click sent to the page (and on macOS isn't in the
+ * page's picture at all), so it's never opened: the pane lists the options and the choice is made in the page.
+ */
+export interface PendingChoice {
+    /** Which list this is, of those the tab has shown: a pick says which one it was made in (Page.choose). */
+    id: number;
+    label: string;
+    options: { label: string; disabled?: boolean }[];
+    selected: number;
+}
+
 /** The time a page gets to finish loading before a call goes on without it. */
 export const LOAD_TIMEOUT_MS = 30_000;
 /** How long without a request in flight counts as the page having settled, and the most a call waits for it. */
@@ -59,6 +73,13 @@ const QUIET_MS = 300;
 const SETTLE_MAX_MS = 3000;
 /** The pane's stream: its JPEG quality, and how long without a frame counts as the page having stopped changing. */
 const STREAM_QUALITY = 90;
+/**
+ * The stream's quality for a pane that's watched over a network (a session on a server): its pictures are under
+ * half the bytes while the page moves, and the still that follows when it stops is as sharp as ever
+ * (far-stream.ts). At a screen's double density the two look the same. Measured to a two-core server 35 ms away,
+ * a page scrolling in a 549 by 642 pane at scale 2: 25 pictures a second of 146 KB, where it had been 13 of 334 KB.
+ */
+const FAR_QUALITY = 45;
 const SETTLE_MS = 200;
 /** How long after a still a frame may still be the repaint that taking it caused. */
 const STILL_ECHO_MS = 60;
@@ -122,6 +143,27 @@ function navigationFailure(url: string, error: string): string {
     return `Couldn't load ${where}: ${error}`;
 }
 
+/** The objects kept in a page for the dropdown the pane shows: let go when the list closes. */
+export const CHOICE_OBJECTS = "cavvy-choice";
+/** The longest a dropdown's name or an option of it is, as listed. */
+export const MAX_LABEL = 200;
+/** An option as the pane lists it (run in the page): its group's name before its own, in a line. */
+export const OPTION_LINE = `(o) => {
+    const group = o.parentElement && o.parentElement.tagName === "OPTGROUP" ? o.parentElement : null;
+    return String((group && group.label ? group.label + ": " : "") + (o.label || o.text)).replace(/\\s+/g, " ").trim().slice(0, ${MAX_LABEL});
+}`;
+/**
+ * Picks an option as a person does: the page hears `input` and `change`, unless it's the one already chosen. Only
+ * the option that was listed there: a page that changed its options meanwhile gets no pick.
+ */
+const PICK_OPTION = `function (i, label) {
+    const o = this.options[i];
+    if (!this.isConnected || this.disabled || !o || o.disabled || (${OPTION_LINE})(o) !== label) return;
+    if (this.selectedIndex === i) return;
+    this.selectedIndex = i;
+    this.dispatchEvent(new Event("input", { bubbles: true }));
+    this.dispatchEvent(new Event("change", { bubbles: true }));
+}`;
 export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
@@ -151,6 +193,18 @@ export class Page {
     loading = false;
     crashed = false;
     dialog?: PendingDialog;
+    choice?: PendingChoice;
+    /** The dropdown `choice` is about, held in the page; and the press that opened it, whose release isn't the page's either. */
+    private choiceOf?: string;
+    private choices = 0;
+    choicePress = false;
+    /** A press on its way to the page (it's finding out what's under it first): what follows it waits for it. */
+    pressing?: Promise<unknown>;
+    /**
+     * The world of its own in this page where a dropdown is looked at (src/browser/interact.ts), by the id that is
+     * that world's alone: one from the page before names nothing in the next. A new page has none yet.
+     */
+    choiceWorld?: string;
     canGoBack = false;
     canGoForward = false;
     viewport: Viewport;
@@ -165,6 +219,10 @@ export class Page {
     private navigations = 0;
     /** Of those, the ones to a new document (not a same-document change: an anchor, history.pushState). */
     private documents = 0;
+    /** Which document the tab shows, counted: a new one for every page loaded in it. */
+    get loaded(): number {
+        return this.documents;
+    }
     /** Approved navigations under way (gotoApproved). */
     private approving = 0;
     private waiters = new Set<() => void>();
@@ -319,8 +377,18 @@ export class Page {
             // The browser's report of the title can come late or not at all: the pane's tab strip reads it from the page.
             void this.readTitle();
         });
+        // The pane's own world in this page's main frame, as Chrome says it's made; gone with the page it was in.
+        this.on("Runtime.executionContextCreated", (p: { context: { uniqueId?: string; name?: string; auxData?: { frameId?: string } } }) => {
+            if (p.context.name === CHOICE_OBJECTS && p.context.auxData?.frameId === this.targetId && p.context.uniqueId) this.choiceWorld = p.context.uniqueId;
+        });
+        this.on("Runtime.executionContextsCleared", () => {
+            this.choiceWorld = undefined;
+        });
         this.on("Page.frameNavigated", (p: { frame: { id: string; parentId?: string; url: string; loaderId?: string } }) => {
             if (p.frame.parentId) return;
+            // Its dropdown, and the world it was looked at in, went with the page before.
+            this.setChoice(undefined);
+            this.choiceWorld = undefined;
             this.navigations++;
             this.documents++;
             this.url = p.frame.url;
@@ -344,6 +412,8 @@ export class Page {
             if (!mainFrame(p)) return;
             this.navigations++;
             this.url = p.url;
+            // Its dropdown went with the page it was on.
+            this.setChoice(undefined);
             this.changed();
             void this.refreshHistory();
         });
@@ -363,6 +433,8 @@ export class Page {
             this.changed();
         });
         this.on("Inspector.targetCrashed", () => {
+            this.setChoice(undefined);
+            this.choiceWorld = undefined;
             this.crashed = true;
             this.loading = false;
             this.changed();
@@ -429,7 +501,10 @@ export class Page {
             this.fullFrames++;
             // The frame's CSS dimensions: its own label, right for a frame already in flight during a resize, unless its
             // picture is the current stream's size, which Chrome sometimes mislabels (frame-size.ts).
-            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) });
+            const frame = { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) };
+            // Watched over a network: which frames are shown, and when the still is, is another matter (far-stream.ts).
+            if (this.far) return this.far.frame(frame, Bun.hash(p.data));
+            this.o.hooks.frame(this, frame);
             this.paced(Date.now());
         });
     }
@@ -698,6 +773,33 @@ export class Page {
         }
     }
 
+    /** The dropdown whose options the pane shows (`object`: it, in the page), or none any more. */
+    setChoice(choice: Omit<PendingChoice, "id"> | undefined, object?: string) {
+        if (!choice && !this.choice) return;
+        this.choice = choice && { ...choice, id: ++this.choices };
+        this.choiceOf = choice ? object : undefined;
+        if (!choice) void this.send("Runtime.releaseObjectGroup", { objectGroup: CHOICE_OBJECTS }).catch(() => undefined);
+        this.changed();
+    }
+
+    /**
+     * The person picked an option of the dropdown the pane shows (by its place in the list), or closed the list.
+     * `list` is the list they did it in (PendingChoice.id): when that's no longer the one that's open (another was
+     * opened since their pane last heard), nothing is picked and the open one stays.
+     */
+    async choose(index?: number, list?: number) {
+        const object = this.choiceOf;
+        const choice = this.choice;
+        if (list !== undefined && choice && choice.id !== list) return;
+        if (!choice || !object) throw new BrowserError("No list is open in this tab.");
+        try {
+            const option = index !== undefined && Number.isInteger(index) ? choice.options[index] : undefined;
+            if (option && !option.disabled) await this.send("Runtime.callFunctionOn", { objectId: object, functionDeclaration: PICK_OPTION, arguments: [{ value: index }, { value: option.label }] });
+        } finally {
+            if (this.choiceOf === object) this.setChoice(undefined);
+        }
+    }
+
     /** Answers the dialog the page is showing. */
     async answerDialog(accept: boolean, promptText?: string) {
         if (!this.dialog) throw new BrowserError("No JavaScript dialog is open in this tab.");
@@ -707,19 +809,38 @@ export class Page {
     // -----------------------------------------------------------------------
     // Streaming
 
-    /** Frames of the page go to the hooks, at most `width` by `height` device pixels. */
-    async startScreencast(width: number, height: number) {
+    /** The pace of the pictures of a pane that's watched over a network, while it is. */
+    private far?: FarStream<{ data: string; width: number; height: number }>;
+
+    /**
+     * Frames of the page go to the hooks, at the page's size and scale. `far`: its pane is watched over a network,
+     * so they're lighter while the page moves (FAR_QUALITY), and the still when it stops is the sharp one.
+     */
+    async startScreencast(far = false) {
+        const [width, height] = [this.viewport.width * this.viewport.scale, this.viewport.height * this.viewport.scale];
         this.streaming = true;
         this.streamEpoch++;
         this.fullFrames = 0;
+        this.far?.stop();
+        this.far = far
+            ? new FarStream({
+                  show: (frame) => this.streaming && !this.closed && this.o.hooks.frame(this, frame),
+                  still: async () => {
+                      if (!this.streaming || this.closed) return undefined;
+                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
+                      return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: Bun.hash(data) };
+                  },
+              })
+            : undefined;
         // Started before the page has drawn at the size it was just given, its first frame is the old picture labelled with
         // the new size: it starts once the page has drawn twice, or a moment has passed (a page stuck in a dialog draws nothing).
         await this.send("Runtime.evaluate", { expression: "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))", awaitPromise: true }, 1000).catch(() => undefined);
         // One size and quality throughout: a stream that changed them while scrolling (restarting it each time) saved a
         // few milliseconds and cost a blur, a stall and a pop on every gesture.
-        await this.send("Page.startScreencast", { format: "jpeg", quality: STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
+        await this.send("Page.startScreencast", { format: "jpeg", quality: far ? FAR_QUALITY : STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
         // An idle page doesn't repaint for a new stream: it starts from a still unless a frame beats it.
-        this.settleLater();
+        if (this.far) this.far.start();
+        else this.settleLater();
     }
 
     /** A frame arrived: once frames stop, the page has settled. */
@@ -760,6 +881,7 @@ export class Page {
         this.streaming = false;
         this.streamEpoch++;
         clearTimeout(this.settleTimer);
+        this.far?.stop();
         await this.send("Page.stopScreencast").catch(() => undefined);
     }
 
@@ -774,6 +896,7 @@ export class Page {
         this.streaming = false;
         this.streamEpoch++;
         clearTimeout(this.settleTimer);
+        this.far?.stop();
         for (const off of this.unlisten) off();
         this.unlisten = [];
         this.wake();

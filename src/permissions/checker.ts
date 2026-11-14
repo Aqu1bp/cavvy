@@ -27,11 +27,12 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
+import { onServer } from "../servers/role";
 import { antigravityConfigDirs, cavvyHome, opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
 import { childEnv } from "../util/env";
@@ -117,7 +118,13 @@ function isLink(p: string): boolean {
 
 /** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
-const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval", "SimulatorAct"]);
+/** What a simulator is told that acts on whatever runs there then: ending an app, a link opened in one, the device shut down or taken back. */
+const ONE_CALL_CONTROLS = new Set(["shutdown", "terminate", "open_url", "take_control"]);
+const oneCall = (tool: Tool<any>, input: any) =>
+    ONE_CALL_APPROVAL.has(tool.name) ||
+    // A launch with arguments ends the app if it's running, to start it with them.
+    (tool.name === "SimulatorControl" && (ONE_CALL_CONTROLS.has(input?.action) || (input?.action === "launch" && Array.isArray(input.args) && input.args.length > 0)));
 const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".agents", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /**
@@ -154,6 +161,8 @@ export class PermissionChecker {
         private root: string,
         /** The sandbox auto mode runs shell commands in here, if any (replaceable in tests). */
         readonly sandbox: () => SandboxKind | undefined = () => (sandboxEnabled(settings().sandbox) ? sandboxKind() : undefined),
+        /** This machine is one of the user's servers (servers/role.ts): only what reaches beyond it is always asked about. */
+        private server: () => boolean = onServer,
     ) {}
 
     sandboxAvailable(): boolean {
@@ -251,9 +260,11 @@ export class PermissionChecker {
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
         // branch, commit or set of files; a browser action, on whatever page is open, so the same click or
-        // script can do something else on the next one: a yes covers the call it answered. "Don't ask again" is the rule.
+        // script can do something else on the next one; a tap or a key on a simulator, on whatever screen is up,
+        // and ending an app or shutting the device down, on whatever runs there: a yes covers the call it
+        // answered. "Don't ask again" is the rule.
         // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
-        if (ONE_CALL_APPROVAL.has(tool.name)) return;
+        if (oneCall(tool, input)) return;
         this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
         const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
         const key = stableStringify(a);
@@ -303,7 +314,7 @@ export class PermissionChecker {
         const rules = d.suggestions ?? [];
         if (!rules.length) return undefined;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
-        if (tool.name === "SimulatorControl") return { label: rules[0]!, rules };
+        if (tool.name === "SimulatorControl") return { label: SIMULATOR_CONTROL_NOUNS[String(input?.action)] ?? rules[0]!, rules };
         return { label: toolNoun(tool.name), rules };
     }
 
@@ -446,7 +457,20 @@ export class PermissionChecker {
         }
 
         let dangerous: string | undefined;
-        if (isShellTool(tool.name)) dangerous = dangerousReason(t.command ?? "");
+        // On a server, a push whose branch can't be worked out: asked about in Bypass too, as what it may be.
+        let unknownPush = false;
+        if (isShellTool(tool.name)) {
+            const server = this.server();
+            dangerous = dangerousReason(t.command ?? "", 0, false, server);
+            // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
+            // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
+            const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;
+            // Not a command too long to read through: that says nothing of a push, and would ask for every such command.
+            if (push && push !== ANALYSIS_LIMIT) {
+                if (push.endsWith("(branch unknown)")) unknownPush = true;
+                else dangerous = `pushes to the default branch (${push})`;
+            }
+        }
 
         // Plan mode: research only.
         if (mode === "plan") {
@@ -481,6 +505,8 @@ export class PermissionChecker {
         if (dangerous) {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
+        // Not flagged as dangerous: it may be an ordinary push, and can be allowed for the session.
+        if (unknownPush && mode === "bypassPermissions") return { behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." };
 
         const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };
@@ -786,9 +812,12 @@ function storeFiles(settings = false): string[] {
     return homes().flatMap((h) => names.map((n) => join(h, n)));
 }
 
-/** Cavvy's own accounts folder, in each of homes(): private whether or not any account is registered. */
+/**
+ * Cavvy's own private folders, in each of homes(): accounts/ (private whether or not any account is registered), and
+ * server/, through which a machine signs in to the Cavvy this one runs for others (src/servers/host.ts).
+ */
 function cavvyAccounts(): string[] {
-    return homes().map((h) => join(h, "accounts"));
+    return homes().flatMap((h) => [join(h, "accounts"), join(h, "server")]);
 }
 
 /** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */
@@ -1009,6 +1038,17 @@ function dirGlob(abs: string): string {
     const dir = dirname(abs);
     return dir === "/" ? "//**" : `/${dir}/**`;
 }
+
+/** What allowing one thing a simulator is told allows, in words: the popup's "Allow … this session". */
+const SIMULATOR_CONTROL_NOUNS: Record<string, string> = {
+    boot: "starting simulators",
+    shutdown: "shutting simulators down",
+    install: "installing apps on simulators",
+    launch: "launching apps on simulators",
+    terminate: "ending apps on simulators",
+    open_url: "opening links on simulators",
+    take_control: "taking a simulator's input back",
+};
 
 const TOOL_NOUNS: Record<string, string> = {
     BrowserAct: "browser actions",

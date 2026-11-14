@@ -15,7 +15,7 @@
 Whatever the mode:
 
 - Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env` (`env -S '…'` included), `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo` with any of their options, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`, `/BIN/RM`), since the shell finds `/bin/rm` for that name there. A program named by a variable (`$X`) isn't known to them. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
-- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too).
+- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too). On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
 - Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.cavvy/settings.local.json`), or decline and say what to do instead.

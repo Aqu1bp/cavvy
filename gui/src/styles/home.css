@@ -151,6 +151,11 @@
     animation: home-drawer 360ms 80ms var(--spring) both;
 }
 
+/* Where the session runs (a server, or this computer): put in by the servers code, laid out as one of the strip's own. */
+.strip-at {
+    display: contents;
+}
+
 .strip-ctl {
     display: inline-flex;
     align-items: center;

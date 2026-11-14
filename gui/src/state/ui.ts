@@ -37,9 +37,20 @@ export const [modePickerOpen, setModePickerOpen] = createSignal(false);
 export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** Setup must be visible; an overlay opened during checkout leaves it for a manual run. */
 export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
-/** The side panel's tab; kept while the app runs, like the reader's layout. */
-/** The side panel's pane. Changes isn't one: its icon opens the diff reader. */
-export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>("agents");
+/** Where a window that's about to load again on another machine leaves its side panel's tab (lib/machines.ts). */
+export const PANE_KEY = "cavvy.pane";
+/** The tab the window was on before it went to another machine, once. */
+function carriedPane(): InspectorPane {
+    try {
+        const was = sessionStorage.getItem(PANE_KEY);
+        sessionStorage.removeItem(PANE_KEY);
+        return was === "agents" || was === "commands" || was === "browser" || was === "simulator" ? was : "agents";
+    } catch {
+        return "agents";
+    }
+}
+/** The side panel's pane, kept while the app runs and when the window goes to another machine. Changes isn't one: its icon opens the diff reader. */
+export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>(carriedPane());
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
@@ -60,6 +71,9 @@ export const [archiveRequest, setArchiveRequest] = createSignal<{ id: string; ti
 
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
+/** The sidebar holds its rows still under the pointer (components/Sidebar.tsx): not for a change that says so here. */
+export const [railFree, setRailFree] = createSignal(false);
+export const freeRail = () => { setRailFree(true); queueMicrotask(() => setRailFree(false)); };
 
 /** The models Home's next prompt goes to, each in a worktree of its own (Compare in the model picker); undefined while that's off. */
 export const [comparePicks, setComparePicks] = createSignal<string[] | undefined>();

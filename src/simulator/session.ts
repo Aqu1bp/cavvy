@@ -137,6 +137,19 @@ async function refreshDevices(force = false): Promise<SimulatorDevice[]> {
     return listing;
 }
 
+/**
+ * Where a session that has used no simulator yet would stand: what could be started, and the device it would be
+ * offered (one that runs, else the first iPhone). Nothing is attached to, so one that runs isn't shown as ready.
+ */
+export async function simulatorOutlook(settings: Settings): Promise<SimulatorState> {
+    if (!simulatorEnabled(settings)) return { status: "unavailable", error: TURNED_OFF, devices: [] };
+    const available = await simctl.simulatorsAvailable();
+    if (!available.ok) return { status: "unavailable", error: available.error, devices: [] };
+    const list = await refreshDevices().catch(() => devices);
+    const device = list.find((x) => x.state === "booted") || list.find((x) => x.kind === "iphone") || list[0];
+    return { status: "off", devices: list, ...(device ? { device } : {}) };
+}
+
 function stateOf(udid: string): SimulatorDevice["state"] | undefined {
     if (stopping.has(udid)) return "shutting_down";
     if (booting.has(udid)) return "booting";

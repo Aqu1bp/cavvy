@@ -15,6 +15,7 @@ import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminal
 import { isTerminalReply } from "@shared/terminal-reply";
 import { copyText, isMod } from "../lib/platform";
 import { terminalKey, withShortcut } from "../state/keybindings";
+import { terminalAsked, terminalTakesKeys, terminalUsed } from "../lib/terminal-keys";
 
 /**
  * `script`: the project script the tab was opened to run (once: restarting it gives a plain shell), and is named after.
@@ -87,6 +88,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         if (!restored() || !p.cwd || app.conn !== "open" || full()) return;
         const id = crypto.randomUUID();
         const tab = { id, cwd: p.cwd, number: next++, terminal: id };
+        terminalAsked();
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
     };
@@ -100,6 +102,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         const id = crypto.randomUUID();
         const tab = { id, terminal: id, cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
         if (setup) setupTickets.set(tab.id, setup.ticket);
+        terminalAsked();
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setTerminalOpen(true);
@@ -109,6 +112,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         if (app.conn !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
         const id = crypto.randomUUID();
         const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
+        terminalAsked();
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setSettingsTab(undefined);
@@ -120,7 +124,12 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     onCleanup(() => { if (terminalActions.runScript === runScript) delete terminalActions.runScript; });
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
-    createEffect(on(terminalOpen, (open) => { if (open && !reopening && !p.hidden && !currentTabs().length) add(); }, { defer: true }));
+    createEffect(on(terminalOpen, (open) => {
+        if (!open || reopening) return;
+        // Opened by the user: its terminal takes the keyboard, even from a card that waits (lib/terminal-keys.ts).
+        terminalAsked();
+        if (!p.hidden && !currentTabs().length) add();
+    }, { defer: true }));
     const close = (tab: Tab) => {
         tab.closing = true;
         if (currentTabs().length === 1) setTerminalOpen(false);
@@ -166,7 +175,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
             <div class="terminal-toolbar">
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => { terminalAsked(); setSelected(tab.id); }} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
                         <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
@@ -202,6 +211,10 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
     let disposed = false;
     /** Its shell is running and attached here: input, resizes and acks go to it. */
     let opened = false;
+    /** The keyboard, when this terminal comes into view: not from a card that waits unless the user asked for the terminal. */
+    const takeKeys = () => { if (p.visible && terminalTakesKeys(container)) term.focus(); };
+    /** Typed, clicked or scrolled in, or left (seen before the emulator, which keeps some keys to itself). */
+    const used = { handleEvent: () => terminalUsed(container), capture: true, passive: true };
     let id = p.tab.terminal;
     // Typed by the first shell only: a restart, a reconnect or a reload never runs it again.
     let script = p.tab.attach ? undefined : p.tab.script;
@@ -314,7 +327,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             if (typed) send(typed);
             // A new size makes a full-screen program draw itself again (the server nudges it when the size is the same).
             fitNow();
-            if (p.visible) term.focus();
+            takeKeys();
         } catch (e) {
             if (disposed || at !== epoch || attempt !== attachment) return;
             early.take();
@@ -369,7 +382,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
             if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
             fitNow();
-            if (p.visible) term.focus();
+            takeKeys();
         } catch (e) {
             early.take();
             if (disposed) return p.onClose(id);
@@ -467,11 +480,11 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             term.dispose();
         });
     });
-    createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
+    createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); takeKeys(); } }); });
     // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
     createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
-        <div class="terminal-emulator" ref={container} />
+        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} />
         <Show when={loginOutputLost()}><div class="terminal-message">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
             <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>

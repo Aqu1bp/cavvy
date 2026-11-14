@@ -6,7 +6,7 @@
 // browser, watched and driven by hand (BrowserPane). Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
-import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch, lazy } from "solid-js";
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -27,7 +27,6 @@ import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
 import { browserUnseen, loadBrowserState } from "../state/browser";
-import { SimulatorPane } from "./SimulatorPane";
 import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
 /** The folder the session works in: its actions, from the header's button (the path on hover). */
@@ -233,6 +232,9 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
         </Show>
     );
 }
+
+/** The Simulator pane is loaded when it's first shown: only a Mac with Xcode, or a server lent one's, ever shows it. */
+const SimulatorPane = lazy(() => import("./SimulatorPane").then((m) => ({ default: m.SimulatorPane })));
 
 /** What the panel's views hold, for its rail and its panes: the folder's changes, the agents and the commands. */
 function usePanelWork(handle: () => SessionHandle) {

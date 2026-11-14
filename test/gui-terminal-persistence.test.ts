@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TerminalClosures, parseTabs, restoreTabs, type SavedTabs } from "../gui/src/lib/terminal";
+import { TerminalClosures, parseTabs, restoreTabs, tabsKey, type SavedTabs } from "../gui/src/lib/terminal";
 import type { Rpc } from "../gui/src/lib/rpc";
 import { isTerminalReply } from "../src/server/terminal-reply";
 
@@ -183,6 +183,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         ResizeObserver: class { constructor(private cb: () => void) {} observe() { resizes.add(this.cb); } disconnect() { resizes.delete(this.cb); } }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
         requestAnimationFrame: (fn: () => void) => frameQueue.push(fn), cancelAnimationFrame() {}, isMod: () => false, copyText() {},
+        // Whose the keyboard is (lib/terminal-keys.ts, tested in gui-terminal-keys.test.ts): here the terminal always takes it.
+        terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;
@@ -421,4 +423,10 @@ test("the terminal holds back the first key of a chord for the terminal toggle, 
         m.dispose();
         kb.applyKeybindingsFile({ path: "/k.json" });
     }
+});
+
+test("a window keeps each machine's terminal tabs apart: back from a server, this computer's are the ones it had", () => {
+    expect(tabsKey(undefined)).toBe("cavvy.terminals");
+    expect(tabsKey("box")).toBe("cavvy.terminals.box");
+    expect(tabsKey("box")).not.toBe(tabsKey("lab"));
 });
