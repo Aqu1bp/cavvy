@@ -2662,7 +2662,7 @@ export class Engine {
                 return null;
             case "themes.report": {
                 const r = p as unknown as ThemeReport;
-                if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}) });
+                if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}), ...(typeof r.picture === "string" && r.picture.length < 2_000_000 && /^[A-Za-z0-9+/]+=*$/.test(r.picture) ? { picture: r.picture } : {}) });
                 return null;
             }
             case "keybindings.create": {

@@ -137,7 +137,7 @@
     transition: box-shadow 200ms;
 }
 
-.tg-pick:hover:not(:disabled) .tg-pv {
+.tg-tile:not(.on) .tg-pick:hover:not(:disabled) .tg-pv {
     box-shadow: 0 0 0 0.5px var(--fg-4);
 }
 

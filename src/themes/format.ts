@@ -109,8 +109,8 @@ const num = (v: unknown): v is number => typeof v === "number" && Number.isFinit
 export function svgProblem(svg: string): string | undefined {
     const t = svg.trim();
     if (!/^(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(t) || !/<\/svg>\s*$/i.test(t)) return "isn't one <svg>…</svg> document";
-    if (/<script[\s>]/i.test(t)) return "has a <script>, which an image never runs";
-    if (/<foreignObject[\s>]/i.test(t)) return "has a <foreignObject>, which isn't drawn";
+    if (/<script[\s/>]/i.test(t)) return "has a <script>, which an image never runs";
+    if (/<foreignObject[\s/>]/i.test(t)) return "has a <foreignObject>, which isn't drawn";
     if (/\son[a-z]+\s*=/i.test(t)) return "has an event handler attribute, which an image never runs";
     if (/(?:href|src)\s*=\s*["']\s*(?!#|data:)/i.test(t)) return "links to something outside itself, which an image can't load: use #ids or data: URLs";
     if (/url\(\s*["']?\s*(?!#|data:)/i.test(t)) return "has a url() outside itself, which an image can't load: use url(#id)";

@@ -167,6 +167,8 @@ export interface Drawn {
     /** The share of the background over the scene: on average, and where it's most. */
     veil?: number;
     veilMost?: number;
+    /** The veil as a small image to stretch over the stage (ThemeBackdrop). */
+    map?: string;
     failed: number[];
 }
 

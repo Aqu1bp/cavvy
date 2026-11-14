@@ -1994,6 +1994,8 @@ export interface ThemeReport {
     failed?: number[];
     /** The window rests the scene (reduced motion, or the theme's Animate is off). */
     still?: boolean;
+    /** The window with the theme on, the app sketched over it with made-up text: a JPEG, in base64. */
+    picture?: string;
 }
 
 export interface HelloResult {

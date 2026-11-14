@@ -784,7 +784,10 @@ async function themeApplied(id: string | null, entry: ThemeEntry | undefined, re
     m.applyTheme(id ?? undefined);
     const still = !prefs.themeMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
     const drawn = id ? await m.whenDrawn(id) : undefined;
-    const report: ThemeReport = id ? (drawn ? { request, shown: true, scheme: drawn.scheme, ...(drawn.veil !== undefined ? { veil: drawn.veil } : {}), ...(drawn.veilMost !== undefined ? { veilMost: drawn.veilMost } : {}), failed: drawn.failed, still } : { request, shown: false }) : { request, shown: true };
+    // A picture of it for the agent, made only now that one has asked.
+    const s = m.shown();
+    const picture = drawn && s ? await import("../lib/theme-picture").then((p) => p.themePicture(s.look, s.palette.vars, drawn.map)).catch(() => undefined) : undefined;
+    const report: ThemeReport = id ? (drawn ? { request, shown: true, scheme: drawn.scheme, ...(drawn.veil !== undefined ? { veil: drawn.veil } : {}), ...(drawn.veilMost !== undefined ? { veilMost: drawn.veilMost } : {}), failed: drawn.failed, still, ...(picture ? { picture } : {}) } : { request, shown: false }) : { request, shown: true };
     await rpc.call("themes.report", report).catch(() => undefined);
 }
 

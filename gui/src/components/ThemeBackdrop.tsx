@@ -9,17 +9,10 @@ import { STAGE } from "../../../src/themes/format";
 import { veilMap, WINDOW_TEXT } from "../../../src/themes/palette";
 import { parseHex, rgba, type Rgb } from "../../../src/themes/color";
 import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
+import { boxOf, drawLayers, loadLayers, svgUrl } from "../lib/theme-draw";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
 import { drawnTheme, sceneKey, shown, type Shown } from "../state/theme";
-
-export const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-
-
-const reduceMotion = typeof matchMedia !== "undefined" ? matchMedia("(prefers-reduced-motion: reduce)") : undefined;
-
-/** Whether the scene rests: the user's Animate is off, or their system asks for less motion. */
-export const sceneStill = () => !prefs.themeMotion || Boolean(reduceMotion?.matches);
 
 /** How a scene was measured: its veil as an image to stretch over the stage, how much it covers on average and at most, and the layers that couldn't be drawn. */
 interface Measured {
@@ -47,39 +40,14 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     canvas.width = STAGE.width / k;
     canvas.height = STAGE.height / k;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    const failed: number[] = [];
-    const images = await Promise.all(
-        (look.layers ?? []).map(async (layer, i) => {
-            const img = new Image();
-            img.src = svgUrl(layer.svg);
-            try {
-                await img.decode();
-                return img;
-            } catch {
-                failed.push(i);
-                return undefined;
-            }
-        }),
-    );
+    const layers = look.layers ?? [];
+    const { images, failed } = await loadLayers(layers);
     const background = parseHex(look.colors.background);
     let pixels: Rgb[] = [];
     if (ctx) {
         ctx.fillStyle = look.colors.background;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        (look.layers ?? []).forEach((layer, i) => {
-            const img = images[i];
-            if (!img) return;
-            const box = boxOf(layer);
-            const pose = restPose(layer);
-            const [ox, oy] = layer.origin ?? [0.5, 0.5];
-            ctx.save();
-            ctx.globalAlpha = (layer.opacity ?? 1) * pose.opacity;
-            ctx.translate((box.x + pose.x + box.width * ox) / k, (box.y + pose.y + box.height * oy) / k);
-            ctx.rotate((pose.rotate * Math.PI) / 180);
-            ctx.scale(pose.scale, pose.scale);
-            ctx.drawImage(img, (-box.width * ox) / k, (-box.height * oy) / k, box.width / k, box.height / k);
-            ctx.restore();
-        });
+        drawLayers(ctx, layers, images, k);
         try {
             const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
             for (let i = 0; i < data.length; i += 4) pixels.push({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! });
@@ -113,8 +81,6 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     veils.set(key, out);
     return out;
 }
-
-const boxOf = (l: Layer) => ({ x: l.x ?? 0, y: l.y ?? 0, width: l.width ?? STAGE.width, height: l.height ?? STAGE.height });
 
 let serial = 0;
 
@@ -174,7 +140,7 @@ function Scene(p: { shown: Shown; sceneKey: string; leaving: boolean; onDrawn: (
     onMount(() => {
         void measure(p.sceneKey, look, p.shown).then((m) => {
             setVeil(m);
-            drawnTheme({ key: p.sceneKey, id: p.shown.id, scheme: p.shown.scheme, veil: m.mean, veilMost: m.most, failed: m.failed });
+            drawnTheme({ key: p.sceneKey, id: p.shown.id, scheme: p.shown.scheme, veil: m.mean, veilMost: m.most, ...(m.map ? { map: m.map } : {}), failed: m.failed });
             p.onDrawn(p.sceneKey);
         });
     });

@@ -13,7 +13,7 @@ import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
 import { applyTheme, builtinTheme, loadAllBuiltins, userThemes } from "../state/theme";
 import { setHomeDraft, setSettingsTab } from "../state/ui";
-import { svgUrl } from "./ThemeBackdrop";
+import { svgUrl } from "../lib/theme-draw";
 
 /** What Make one puts in a new session's composer. */
 const ASK = "Make me a Cavvy theme: ";
