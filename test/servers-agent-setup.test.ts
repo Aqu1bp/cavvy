@@ -169,6 +169,12 @@ describe("the keys Cavvy makes for a new server", () => {
         expect(s.indexOf("systemctl restart ssh")).toBeLessThan(s.indexOf("apt-get"));
         expect(s).toContain("$3 == 1000");
         expect(s).toContain("touch /var/lib/cavvy-setup-done");
+        // A small machine gets swap before anything is installed: without it one ran out of memory.
+        expect(s).toContain("swapon /swapfile");
+        expect(s.indexOf("swapon /swapfile")).toBeLessThan(s.indexOf("apt-get"));
+        expect(s.indexOf("authorized_keys")).toBeLessThan(s.indexOf("swapon /swapfile"));
+        // And agents are told what size to pick.
+        expect(ServerKeyTool.description).toContain("at least 1 GB of memory");
     });
 
     test("a rented machine's details: one short line each, and teardown commands that are words", () => {
@@ -464,6 +470,14 @@ describe("from a window, with an agent doing it", () => {
         const list = await c.card(id, "signin", (i) => i.step === "list");
         expect(list.machine).toBe("aws-mumbai");
         expect(list.rows).toEqual([{ target: "claude", name: "Claude Code", state: "in", who: "me@example.com" }, { target: "codex", name: "Codex", state: "out" }, { target: "gh", name: "GitHub", state: "out" }]);
+        // What it was at, step by step, on the call's own row: the wait, the copy, the start, the installs, the look at its sign-ins.
+        const steps = String((c.view(id).turns.flatMap((t) => t.blocks).find((b) => b.t === "tool" && b.name === "ServerAdd") as { progress?: string } | undefined)?.progress ?? "").trim().split("\n");
+        expect(steps[0]).toBe("Waiting for aws-mumbai to start");
+        expect(steps).toContain("Copying Cavvy to aws-mumbai…");
+        expect(steps).toContain("Starting Cavvy on aws-mumbai…");
+        expect(steps.some((l) => /^Installing .+ on aws-mumbai$/.test(l))).toBe(true);
+        expect(steps).toContain("Checking what aws-mumbai has");
+        expect(steps[steps.length - 1]).toBe("Checking what's signed in on aws-mumbai");
         // It's listed already, with what it costs: the sign-ins aren't what adds it.
         const entry = getServer("aws-mumbai")!;
         expect(entry).toMatchObject({ destination: "dev@new.example", identityFile: made.identityFile, knownHostsFile: ownKnownHosts(), cloud: { provider: "AWS Lightsail", where: "Mumbai", cost: "$12/month", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "aws-mumbai"]] } });

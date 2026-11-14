@@ -141,6 +141,7 @@ export const ServerKeyTool: Tool<KeyInput> = {
 
 - The user sees the price and the details and chooses Create, Change… or Cancel, whatever the permission mode. Nothing that costs money may be created without this approval, and only what was approved.
 - name is what the server will be called in Cavvy (lowercase letters, digits, dashes: "aws-mumbai"). provider, where, size and system are shown as you write them ("AWS Lightsail", "Mumbai", "2 CPUs · 2 GB · 60 GB", "Ubuntu 24.04"). price is the whole recurring cost with its period, from the provider's own price list ("$12/month"); look it up, don't guess.
+- Size it for agents: at least 1 GB of memory (2 GB is comfortable). Cavvy and an agent CLI don't fit in 512 MB, so "the cheapest" means the cheapest with 1 GB or more; say so if the user asked for less.
 - On Create you get the path of a start-up script. Pass that file as the new machine's user data when you create it. It gives the server the key Cavvy signs in with and the identity Cavvy expects, turns password logins off, and installs git, the GitHub CLI, Claude Code and Codex. So create no key pair for it and choose no password, and don't read or print the script (it holds the server's private host key).
 - On Change… ask the user what they want, then call ServerKey again with the new details. On Cancel create nothing.
 - Use the provider's own CLI for everything else. If it isn't signed in, ask with RequestSignIn first.
@@ -241,6 +242,7 @@ export const ServerAddTool: Tool<AddInput> = {
         const tool = ctx.signInTool ?? "RequestSignIn";
         if (await servers.get(i.name)) {
             if (!i.copy_settings) return fail(`${i.name} is already one of the user's servers.`);
+            ctx.onProgress?.(`Copying your settings to ${i.name}\n`);
             try {
                 const took = await servers.copy(i.name);
                 return { content: took ? `Copied to ${i.name}: ${took}.` : `${i.name} already had everything a copy would bring.`, display: { summary: "Copied" } };
@@ -278,6 +280,7 @@ export const ServerAddTool: Tool<AddInput> = {
         const out = [`${i.name} is one of the user's servers now${cloud?.cost ? ` (${cloud.cost})` : ""}. Sessions there run without asking (Bypass).${added.note ? ` ${added.note}` : ""}`];
         if (added.lacks.length) out.push(`It lacks: ${added.lacks.join("; ")}.`);
         if (i.copy_settings) {
+            ctx.onProgress?.(`Copying your settings to ${i.name}\n`);
             try {
                 const took = await servers.copy(i.name);
                 if (took) out.push(`Copied there: ${took}.`);
@@ -287,6 +290,7 @@ export const ServerAddTool: Tool<AddInput> = {
         } else out.push("The user's settings, memory, skills and commands weren't copied there. Offer it; ServerAdd with copy_settings: true on this name does it.");
         // Its sign-ins, in one card: each is the user's to do, and none is needed for the server to be listed.
         if (ctx.ui.requestSignIn && !ctx.signal.aborted) {
+            ctx.onProgress?.(`Checking what's signed in on ${i.name}\n`);
             const r = await ctx.ui.requestSignIn({ targets: [{ target: "claude" }, { target: "codex" }, { target: "gh" }], machine: i.name, tool, waitMs: SIGN_IN_WAIT_MS }, ctx.signal);
             out.push(r.text);
         }
@@ -385,6 +389,6 @@ export const SERVER_INSTRUCTIONS = `# Servers (cavvy)
 
 The user can ask you to set up a server for them at any cloud provider, or to add one they have, or to delete one. Cavvy does the parts you mustn't: the SSH key, the server's identity, and the user's yes before money is spent or anything is deleted.
 
-To create one: sign the provider's CLI in if needed (request_sign_in), find what fits and its price with that CLI, call server_key with exactly what you'll create (the user approves the price there), create the machine with the start-up script server_key gives you as its user data, then call server_add with its address, cost and teardown commands. Don't make key pairs, don't run ssh, and don't create anything before server_key says the user approved.
+To create one: sign the provider's CLI in if needed (request_sign_in), find what fits (1 GB of memory or more) and its price with that CLI, call server_key with exactly what you'll create (the user approves the price there), create the machine with the start-up script server_key gives you as its user data, then call server_add with its address, cost and teardown commands. Don't make key pairs, don't run ssh, and don't create anything before server_key says the user approved.
 
 To add a server the user already has, call server_add with its name and address: Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.`;

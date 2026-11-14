@@ -3048,9 +3048,34 @@ export class Agent {
     private servedMain = new Set<string>();
     private servedSub = new Set<string>();
 
+    /** The main thread's calls of Cavvy's served tools that are under way, as the backend showed them: what a served call with no id of its own is matched to. */
+    private servedRunning: { id: string; name: string; input: Record<string, unknown>; claimed: boolean }[] = [];
+
+    /**
+     * The backend's own id for a served call that came with none (Claude Code sends none): the call of that tool
+     * with those arguments it has under way. What the tool reports while it runs (its steps) then lands on the row
+     * the user sees. `wait`: its event may come just after the call.
+     */
+    private async servedCallId(name: string, input: Record<string, unknown>, wait: boolean): Promise<string | undefined> {
+        const same = (a: Record<string, unknown>) => [...new Set([...Object.keys(a), ...Object.keys(input)])].every((k) => JSON.stringify(a[k]) === JSON.stringify(input[k]));
+        for (let i = 0; i < (wait ? 40 : 1); i++) {
+            const c = this.servedRunning.find((x) => !x.claimed && x.name === name && same(x.input));
+            if (c) {
+                c.claimed = true;
+                return c.id;
+            }
+            if (wait) await Bun.sleep(50);
+        }
+        return undefined;
+    }
+
     private noteServedCall(e: AgentEvent, into: Set<string>): void {
         if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
         if (e.type !== "tool_start" && e.type !== "tool_end") return;
+        if (into === this.servedMain && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
+            if (e.type === "tool_start") this.servedRunning.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, claimed: false });
+            else this.servedRunning = this.servedRunning.filter((c) => c.id !== e.call.id);
+        }
         // The session tools' calls by their arguments too: Claude Code sends no call id with them (servedSessionCaller).
         if (servedSessionTool(MCP_SERVER_NAME, e.call.name)) {
             if (e.type === "tool_start") this.sessionCalls.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
@@ -3139,6 +3164,9 @@ export class Agent {
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)));
             if (refused) return refused;
         }
+        // Under the backend's own id for the call, so its steps show on that call's row. Waited for only where steps are worth it (a server being set up takes minutes).
+        const servedAs = servedServerName(tool.name);
+        if (!callId && servedAs) callId = await this.servedCallId(`mcp__${MCP_SERVER_NAME}__${servedAs}`, input, true);
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) {

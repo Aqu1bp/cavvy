@@ -71,6 +71,22 @@ test("the step under way: its verb and target, a command by its description, an 
     expect(line({ blocks: [tool({ name: "BashOutput", title: "BashOutput", job: { label: "npm run dev", startedAt: 3 } })] })).toMatchObject({ label: "Checking output", detail: "npm run dev", jobSince: 3 });
 });
 
+test("a long call that says what it's at is that, and nothing beside it: one line, one thing going on", () => {
+    const add = (o: Record<string, unknown> = {}) => tool({ name: "mcp__cavvy__server_add", title: "ServerAdd(aws-mumbai)", input: { name: "aws-mumbai", address: "ubuntu@203.0.113.7" }, ...o });
+    // Before its first step: what it does, and to what.
+    expect(line({ blocks: [add()] })).toMatchObject({ kind: "tool", label: "Adding server", detail: "aws-mumbai", key: "tool:t1:running" });
+    // Then each step, in the call's own words: the last line it said, without the dots of something under way.
+    const waiting = line({ blocks: [add({ progress: "Waiting for aws-mumbai to start\n" })] })!;
+    expect(waiting).toMatchObject({ label: "Waiting for aws-mumbai to start", key: "tool:t1:running", since: 5 });
+    expect(waiting.detail).toBeUndefined();
+    expect(line({ blocks: [add({ progress: "Waiting for aws-mumbai to start\nCopying Cavvy to aws-mumbai…\n" })] })).toMatchObject({ label: "Copying Cavvy to aws-mumbai" });
+    expect(line({ blocks: [add({ progress: "x\nInstalling Codex and Claude Code on aws-mumbai\n" })] })!.label).toBe("Installing Codex and Claude Code on aws-mumbai");
+    // A command's output isn't its status: it keeps its own line.
+    expect(line({ blocks: [tool({ name: "Bash", title: "Bash(bun test)", input: { command: "bun test" }, progress: "12 pass\n" })] })).toMatchObject({ label: "Running", detail: "bun test" });
+    // Nor once the user is asked something: that comes first.
+    expect(line({ blocks: [add({ progress: "Checking what's signed in on aws-mumbai\n" })], interactions: [{ kind: "signin", id: "s", name: "GitHub" } as any] })).toMatchObject({ label: "Waiting for you to sign in", detail: "GitHub" });
+});
+
 test("thinking shows the thought's latest line unless Show thinking is off; the answer streaming hides the line", () => {
     const thought = { t: "thinking", id: "th", text: "Checking what's merged.\n\n**Main** is at d55ddfac.\n", startedAt: 7 } as any;
     expect(line({ blocks: [thought], activity: { label: "Thinking", since: 1 } })).toMatchObject({ kind: "think", label: "Thinking", detail: "Main is at d55ddfac.", since: 7 });

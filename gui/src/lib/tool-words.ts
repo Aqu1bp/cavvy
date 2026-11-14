@@ -112,11 +112,39 @@ function actedOn(output: string | undefined): string | undefined {
     return m?.[1];
 }
 
-/** Cavvy's browser and simulator tools in words: what they did to what, never their internal names, refs or code. */
+/**
+ * Cavvy's other tools, however they were called (ServerAdd, or mcp__cavvy__server_add from an agent CLI): what each
+ * does, what it's doing, and which of its arguments says on what. Never "Using cavvy": that says nothing.
+ */
+const CAVVY: Record<string, [verb: string, running: string, arg?: string]> = {
+    ServerKey: ["Prepare server", "Preparing server", "name"],
+    ServerAdd: ["Add server", "Adding server", "name"],
+    ServerRemove: ["Remove server", "Removing server", "name"],
+    RequestSignIn: ["Ask to sign in", "Checking sign-in", "target"],
+    RequestSecret: ["Ask for secret", "Asking for a secret", "name"],
+    RunWithSecrets: ["Run with secrets", "Running with secrets", "description"],
+    Models: ["List models", "Listing models"],
+    TaskStatus: ["Check task", "Checking task"],
+    TaskCancel: ["Stop task", "Stopping task"],
+    ScheduleCreate: ["Schedule", "Scheduling", "prompt"],
+    ScheduleList: ["List schedules", "Listing schedules"],
+    ScheduleDelete: ["Delete schedule", "Deleting schedule"],
+    ListSessions: ["List sessions", "Listing sessions"],
+    ReadSession: ["Read session", "Reading session"],
+    SendToSession: ["Message session", "Messaging session"],
+    StartSession: ["Start session", "Starting session", "prompt"],
+};
+
+/** Cavvy's own tools in words: what they did to what, never their internal names, refs or code. */
 function ownWords(t: ToolBlock): Words | undefined {
     const i = t.input ?? {};
     const s = (k: string) => (typeof i[k] === "string" && i[k] ? (i[k] as string) : undefined);
-    switch (toolKind(t.name)) {
+    const kind = toolKind(t.name);
+    const cavvy = t.agent ? undefined : CAVVY[kind];
+    if (cavvy) return { verb: cavvy[0], running: cavvy[1], arg: cavvy[2] ? s(cavvy[2])?.split("\n")[0] : undefined };
+    // One with words under its own name (WatchPullRequest), called through Cavvy's server.
+    if (kind !== t.name && VERBS[kind]) return { verb: VERBS[kind]!, running: RUNNING[kind] ?? VERBS[kind]!, arg: splitTitle(t.title).arg };
+    switch (kind) {
         case "BrowserNavigate": {
             const a = s("action") ?? "goto";
             if (a === "goto" || a === "new_tab") return { verb: "Open", running: "Opening", arg: shortUrl(i.url) };
@@ -175,7 +203,9 @@ function mcpWords(t: ToolBlock): Words | undefined {
     if (!m) return undefined;
     const { verb, arg } = splitTitle(t.title);
     const own = verb === t.name || verb.startsWith("mcp__") ? m[2]!.replace(/[_-]+/g, " ").trim() : verb;
-    return { verb: own.charAt(0).toUpperCase() + own.slice(1), running: `Using ${m[1]!.replace(/[_-]+/g, " ")}`, arg };
+    const said = own.charAt(0).toUpperCase() + own.slice(1);
+    // Cavvy's own are said by what they do: "Using cavvy" names the app the reader is in.
+    return { verb: said, running: m[1] === "cavvy" ? said : `Using ${m[1]!.replace(/[_-]+/g, " ")}`, arg };
 }
 
 export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {

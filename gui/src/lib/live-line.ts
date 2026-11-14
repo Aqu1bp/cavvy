@@ -97,6 +97,12 @@ function latestLine(text: string): string | undefined {
     return undefined;
 }
 
+/** The step a running call last said it's at: its last line, without the dots of something under way. */
+function step(t: ToolBlock): string | undefined {
+    const last = t.progress?.trimEnd().split("\n").pop()?.replace(/\x1b\[[0-9;]*m/g, "").replace(/(?:…|\.\.\.)$/, "").trim();
+    return last ? (last.length > 80 ? `${last.slice(0, 79)}…` : last) : undefined;
+}
+
 function toolState(t: ToolBlock): LiveLineState {
     const { verb, arg } = toolLabel(t);
     const description = commandDescription(t);
@@ -117,6 +123,10 @@ function toolState(t: ToolBlock): LiveLineState {
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
         return { ...base, label, detail: liveCommand(t), mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
+    // A call that says what it's at (a server being set up: "Waiting for box to start", "Installing Codex") is that, and
+    // nothing beside it: one line, one thing going on.
+    const at = t.status === "running" && t.name !== "Task" && !t.agent ? step(t) : undefined;
+    if (at) return { ...base, label: at, title: arg };
     // A search's query is words, not code.
     return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion" && t.name !== "WebSearch", title: arg };
 }

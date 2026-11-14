@@ -2,7 +2,15 @@
 // Esc there did nothing for the card (and, for a card another machine asks, stopped the whole turn).
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { cardsKey, typingIn } from "../gui/src/lib/card-keys";
+import { cardsKey, putOffSignIn, typingIn } from "../gui/src/lib/card-keys";
+
+test("a put-off sign-in in the strip's words: what, and on which machine", () => {
+    expect(putOffSignIn("Sign in to GitHub")).toEqual({ name: "GitHub" });
+    expect(putOffSignIn("Sign in to GitHub on aws-mumbai")).toEqual({ name: "GitHub", on: "aws-mumbai" });
+    expect(putOffSignIn("Sign in to Claude Code, Codex and GitHub on box")).toEqual({ name: "Claude Code, Codex and GitHub", on: "box" });
+    // A session on a server doesn't say which: the window it's shown in does.
+    expect(putOffSignIn("Sign in to GitHub", "vps")).toEqual({ name: "GitHub", on: "vps" });
+});
 
 const el = (tagName: string, o: { value?: string; inside?: string | string[]; editable?: boolean } = {}) => ({ tagName, isContentEditable: Boolean(o.editable), value: o.value, closest: (selector: string) => (selector.split(", ").some((s) => [o.inside ?? []].flat().includes(s)) ? {} : null) }) as never;
 

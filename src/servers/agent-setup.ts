@@ -45,7 +45,7 @@ const wait = (ms: number, signal: AbortSignal) =>
 async function ready(e: ServerEntry, signal: AbortSignal, progress: (text: string) => void) {
     const until = Date.now() + setupTiming.readyMs;
     let last = "";
-    progress(`Waiting for ${e.name} to start…`);
+    progress(`Waiting for ${e.name} to start`);
     for (;;) {
         if (signal.aborted) throw new ServerError("Stopped.");
         try {
@@ -62,16 +62,41 @@ async function ready(e: ServerEntry, signal: AbortSignal, progress: (text: strin
     }
 }
 
-/** Waits, for a while, for the start-up script to finish installing what agents use. Not finishing isn't a failure: Cavvy says what's missing. */
+/** What the start-up script installs, in its order, and how to tell each is there. */
+const INSTALLS: [name: string, there: string][] = [
+    ["git", "command -v git"],
+    ["GitHub's CLI", "command -v gh"],
+    ["Node", "command -v node"],
+    ["Codex", "command -v codex"],
+    ["Claude Code", "command -v claude || test -x ~/.local/bin/claude"],
+];
+const INSTALLED = `${INSTALLS.map(([, there], i) => `{ ${there}; } >/dev/null 2>&1 && echo ${i}`).join("; ")}; test -e /var/lib/cavvy-setup-done && echo done; true`;
+
+/**
+ * Waits, for a while, for the start-up script to finish installing what agents use, saying what's still to come.
+ * Not finishing isn't a failure: Cavvy says what's missing.
+ */
 async function settled(e: ServerEntry, signal: AbortSignal, progress: (text: string) => void) {
     const until = Date.now() + setupTiming.settledMs;
-    progress(`Installing git, GitHub's CLI, Claude Code and Codex on ${e.name}…`);
+    let said = "";
+    const say = (text: string) => {
+        if (text !== said) progress((said = text));
+    };
+    const all = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0]!);
+    say(`Installing ${all(INSTALLS.map(([name]) => name))} on ${e.name}`);
     while (!signal.aborted && Date.now() < until) {
-        const done = await ssh(e, "test -e /var/lib/cavvy-setup-done", { timeoutMs: 30_000, signal }).then((r) => r.code === 0, () => false);
-        if (done) return;
+        const have = await ssh(e, INSTALLED, { timeoutMs: 30_000, signal }).then((r) => r.stdout.split("\n").map((l) => l.trim()), () => undefined);
+        if (have?.includes("done")) return;
+        if (have) {
+            const left = INSTALLS.filter((_, i) => !have.includes(String(i))).map(([name]) => name);
+            say(left.length ? `Installing ${all(left)} on ${e.name}` : `Finishing the install on ${e.name}`);
+        }
         await wait(setupTiming.everyMs, signal);
     }
 }
+
+/** Memory under which Cavvy and an agent CLI don't fit (measured: a 512 MB machine killed both while it installed). */
+const SMALL_KB = 900_000;
 
 /** Runs one teardown command: Cavvy's own process, with arguments only. `missing`: its CLI isn't installed here. */
 async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code: number; out: string; missing?: boolean }> {
@@ -142,6 +167,10 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             const entry = getServer(spec.name)!;
             if (fresh) await settled(entry, signal, progress);
             const lacks: string[] = [];
+            progress(`Checking what ${spec.name} has`);
+            // Too little memory is why agents there get killed: said before the user finds out.
+            const kb = await ssh(entry, "awk '/MemTotal/ { print $2 }' /proc/meminfo", { timeoutMs: 30_000, signal }).then((r) => Number(r.stdout.trim()), () => NaN);
+            if (kb > 0 && kb < SMALL_KB) lacks.push(`memory (${Math.round(kb / 1024)} MB: Cavvy with an agent CLI needs about 1 GB, so agents there may be stopped for want of it)`);
             try {
                 const c = await links.check(spec.name);
                 for (const cli of c.clis) if (!cli.installed && ["claude-code", "codex"].includes(cli.id)) lacks.push(`${cli.product} (${cli.install})`);
@@ -168,7 +197,7 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             }
             while (left.length) {
                 const argv = left[0]!;
-                progress(argv.join(" "));
+                progress(`Running ${argv.join(" ")}`);
                 let r = await runTeardown(argv, signal);
                 if (r.missing) throw new ServerError(`\`${argv[0]}\` isn't installed on this machine, so \`${argv.join(" ")}\` didn't run. Nothing was deleted by it.`);
                 // Its CLI is signed out: the user is asked, and the same command goes again.
@@ -186,6 +215,7 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
                 if (signal.aborted) throw new ServerError("Stopped part way: check what's left with the provider's CLI.");
                 if (r.code !== 0) throw new ServerError(`\`${argv.join(" ")}\` failed:\n${tail(r.out) || `exit ${r.code}`}\nIf what it deletes is already gone, tell the user: they can forget ${name} in Servers, which deletes nothing.`);
             }
+            progress(`Removing ${name} from Cavvy`);
             await (await o.links()).remove(name);
             // The machine is gone, so its keys are of no use. (One that's only forgotten keeps them: it can be put back.)
             if (entry.cloud?.teardown?.length && entry.identityFile?.startsWith(serverKeysDir())) forgetServerKey(name, hostOf(entry), entry.port);

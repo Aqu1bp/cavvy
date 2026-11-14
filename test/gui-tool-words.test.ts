@@ -37,6 +37,28 @@ test("another server's tool is said by its own name in words, and under way by i
     expect(runningVerb({ ...issue, status: "streaming" })).toBe("Using github");
 });
 
+test("Cavvy's own tools are said by what they do, however they were called: never \"Using cavvy\"", () => {
+    // From an agent CLI, by the name Cavvy's server gives it; from a model Cavvy runs, by its own.
+    for (const name of ["mcp__cavvy__server_add", "ServerAdd"]) {
+        const add = call({ name, title: "ServerAdd(aws-mumbai)", status: "running", input: { name: "aws-mumbai", address: "ubuntu@203.0.113.7" } });
+        expect(runningVerb(add)).toBe("Adding server");
+        expect(toolLabel(add)).toEqual({ verb: "Add server", arg: "aws-mumbai" });
+    }
+    expect(runningVerb(call({ name: "mcp__cavvy__server_key", status: "running", input: { name: "aws-mumbai" } }))).toBe("Preparing server");
+    expect(toolLabel(call({ name: "mcp__cavvy__server_remove", input: { name: "aws-mumbai" } }))).toEqual({ verb: "Remove server", arg: "aws-mumbai" });
+    expect(toolLabel(call({ name: "mcp__cavvy__request_sign_in", input: { target: "gh" } }))).toEqual({ verb: "Ask to sign in", arg: "gh" });
+    expect(runningVerb(call({ name: "mcp__cavvy__request_secret", status: "running", input: { name: "NPM_TOKEN" } }))).toBe("Asking for a secret");
+    expect(runningVerb(call({ name: "mcp__cavvy__start_session", status: "running", input: { prompt: "Fix the build\nand push" } }))).toBe("Starting session");
+    expect(toolLabel(call({ name: "mcp__cavvy__start_session", input: { prompt: "Fix the build\nand push" } })).arg).toBe("Fix the build");
+    // One with words under its own name, called through Cavvy's server.
+    expect(runningVerb(call({ name: "mcp__cavvy__watch_pull_request", title: "WatchPullRequest(140)", status: "running" }))).toBe("Reading pull request");
+    // One nothing here knows yet: its own name in words, still never the app's.
+    const odd = call({ name: "mcp__cavvy__tidy_things", title: "mcp__cavvy__tidy_things", status: "running" });
+    expect(runningVerb(odd)).toBe("Tidy things");
+    // Another server's is still said under way by its server.
+    expect(runningVerb(call({ name: "mcp__github__create_issue", title: "mcp__github__create_issue", status: "running" }))).toBe("Using github");
+});
+
 test("a result that only repeats the row isn't shown; a failure's always is", () => {
     const click = call({ name: "mcp__cavvy__browser_act", input: { action: "click" }, summary: 'Clicked button "Save" [e12]' });
     expect(resultEchoes(click)).toBe(true);

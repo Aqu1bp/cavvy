@@ -46,6 +46,7 @@ Creating one goes like this:
 1. **The provider's sign-in.** If its CLI is signed out, you get the [sign-in card](sign-in.md).
 2. **The price.** `Create a server for $12/month?`, with its name, where it runs, its size and its system. **Create** goes ahead, **Change…** lets you say what you'd rather have, **Cancel** creates nothing. This is asked in every permission mode, Bypass included: no mode, rule or reviewer answers it for you.
 3. **The server is created and added.** There's no key to pick and no `Trust this host?`: Cavvy made a key for it and gave the server its identity before it started, so it knows the server's fingerprint in advance. The steps show in the conversation.
+   While this runs the session's status line says which step it's at: `Waiting for aws-mumbai to start`, `Copying Cavvy to aws-mumbai`, `Installing Codex and Claude Code on aws-mumbai`. A machine needs about 1 GB of memory for Cavvy and an agent CLI; agents are told to pick at least that, the start-up script adds swap on a smaller one, and the agent says so if it's short.
 4. **Its sign-ins.** `Sign in on aws-mumbai?` lists Claude Code, Codex and GitHub: what's signed in says as whom, the rest have **Sign in**. **Later** leaves them; the server is added either way.
 
 The server is then in your list like any other, with what it costs beside it (`cavvy servers` shows it too).

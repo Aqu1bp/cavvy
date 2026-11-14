@@ -4,6 +4,16 @@
 /** When the user last pressed Sign in here (in a card, or on one put off): a window only brings a port over for a sign-in started in it. */
 export const signInPressed = { at: 0 };
 
+/**
+ * A put-off sign-in in the strip's words: what ("GitHub", "Claude Code and Codex") and on which machine. From the
+ * watch's label ("Sign in to GitHub on box"); `machine`: the server this window is on, which a session there doesn't name.
+ */
+export function putOffSignIn(label: string, machine?: string): { name: string; on?: string } {
+    const rest = label.replace(/^Sign in to /, "");
+    const at = rest.lastIndexOf(" on ");
+    return at > 0 ? { name: rest.slice(0, at), on: rest.slice(at + 4) } : { name: rest, ...(machine ? { on: machine } : {}) };
+}
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
 /**

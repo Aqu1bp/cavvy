@@ -78,6 +78,11 @@ printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' > /etc/s
 chmod 644 /etc/ssh/sshd_config.d/00-cavvy.conf
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
 
+# A small machine runs out of memory installing what follows (a 512 MB one did): swap keeps it going.
+if [ "$(awk '/MemTotal/ { print $2 }' /proc/meminfo)" -lt 1900000 ] && [ ! -e /swapfile ]; then
+    (fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null) && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 # What agents there use. Best effort: Cavvy says what's missing once the server is added.
 umask 022
 (
