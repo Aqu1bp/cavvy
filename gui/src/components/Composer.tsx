@@ -35,7 +35,7 @@ import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollo
 import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
-import { StashTab } from "./StashTab";
+import { StashChip } from "./StashChip";
 import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
@@ -807,6 +807,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
+            <Show when={draft.stash()}>
+                {(stashed) => <StashChip text={stashed().text} attached={stashed().attachments.length} onRestore={swapStash} onDiscard={discardStash} />}
+            </Show>
             <div class="composer-box card-surface" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
@@ -817,9 +820,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             <ScheduleTab sessionId={p.sessionId!} items={items()} />
                         </Show>
                     )}
-                </Show>
-                <Show when={draft.stash()}>
-                    {(stashed) => <StashTab text={stashed().text} attached={stashed().attachments.length} onRestore={swapStash} onDiscard={discardStash} />}
                 </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips

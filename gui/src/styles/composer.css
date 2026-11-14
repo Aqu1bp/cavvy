@@ -167,6 +167,75 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* ---- The stashed prompt: a small chip over the box's top right corner ---------
+   Its own small card, like the tray: waiting to go back into this box. */
+
+.stash-chip {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: none;
+    align-items: center;
+    align-self: flex-end;
+    height: calc(28 * var(--sp));
+    /* 6px above the box, as the tray is. */
+    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp)) 0;
+    padding: 0 calc(3 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    color: var(--fg-2);
+    animation: c-in 260ms var(--ease);
+}
+
+/* Home: it takes no room in the column, so the composer doesn't move when it comes and goes. */
+.composer.v-home .stash-chip {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6 * var(--sp));
+    margin-bottom: 0;
+}
+
+/* Over the tab that asks to trust the folder, which stands on the card's top edge. */
+.home-tab + .composer.v-home .stash-chip {
+    bottom: calc(100% + 44 * var(--sp));
+    /* In line with the tab's end, which is set in from the card's. */
+    margin-right: calc(22 * var(--sp));
+}
+
+.stash-back,
+.stash-drop {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: calc(22 * var(--sp));
+    border-radius: var(--pill);
+    font: inherit;
+    color: inherit;
+    transition: background 140ms, color 140ms;
+}
+
+.stash-back {
+    gap: calc(6 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(8 * var(--sp));
+}
+
+.stash-drop {
+    width: calc(22 * var(--sp));
+    color: var(--fg-3);
+}
+
+.stash-back:hover,
+.stash-drop:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.stash-back:focus-visible,
+.stash-drop:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
 /* ---- Up next: steers and queued messages, in a tray on top of the box -------
    Its own small glass card, inset from the box's edges, so it reads as "waiting
    to go into this box". Rows are numbered in the order they go; the number is a
@@ -513,35 +582,6 @@
     font-size: 0.857rem;
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
-}
-
-/* The stashed prompt: the row is its way back. */
-.stash-tab .goal-row {
-    padding-left: 0;
-}
-
-.stash-back {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    align-self: stretch;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    padding-left: calc(10 * var(--sp));
-    border-radius: inherit;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-}
-
-.stash-back:hover .goal-text,
-.stash-back:focus-visible .goal-text {
-    color: var(--accent-text);
-}
-
-.stash-tab kbd {
-    flex: none;
-    color: var(--fg-3);
 }
 
 .goal-details {
