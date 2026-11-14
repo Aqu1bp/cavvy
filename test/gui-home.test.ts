@@ -36,7 +36,6 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createEffect: (f: () => void) => f(),
         createResource: () => [() => ({ sessions, sources }), { refetch: () => void refetched++ }],
-        ArrowRight: "ArrowRight",
         Dialog: tagged("Dialog"),
         ProviderIcon: tagged("ProviderIcon"),
         app: { conn: "open", providers },
@@ -52,7 +51,7 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
     return { tree, continued, tabs, shown, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
-test("Home lists the three newest sessions not yet in Cavvy, each with its mark, messages and model", () => {
+test("Home lists the three newest sessions not yet in Cavvy, each with its mark, when and how long, and Import", () => {
     const r = cli([
         session("old", { updatedAt: Date.now() - 3 * 1440 * MIN }),
         session("new", { updatedAt: Date.now() - 6 * MIN, messages: 5, partial: true, model: "Opus 5.5", recent: true }),
@@ -65,11 +64,10 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     expect(r.shown).toEqual([3]);
     expect(elements(elements(r.tree, "section"), "ProviderIcon").map((i) => i.props.id)).toEqual(["claude-code", "codex", "claude-code"]);
     const [first, second] = r.rows();
-    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 5+ messages · Opus 5.5 · Still open in a terminal");
+    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 6m ago · 5+ messages · Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
     expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using it here and in the terminal at once mixes the two.");
-    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 1 message · GPT-6");
-    expect(text(byClass(first, "span", "cli-ago"))).toBe("6m ago");
+    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 2h ago · 1 message");
     expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
     expect(text(byClass(r.tree, "div", "cli-h"))).toBe("Continue from your terminalShow all 4");
 });
@@ -87,7 +85,7 @@ test("a row is a button: a click, Enter or Space imports it; one whose CLI is of
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a", "a"]);
     expect(prevented).toBe(2);
-    expect(text(b)).toContain("Turn on Codex in Settings → Providers");
+    expect(text(byClass(b, "span", "cli-off"))).toBe("Turn on in Settings");
     expect(byClass(b, "span", "cli-go")).toHaveLength(0);
     expect(b!.props["aria-label"]).toBe("Turn on Codex in Settings → Providers to import “Session b”");
     b!.props.onClick();
