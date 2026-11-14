@@ -1,0 +1,273 @@
+/* A theme's scene behind the window (ThemeBackdrop.tsx). Under everything, and nothing in it takes a click.
+   The stage is 1600 × 1000, scaled to cover the window; each layer moves on the compositor alone
+   (lib/theme-motion.ts), and the veil, the theme's background, lies over all of it. */
+
+.theme-backdrop {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    contain: strict;
+    background: var(--sheet);
+}
+
+.theme-backdrop[hidden] {
+    display: none;
+}
+
+.tb-scene {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity 500ms var(--ease-out);
+}
+
+.tb-scene.on {
+    opacity: 1;
+}
+
+.tb-stage {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1600px;
+    height: 1000px;
+    transform: translate(-50%, -50%) scale(var(--tb-scale, 1));
+}
+
+.tb-layer {
+    position: absolute;
+    transition: opacity 800ms var(--ease-in-out);
+}
+
+.tb-layer.away {
+    opacity: 0;
+}
+
+.tb-layer > img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.tb-veil {
+    position: absolute;
+    inset: 0;
+    background-size: 100% 100%;
+}
+
+/* Animate off, or the system asks for less motion: every layer rests at its first keyframe. */
+.theme-backdrop[data-still] .tb-layer > img {
+    animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tb-layer > img {
+        animation: none !important;
+    }
+
+    .tb-scene,
+    .tb-layer {
+        transition: none;
+    }
+}
+
+/* Reduce transparency: the scene stays, faintly, under an almost solid window. */
+@media (prefers-reduced-transparency: reduce) {
+    .tb-veil::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: var(--sheet);
+        opacity: 0.9;
+    }
+}
+
+/* Until a scene has drawn (it loads after the window), the theme's own background, not the desktop or a blank page. */
+/* Doubled to outweigh base.css's .app.tauri.os-macos. */
+:root[data-themed="scene"],
+:root[data-themed="scene"] .app.app {
+    background: var(--sheet);
+}
+
+/* ---- Settings → Appearance → Theme (ThemeGallery.tsx) ---- */
+.tg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(calc(136 * var(--sp)), 1fr));
+    gap: calc(14 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(14 * var(--sp));
+}
+
+.tg-tile {
+    position: relative;
+    min-width: 0;
+}
+
+.tg-pick {
+    display: flex;
+    flex-direction: column;
+    gap: calc(7 * var(--sp));
+    width: 100%;
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    text-align: left;
+}
+
+.tg-tile.on .tg-pick {
+    color: var(--fg);
+}
+
+.tg-pick:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.tg-pv {
+    position: relative;
+    display: grid;
+    place-items: center;
+    aspect-ratio: 16 / 10;
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    color: var(--fg-3);
+    box-shadow: 0 0 0 0.5px var(--line);
+    transition: box-shadow 200ms;
+}
+
+.tg-pick:hover:not(:disabled) .tg-pv {
+    box-shadow: 0 0 0 0.5px var(--fg-4);
+}
+
+.tg-tile.on .tg-pv {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+.tg-make .tg-pv {
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    background: var(--sheet-2);
+}
+
+.tg-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* The window in miniature: the scene (or the app's own backdrop), the rail, and a few lines and the composer. */
+.tg-face {
+    position: absolute;
+    inset: 0;
+    background: var(--sheet);
+}
+
+.tg-face[data-theme] {
+    background: var(--backdrop);
+}
+
+.tg-scene {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.tg-stage {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1600px;
+    height: 1000px;
+    transform-origin: 0 0;
+}
+
+.tg-stage > img {
+    position: absolute;
+    display: block;
+}
+
+.tg-ui {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 26% 1fr;
+}
+
+.tg-ui i {
+    border-right: 0.5px solid var(--line);
+    background: linear-gradient(var(--rail-sel), var(--rail-sel)) calc(4 * var(--sp)) calc(14 * var(--sp)) / calc(100% - 8 * var(--sp)) calc(6 * var(--sp)) no-repeat;
+}
+
+.tg-ui u {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: calc(4 * var(--sp));
+    padding: calc(8 * var(--sp)) 18%;
+}
+
+.tg-ui b {
+    height: calc(3 * var(--sp));
+    border-radius: 2px;
+    background: var(--fg-3);
+    opacity: 0.7;
+}
+
+.tg-ui b + b {
+    width: 70%;
+}
+
+.tg-ui s {
+    height: calc(12 * var(--sp));
+    margin-top: calc(3 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke);
+}
+
+.tg-kind {
+    position: absolute;
+    top: calc(5 * var(--sp));
+    right: calc(5 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+}
+
+.tg-del {
+    position: absolute;
+    top: calc(-6 * var(--sp));
+    right: calc(-6 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+    box-shadow: var(--ctl-shadow);
+    opacity: 0;
+    transition: opacity var(--dur-fast);
+}
+
+.tg-tile:hover .tg-del,
+.tg-del:focus-visible {
+    opacity: 1;
+}
+
+.ap-note {
+    margin: 0;
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.ap-tile:disabled {
+    cursor: default;
+    opacity: 0.5;
+}

@@ -88,6 +88,7 @@ import type {
     GuiSettings,
     HelloResult,
     KeybindingsFile,
+    ThemeReport,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
@@ -113,6 +114,8 @@ import type {
     PluginsInfo,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
+import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
+import type { ThemeEntry } from "../themes/format";
 import { listPlugins } from "../plugins/install";
 import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
@@ -419,6 +422,9 @@ export class Engine {
 
     private readonly unregisterAccountRoots: () => void;
     private stopKeybindings?: () => void;
+    private stopThemes?: () => void;
+    /** Agents waiting to hear how a theme they asked for came out (showTheme), by request. */
+    private themeReports = new Map<string, (r: ThemeReport) => void>();
     /** The desktop app updating itself from main: only the installed app does. */
     private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
@@ -443,6 +449,8 @@ export class Engine {
         void Promise.resolve(pathSettling).then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        // And a save of a theme: one an agent is working on changes on screen as it's written.
+        this.stopThemes = watchThemes(() => this.broadcast({ type: "themes.changed", themes: listThemes() }));
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
@@ -524,6 +532,7 @@ export class Engine {
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         this.stopKeybindings?.();
+        this.stopThemes?.();
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
@@ -561,6 +570,29 @@ export class Engine {
     /** The session's browser changed: the windows that have it open hear of it. */
     sendBrowser(sessionId: string, state: BrowserState) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
+    }
+
+    /**
+     * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
+     * undefined when there's no window, `{ sent }` alone when none answered in time.
+     */
+    async showTheme(id: string | null, entry?: ThemeEntry, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
+        const windows = [...this.clients].filter((c) => c.machine === undefined && c.window !== undefined);
+        if (!windows.length) return { sent: 0 };
+        const request = randomUUID();
+        const report = new Promise<ThemeReport | undefined>((done) => {
+            const timer = setTimeout(() => {
+                this.themeReports.delete(request);
+                done(undefined);
+            }, waitMs);
+            this.themeReports.set(request, (r) => {
+                clearTimeout(timer);
+                this.themeReports.delete(request);
+                done(r);
+            });
+        });
+        for (const c of windows) c.send({ type: "theme.apply", id, ...(entry ? { entry } : {}), request });
+        return { sent: windows.length, report: await report };
     }
 
     sessionShown(sessionId: string): boolean {
@@ -2406,6 +2438,7 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "theme", description: "Pick a theme for the window" },
             { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
@@ -2620,6 +2653,18 @@ export class Engine {
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "themes.list":
+                return listThemes();
+            case "themes.remove":
+                return { text: removeTheme(str(p.id, "id")) };
+            case "themes.restore":
+                restoreTheme(str(p.id, "id"), str(p.text, "text"));
+                return null;
+            case "themes.report": {
+                const r = p as unknown as ThemeReport;
+                if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}) });
+                return null;
+            }
             case "keybindings.create": {
                 const path = keybindingsPath();
                 return { created: ensureKeybindingsFile(path), path };

@@ -1,3 +1,5 @@
+import type { ThemeEntry } from "../themes/format";
+import type { ThemeReport } from "../server/protocol";
 import type { SecretStore } from "../agent/secrets";
 import type { ImagePart, TodoItem } from "../providers/types";
 import type { Settings } from "../config/settings";
@@ -155,6 +157,11 @@ export interface UiBridge {
      * "later" when the user put it off, and `then` runs if they sign in after all.
      */
     askSignIn?(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot">;
+    /**
+     * Shows a theme (null: none) in the windows on the user's own computer (ThemeSet), and says how it came out.
+     * Missing where there are none to show it in (a server's session, the terminal): no theme tools are offered then.
+     */
+    showTheme?(id: string | null, entry?: ThemeEntry): Promise<{ sent: number; report?: ThemeReport }>;
 }
 
 export interface ToolContext {

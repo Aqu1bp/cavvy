@@ -5,6 +5,7 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
+import type { ThemeEntry, ThemeReport } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
@@ -776,6 +777,25 @@ function recheckUpdate() {
     rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
 }
 
+/** An agent showed a theme (or none): shown here, and how it came out told back to it. */
+async function themeApplied(id: string | null, entry: ThemeEntry | undefined, request: string) {
+    const m = await import("./theme");
+    if (entry) m.addThemeEntry(entry);
+    m.applyTheme(id ?? undefined);
+    const still = !prefs.themeMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const drawn = id ? await m.whenDrawn(id) : undefined;
+    const report: ThemeReport = id ? (drawn ? { request, shown: true, scheme: drawn.scheme, ...(drawn.veil !== undefined ? { veil: drawn.veil } : {}), ...(drawn.veilMost !== undefined ? { veilMost: drawn.veilMost } : {}), failed: drawn.failed, still } : { request, shown: false }) : { request, shown: true };
+    await rpc.call("themes.report", report).catch(() => undefined);
+}
+
+/** The user's themes, from the server: read when a window connects, kept up to date by themes.changed. */
+export async function refreshThemes() {
+    const list = await rpc.call("themes.list", {});
+    // Nothing to load when no theme is chosen and the gallery isn't open: the list is asked for again when it opens.
+    const m = await import("./theme");
+    m.setThemeEntries(list);
+}
+
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
     const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
@@ -935,6 +955,15 @@ function onEvent(ev: ServerEvent) {
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);
             return;
+        case "themes.changed":
+            void import("./theme").then((m) => {
+                const { problem, id } = m.setThemeEntries(ev.themes);
+                if (problem && id) toast(`${m.themeName(id)} has a problem: ${problem}`, "warn");
+            });
+            return;
+        case "theme.apply":
+            void themeApplied(ev.id, ev.entry, ev.request);
+            return;
         case "app.update":
             setApp("update", reconcile(ev.info));
             return;
@@ -1043,7 +1072,7 @@ export function start() {
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
-                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined), (prefs.themeId ? refreshThemes() : Promise.resolve()).catch(() => undefined)]);
                 // The models are asked for with the lists (the composer names its model from them, offers its efforts,
                 // and a pick brought from another machine is checked against them), but after them, and not waited
                 // for: the machine answers in the order it's asked, and the first screen waits for the lists (asked

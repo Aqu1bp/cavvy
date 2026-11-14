@@ -108,6 +108,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "plugins":
             setSettingsTab("plugins");
             return true;
+        case "theme":
+            setSettingsTab("appearance");
+            return true;
         case "usage":
             setSettingsTab("usage");
             return true;

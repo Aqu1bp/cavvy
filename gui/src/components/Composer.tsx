@@ -5,7 +5,7 @@ import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } fro
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
+import { comparePicks, setComparePicks, focusComposer, homeDraft, setHomeDraft, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -207,6 +207,21 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             if (!settingsTab()) ta?.focus();
         });
     });
+    // Text handed to a new session's composer (Settings → Theme → Make one), put after anything typed.
+    if (p.variant === "home") {
+        createEffect(() => {
+            const seed = homeDraft();
+            if (!seed) return;
+            setHomeDraft(undefined);
+            setText((t) => (t.trim() ? `${t.trimEnd()}\n${seed}` : seed));
+            requestAnimationFrame(() => {
+                resize();
+                if (settingsTab() || !ta) return;
+                ta.focus();
+                ta.setSelectionRange(ta.value.length, ta.value.length);
+            });
+        });
+    }
     // Not while Settings covers it (App.tsx keeps it mounted there).
     createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && ta?.focus()), { defer: true }));
 

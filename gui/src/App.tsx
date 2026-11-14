@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
@@ -9,6 +9,9 @@ import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, rai
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { FloatingBrowser } from "./components/FloatingBrowser";
+
+/** Loaded with the first theme chosen: a window with none carries none of it. */
+const ThemeBackdrop = lazy(() => import("./components/ThemeBackdrop").then((m) => ({ default: m.ThemeBackdrop })));
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
@@ -507,6 +510,10 @@ export function App() {
             data-tmax={layout().terminal.maximized ? "on" : "off"}
             data-settings={settingsTab() ? "on" : "off"}
         >
+            {/* A theme's scene, behind everything: loaded only when a theme is chosen. */}
+            <Show when={prefs.themeId}>
+                <ThemeBackdrop />
+            </Show>
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
                     {/* The window's edges move it, under the rail and the sheet (and so does its whole top strip: lib/window-drag.ts). */}

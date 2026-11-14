@@ -2,7 +2,7 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
-import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, lazy, Match, on, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
@@ -10,7 +10,11 @@ import { reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
+import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
+import { shown as themeShown } from "../state/theme";
+
+/** Settings → Appearance → Theme: loaded when Appearance first opens. */
+const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { loadSimulatorState } from "../state/simulator";
 import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
@@ -340,7 +344,7 @@ function General() {
 function SchemeTile(p: { id: Scheme; label: string }) {
     const on = () => prefs.scheme === p.id;
     return (
-        <button class={`ap-tile ${on() ? "on" : ""}`} aria-pressed={on()} onClick={() => setPrefs("scheme", p.id)}>
+        <button class={`ap-tile ${on() ? "on" : ""}`} aria-pressed={on()} disabled={Boolean(forcedScheme())} onClick={() => setPrefs("scheme", p.id)}>
             <span class="ap-pv" aria-hidden="true">
                 <Show when={p.id !== "dark"}>
                     <span class="ap-face" data-theme="light">
@@ -386,8 +390,23 @@ function Appearance() {
     // Blue is the default: picking it clears the choice.
     const accent = () => prefs.accent ?? "blue";
     const pickAccent = (id: AccentId) => setPrefs("accent", id === "blue" ? undefined : id);
+    // What a theme sets, the settings for it step aside for: the window's glass and tint under a scene, the accent it chooses.
+    const scened = () => Boolean(themeShown()?.look.layers?.length);
+    const themeAccent = () => Boolean(themeShown()?.look.colors.accent);
     return (
         <div class="ap">
+            <Group>Theme</Group>
+            <div class="set-group ap-group">
+                <Suspense>
+                    <ThemeGallery />
+                </Suspense>
+                <Show when={scened()}>
+                    <Row title="Animate" changed={!prefs.themeMotion} reset={() => setPrefs("themeMotion", true)}>
+                        <Toggle label="Animate" checked={prefs.themeMotion} onChange={(v) => setPrefs("themeMotion", v)} />
+                    </Row>
+                </Show>
+            </div>
+
             <Group>Color scheme</Group>
             <div class="set-group ap-group">
                 <div class="ap-tiles" role="group" aria-label="Color scheme">
@@ -395,37 +414,46 @@ function Appearance() {
                     <SchemeTile id="light" label="Light" />
                     <SchemeTile id="dark" label="Dark" />
                 </div>
+                <Show when={forcedScheme()}>
+                    <p class="ap-note">{`${themeShown()?.theme.name ?? "This theme"} is ${forcedScheme()} only.`}</p>
+                </Show>
             </div>
 
             <Group>Look</Group>
             <div class="set-group ap-group">
-                <Row title="Accent" desc="Send, primary buttons, links and focus." changed={accent() !== "blue"} reset={() => setPrefs("accent", undefined)}>
-                    <div class="ap-swatches" role="group" aria-label="Accent">
-                        <For each={ACCENTS}>
-                            {(a) => <button class={accent() === a.id ? "on" : ""} aria-pressed={accent() === a.id} style={{ background: a.color }} title={a.name} aria-label={a.name} onClick={() => pickAccent(a.id)} />}
-                        </For>
-                    </div>
-                </Row>
-                <Row title="Window" desc="How much of your desktop shows through the window and sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
-                    <Segmented
-                        size="sm"
-                        label="Window"
-                        value={prefs.glass}
-                        onChange={(v) => setPrefs("glass", v)}
-                        options={[
-                            { value: "glass", label: "Glass" },
-                            { value: "tinted", label: "Tinted" },
-                            { value: "solid", label: "Solid" },
-                        ]}
-                    />
-                </Row>
-                <Row title="Window tint" desc="The color of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
-                    <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
-                        <TintTile id="clear" label="Clear" />
-                        <TintTile id="ocean" label="Ocean" />
-                        <TintTile id="accent" label="Accent" />
-                    </div>
-                </Row>
+                <Show when={!themeAccent()}>
+                    <Row title="Accent" desc="Send, primary buttons, links and focus." changed={accent() !== "blue"} reset={() => setPrefs("accent", undefined)}>
+                        <div class="ap-swatches" role="group" aria-label="Accent">
+                            <For each={ACCENTS}>
+                                {(a) => <button class={accent() === a.id ? "on" : ""} aria-pressed={accent() === a.id} style={{ background: a.color }} title={a.name} aria-label={a.name} onClick={() => pickAccent(a.id)} />}
+                            </For>
+                        </div>
+                    </Row>
+                </Show>
+                <Show when={!scened()}>
+                    <Row title="Window" desc="How much of your desktop shows through the window and sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
+                        <Segmented
+                            size="sm"
+                            label="Window"
+                            value={prefs.glass}
+                            onChange={(v) => setPrefs("glass", v)}
+                            options={[
+                                { value: "glass", label: "Glass" },
+                                { value: "tinted", label: "Tinted" },
+                                { value: "solid", label: "Solid" },
+                            ]}
+                        />
+                    </Row>
+                </Show>
+                <Show when={!prefs.themeId}>
+                    <Row title="Window tint" desc="The color of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
+                        <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
+                            <TintTile id="clear" label="Clear" />
+                            <TintTile id="ocean" label="Ocean" />
+                            <TintTile id="accent" label="Accent" />
+                        </div>
+                    </Row>
+                </Show>
                 <Row title="Contrast" desc="Stronger text and edges." changed={prefs.contrast !== PREF_DEFAULTS.contrast} reset={() => setPrefs("contrast", PREF_DEFAULTS.contrast)}>
                     <Segmented
                         size="sm"
