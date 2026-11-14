@@ -870,32 +870,50 @@
 }
 
 /* ---- Notices (#426): drawn as what they are -----------------------------
-   The UI explains, not words: placement, icon, colour and state carry the meaning. Ported from the approved
-   mockup (cavvy-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
-   12px = 0.857rem, 11.5px = 0.821rem, 13.5px = 0.964rem. */
+   One system for all three. An info is a quiet line; a warning and an error are a card the width of the column,
+   tinted amber or red, with a hairline edge. Every one has its icon in one column (10px in from the reply's edge,
+   16px wide), its words from one edge after it, at one size and weight, and what it can do (open, copy) at its end.
+   Cut short, a notice opens on a click. At the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem. */
+.nt,
+.nw,
+.ne {
+    --n-x: calc(10 * var(--sp));
+    --n-ic: calc(16 * var(--sp));
+    --n-gap: calc(10 * var(--sp));
+}
 
-/* Info: one quiet line; the icon in a 22px gutter, the text where a step's verb starts. Cut short, it opens. */
-.nt {
+.nt,
+.nw,
+.ne {
     align-self: stretch;
-    display: flex;
-    align-items: flex-start;
-    gap: calc(9 * var(--sp));
     min-width: 0;
-    margin: 0 0 calc(2 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     font-size: 0.929rem;
     line-height: calc(20 * var(--sp));
-    color: var(--fg-3);
     text-align: left;
 }
 
-.nt .ic {
-    width: calc(22 * var(--sp));
+/* Info: no card, so it stays quiet; its icon and words where a card's are. */
+.nt {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--n-gap);
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    color: var(--fg-3);
+}
+
+.nt .ic,
+.nw-h .ic,
+.ne .ic {
+    width: var(--n-ic);
     height: calc(20 * var(--sp));
     flex: none;
     display: grid;
     place-items: center;
+}
+
+.nt .ic {
     color: var(--fg-3);
 }
 
@@ -918,17 +936,21 @@
 
 .nt-detail {
     display: block;
-    font-size: 0.857rem;
+    font-size: 0.893rem;
 }
 
-.nt .more {
-    height: calc(20 * var(--sp));
+.nt .more,
+.nw-h .chev {
     flex: none;
+    height: calc(20 * var(--sp));
     display: grid;
     place-items: center;
     color: var(--fg-3);
-    opacity: 0;
     transition: opacity 140ms, transform 200ms var(--ease);
+}
+
+.nt .more {
+    opacity: 0;
 }
 
 .nt.long {
@@ -945,7 +967,8 @@
     opacity: 1;
 }
 
-.nt.open .more {
+.nt.open .more,
+.nw.open .nw-h .chev {
     transform: rotate(90deg);
 }
 
@@ -961,66 +984,47 @@
     color: var(--fg-2);
 }
 
-/* A warning: a compact amber pill that hugs its title; what the CLI said, and its link, fold under it. Open, it
-   widens to the column. */
+/* A warning: an amber card. Its title (or its words, cut to a line) and who said it; what the CLI said, and its
+   link, fold under it. */
 .nw {
-    align-self: flex-start;
-    max-width: 100%;
-    min-width: 0;
-    margin: 0 0 calc(6 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--warn-bg);
-}
-
-.nw.open {
-    align-self: stretch;
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: color-mix(in srgb, var(--warn) 7%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 26%, transparent);
 }
 
 .nw-h {
     display: flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    max-width: 100%;
-    min-height: calc(30 * var(--sp));
-    padding: 0 calc(9 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    font-size: 0.929rem;
+    align-items: flex-start;
+    gap: var(--n-gap);
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    border-radius: inherit;
     color: var(--fg);
-    text-align: left;
+}
+
+.nw-h[role="button"] {
+    cursor: default;
 }
 
 .nw-h .ic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    flex: none;
-    display: grid;
-    place-items: center;
     color: var(--warn);
 }
 
 .nw-title {
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 500;
 }
 
-/* A title-only pill cut short: opened, it wraps. */
+/* Opened, a title cut short wraps. */
 .nw.open .nw-title {
     white-space: normal;
     overflow-wrap: anywhere;
 }
 
-.nw.open .nw-h {
-    padding-top: calc(4 * var(--sp));
-    padding-bottom: calc(4 * var(--sp));
-}
-
 .nw-src {
     flex: none;
+    height: calc(20 * var(--sp));
     display: grid;
     place-items: center;
     color: var(--fg-3);
@@ -1031,37 +1035,26 @@
     height: calc(13 * var(--sp));
 }
 
-.nw-h .chev {
-    flex: none;
-    color: var(--fg-3);
-    transition: transform 200ms var(--ease);
-}
-
-.nw.open .nw-h .chev {
-    transform: rotate(90deg);
-}
-
-/* Drawn only while open (Notices.tsx). */
+/* Drawn only while open (Notices.tsx), from the title's edge. */
 .nw-body {
-    padding: 0 calc(14 * var(--sp)) calc(11 * var(--sp)) calc(33 * var(--sp));
-    font-size: 0.929rem;
+    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp)) calc(var(--n-x) + var(--n-ic) + var(--n-gap));
+    font-size: 0.893rem;
     line-height: 1.55;
     color: var(--fg-2);
     animation: rise 220ms var(--ease) both;
 }
 
 .nw-body p {
-    margin: 0 0 calc(6 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
     text-wrap: pretty;
     white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
 .nw-details {
-    margin: 0 0 calc(6 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp));
     padding: 0;
     list-style: none;
-    font-size: 0.857rem;
     line-height: 1.6;
 }
 
@@ -1070,7 +1063,7 @@
     align-items: center;
     flex-wrap: wrap;
     gap: calc(10 * var(--sp));
-    margin-top: calc(8 * var(--sp));
+    margin-top: calc(6 * var(--sp));
 }
 
 .nlink {
@@ -1088,38 +1081,45 @@
     font-weight: 400;
 }
 
-/* An error: a card, never cut short: its sentence in red, then what to do. It ends the turn, so there's no
-   "Stopped with an error" line under it (TurnView). */
+/* An error: a red card, never cut short. Its sentence, Copy at its end, then what was said with it and what to
+   do. It ends the turn, so there's no "Stopped with an error" line under it (TurnView). */
 .ne {
     display: grid;
-    grid-template-columns: calc(22 * var(--sp)) minmax(0, 1fr);
-    column-gap: calc(7 * var(--sp));
-    margin: calc(2 * var(--sp)) 0 calc(10 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 34%, transparent);
+    grid-template-columns: var(--n-ic) minmax(0, 1fr) auto;
+    column-gap: var(--n-gap);
+    align-items: start;
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 .ne .ic {
-    height: calc(20 * var(--sp));
-    display: grid;
-    place-items: center;
     color: var(--danger);
 }
 
 .ne-title {
-    font-size: 0.964rem;
-    line-height: calc(20 * var(--sp));
-    font-weight: 600;
-    color: var(--danger);
+    color: var(--fg);
     overflow-wrap: anywhere;
 }
 
+/* Copy, on the sentence's line: the card's one action that isn't a choice. */
+.ne-copy.hb.sm {
+    grid-column: 3;
+    grid-row: 1;
+    margin: calc(-2 * var(--sp)) 0;
+    color: var(--fg-3);
+}
+
+.ne-body,
+.ne-resume,
+.ne-foot {
+    grid-column: 2 / -1;
+    padding-right: calc(4 * var(--sp));
+}
+
 .ne-body {
-    grid-column: 2;
-    margin-top: calc(2 * var(--sp));
-    font-size: 0.929rem;
+    margin: calc(2 * var(--sp)) 0 calc(2 * var(--sp));
+    font-size: 0.893rem;
     line-height: 1.55;
     color: var(--fg-2);
     white-space: pre-line;
@@ -1132,12 +1132,11 @@
 }
 
 .ne-foot {
-    grid-column: 2;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: calc(6 * var(--sp));
-    margin-top: calc(9 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 calc(2 * var(--sp));
 }
 
 .ne-foot .cbtn {
@@ -1146,8 +1145,6 @@
 
 /* A plan's limit: while the session waits to pick up again by itself, a line under its sentence says when. */
 .ne-resume {
-    grid-column: 2;
-    margin-top: calc(1 * var(--sp));
     font-size: 0.893rem;
     line-height: 1.5;
     color: var(--fg-3);

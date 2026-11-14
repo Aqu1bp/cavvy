@@ -232,23 +232,22 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
             <Show
                 when={limit()}
                 fallback={
-                    <div class="ne-foot" data-find-skip>
-                        <button
-                            class="cbtn"
-                            title="Copy the error"
-                            onClick={async () => {
-                                if (await copyText(p.block.text)) {
-                                    setCopied(true);
-                                    setTimeout(() => setCopied(false), 1400);
-                                }
-                            }}
-                        >
-                            <Show when={copied()} fallback={<Copy size={12} />}>
-                                <Check size={12} />
-                            </Show>
-                            {copied() ? "Copied" : "Copy"}
-                        </button>
-                    </div>
+                    <button
+                        class="hb sm ne-copy"
+                        data-find-skip
+                        title={copied() ? "Copied" : "Copy the error"}
+                        aria-label={copied() ? "Copied" : "Copy the error"}
+                        onClick={async () => {
+                            if (await copyText(p.block.text)) {
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 1400);
+                            }
+                        }}
+                    >
+                        <Show when={copied()} fallback={<Copy size={13} />}>
+                            <Check size={13} />
+                        </Show>
+                    </button>
                 }
             >
                 {(l) => <LimitActions provider={l().provider} accountId={l().accountId} resetsAt={l().resetsAt} state={p.state} latest={latest()} resume={resume()?.id} />}
