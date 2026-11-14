@@ -1045,11 +1045,12 @@ export class Agent {
                 recorded = true;
             };
             if (!signal.aborted) {
+                // Not into a round that ends the turn (the user denied a call, a hook stopped it or blocked the batch): the wake
+                // would go unanswered, shown as taken. It waits for the next turn instead. Taken before the steer: its line
+                // goes with these results, in the turn before the steer's (where a reopened session puts it).
+                const woke = denied || this.hookStop || batchBlocked ? undefined : this.takeWakes(true);
                 const steer = await this.drainSteering(signal);
                 const queued = steer.texts;
-                // Not into a round that ends the turn (the user denied a call, a hook stopped it or blocked the batch): the wake
-                // would go unanswered, shown as taken. It waits for the next turn instead.
-                const woke = denied || this.hookStop || batchBlocked ? undefined : this.takeWakes(true);
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
                 if (woke) {
                     extra.push(reminder(woke.text));

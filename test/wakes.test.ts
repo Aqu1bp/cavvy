@@ -207,12 +207,20 @@ describe("a running agent", () => {
             n === 0 ? reply([{ type: "tool_call", id: "c1", name: "Poke", input: { label: "PR #3: new comment" } }], "tool_use") : reply([{ type: "text", text: "on it" }]),
         );
         let given = false;
-        (agent as any).o.host.drainQueued = () => (given ? [] : ((given = true), ["also check the docs"]));
+        const order: string[] = [];
+        const host = (agent as any).o.host;
+        const emit = host.emit;
+        host.emit = (e: any) => (e.type === "notice" && order.push("wake"), emit(e));
+        host.drainQueued = () => (given ? [] : ((given = true), order.push("steer"), ["also check the docs"]));
         await agent.run([{ type: "text", text: "watch it" }], { signal: new AbortController().signal });
         const sent = lastText(requests[1]!.at(-1));
         expect(sent).toContain("also check the docs");
         expect(sent).toContain("event PR #3: new comment");
         expect(JSON.stringify(session.messages)).toContain("event PR #3: new comment");
+        // Its line goes before the steer starts its turn, at the results' place: where a reopened session shows it.
+        expect(order).toEqual(["wake", "steer"]);
+        const results = session.messages.findIndex((m) => m.meta?.kind === "tool_results");
+        expect(session.notices).toMatchObject([{ index: results, wake: true }]);
         expect(wakes.size).toBe(0);
         wakes.dispose();
     });
