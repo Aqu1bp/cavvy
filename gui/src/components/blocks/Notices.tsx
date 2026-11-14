@@ -288,7 +288,7 @@ function LimitActions(p: { provider: string; accountId: string; resetsAt?: numbe
         setSwitching(true);
         try {
             await rpc.call("session.setAccount", { id: p.state.id, provider: p.provider, accountId: id });
-            toast("Account switched. Send your message again to continue.", "info");
+            toast("Account switched. Send your message again.", "info");
         } catch (error) {
             reportError(error);
         } finally {

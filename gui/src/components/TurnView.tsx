@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, CircleStop, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -547,7 +547,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
 }
 
 const END_TEXT: Partial<Record<Turn["status"], string>> = {
-    aborted: "Stopped. Nothing after this point ran.",
+    aborted: "Stopped",
     error: "Stopped with an error",
     denied: "Stopped after a declined tool call",
     max_turns: "Stopped at the turn limit",
@@ -562,7 +562,7 @@ const LEFT_RUNNING = "Still running in the background";
 
 /**
  * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
- * background command does): then "nothing after this point ran" isn't so, and the line says what is.
+ * background command does): then the line says so.
  */
 function stoppedText(turn: Turn, state: SessionState): string {
     const calls = new Set(turn.blocks.flatMap((b) => (b.t === "tool" ? [b.id] : [])));
@@ -734,7 +734,7 @@ function TurnViewContent(p: TurnViewProps) {
                         {/* An error's card says how the turn ended: no second line under it. */}
                         <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
-                                {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
+                                {p.turn.status === "aborted" ? <Square size={9} fill="currentColor" class="end-stop" /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
                                 <span>{p.turn.status === "aborted" ? stoppedText(p.turn, p.state) : END_TEXT[p.turn.status]}</span>
                             </div>
                         </Show>

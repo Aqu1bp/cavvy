@@ -854,10 +854,19 @@
 }
 
 .notice.error,
-.end-note.end-aborted,
 .end-note.end-error,
 .end-note.end-blocked {
     color: var(--danger);
+}
+
+/* Stopped by the user: not an error, so no colour; a small stop mark in the icon's place. */
+.end-note.end-aborted {
+    align-items: center;
+    font-weight: 500;
+}
+
+.end-note .end-stop {
+    margin: 0 calc(2.5 * var(--sp));
 }
 
 /* ---- Notices (#426): drawn as what they are -----------------------------
