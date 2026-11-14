@@ -770,9 +770,12 @@ export function Sidebar() {
             const animation = el.animate([{ height: `${from}px`, opacity: opacity[0] }, { height: `${to}px`, opacity: opacity[1] }], { duration: ms, easing: EASE, fill: folding ? "forwards" : "none" });
             return { animation, done: animation.finished.catch(() => undefined).finally(() => { el.style.overflow = ""; }) };
         };
+        // A few rows shrink away (and grow back) in place. A page of them would all squash at once and leave the
+        // list empty a moment: they go at once instead, and what takes their place fades in (the keys memo).
+        const FEW = 6;
         if (folding) {
             const rows = headRows(head);
-            if (!rows.length) return commit();
+            if (!rows.length || rows.length > FEW) return commit();
             setFolding(head);
             const shrinking = rows.map((el) => grow(el, el.offsetHeight, 0, [1, 0]));
             void Promise.all(shrinking.map((a) => a.done)).then(() => {
@@ -786,7 +789,8 @@ export function Sidebar() {
             return;
         }
         commit();
-        for (const el of headRows(head)) grow(el, 0, el.offsetHeight, [0, 1]);
+        const rows = headRows(head);
+        if (rows.length <= FEW) for (const el of rows) grow(el, 0, el.offsetHeight, [0, 1]);
     };
     const projectsInPlay = createMemo(() => [...new Set(app.sessions.filter((s) => !s.settled).map(projectOf))]);
     // Opening a session in a folded project (⌘K, a notification) unfolds it, so the open row shows.
