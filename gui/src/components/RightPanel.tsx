@@ -384,6 +384,12 @@ export function RightPanel(p: { handle: SessionHandle }) {
     const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" ? undefined : inspectorPane());
     return (
         <aside class="panel" aria-label="Session details">
+            {/* The folder's changes (the Changes icon's count) are the one thing here fetched once the session is open:
+                until they're in, a window that just switched machines keeps its picture over the panel
+                (desktop-electron/src/preload.ts). */}
+            <Show when={work.changes() === undefined}>
+                <div class="insp-loading" aria-busy="true" hidden />
+            </Show>
             <PanelRail handle={p.handle} work={work} />
             <div class="insp-main">
             <Show when={titled()}>
