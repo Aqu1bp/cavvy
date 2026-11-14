@@ -7,18 +7,50 @@ import { blurDef, frames, glow, moving, round, seeded, still, svg, vertical } fr
 const W = 1600;
 const H = 1000;
 
-/** A tree's silhouette: a trunk and a crown of overlapping lobes, rooted at `x`, `ground`. */
-function tree(rand: () => number, x: number, ground: number, height: number, width: number, fill: string): string {
-    const trunk = `<path d="M${round(x - width * 0.05)} ${ground} L${round(x - width * 0.025)} ${round(ground - height * 0.5)} L${round(x + width * 0.025)} ${round(ground - height * 0.5)} L${round(x + width * 0.05)} ${ground} Z" fill="${fill}"/>`;
-    let crown = "";
-    for (let i = 0; i < 9; i++) {
-        const t = i / 8;
-        const cy = ground - height * (0.38 + t * 0.55);
-        const spread = width * (0.5 - t * 0.33);
-        const cx = x + (rand() - 0.5) * spread * 0.9;
-        crown += `<ellipse cx="${round(cx)}" cy="${round(cy)}" rx="${round(spread * (0.55 + rand() * 0.3))}" ry="${round(height * (0.12 + rand() * 0.06))}" fill="${fill}"/>`;
+/** A leafy clump: a rough ellipse whose edge is broken into small leaf tips. */
+function clump(rand: () => number, cx: number, cy: number, rx: number, ry: number): string {
+    const n = Math.max(48, Math.round((rx + ry) / 3));
+    const p1 = rand() * 6.3;
+    const p2 = rand() * 6.3;
+    const pts: string[] = [];
+    for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const wobble = 1 + 0.12 * Math.sin(3 * a + p1) + 0.07 * Math.sin(7 * a + p2);
+        const tip = i % 2 ? 1 + 0.03 + rand() * 0.07 : 1 - rand() * 0.04;
+        pts.push(`${round(cx + Math.cos(a) * rx * wobble * tip)} ${round(cy + Math.sin(a) * ry * wobble * tip)}`);
     }
-    return trunk + crown;
+    return `M${pts.join(" L")} Z`;
+}
+
+/** A broadleaf tree: a short trunk under a crown of overlapping leafy clumps. */
+function broadleaf(rand: () => number, x: number, ground: number, height: number, width: number, fill: string): string {
+    const tw = width * 0.05;
+    let d = `M${round(x - tw * 1.5)} ${ground} C${round(x - tw)} ${round(ground - height * 0.2)} ${round(x - tw * 0.8)} ${round(ground - height * 0.45)} ${round(x - tw * 0.6)} ${round(ground - height * 0.55)} L${round(x + tw * 0.6)} ${round(ground - height * 0.55)} C${round(x + tw * 0.8)} ${round(ground - height * 0.45)} ${round(x + tw)} ${round(ground - height * 0.2)} ${round(x + tw * 1.5)} ${ground} Z`;
+    for (let i = 0; i < 11; i++) {
+        const t = i / 10;
+        const cy = ground - height * (0.5 + t * 0.4);
+        const spread = width * (0.5 - t * 0.26);
+        d += " " + clump(rand, x + (rand() - 0.5) * spread, cy, spread * (0.42 + rand() * 0.2), height * (0.1 + rand() * 0.05));
+    }
+    return `<path d="${d}" fill="${fill}"/>`;
+}
+
+/** A pine: a thin trunk under tiers of drooping branches, ragged at the tips. */
+function pine(rand: () => number, x: number, ground: number, height: number, width: number, fill: string): string {
+    const top = ground - height;
+    const rows = 14 + Math.floor(rand() * 6);
+    const left: string[] = [];
+    const right: string[] = [];
+    for (let i = 0; i < rows; i++) {
+        const t = (i + 1) / rows;
+        const y = top + t * height * 0.9;
+        const reach = width * 0.5 * t ** 0.9 * (0.8 + rand() * 0.35);
+        const droop = 8 + t * 18;
+        left.push(`${round(x - reach * 0.3)} ${round(y - 6)}`, `${round(x - reach)} ${round(y + droop)}`, `${round(x - reach * 0.55)} ${round(y + droop * 0.5)}`);
+        right.push(`${round(x + reach * 0.55)} ${round(y + droop * 0.5)}`, `${round(x + reach)} ${round(y + droop + (rand() - 0.5) * 6)}`, `${round(x + reach * 0.3)} ${round(y - 6)}`);
+    }
+    const tw = Math.max(4, width * 0.03);
+    return `<path d="M${round(x)} ${round(top)} L${left.join(" L")} L${round(x - tw)} ${round(ground - height * 0.08)} L${round(x - tw)} ${ground} L${round(x + tw)} ${ground} L${round(x + tw)} ${round(ground - height * 0.08)} L${right.reverse().join(" L")} Z" fill="${fill}"/>`;
 }
 
 function grass(rand: () => number, y: number, fill: string, n: number): string {
@@ -42,9 +74,13 @@ export function fireflies(): Theme {
         vertical("sky", [[0, "#071012"], [0.55, "#0b1a18"], [1, "#132a20"]]) + glow("halo", "#e9e3b8", 0.18, 0.3),
     );
     // Three planes of trees: far and pale in mist, then darker, then black at the very edges.
-    const far = svg(W, H, [80, 210, 330, 1250, 1380, 1500, 1580].map((x) => tree(rand, x + (rand() - 0.5) * 40, 860, 360 + rand() * 160, 220 + rand() * 80, "#11241f")).join("") + `<rect y="830" width="${W}" height="170" fill="#11241f"/>`);
+    const far = svg(
+        W,
+        H,
+        [40, 150, 250, 340, 1240, 1330, 1430, 1530].map((x, i) => (i % 3 === 1 ? broadleaf(rand, x, 870, 330 + rand() * 120, 230, "#11241f") : pine(rand, x + (rand() - 0.5) * 30, 870, 380 + rand() * 180, 150 + rand() * 50, "#11241f"))).join("") + `<rect y="850" width="${W}" height="150" fill="#11241f"/>`,
+    );
     const mist = svg(W, 300, `<ellipse cx="800" cy="150" rx="900" ry="70" fill="#9fc2b0" opacity="0.07" filter="url(#b)"/>`, blurDef("b", 24));
-    const near = svg(W, H, [-30, 120, 1470, 1640].map((x) => tree(rand, x, 1000, 620 + rand() * 260, 300 + rand() * 120, "#07100d")).join("") + grass(rand, 945, "#07100d", 160));
+    const near = svg(W, H, pine(rand, 20, 1000, 900, 300, "#07100d") + pine(rand, 270, 1000, 620, 220, "#07100d") + pine(rand, 1360, 1000, 720, 250, "#07100d") + pine(rand, 1580, 1000, 940, 320, "#07100d") + grass(rand, 945, "#07100d", 160));
     // A firefly: a warm core in a soft glow, wandering a loop and blinking as it goes.
     const fly = (seed: number, when?: "working"): Layer => {
         const r = seeded(seed);

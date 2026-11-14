@@ -25,10 +25,12 @@ function bokeh(rand: () => number, n: number, band: [number, number]): string {
 }
 
 /** Rain streaks for a sheet `2h` tall whose lower half repeats its upper: slid down by `h`, it loops seamlessly. */
-function rain(rand: () => number, w: number, h: number, n: number, alpha: number): string {
+function rain(rand: () => number, w: number, h: number, n: number, alpha: number, edges: number): string {
     let out = "";
     for (let i = 0; i < n; i++) {
-        const x = rand() * w;
+        // Thicker at the sides: `edges` 1 keeps nearly all of it out of the middle, 0 spreads it evenly.
+        const out_ = rand() ** (1 + edges * 1.5) * (w / 2);
+        const x = rand() < 0.5 ? out_ : w - out_;
         const y = rand() * h;
         const len = 26 + rand() * 46;
         const dx = len * 0.16;
@@ -39,9 +41,14 @@ function rain(rand: () => number, w: number, h: number, n: number, alpha: number
     return out;
 }
 
+/** A bead of water on the glass: lit from above, so a bright glint at the top and the light it bends pooled at the bottom, with a soft shadow under it. Needs DROP_DEFS. */
 function drop(rand: () => number, x: number, y: number, r: number): string {
-    return `<ellipse cx="${round(x)}" cy="${round(y)}" rx="${round(r)}" ry="${round(r * 1.15)}" fill="#0c1220" opacity="0.35"/><ellipse cx="${round(x)}" cy="${round(y)}" rx="${round(r)}" ry="${round(r * 1.15)}" fill="none" stroke="#dbe7ff" stroke-width="${round(0.6 + r * 0.06, 2)}" opacity="${round(0.22 + rand() * 0.2, 2)}"/><circle cx="${round(x - r * 0.35)}" cy="${round(y - r * 0.4)}" r="${round(r * 0.22, 2)}" fill="#ffffff" opacity="0.5"/>`;
+    const ry = r * (1.05 + rand() * 0.2);
+    const o = round(0.55 + rand() * 0.45, 2);
+    return `<g opacity="${o}"><ellipse cx="${round(x + r * 0.12)}" cy="${round(y + r * 0.2)}" rx="${round(r * 1.05)}" ry="${round(ry * 1.05)}" fill="#04060c" opacity="0.28"/><ellipse cx="${round(x)}" cy="${round(y)}" rx="${round(r)}" ry="${round(ry)}" fill="url(#bead)"/><ellipse cx="${round(x - r * 0.3)}" cy="${round(y - ry * 0.45)}" rx="${round(r * 0.32, 2)}" ry="${round(ry * 0.18, 2)}" fill="#ffffff" opacity="0.55"/></g>`;
 }
+
+const DROP_DEFS = `<radialGradient id="bead" cx="0.5" cy="0.72" r="0.62"><stop offset="0" stop-color="#e8eeff" stop-opacity="0.32"/><stop offset="0.55" stop-color="#9fb2d8" stop-opacity="0.1"/><stop offset="0.9" stop-color="#dbe7ff" stop-opacity="0.04"/><stop offset="1" stop-color="#dbe7ff" stop-opacity="0.22"/></radialGradient>`;
 
 export function nightRain(): Theme {
     const rand = seeded(23);
@@ -60,8 +67,8 @@ export function nightRain(): Theme {
             delay,
         });
     };
-    const sheet = (seed: number, n: number, alpha: number, seconds: number, extra: Partial<Layer> = {}): Layer => ({
-        ...moving(svg(W, 2 * H, rain(seeded(seed), W, H, n, alpha)), { x: 0, y: -H, width: W, height: 2 * H }, { duration: seconds, loop: "repeat", easing: "linear", keyframes: frames({ y: 0 }, { y: H }) }),
+    const sheet = (seed: number, n: number, alpha: number, seconds: number, edges: number, extra: Partial<Layer> = {}): Layer => ({
+        ...moving(svg(W, 2 * H, rain(seeded(seed), W, H, n, alpha, edges)), { x: 0, y: -H, width: W, height: 2 * H }, { duration: seconds, loop: "repeat", easing: "linear", keyframes: frames({ y: 0 }, { y: H }) }),
         ...extra,
     });
     // Drops on the glass at the edges; a few slide down now and then.
@@ -72,9 +79,10 @@ export function nightRain(): Theme {
             const x = rand() < 0.5 ? rand() * 360 : W - rand() * 360;
             return drop(rand, x, rand() * H, 1.5 + rand() ** 3 * 7);
         }).join(""),
+        DROP_DEFS,
     );
     const slider = (x: number, from: number, seconds: number, delay: number): Layer =>
-        moving(svg(30, 150, `<path d="M15 0 L15 120" stroke="#dbe7ff" stroke-width="1.4" opacity="0.14"/>${drop(rand, 15, 132, 7)}`), { x: x - 15, y: from, width: 30, height: 150 }, {
+        moving(svg(30, 150, `<path d="M15 0 L15 120" stroke="#dbe7ff" stroke-width="1.4" stroke-linecap="round" opacity="0.1"/>${drop(rand, 15, 132, 7)}`, DROP_DEFS), { x: x - 15, y: from, width: 30, height: 150 }, {
             duration: seconds,
             loop: "repeat",
             easing: "linear",
@@ -90,13 +98,13 @@ export function nightRain(): Theme {
                 lights(31, 34, 11, -2),
                 lights(37, 26, 15, -7),
                 lights(41, 18, 9, -4),
-                sheet(51, 70, 0.22, 2.6),
+                sheet(51, 80, 0.22, 2.6, 1),
                 still(glass),
                 slider(120, 60, 16, -3),
                 slider(1490, 200, 21, -11),
                 slider(300, 340, 26, -19),
-                sheet(57, 160, 0.3, 1.6, { when: "working" }),
-                sheet(59, 90, 0.26, 1.9, { when: "working" }),
+                sheet(57, 160, 0.3, 1.6, 0.5, { when: "working" }),
+                sheet(59, 90, 0.26, 1.9, 0.3, { when: "working" }),
             ],
         },
     };
