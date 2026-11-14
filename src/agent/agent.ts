@@ -70,6 +70,10 @@ import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
+import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
+import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, servedServerName, serverServerTools } from "../tools/server-tools";
+import { findRecipe, signedOutIn, signInRecipes, statusMasked, type SignInRecipe } from "./sign-in-recipes";
+import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
@@ -564,6 +568,8 @@ export class Agent {
     private serverTools: ServerTool[] = [];
     /** The last run stopped on the plan's usage limit (an agent CLI said so), and when that resets if known. */
     limitStop?: { resetsAt?: number };
+    /** The turn stopped because something isn't signed in (an agent CLI, gcloud for Vertex): which, and the advice the host's card replaces. */
+    signedOutStop?: { target: string; account: string; advice: string };
     private serverInstructions = "";
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
@@ -730,6 +736,9 @@ export class Agent {
         const thisRun: { over: boolean } = (this.thisRun = { over: false });
         this.prompted = false;
         this.limitStop = undefined;
+        this.signedOutStop = undefined;
+        this.signedOutUnasked = undefined;
+        this.askedSignIns.clear();
         // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
         // turn or an earlier one) run on: only an explicit stop ends them (#228, stopBackground).
         const onAbort = () => this.cancelTasks();
@@ -1262,6 +1271,12 @@ export class Agent {
      * never sent to a model).
      */
     private endNotice(level: "warn" | "error", message: string, data?: NoticeData) {
+        // It stopped on something signed out, and there's someone to ask: the host shows the sign-in in place of the advice to run it by hand.
+        const out = level === "error" && !this.o.isSubagent && this.o.host.ui.requestSignIn ? signInAdvised(message) : undefined;
+        if (out) {
+            this.signedOutStop = { target: out.target, account: out.account, advice: out.advice };
+            message = message.replace(out.advice, "").replace(/[\s:.]+$/, "") + ".";
+        }
         if (level === "error") this.turnError = message;
         this.session.recordNotice(level, message, data);
         this.emit({ type: "notice", level, message, ...(data ? { data } : {}) });
@@ -1719,6 +1734,8 @@ export class Agent {
         const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
         const store = acp ? undefined : this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
+        // Where there's someone to sign in (not a -p run).
+        const signIn = acp ? undefined : this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
         const scheduling = !acp && Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
@@ -1732,7 +1749,9 @@ export class Agent {
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
-        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers) return undefined;
+        // The user's servers: from their own machine, where there's someone to say yes to what costs money.
+        const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1752,6 +1771,11 @@ export class Agent {
         if (store && ask) {
             tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
+        }
+        if (signIn) {
+            // Under the CLI's limit for one of Cavvy's tools (toolTimeoutSec below): a call still waiting then answers "still waiting", and the card stays.
+            tools.push(...signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) }));
+            instructions.push(SIGN_IN_INSTRUCTIONS);
         }
         if (scheduling) {
             tools.push(...scheduleServerTools(() => this.state.scheduler));
@@ -1776,6 +1800,10 @@ export class Agent {
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
             instructions.push(WORKTREE_INSTRUCTIONS);
+        }
+        if (servers) {
+            tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            instructions.push(SERVER_INSTRUCTIONS);
         }
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
@@ -2250,6 +2278,8 @@ export class Agent {
         if (adopt && (!backend.adoptsTurns || adopt.provider !== this.model.provider)) return this.cannotAdopt(adopt);
         // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
         const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
+        // A message of the user's own: what it runs into is pointed out afresh, whatever was pointed out or put off before.
+        if (!woken) this.signInPointed.clear();
         try {
             return await this.runBackendTurn(backend, parts, signal, woken, adopt?.ref);
         } finally {
@@ -2856,6 +2886,51 @@ export class Agent {
         return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices());
     }
 
+    /** When each sign-in was last pointed to, so a command run again and again doesn't bring the same news each time. */
+    private signInPointed = new Map<string, number>();
+
+    /**
+     * What Cavvy's own Bash appends to a failed command (src/tools/bash.ts), for an agent CLI whose shell Cavvy only
+     * watches: a wake that joins the turn (or starts one, if the CLI has already ended it by telling the user to sign in).
+     */
+    private pointToSignIn(recipe: SignInRecipe) {
+        if (!this.state.wakes || !this.serverTools.some((t) => t.name === "request_sign_in")) return;
+        const now = Date.now();
+        if (now - (this.signInPointed.get(recipe.id) ?? 0) < 10 * 60_000) return;
+        this.signInPointed.set(recipe.id, now);
+        this.state.wakes.push({ source: "sign-in", key: `sign-in-hint:${recipe.id}`, label: `${recipe.name} isn't signed in`, text: `A command just said ${recipe.name} isn't signed in. Ask the user to sign in: call request_sign_in with target "${recipe.id}", then run the command again. Don't tell them to run a login command themselves.` });
+    }
+
+    /** What the agent asked the user to sign in to in this turn: their answer stands for the turn. */
+    private askedSignIns = new Set<string>();
+
+    /**
+     * A command in this turn said one of these isn't signed in, and the agent hasn't asked the user about it. Whether
+     * an agent asks is its own choice (one told "not now" earlier may never ask again); when the turn ends with this
+     * still set, the host puts the sign-in in front of the user itself.
+     */
+    signedOutUnasked?: { target: string; name: string };
+
+    /**
+     * The sign-in a command's output says is missing, if it ran that CLI. Whether or not the call counts as failed
+     * when its status may not be the CLI's own: agents end a command with `; echo "exit=$?"` or pipe it into tail.
+     */
+    private sawSignedOut(command: unknown, output: string, failed: boolean): SignInRecipe | undefined {
+        if (typeof command !== "string" || this.o.isSubagent || this.oneShot || (!failed && !statusMasked(command))) return undefined;
+        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns), command);
+        if (recipe && !this.askedSignIns.has(recipe.id)) this.signedOutUnasked = { target: recipe.id, name: recipe.name };
+        return recipe;
+    }
+
+    /** The agent asked the user to sign in to `target`: however that ended, nothing more is asked about it this turn. */
+    private askedToSignIn(target: unknown) {
+        const asked = findRecipe(String(target ?? ""), signInRecipes(this.o.settings().signIns));
+        if (!asked) return;
+        this.askedSignIns.add(asked.id);
+        this.signInPointed.set(asked.id, Date.now());
+        if (this.signedOutUnasked?.target === asked.id) this.signedOutUnasked = undefined;
+    }
+
     /**
      * Backend tool calls use Cavvy's tool (when there is one) for titles
      * and rendering. Their output is redacted here, as Cavvy's own tools
@@ -2867,11 +2942,17 @@ export class Agent {
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
+        // A command of the CLI's own whose output says something isn't signed in: Cavvy can't add to what its model read, so the pointer follows as news.
+        if (e.type === "tool_end" && e.call.name === `mcp__${MCP_SERVER_NAME}__request_sign_in`) this.askedToSignIn((e.call.input as { target?: unknown } | undefined)?.target);
+        if (e.type === "tool_end" && e.call.name === "Bash") {
+            const recipe = this.sawSignedOut((e.call.input as { command?: unknown } | undefined)?.command, e.result.content, Boolean(e.result.isError));
+            if (recipe) this.pointToSignIn(recipe);
+        }
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeServerCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -2889,7 +2970,7 @@ export class Agent {
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
             else if (call.name === DELEGATE_TOOL) this.delegateCalls = this.delegateCalls.filter((c) => c.id !== call.id);
         }
-        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
+        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? signInToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
         if (own && e.type === "tool_start") e = { ...e, title: own };
         else if (e.type === "tool_end" && e.title) {
             // Retitled at its end (its input only known then): titled as at its start.
@@ -2967,9 +3048,34 @@ export class Agent {
     private servedMain = new Set<string>();
     private servedSub = new Set<string>();
 
+    /** The main thread's calls of Cavvy's served tools that are under way, as the backend showed them: what a served call with no id of its own is matched to. */
+    private servedRunning: { id: string; name: string; input: Record<string, unknown>; claimed: boolean }[] = [];
+
+    /**
+     * The backend's own id for a served call that came with none (Claude Code sends none): the call of that tool
+     * with those arguments it has under way. What the tool reports while it runs (its steps) then lands on the row
+     * the user sees. `wait`: its event may come just after the call.
+     */
+    private async servedCallId(name: string, input: Record<string, unknown>, wait: boolean): Promise<string | undefined> {
+        const same = (a: Record<string, unknown>) => [...new Set([...Object.keys(a), ...Object.keys(input)])].every((k) => JSON.stringify(a[k]) === JSON.stringify(input[k]));
+        for (let i = 0; i < (wait ? 40 : 1); i++) {
+            const c = this.servedRunning.find((x) => !x.claimed && x.name === name && same(x.input));
+            if (c) {
+                c.claimed = true;
+                return c.id;
+            }
+            if (wait) await Bun.sleep(50);
+        }
+        return undefined;
+    }
+
     private noteServedCall(e: AgentEvent, into: Set<string>): void {
         if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
         if (e.type !== "tool_start" && e.type !== "tool_end") return;
+        if (into === this.servedMain && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
+            if (e.type === "tool_start") this.servedRunning.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, claimed: false });
+            else this.servedRunning = this.servedRunning.filter((c) => c.id !== e.call.id);
+        }
         // The session tools' calls by their arguments too: Claude Code sends no call id with them (servedSessionCaller).
         if (servedSessionTool(MCP_SERVER_NAME, e.call.name)) {
             if (e.type === "tool_start") this.sessionCalls.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
@@ -3051,13 +3157,16 @@ export class Agent {
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)));
             if (refused) return refused;
         }
+        // Under the backend's own id for the call, so its steps show on that call's row. Waited for only where steps are worth it (a server being set up takes minutes).
+        const servedAs = servedServerName(tool.name);
+        if (!callId && servedAs) callId = await this.servedCallId(`mcp__${MCP_SERVER_NAME}__${servedAs}`, input, true);
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) {
@@ -3115,7 +3224,7 @@ export class Agent {
         const state: ToolState = { ...this.state, secrets: store.only(o.names) };
         let r: ToolResult;
         try {
-            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined });
+            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined, signInTool: this.o.host.ui.requestSignIn ? "request_sign_in" : undefined });
         } catch (e) {
             r = { content: signal.aborted ? "Interrupted by user" : `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
@@ -3289,6 +3398,8 @@ export class Agent {
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
+            // A sub-agent has no way to ask the user: its parent hears what's signed out from its report.
+            signInTool: this.o.isSubagent || !this.o.host.ui.requestSignIn ? undefined : "RequestSignIn",
             // Only the session's own agent can be woken: a sub-agent's turn ends with its task.
             wakes: this.o.isSubagent ? undefined : this.state.wakes,
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
@@ -3565,6 +3676,8 @@ export class Agent {
             if (h?.blocked) result = { ...result, content: `${result.content}\n\n${event} hook feedback:\n${h.blocked}` };
             if (h?.additionalContext) (served ?? this.toolHookContext).push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
         }
+        if (tool.name === "RequestSignIn") this.askedToSignIn((input as { target?: unknown }).target);
+        else if (tool.name === "Bash") this.sawSignedOut((input as { command?: unknown }).command, result.content, Boolean(result.isError));
         if (!quiet) this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {
             type: "tool_result",
@@ -3774,7 +3887,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

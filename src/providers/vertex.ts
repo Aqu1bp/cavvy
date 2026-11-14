@@ -5,6 +5,7 @@
 // Cavvy keeps tokens in memory only and registers them with the redactor.
 
 import { homedir } from "os";
+import { adviseSignIn } from "../backends/account-login";
 import { OpenAICompatProvider, httpError } from "./openai-compat";
 import { validGoogleAccount, vertexBaseUrl, vertexHost, type ProviderDef, type VertexConfig } from "./registry";
 import { ProviderError, type ModelInfo } from "./types";
@@ -123,7 +124,7 @@ export class GcloudTokens {
         const cred = r.code === 0 ? parseCredential(r.stdout) : undefined;
         if (!cred) {
             const why = r.timedOut ? "it didn't answer in 30s" : gcloudMessage(r.stderr);
-            throw new ProviderError(`gcloud couldn't get a token for ${this.account}: ${why}. Sign in again with: gcloud auth login ${this.account}`, 401);
+            throw new ProviderError(`gcloud couldn't get a token for ${this.account}: ${why}. ${adviseSignIn("gcloud", "default", `Sign in again with: gcloud auth login ${this.account}`)}`, 401);
         }
         registerSecret(cred.token, "vertex");
         this.token = cred.token;

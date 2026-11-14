@@ -186,13 +186,33 @@ export class ServerLinks {
     }
 
     list(): ServerSummary[] {
-        return listServers().map((s) => ({ name: s.name, destination: s.destination, connected: this.links.get(s.name)?.link.state.state === "connected" }));
+        return listServers().map((s) => ({
+            name: s.name,
+            destination: s.destination,
+            connected: this.links.get(s.name)?.link.state.state === "connected",
+            ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
+            // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
+            ...(s.cloud?.teardown?.length ? { rented: true } : {}),
+        }));
     }
 
-    private progress(name: string): SetupProgress {
+    /** `also`: whoever asked for this setup hears each step too (an agent's tool call, which shows it in the conversation). */
+    private progress(name: string, also?: (text: string) => void): SetupProgress {
+        let said = -1;
         return {
-            step: (text) => this.o.onProgress?.({ name, text }),
-            copied: (sent, total) => total > 0 && this.o.onProgress?.({ name, text: `Copying Cavvy to ${name}…`, percent: Math.min(100, Math.floor((sent / total) * 100)) }),
+            step: (text) => {
+                this.o.onProgress?.({ name, text });
+                also?.(text);
+            },
+            copied: (sent, total) => {
+                if (total <= 0) return;
+                const percent = Math.min(100, Math.floor((sent / total) * 100));
+                this.o.onProgress?.({ name, text: `Copying Cavvy to ${name}…`, percent });
+                // A line per quarter, not per chunk.
+                const quarter = Math.floor(percent / 25);
+                if (also && quarter > said) also(`Copying Cavvy to ${name}… ${percent}%`);
+                said = Math.max(said, quarter);
+            },
         };
     }
 
@@ -221,7 +241,7 @@ export class ServerLinks {
      * Adds a server: connects, puts this machine's build of Cavvy there and starts it. `trusted`: the entry `trust`
      * handed back, when the host's key was just accepted.
      */
-    async add(draft: { name: string; destination: string; port?: number; identityFile?: string }, trusted?: ServerEntry): Promise<AddResult> {
+    async add(draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] }, trusted?: ServerEntry, heard?: (text: string) => void): Promise<AddResult> {
         let entry: ServerEntry;
         try {
             entry = trusted ?? draftServer(draft);
@@ -229,9 +249,10 @@ export class ServerLinks {
             return { status: "failed", problem: problemOf(e) };
         }
         this.o.onProgress?.({ name: entry.name, text: `Connecting to ${hostOf(entry)}…` });
+        heard?.(`Connecting to ${hostOf(entry)}…`);
         let note: string | undefined;
         try {
-            const setup = await setUpServer(entry, { progress: this.progress(entry.name), source: this.o.source });
+            const setup = await setUpServer(entry, { progress: this.progress(entry.name, heard), source: this.o.source });
             if (setup.kept === "newer") note = "It runs a newer Cavvy than this machine.";
         } catch (e) {
             const unknown = await this.unknown(entry.name, entry, e).catch(() => undefined);

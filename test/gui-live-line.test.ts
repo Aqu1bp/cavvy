@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lineTone, liveLine, specialActivity, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lineTone, liveLine, specialActivity, stepOf, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -69,6 +69,29 @@ test("the step under way: its verb and target, a command by its description, an 
     expect(line({ blocks: [a] })?.key).toBe(line({ blocks: [{ ...a, progress: "more" }] })?.key);
     // A background command's check says when that command started.
     expect(line({ blocks: [tool({ name: "BashOutput", title: "BashOutput", job: { label: "npm run dev", startedAt: 3 } })] })).toMatchObject({ label: "Checking output", detail: "npm run dev", jobSince: 3 });
+});
+
+test("a long call that says what it's at is that, and nothing beside it: one line, one thing going on", () => {
+    const add = (o: Record<string, unknown> = {}) => tool({ name: "mcp__cavvy__server_add", title: "ServerAdd(aws-mumbai)", input: { name: "aws-mumbai", address: "ubuntu@203.0.113.7" }, ...o });
+    // What it does, and to what; the call itself is handed over for its steps, which the line's own drawing reads
+    // (LiveLine.tsx): read here, each of them would have this redone over the whole turn.
+    const before = line({ blocks: [add()] })!;
+    expect(before).toMatchObject({ kind: "tool", label: "Adding server", detail: "aws-mumbai", key: "tool:t1:running" });
+    expect(stepOf(before.steps)).toBeUndefined();
+    // Then each step, in the call's own words: the last line it said, without the dots of something under way.
+    const at = (progress: string) => stepOf(line({ blocks: [add({ progress })] })!.steps);
+    expect(at("Waiting for aws-mumbai to start\n")).toBe("Waiting for aws-mumbai to start");
+    expect(at("Waiting for aws-mumbai to start\nCopying Cavvy to aws-mumbai…\n")).toBe("Copying Cavvy to aws-mumbai");
+    expect(at("Copying Cavvy to aws-mumbai… 50%\n")).toBe("Copying Cavvy to aws-mumbai… 50%");
+    expect(at("x\nInstalling Codex and Claude Code on aws-mumbai\n")).toBe("Installing Codex and Claude Code on aws-mumbai");
+    // The line's own state doesn't change with a step: same key, so it updates in place.
+    expect(line({ blocks: [add({ progress: "Waiting for aws-mumbai to start\n" })] })).toMatchObject({ label: "Adding server", key: "tool:t1:running", since: 5 });
+    // A command's output isn't its status, nor a sub-agent's: neither is handed over.
+    expect(line({ blocks: [tool({ name: "Bash", title: "Bash(bun test)", input: { command: "bun test" }, progress: "12 pass\n" })] })!.steps).toBeUndefined();
+    expect(line({ blocks: [tool({ name: "Task", title: "Task(x)", input: { description: "x" }, progress: "reading\n" })] })!.steps).toBeUndefined();
+    // Nor a call still arriving, nor once the user is asked something: that comes first.
+    expect(line({ blocks: [add({ status: "streaming", progress: "x\n" })] })!.steps).toBeUndefined();
+    expect(line({ blocks: [add({ progress: "Checking what's signed in on aws-mumbai\n" })], interactions: [{ kind: "signin", id: "s", name: "GitHub" } as any] })).toMatchObject({ label: "Waiting for you to sign in", detail: "GitHub" });
 });
 
 test("thinking shows the thought's latest line unless Show thinking is off; the answer streaming hides the line", () => {

@@ -18,6 +18,21 @@ export function loginCommand(provider: string, id = "default", o: { away?: boole
     };
 }
 
+/** Advice given, by its text, and the sign-in it's for: where there's someone to ask, a card takes the advice's place. */
+const advised = new Map<string, { target: string; account: string }>();
+
+/** `advice` (a sentence on how to sign in, for a failure's message) noted as being for that sign-in. Returns it. */
+export function adviseSignIn(target: string, account: string, advice: string): string {
+    advised.set(advice, { target, account });
+    return advice;
+}
+
+/** The sign-in a failure's message advises, with the advice itself, or undefined. */
+export function signInAdvised(message: string): { target: string; account: string; advice: string } | undefined {
+    for (const [advice, what] of advised) if (message.includes(advice)) return { ...what, advice };
+    return undefined;
+}
+
 /** This Cavvy runs on a server (src/servers/host.ts): whoever reads its advice is at another machine. */
 let onServer = false;
 export function signInsOnServer(on = true): void {
@@ -31,6 +46,10 @@ export function signInsOnServer(on = true): void {
  * the one that works with their browser elsewhere.
  */
 export function signInAdvice(provider: string, id = "default"): string {
+    return adviseSignIn(provider, id, adviceText(provider, id));
+}
+
+function adviceText(provider: string, id: string): string {
     const cli = agentCli(provider)?.cli;
     if (id === "default" && onServer) return `On this server, run \`${cli?.signInAway ?? cli?.signIn ?? provider}\`, then try again.`;
     if (id === "default") return `In a terminal, run \`${cli?.signIn ?? provider}\`, then try again.`;

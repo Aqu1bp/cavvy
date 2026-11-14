@@ -45,7 +45,7 @@ import { resetToolState, rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
-import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../config/settings";
+import { loadSettings, loadScope, addPermissionRule, onConfigWarning, updateSettings } from "../config/settings";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -67,7 +67,7 @@ import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { findCli } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
-import { commandList, commandRefusesImages, runCommand } from "../commands/index";
+import { commandList, commandRefusesImages, openInBrowser, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
@@ -78,6 +78,12 @@ import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SESSION_VAR } from "../util/session-processes";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { SessionSignIns, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
+import { onServer } from "../servers/role";
+import { SignInDialog } from "./sign-in-dialog";
+import type { ConfirmRequest } from "../tools/types";
+import { SERVER_TOOLS, type ServerSetup } from "../tools/server-tools";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import { steersMidTurn } from "../backends/defs";
@@ -293,6 +299,8 @@ export class App {
         // The user's other sessions, read from disk: the terminal can't drive those another process has open.
         this.toolState.peers = diskPeers(() => this.session.meta.id, () => this.cwd);
         (this.toolState.watchers as WatcherMap).onChange = () => this.renderLive();
+        // The user's servers, for an agent to set one up, add one or remove one: from their own machine (a server reaches no other).
+        if (!onServer()) this.toolState.servers = this.serverSetup();
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
 
@@ -443,6 +451,8 @@ export class App {
         this.goal?.dispose();
         this.idleCompact.disarm();
         this.abort?.abort();
+        this.signIns.dispose();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.backgroundTimer) clearInterval(this.backgroundTimer);
@@ -879,7 +889,7 @@ export class App {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off") && offered(t, this.settings));
         const skill = skillTool(this.skills);
-        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_READ_TOOLS, ...this.mcp.tools()];
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_READ_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -918,6 +928,9 @@ export class App {
                     askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
+                    requestSignIn: (req, signal) => this.requestSignIn(req, signal),
+                    askSignIn: (req, then) => this.signIns.ask(req, then),
+                    confirm: (req, signal) => this.confirm(req, signal),
                 },
                 drainQueued: (_record, admit) => this.drainQueued(admit),
                 unsteered: (steers) => this.unsteered(steers.flatMap((s) => s.texts), steers.map((s) => s.id)),
@@ -983,6 +996,7 @@ export class App {
         this.session = Session.create(this.cwd);
         prev.release();
         this.bindBackground();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.clear();
         this.toolState.fileState.clear();
@@ -1013,6 +1027,7 @@ export class App {
         if (prev) this.leaveBackground(prev);
         prev?.release();
         this.bindBackground();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.clear();
         resetToolState(this.toolState, this.session.messages);
@@ -1900,6 +1915,106 @@ export class App {
         return signal.aborted ? undefined : value;
     }
 
+    /** The servers' manager behind the server tools, as `cavvy servers` uses it; loaded with the first call. */
+    private serverSetup(): ServerSetup {
+        let made: Promise<ServerSetup> | undefined;
+        const real = () =>
+            (made ??= Promise.all([import("../servers/agent-setup"), import("../servers/manager")]).then(([setup, { ServerLinks }]) => {
+                const links = new ServerLinks();
+                return setup.serverSetup({ links: async () => links, settings: () => this.settings });
+            }));
+        return {
+            get: async (name) => (await real()).get(name),
+            names: async () => (await real()).names(),
+            hasKey: async (name) => (await real()).hasKey(name),
+            makeKey: async (name) => (await real()).makeKey(name),
+            copy: async (name) => (await real()).copy(name),
+            add: async (spec, o) => (await real()).add(spec, o),
+            remove: async (name, o) => (await real()).remove(name, o),
+        };
+    }
+
+    /** Before something that spends money or can't be taken back: asked whatever the mode. Esc, or the turn stopping, is a no. */
+    private async confirm(req: ConfirmRequest, signal: AbortSignal): Promise<"yes" | "other" | "no"> {
+        if (signal.aborted) return "no";
+        const header = [...(req.facts ?? []).map(([k, v]) => `${theme.muted(k.padEnd(8))} ${v}`), ...(req.commands ?? []).map((c) => theme.muted(`$ ${c}`))];
+        const items: SelectItem<"yes" | "other" | "no">[] = [{ label: req.yes, value: "yes" }, ...(req.other ? [{ label: req.other, value: "other" as const }] : []), { label: req.no, value: "no" }];
+        const d = new SelectDialog<"yes" | "other" | "no">({ title: `${req.title}?`, header, items, numbers: true, initial: req.danger ? items.length - 1 : 0, color: req.danger ? theme.error : theme.info });
+        void this.notifier.notify("question");
+        const withdraw = () => d.cancel();
+        signal.addEventListener("abort", withdraw, { once: true });
+        const r = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
+        return signal.aborted || r === undefined || Array.isArray(r) ? "no" : r;
+    }
+
+    /** A sign-in Cavvy runs (RequestSignIn): its prompt changes in place as the sign-in goes, and closes when it's over. */
+    private requestSignIn(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
+        return this.signIns.request(req, signal);
+    }
+
+    private signInDialogs = new Map<string, SignInDialog>();
+    private signIns = this.newSignIns();
+
+    private newSignIns(): SessionSignIns {
+        const away = onServer();
+        let ids = 0;
+        return new SessionSignIns({
+            recipes: () => signInRecipes(this.settings.signIns),
+            // An agent CLI signed in here has models to offer.
+            machine: async (name, account) => (await import("../servers/sign-in-host")).signInMachine(name, { away, account, signedIn: async (recipe) => { if (recipe.provider) await this.refreshListings(true).catch(() => undefined); } }),
+            newId: () => `signin-${++ids}`,
+            wakes: () => this.toolState.wakes,
+            watchers: () => this.toolState.watchers,
+            save: (recipe) => {
+                updateSettings("user", this.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; });
+                this.reloadSettings();
+            },
+            cards: {
+                show: (id, view) => {
+                    let d = this.signInDialogs.get(id);
+                    if (!d) {
+                        const dialog = (d = new SignInDialog({ act: (a) => this.signIns.act(id, a), open: away ? undefined : (url) => openInBrowser(url), where: away ? "on this server" : undefined }));
+                        this.signInDialogs.set(id, dialog);
+                        void this.notifier.notify("question");
+                        void this.showDialog(dialog);
+                    }
+                    d.update(view);
+                    this.renderLive();
+                },
+                hide: (id) => {
+                    this.signInDialogs.get(id)?.close();
+                    this.signInDialogs.delete(id);
+                },
+            },
+        });
+    }
+
+    /** The turn stopped on something signed out: its prompt, and once it's signed in the agent carries on (as the GUI does). */
+    private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
+        const name = findRecipe(out.target, signInRecipes(this.settings.signIns))?.name ?? out.target;
+        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
+            if (r === "signed-in") carryOn(true);
+            else if (r === "cannot" && out.advice) this.notice(out.advice, "warn");
+        });
+    }
+
+    /** /sign-in: back to a sign-in that was put off (the one named, or the only one). */
+    resumeSignIn(which?: string): string | undefined {
+        const waiting = [...(this.toolState.watchers?.values() ?? [])].filter((w) => w.kind === "sign-in");
+        if (!waiting.length) return "No sign-in is waiting.";
+        const w = which ? waiting.find((x) => x.label.toLowerCase().includes(which.toLowerCase())) : waiting.length === 1 ? waiting[0] : undefined;
+        if (!w) return `Which one? ${waiting.map((x) => x.label.replace(/^Sign in to /, "")).join(", ")}`;
+        return this.signIns.reopen(w.id) ? undefined : "That sign-in is no longer waiting.";
+    }
+
+    /** The session changed under the terminal (/new, /resume): its sign-ins go with it. */
+    private dropSignIns() {
+        this.signIns.dispose();
+        this.signIns = this.newSignIns();
+    }
+
     /** How what MCP servers ask for (forms, sampling) reaches the user outside a tool call: @-mentions, prompts. */
     mcpAsker(): McpAsker {
         return {
@@ -2615,6 +2730,9 @@ export class App {
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
         if (reason && !(goal?.active && goal.view()?.state !== "paused")) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (reason) this.schedules.turnEnded(reason, agent.limitStop);
+        if (reason === "error" && agent.signedOutStop) this.offerSignIn(agent.signedOutStop);
+        // A command in the turn said something isn't signed in, and the agent didn't ask: the user is asked all the same.
+        else if (reason === "done" && agent.signedOutUnasked) this.offerSignIn({ target: agent.signedOutUnasked.target, account: "", advice: "" }, true);
         if (ac.signal.aborted) {
             if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
             this.returnQueued();
@@ -3276,7 +3394,10 @@ export class App {
             const due = sched.list().some((j) => j.due);
             parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
         }
-        const watches = [...(this.toolState.watchers?.values() ?? [])];
+        const waiting = [...(this.toolState.watchers?.values() ?? [])];
+        const signIns = waiting.filter((w) => w.kind === "sign-in");
+        if (signIns.length) parts.push(theme.warning(signIns.length === 1 ? `${signIns[0]!.label.replace(/^Sign in to /, "")} signed out · /sign-in` : `${signIns.length} sign-ins waiting · /sign-in`));
+        const watches = waiting.filter((w) => w.kind !== "sign-in");
         if (watches.length) {
             const bad = watches.some((w) => /failing|conflicts/.test(w.detail ?? ""));
             const text = `↻ watching ${watches.length === 1 ? watches[0]!.label.replace(/ in .*$/, "") : `${watches.length} ${watches.every((w) => w.kind === "pull-request") ? "PRs" : "watches"}`}`;

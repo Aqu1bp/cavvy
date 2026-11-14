@@ -191,9 +191,13 @@ async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     const name = /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(refs)?.[1];
     return name ? branchName(cwd, name, signal) : undefined;
 }
+/** How the GitHub CLI stands here: usable, installed but signed out (a sign-in is all that's missing), or not installed. */
+async function ghState(cwd: string, signal?: AbortSignal): Promise<"ready" | "signed-out" | "missing"> {
+    try { return (await run(cwd, ["gh", "auth", "status", "--hostname", "github.com"], true, signal)).code === 0 ? "ready" : "signed-out"; }
+    catch (e) { if (e instanceof RpcError && e.code === "unavailable") return "missing"; throw e; }
+}
 async function ghReady(cwd: string, signal?: AbortSignal): Promise<boolean> {
-    try { return (await run(cwd, ["gh", "auth", "status", "--hostname", "github.com"], true, signal)).code === 0; }
-    catch (e) { if (e instanceof RpcError && e.code === "unavailable") return false; throw e; }
+    return (await ghState(cwd, signal)) === "ready";
 }
 async function prView(cwd: string, repo: string, branch: string, signal?: AbortSignal): Promise<GitPrInfo | undefined> {
     // Asked for by head owner and branch (owner:branch), so other owners' PRs from a branch of the same name (forks)
@@ -241,7 +245,8 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
     const info = await local(cwd, signal);
     const base = await defaultBranch(cwd, info.url, signal);
     const repo = githubRepo(info.url);
-    const gh = Boolean(repo) && await ghReady(cwd, signal);
+    const state = repo ? await ghState(cwd, signal) : "missing";
+    const gh = state === "ready";
     let pr: GitPrInfo | undefined, prError: string | undefined;
     if (gh) {
         try { pr = await prView(cwd, repo!, info.target, signal); }
@@ -259,7 +264,7 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
         ahead: info.ahead, behind: info.behind, hasUpstream: info.hasUpstream, base: base && clean(base),
         protected: ["main", "master", base].includes(info.branch) || ["main", "master", base].includes(info.target),
         // If a remote has no symbolic HEAD, require acknowledgement for every branch.
-        defaultUnknown: !base, gh, pr, prError, title: text.split("\n")[0]?.slice(0, 250) || clean(info.branch), body: text,
+        defaultUnknown: !base, gh, ...(state === "signed-out" ? { ghSignedOut: true } : {}), pr, prError, title: text.split("\n")[0]?.slice(0, 250) || clean(info.branch), body: text,
         compareUrl: repo && redact(info.target) === info.target && (!base || redact(base) === base) ? `https://github.com/${repo}/compare/${base ? `${encodeURIComponent(base)}...` : ""}${encodeURIComponent(info.target)}?expand=1` : undefined,
     };
 }
@@ -330,7 +335,10 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if (request.action === "pr") {
         await branchName(cwd, request.base ?? "", signal);
         if (!request.title?.trim() || request.title.length > 250 || (request.body?.length ?? 0) > 16000 || /\0/.test(request.title + (request.body ?? ""))) throw fail("Enter a title (up to 250 characters) and body (up to 16000 characters), without NUL bytes.", "invalid");
-        if (!repo || !(await ghReady(cwd, signal))) throw fail("GitHub CLI is unavailable or not authenticated. Run gh auth login in a terminal.", "gh");
+        const state = repo ? await ghState(cwd, signal) : "missing";
+        // Signed out is its own code: whoever asked shows the sign-in, not advice to run one.
+        if (state === "signed-out") throw fail("GitHub isn't signed in.", "sign_in");
+        if (!repo || state !== "ready") throw fail("Pull requests need the GitHub CLI, and a remote on github.com.", "gh");
         if (request.base === info.target) throw fail("The pull request base must differ from the pushed branch.", "invalid");
         existing = await prView(cwd, repo, info.target, signal);
     }

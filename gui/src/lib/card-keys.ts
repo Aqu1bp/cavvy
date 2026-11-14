@@ -1,11 +1,33 @@
 // Whose a key is while a card waits for an answer (components/InteractionDock.tsx): its number keys and Esc work
 // while nothing is typed elsewhere.
 
+/** When the user last pressed Sign in here (in a card, or on one put off): a window only brings a port over for a sign-in started in it. */
+export const signInPressed = { at: 0 };
+
+/**
+ * A put-off sign-in in the strip's words: what ("GitHub", "Claude Code and Codex") and on which machine. From the
+ * watch's label ("Sign in to GitHub on box"); `machine`: the server this window is on, which a session there doesn't name.
+ */
+export function putOffSignIn(label: string, machine?: string): { name: string; on?: string } {
+    const rest = label.replace(/^Sign in to /, "");
+    const at = rest.lastIndexOf(" on ");
+    return at > 0 ? { name: rest.slice(0, at), on: rest.slice(at + 4) } : { name: rest, ...(machine ? { on: machine } : {}) };
+}
+
+/** The mark for a put-off sign-in to one service that has one (ProviderIcon's ids), from the watch's id ("sign-in:box:gh"): GitHub's, Claude Code's, Codex's. */
+export function signInMark(watchId: string): string | undefined {
+    const targets = watchId.slice(watchId.lastIndexOf(":") + 1).split(",");
+    return targets.length === 1 ? ({ gh: "github", claude: "claude-code", codex: "codex" } as Record<string, string>)[targets[0]!] : undefined;
+}
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
-/** Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key. */
+/**
+ * Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number
+ * keys. And the browser's page and a sign-in's prompt, which take every key.
+ */
 export function typingIn(el: Focused | null): boolean {
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas, .si-term")));
 }
 
 /**

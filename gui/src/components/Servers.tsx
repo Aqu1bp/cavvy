@@ -159,12 +159,12 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                 .catch(() => []),
     );
     const close = () => setServerMenu(false);
-    // It can be put back, so nothing is asked first.
-    const remove = async (name: string) => {
+    // It can be put back, so nothing is asked first. (A rented machine stays rented: deleting it is asked of an agent.)
+    const remove = async (name: string, rented?: boolean) => {
         close();
         try {
             await servers().call("servers.remove", { name });
-            toast(`Removed ${name}`, "info", { label: "Undo", run: () => servers().call("servers.restore", { name }).then(() => undefined) });
+            toast(rented ? `Removed ${name}. Its server still runs.` : `Removed ${name}`, "info", { label: "Undo", run: () => servers().call("servers.restore", { name }).then(() => undefined) });
         } catch (e) {
             reportError(e);
         }
@@ -182,13 +182,16 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                     <div class="server-row">
                         <button role="menuitemradio" aria-checked={machine === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), machine !== s.name && switchMachine(s.name))}>
                             <span class="grow">{s.name}</span>
+                            <Show when={s.cost}>
+                                <span class="server-cost">{s.cost}</span>
+                            </Show>
                             <Show when={machine === s.name}>
                                 <Check size={14} />
                             </Show>
                         </button>
                         {/* Not the one this window is on: it's removed from another. */}
                         <Show when={machine !== s.name}>
-                            <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name)}>
+                            <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>
                                 <Trash2 size={13} />
                             </button>
                         </Show>

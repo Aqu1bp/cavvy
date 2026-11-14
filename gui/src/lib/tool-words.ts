@@ -32,13 +32,45 @@ export const VERBS: Record<string, string> = {
     UnwatchPullRequest: "Stop watching",
     // Claude Code's: it loads tools it has only the names of.
     ToolSearch: "Find tools",
+    // The agent CLIs' own, which Cavvy only shows: said as what they do, never as their names.
+    Agent: "Agent",
+    TaskOutput: "Check task",
+    TaskStop: "Stop task",
+    TaskCreate: "Add task",
+    TaskUpdate: "Update task",
+    TaskList: "List tasks",
+    TaskGet: "Read task",
+    CronCreate: "Schedule",
+    CronList: "List schedules",
+    CronDelete: "Delete schedule",
+    ScheduleWakeup: "Schedule a wake-up",
+    EnterPlanMode: "Enter plan mode",
+    EnterWorktree: "Enter worktree",
+    ExitWorktree: "Leave worktree",
+    KillBash: "Stop",
+    SlashCommand: "Run command",
+    ListMcpResourcesTool: "List resources",
+    ReadMcpResourceTool: "Read resource",
+    SendMessage: "Message agent",
+    Workflow: "Run workflow",
+    LSP: "Look up code",
+    ListModels: "List models",
+    apply_patch: "Edit",
+    update_plan: "Update plan",
+    view_image: "View image",
+    web_search: "Search the web",
 };
 
 /**
  * What a call does, in words: its verb above, or for a tool with none (a CLI's own, a new one) its name as words
  * ("TaskOutput" is "Task output"), never the name as the tool spells it.
  */
-const verbOf = (name: string) => VERBS[name] ?? name.replace(/([a-z\d])([A-Z])/g, (_, a: string, b: string) => `${a} ${b.toLowerCase()}`);
+const verbOf = (name: string) =>
+    VERBS[name] ??
+    name
+        .replace(/[_-]+/g, " ")
+        .replace(/([a-z\d])([A-Z])/g, (_, a: string, b: string) => `${a} ${b.toLowerCase()}`)
+        .replace(/^[a-z]/, (c) => c.toUpperCase());
 /** Those words after another ("Then search", "Running task output"): a name in capitals stays as it is ("Running LSP"). */
 const after = (name: string) => verbOf(name).replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase());
 
@@ -69,6 +101,32 @@ export const RUNNING: Record<string, string> = {
     WatchPullRequest: "Reading pull request",
     UnwatchPullRequest: "Ending the watch",
     ToolSearch: "Finding tools",
+    Agent: "Agent working",
+    TaskOutput: "Checking task",
+    TaskStop: "Stopping task",
+    TaskCreate: "Adding task",
+    TaskUpdate: "Updating task",
+    TaskList: "Listing tasks",
+    TaskGet: "Reading task",
+    CronCreate: "Scheduling",
+    CronList: "Listing schedules",
+    CronDelete: "Deleting schedule",
+    ScheduleWakeup: "Scheduling a wake-up",
+    EnterPlanMode: "Entering plan mode",
+    EnterWorktree: "Entering worktree",
+    ExitWorktree: "Leaving worktree",
+    KillBash: "Stopping",
+    SlashCommand: "Running command",
+    ListMcpResourcesTool: "Listing resources",
+    ReadMcpResourceTool: "Reading resource",
+    SendMessage: "Messaging agent",
+    Workflow: "Running workflow",
+    LSP: "Looking up code",
+    ListModels: "Listing models",
+    apply_patch: "Editing",
+    update_plan: "Updating plan",
+    view_image: "Viewing image",
+    web_search: "Searching the web",
 };
 
 /** "Gemini 3 Pro" style: the model part of provider:model. */
@@ -112,11 +170,40 @@ function actedOn(output: string | undefined): string | undefined {
     return m?.[1];
 }
 
-/** Cavvy's browser and simulator tools in words: what they did to what, never their internal names, refs or code. */
+/**
+ * Cavvy's other tools, however they were called (ServerAdd, or mcp__cavvy__server_add from an agent CLI): what each
+ * does, what it's doing, and which of its arguments says on what. Never "Using cavvy": that says nothing.
+ */
+const CAVVY: Record<string, [verb: string, running: string, arg?: string]> = {
+    ServerKey: ["Prepare server", "Preparing server", "name"],
+    ServerAdd: ["Add server", "Adding server", "name"],
+    ServerRemove: ["Remove server", "Removing server", "name"],
+    RequestSignIn: ["Ask to sign in", "Checking sign-in", "target"],
+    RequestSecret: ["Ask for secret", "Asking for a secret", "name"],
+    RunWithSecrets: ["Run with secrets", "Running with secrets", "description"],
+    Models: ["List models", "Listing models"],
+    TaskStatus: ["Check task", "Checking task"],
+    TaskCancel: ["Stop task", "Stopping task"],
+    ScheduleCreate: ["Schedule", "Scheduling", "prompt"],
+    ScheduleList: ["List schedules", "Listing schedules"],
+    ScheduleDelete: ["Delete schedule", "Deleting schedule"],
+    ListSessions: ["List sessions", "Listing sessions"],
+    ReadSession: ["Read session", "Reading session"],
+    SendToSession: ["Message session", "Messaging session"],
+    StartSession: ["Start session", "Starting session", "prompt"],
+    Delegate: ["Delegate", "Delegating", "description"],
+};
+
+/** Cavvy's own tools in words: what they did to what, never their internal names, refs or code. */
 function ownWords(t: ToolBlock): Words | undefined {
     const i = t.input ?? {};
     const s = (k: string) => (typeof i[k] === "string" && i[k] ? (i[k] as string) : undefined);
-    switch (toolKind(t.name)) {
+    const kind = toolKind(t.name);
+    const cavvy = t.agent ? undefined : CAVVY[kind];
+    if (cavvy) return { verb: cavvy[0], running: cavvy[1], arg: cavvy[2] ? s(cavvy[2])?.split("\n")[0] : undefined };
+    // One with words under its own name (WatchPullRequest), called through Cavvy's server.
+    if (kind !== t.name && VERBS[kind]) return { verb: VERBS[kind]!, running: RUNNING[kind] ?? VERBS[kind]!, arg: splitTitle(t.title).arg };
+    switch (kind) {
         case "BrowserNavigate": {
             const a = s("action") ?? "goto";
             if (a === "goto" || a === "new_tab") return { verb: "Open", running: "Opening", arg: shortUrl(i.url) };
@@ -154,7 +241,7 @@ function ownWords(t: ToolBlock): Words | undefined {
         case "BrowserAct":
         case "SimulatorAct": {
             const a = s("action") ?? "";
-            const [verb, running] = ACTS[a] ?? ["Act on the page", "Acting on the page"];
+            const [verb, running] = ACTS[a] ?? (kind === "SimulatorAct" ? ["Act on the screen", "Acting on the screen"] : ["Act on the page", "Acting on the page"]);
             // What it pressed or waited for; else what it clicked or typed into, once it says.
             const arg = a === "press" ? s("key") : a === "button" ? s("button") : a === "wait" ? (s("text") ?? s("selector")) : a === "select" ? s("value") : actedOn(t.output);
             return { verb, running, arg };
@@ -175,7 +262,24 @@ function mcpWords(t: ToolBlock): Words | undefined {
     if (!m) return undefined;
     const { verb, arg } = splitTitle(t.title);
     const own = verb === t.name || verb.startsWith("mcp__") ? m[2]!.replace(/[_-]+/g, " ").trim() : verb;
-    return { verb: own.charAt(0).toUpperCase() + own.slice(1), running: `Using ${m[1]!.replace(/[_-]+/g, " ")}`, arg };
+    const said = own.charAt(0).toUpperCase() + own.slice(1);
+    // Under way it's still what it does ("Create issue"): "Using github" said where, and nothing of what. With nothing
+    // it's about to show, its server is.
+    return { verb: said, running: said, arg: arg ?? (t.status === "ok" || t.status === "error" || m[1] === "cavvy" ? undefined : m[1]!.replace(/[_-]+/g, " ")) };
+}
+
+/**
+ * What a search for tools asked for, in words: tools it named ("select:mcp__cavvy__server_key,mcp__github__create_issue")
+ * as what they do ("Prepare server, Create issue"), a search as it was typed.
+ */
+function toolsAsked(query: string): string {
+    const m = /^select:(.+)$/.exec(query.trim());
+    if (!m) return query;
+    const named = (name: string) => {
+        const t = { t: "tool", id: "", name, title: name, status: "ok", input: {} } as unknown as ToolBlock;
+        return (CAVVY[toolKind(name)]?.[0] ?? mcpWords(t)?.verb ?? ownWords(t)?.verb ?? verbOf(name)) || name;
+    };
+    return m[1]!.split(",").map((n) => named(n.trim())).filter(Boolean).join(", ");
 }
 
 export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
@@ -194,14 +298,14 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     if (t.name === "Bash") a = String(input.command ?? arg ?? "").split("\n")[0];
     if (t.job && (t.name === "BashOutput" || t.name === "KillShell")) a = t.job.label;
     if (t.name === "Monitor") a = String(input.description ?? arg ?? "");
-    if (t.name === "Task") a = String(input.description ?? arg ?? "");
+    if (t.name === "Task" || t.name === "Agent") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
     if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
     if (t.name === "TodoWrite" || t.name === "ExitPlanMode" || t.name === "GitPush") a = undefined;
     if (t.name === "GitCommit") a = String(input.message ?? arg ?? "").split("\n")[0];
     if (t.name === "CreatePullRequest") a = String(input.title ?? arg ?? "");
     if (t.name === "WatchPullRequest" || t.name === "UnwatchPullRequest") a = input.pr !== undefined && input.pr !== "" ? `#${String(input.pr).replace(/^#/, "").replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\//, "")}` : undefined;
-    if (t.name === "ToolSearch") a = String(input.query ?? arg ?? "");
+    if (t.name === "ToolSearch") a = toolsAsked(String(input.query ?? arg ?? ""));
     return { verb: verbOf(t.name), arg: a || undefined };
 }
 
@@ -216,6 +320,11 @@ const ARRIVING: Record<string, string> = {
     NotebookEdit: "Editing notebook",
     Bash: "Writing command",
     ToolSearch: "Finding tools",
+    // Not yet asked: the question, or the plan, is still being written.
+    AskUserQuestion: "Writing a question",
+    ExitPlanMode: "Writing the plan",
+    Task: "Starting agent",
+    Agent: "Starting agent",
 };
 
 /** Still under way: arriving, waiting its turn, running, or waiting for the user. */
@@ -226,7 +335,8 @@ export function runningVerb(t: ToolBlock): string {
     if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
     const own = ownWords(t) ?? mcpWords(t);
     if (own) return t.status === "queued" ? `Then ${own.verb.charAt(0).toLowerCase()}${own.verb.slice(1)}` : own.running;
-    if (t.status === "streaming") return ARRIVING[t.name] ?? `Preparing ${after(t.name)}`;
+    // Arriving, it's about to be what it does: "Reading", not "Preparing read".
+    if (t.status === "streaming") return ARRIVING[t.name] ?? RUNNING[t.name] ?? `Preparing ${after(t.name)}`;
     if (t.status === "queued") return `Then ${after(t.name)}`;
     if (t.name === "Bash" && sleepSeconds(t.input?.command)) return "Waiting";
     return RUNNING[t.name] ?? `Running ${after(t.name)}`;

@@ -25,6 +25,8 @@ export interface FakeServer {
     changeHostKey(): void;
     /** The key it first had, again. */
     restoreHostKey(): void;
+    /** The server shows this key from now on (a public key's line): a new machine whose start-up script installed the identity it was given. */
+    showHostKey(publicKey: string): void;
     /** What `ssh -G` says about the server, as lines ("userknownhostsfile /dev/null"); none: the usual. */
     settings(lines?: string[]): void;
     /** The pretend server's disk has this many MB free (undefined: as this machine's has). */
@@ -127,6 +129,10 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         },
         restoreHostKey() {
             delete behavior.hostKey;
+            save();
+        },
+        showHostKey(publicKey) {
+            behavior.hostKey = publicKey.trim().split(" ").slice(0, 2).join(" ");
             save();
         },
         settings(lines) {

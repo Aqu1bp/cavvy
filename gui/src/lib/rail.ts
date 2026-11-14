@@ -76,6 +76,8 @@ export function asking(s: Pick<SessionSummary, "waitingKind">): string {
         case "plan": return "Plan ready for review";
         case "question": return "Has a question for you";
         case "secret": return "Asks for a secret";
+        case "signin": return "Needs you to sign in";
+        case "confirm": return "Needs your OK";
         default: return "Waiting for your answer";
     }
 }

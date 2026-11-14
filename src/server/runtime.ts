@@ -30,6 +30,10 @@ import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custo
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
+import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
+import { SERVER_TOOL_NAMES, SERVER_TOOLS, servedServerName } from "../tools/server-tools";
+import type { ConfirmRequest } from "../tools/types";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -462,6 +466,8 @@ export class Runtime {
         if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
+        // The user's servers, for an agent to set one up or add one: from their own machine only (a server reaches no other machine of theirs).
+        if (!engine.away) this.toolState.servers = engine.serverSetup();
         this.schedules = new SessionSchedules({
             session: () => this.session,
             settings: () => this.settings(),
@@ -641,7 +647,9 @@ export class Runtime {
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
         // Nor while the session's CLI account is gone (#410): they run once the user picks another.
-        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
+        // A sign-in's card left up for the user isn't a turn waiting on them: as a wake does, a scheduled prompt runs beside it.
+        const asking = [...this.pending.keys()].some((id) => !this.signIns.kept(id));
+        return !this.closed && (!this.busy || this.idleCompacting) && !asking && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
     }
 
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
@@ -1597,11 +1605,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1657,6 +1665,9 @@ export class Runtime {
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
+                    requestSignIn: (req, signal) => this.requestSignIn(req, signal),
+                    askSignIn: (req, then) => this.askSignIn(req, then),
+                    confirm: (req, signal) => this.confirm(req, signal),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -2504,6 +2515,8 @@ export class Runtime {
             this.setState({ interactions: [...this.pendingList()] });
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
+            if (interaction.kind === "signin") return this.engine.notify(this, "question", signInAsks(interaction));
+            if (interaction.kind === "confirm") return this.engine.notify(this, "question", `${interaction.title}?`);
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
@@ -2524,6 +2537,19 @@ export class Runtime {
         const p = this.pending.get(interactionId);
         if (!p) throw new RpcError("That request was already answered or has expired.", "expired");
         if (p.interaction.kind !== r.kind) throw new RpcError("The answer doesn't match the request.");
+        if (r.kind === "confirm" && p.interaction.kind === "confirm") {
+            const choice = r.choice === "yes" || (r.choice === "other" && p.interaction.other) ? r.choice : "no";
+            return this.settle(interactionId, { kind: "confirm", choice });
+        }
+        // A step in a sign-in's card: the card stays until the sign-in itself is over.
+        if (r.kind === "signin") {
+            try {
+                this.signIns.act(interactionId, signInAction(r));
+            } catch (e) {
+                throw new RpcError(e instanceof Error ? e.message : String(e), "invalid");
+            }
+            return;
+        }
         // A bad value stays in the card for the user to fix; the message never quotes it.
         if (p.interaction.kind === "secret" && r.kind === "secret" && r.value !== undefined) {
             const bad = secretValueError(r.value, p.interaction.name);
@@ -2564,6 +2590,8 @@ export class Runtime {
     private cancelInteractions(opts: { keepDelegated?: boolean; keepBackground?: boolean } = {}) {
         for (const [id, p] of [...this.pending]) {
             if (opts.keepBackground && this.backgroundAsks.has(id)) continue;
+            // A sign-in's card goes when its sign-in does: one the turn waits on ends with the turn's own signal, and one left for the user stays.
+            if (p.interaction.kind === "signin" && this.signIns.has(id)) continue;
             const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
             // A delegated task's own sub-agent asks for the task.
             const agent = agentId ? this.outermost(agentId) : undefined;
@@ -2744,6 +2772,90 @@ export class Runtime {
             if (toolId) this.patchBlock(toolId, { status: "running" });
         }
     }
+
+    /** Before something that spends money or can't be taken back: the card, whatever the mode. Withdrawn with the turn, it's a no. */
+    private async confirm(req: ConfirmRequest, signal: AbortSignal): Promise<"yes" | "other" | "no"> {
+        if (signal.aborted) return "no";
+        const toolId = [...SERVER_TOOL_NAMES, ...SERVER_TOOL_NAMES.map((n) => `mcp__${MCP_SERVER_NAME}__${servedServerName(n)}`)].map((n) => this.runningTool(n)).find(Boolean);
+        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        const id = this.newId();
+        const withdraw = () => this.settle(id, undefined);
+        signal.addEventListener("abort", withdraw, { once: true });
+        try {
+            const r = await this.interact({ kind: "confirm", id, toolId, title: redact(req.title), facts: req.facts?.map(([k, v]) => [redact(k), redact(v)]), commands: req.commands?.map(redact), yes: req.yes, other: req.other, no: req.no, danger: req.danger });
+            return r?.kind === "confirm" ? r.choice : "no";
+        } finally {
+            signal.removeEventListener("abort", withdraw);
+            if (toolId) this.patchBlock(toolId, { status: "running" });
+        }
+    }
+
+    /** RequestSignIn: the card is the flow's, changed in place as the sign-in goes; this waits for what the model is told. */
+    private async requestSignIn(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
+        const toolId = this.runningTool("RequestSignIn") ?? this.runningTool(`mcp__${MCP_SERVER_NAME}__request_sign_in`);
+        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        try {
+            return await this.signIns.request(req, signal);
+        } finally {
+            if (toolId) this.patchBlock(toolId, { status: "running" });
+        }
+    }
+
+    /** A sign-in one of Cavvy's own features needs for this session: the same card, with no tool call behind it. */
+    askSignIn(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot"> {
+        return this.signIns.ask(req, then);
+    }
+
+    /**
+     * The turn stopped because something isn't signed in (the session's own CLI, gcloud for Vertex): its card, and
+     * once it's signed in (there, or later) the agent is told to carry on. Where there's nothing to show, the way
+     * to do it by hand is said after all. `unasked`: the turn ended as usual, but a command in it said something
+     * isn't signed in and the agent didn't ask; nothing is shown for one the user has already put off.
+     */
+    private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
+        const name = findRecipe(out.target, signInRecipes(this.settings().signIns))?.name ?? out.target;
+        // Dismissed instead: nothing to carry on with, and the user knows.
+        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
+            if (this.closed) return;
+            if (r === "signed-in") carryOn(true);
+            else if (r === "cannot" && out.advice) this.notice(out.advice, "warn");
+        });
+    }
+
+    /** What a sign-in card's "Open in terminal" types into the new terminal: the command it shows, for the user to run. */
+    signInTyped(interactionId: string): string | undefined {
+        return this.signIns.typed(interactionId);
+    }
+
+    /** The user came back to a sign-in they'd put off. */
+    reopenSignIn(watchId: string) {
+        if (!this.signIns.reopen(watchId)) throw new RpcError("That sign-in is no longer waiting.", "not_found");
+    }
+
+    private readonly signIns: SessionSignIns = new SessionSignIns({
+        recipes: () => signInRecipes(this.settings().signIns),
+        // Loaded with the first sign-in: what reaches a server isn't needed to start.
+        machine: async (name, account) => (await import("../servers/sign-in-host")).signInMachine(name, { away: this.engine.away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }),
+        newId: () => this.newId(),
+        // On a server, the window is on the user's own machine: it brings a sign-in's port over.
+        windowForwards: () => this.engine.away,
+        wakes: () => this.toolState.wakes,
+        watchers: () => this.toolState.watchers,
+        save: (recipe) => updateSettings("user", this.ws.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; }),
+        cards: {
+            show: (id, view) => {
+                const had = this.pending.get(id);
+                const interaction: Interaction = { ...view, kind: "signin", id, since: had?.interaction.since ?? Date.now() };
+                if (had) {
+                    had.interaction = interaction;
+                    this.setState({ interactions: this.pendingList() });
+                } else void this.interact(interaction);
+            },
+            hide: (id) => this.settle(id, undefined),
+        },
+    });
 
     forgetSecret(name: string) {
         if (!this.toolState.secrets?.forget(name)) throw new RpcError("This session doesn't hold a secret by that name.", "not_found");
@@ -3345,6 +3457,9 @@ export class Runtime {
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
         if (!(this.goal.active && this.goal.view()?.state !== "paused")) notify();
         if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
+        if (reason === "error" && agent.signedOutStop && !this.closed) this.offerSignIn(agent.signedOutStop);
+        // A command in the turn said something isn't signed in, and the agent didn't ask: the user is asked all the same.
+        else if (reason === "done" && agent.signedOutUnasked && !this.closed) this.offerSignIn({ target: agent.signedOutUnasked.target, account: "", advice: "" }, true);
         const queued = Boolean(this.nextQueued());
         if (ac.signal.aborted) void this.goal.afterTurn("aborted", index, Boolean(opts.goal));
         // What was queued goes first. If none of it is a turn (a !command, /compact), the goal takes this turn's end after it.
@@ -4307,7 +4422,8 @@ export class Runtime {
         if (!w) throw new RpcError("That watch has already ended.", "not_found");
         w.stop();
         this.toolState.watchers!.delete(watchId);
-        this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
+        if (w.kind === "sign-in") this.agent?.addReminder(`The user dismissed the request: ${w.label}. Don't bring it up by yourself. When something they ask for needs that sign-in, ask for it then, with the sign-in tool.`);
+        else this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
     }
 
     /** Watching something (a pull request): kept loaded so the watch goes on with no window open. */
@@ -4412,6 +4528,7 @@ export class Runtime {
         this.titleAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
+        this.signIns.dispose();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.shellTimer) clearInterval(this.shellTimer);

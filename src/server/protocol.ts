@@ -502,7 +502,108 @@ export interface SecretInteraction {
     purpose: string;
 }
 
-export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction) & {
+/**
+ * Cavvy asks before something an agent set in motion that spends money or can't be taken back (creating a server,
+ * deleting one). Asked in every permission mode: no mode, rule or reviewer answers it for the user.
+ */
+export interface ConfirmInteraction {
+    kind: "confirm";
+    id: string;
+    toolId?: string;
+    /** The question, without its mark: "Create a server for $12/month". */
+    title: string;
+    /** What it's about, as label and value: Name, Where, Size, System. */
+    facts?: [string, string][];
+    /** Commands that run on yes, as they'll run. */
+    commands?: string[];
+    /** The buttons: the one that goes ahead, one that asks for something else ("Change…"), and the way out. */
+    yes: string;
+    other?: string;
+    no: string;
+    /** Yes destroys something. */
+    danger?: boolean;
+}
+
+/** One sign-in in a card that offers several (a new server's): what it is, and whether it's done. */
+export interface SignInRow {
+    target: string;
+    name: string;
+    /** "in": signed in (as `who`, when its CLI says). "none": its CLI isn't installed there. */
+    state: "out" | "in" | "none";
+    who?: string;
+}
+
+/**
+ * Cavvy asks the user to sign in to something (RequestSignIn, or a feature that found it signed out) and runs
+ * that sign-in itself. The card changes while it waits: the same id, sent again with what's new.
+ */
+export interface SignInInteraction {
+    kind: "signin";
+    id: string;
+    toolId?: string;
+    /** The server it happens on, by its name here. Left out: the machine this session runs on. */
+    machine?: string;
+    /** More than one to sign in to: the list, shown while `step` is "list". */
+    rows?: SignInRow[];
+    /** What is being signed in to now: its recipe's id and its name ("GitHub"). */
+    target?: string;
+    name?: string;
+    /**
+     * - list: `rows`, each with its own Sign in.
+     * - ask: Sign in, Use a token (`canToken`), Later.
+     * - browser: the CLI waits for the browser (`url` to open it again; `open`: nothing opened it, so the card must).
+     * - code: `code` to enter at `url`.
+     * - paste: the page at `url` gives a code to paste back.
+     * - token: a masked field (`tokenUrl`: where to make one).
+     * - typed: the CLI asks at a prompt; `term` is what it shows.
+     * - command: nothing Cavvy can run itself; `command` is for the user to run in a terminal.
+     */
+    step: "list" | "ask" | "browser" | "code" | "paste" | "token" | "typed" | "command";
+    /** One line under the question, where the risk is real ("Agents there can push as you"). */
+    warning?: string;
+    canToken?: boolean;
+    /**
+     * The page ends by calling this port on the CLI's machine, which isn't the one with the browser: the window brings
+     * it over (servers.forward) and says so (action "port") before the link is offered.
+     */
+    forward?: number;
+    url?: string;
+    /** `url` without its scheme and query, to show ("github.com/login/device"). */
+    site?: string;
+    open?: boolean;
+    code?: string;
+    /** The code is no longer good: a new one is needed. */
+    expired?: boolean;
+    tokenUrl?: string;
+    term?: string;
+    command?: string;
+    /** The terminal was opened with `command`: Done is offered. */
+    ran?: boolean;
+    /** May be kept for next time (a sign-in Cavvy didn't know). */
+    canSave?: boolean;
+    /** The CLI's own words on why it didn't work. */
+    error?: string;
+    /** The sign-in command ended without signing in: Try again starts it over. Without it, an error is about what was just entered, and the field still takes another. */
+    ended?: boolean;
+    /** Something is running that the card waits for (checking, sending the code). */
+    busy?: boolean;
+    /** Came from a list: Back returns to it. */
+    back?: boolean;
+}
+
+export type SignInAction =
+    | { action: "start" | "token" | "back" | "later" | "retry" | "ran" }
+    | { action: "pick"; target: string }
+    /** A pasted code or a token. */
+    | { action: "submit"; value: string }
+    /** Typed at the CLI's prompt. */
+    | { action: "keys"; value: string }
+    /** The user says they've run the command; `save` keeps it for next time. */
+    | { action: "done"; save?: boolean }
+    /** The window brought the card's `forward` port over, or couldn't (`error`). */
+    | { action: "port"; error?: string };
+
+export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction | ConfirmInteraction) & {
     /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
     since?: number;
 };
@@ -512,7 +613,10 @@ export type InteractionResponse =
     | { kind: "question"; answers?: string[] }
     | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
     /** No value: declined. The value goes to the session's memory and nowhere else. */
-    | { kind: "secret"; value?: string };
+    | { kind: "secret"; value?: string }
+    /** A step in the card, not an answer: the card stays until the sign-in is over. */
+    | ({ kind: "signin" } & SignInAction)
+    | { kind: "confirm"; choice: "yes" | "other" | "no" };
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -1423,6 +1527,8 @@ export interface GitPublishInfo {
     protected: boolean;
     defaultUnknown: boolean;
     gh: boolean;
+    /** The GitHub CLI is here and only signed out: a sign-in is all that pull requests lack. */
+    ghSignedOut?: boolean;
     prError?: string;
     title: string;
     body: string;
@@ -1440,7 +1546,7 @@ export interface GitPublishRequest {
 }
 export interface WatchInfo {
     id: string;
-    /** "pull-request". */
+    /** "pull-request", "monitor", or "sign-in": one the user put off, which wakes the agent once they've signed in. */
     kind: string;
     label: string;
     url?: string;
@@ -1673,6 +1779,10 @@ export interface ServerSummary {
     destination: string;
     /** Connected to from this Cavvy right now. */
     connected: boolean;
+    /** A rented machine's cost, as its user agreed to it ("$12/month"). */
+    cost?: string;
+    /** An agent created it, and Cavvy knows how to delete it at its provider. */
+    rented?: boolean;
 }
 
 /**
@@ -1786,6 +1896,8 @@ export type ServerEvent =
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
      * which replays all the output kept.
      */
+    /** An agent added or removed a server (ServerAdd, ServerRemove): how many this machine knows now. */
+    | { type: "servers.changed"; count: number }
     | { type: "terminal.data"; id: string; data: string; pos: number; reset?: boolean }
     | { type: "terminal.exit"; id: string; exitCode: number }
     /** Another connection with this window's key (a copy of the window) attached the terminal: it's shown there now. */
@@ -1914,7 +2026,10 @@ export interface Methods {
     "servers.remove": { params: { name: string }; result: null };
     /** Undoes a `servers.remove` made since this Cavvy started. */
     "servers.restore": { params: { name: string }; result: null };
-    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
+    /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it (`target`: the sign-in, which this machine must know with that port); until `servers.unforward` or the window goes. */
+    "servers.forward": { params: { name: string; port: number; target: string }; result: null };
+    "servers.unforward": { params: { name: string; port: number }; result: null };
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
     "terminal.ack": { params: { id: string; chars: number }; result: null };
@@ -2068,6 +2183,10 @@ export interface Methods {
     /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
     "session.restartCli": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
+    /** A sign-in a window's own feature needs (publishing found GitHub signed out): the session's card. Answers when the user is done with it. */
+    "session.askSignIn": { params: { id: string; target: string }; result: "signed-in" | "later" | "cannot" };
+    /** Brings back the card of a sign-in the user put off (a watch of kind "sign-in"). */
+    "session.signIn": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
