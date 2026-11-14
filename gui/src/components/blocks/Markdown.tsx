@@ -1,5 +1,5 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, untrack, useContext } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
 import { createReveal, DrawnAgain } from "../../lib/reveal";
 import { paint } from "../../lib/stream-dom";
@@ -86,9 +86,12 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
     return <RenderBoundary raw={() => p.text}><MarkdownContent {...p} /></RenderBoundary>;
 }
 
-/** One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the writing mark. */
+/**
+ * One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the
+ * writing mark. One written as it streams is `md-written` for good (markdown.css): its lines wrap as they came.
+ */
 function HtmlBlock(p: { html: string; live: boolean; last: boolean }) {
-    return <div class="md-block" ref={(el) => createRenderEffect(() => paint(el, p.html, p.live, p.live && p.last))} />;
+    return <div class={untrack(() => p.live) ? "md-block md-written" : "md-block"} ref={(el) => createRenderEffect(() => paint(el, p.html, p.live, p.live && p.last))} />;
 }
 
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {

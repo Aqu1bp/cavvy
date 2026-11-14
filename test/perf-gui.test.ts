@@ -162,6 +162,29 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         withinBudget("idleStyleUpdatesAfterReply", after.RecalcStyleCount! - before.RecalcStyleCount!, { room: true });
         const running = await js(`document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations !== Infinity).length`);
         withinBudget("idleEntrancesRunningAfterReply", running);
+
+        // A reply that comes a paragraph at a time, between tools: the words being written never move down, not as
+        // the words stop (a tool, a pause) nor once the reply's done (room under it taken back would bring it down).
+        await js(`(() => {
+            window.__down = [];
+            window.__watch = true;
+            let el, last;
+            const frame = () => {
+                if (!window.__watch) return;
+                const md = [...([...document.querySelectorAll(".transcript [data-turn]")].at(-1)?.querySelectorAll(".md") ?? [])].at(-1);
+                const top = md?.getBoundingClientRect().top;
+                if (md === el && last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
+                el = md;
+                last = top;
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        await send("fastdemo burst");
+        await until("the bursts to finish", 120_000, finished);
+        await sleep(1000);
+        await js(`window.__watch = false`);
+        expect(await js(`window.__down`)).toEqual([]);
     } finally {
         tools?.close();
         browser?.kill();

@@ -333,29 +333,34 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         roomLast = h;
         if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
     };
-    /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
-    let settledAt = -Infinity;
     /**
-     * The words stopped (a tool, the reply's end): the room goes, and the conversation settles onto the end in one
-     * glide (with what lands at the end as it does), so nothing stands empty under it. False with no room to let go of.
+     * The words stopped (a tool, a stall, the reply's end): the room stays where it is. Taken back at the end of the
+     * view, it could only move the conversation down, and up again when the words go on. What they write next is
+     * counted from here.
      */
-    const settleRoom = () => {
-        roomBase = roomLast = undefined;
+    const wordsStopped = () => {
         written = [];
         wordsPx = 0;
         columnWas = undefined;
-        if (!scroller || smoothScroll) return false;
-        if (room()) {
-            // Where it was, read before the room goes (the browser brings the view back within the column once it has).
-            const before = scroller.scrollTop;
-            setRoom(0);
-            settledAt = performance.now();
-            pin(before);
-            return true;
+    };
+    /**
+     * What lands at the end while no words come (a tool's row, the reply's footer) goes into the room, the conversation
+     * holding still; only what doesn't fit moves it up. What goes from the end is given to the room, so nothing moves
+     * down.
+     */
+    const fill = (live: boolean) => {
+        if (!scroller || !content) return;
+        const before = scroller.scrollTop;
+        const h = content.offsetHeight;
+        if (roomBase === undefined) {
+            roomBase = h;
+            roomMade = room();
         }
-        if (performance.now() - settledAt >= GLIDE_MS) return false;
-        pin();
-        return true;
+        const left = roomMade - (h - roomBase);
+        roomBase = roomLast = h;
+        roomMade = Math.min(Math.max(0, left), scroller.clientHeight);
+        setRoom(roomMade);
+        if (left < 0) live ? pin(before) : toBottom();
     };
     /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
     const dropRoomUnseen = () => {
@@ -380,6 +385,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         const was = turn.getBoundingClientRect().top;
         const running = shift();
         run();
+        // What folded is above the answer: not the end's to give to the room.
+        roomAbove();
         toBottom();
         const moved = was - turn.getBoundingClientRect().top;
         // A fold is one move, not growth that goes on: all the way, up to a screen.
@@ -535,13 +542,14 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 // Room only while words come out: what lands between them (a tool's row) glides in, and the room
                 // isn't left standing empty under a wait.
                 if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
-                // Growth above the view as a reply runs: the end stays where it is, and the room is still all there.
-                else if (FOLLOW_ROOM && above && (running || revealing())) {
+                // Growth above the view as a reply runs (or with room left): the end stays where it is, and the room is still all there.
+                else if (FOLLOW_ROOM && above && (running || revealing() || room() > 0)) {
                     roomAbove();
                     toBottom();
                 }
-                // The words stopped, or the reply's done: the room goes, in one glide.
-                else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
+                // The words stopped, or the reply's done: what lands goes into the room left.
+                else if (FOLLOW_ROOM && room() > 0 && !above) fill(live);
+                else live ? pin() : toBottom();
             }
             else {
                 if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
@@ -670,11 +678,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = capture();
     };
 
-    // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
-    // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
-    // the wrong place).
+    // The words stop (a tool, the reply's end): what they write next is counted afresh. The room stays.
     createEffect(on(wordsFlowing, (flowing, was) => {
-        if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
+        if (FOLLOW_ROOM && was && !flowing) wordsStopped();
     }, { defer: true }));
 
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
