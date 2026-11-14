@@ -138,6 +138,11 @@ export interface UiBridge {
     requestSecret?(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined>;
     /** Ask the user to sign in to something (RequestSignIn): Cavvy runs the sign-in, and this answers with what the model is told. */
     requestSignIn?(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer>;
+    /**
+     * The same card for something that runs outside a turn (a pull request's watch that found GitHub signed out):
+     * "later" when the user put it off, and `then` runs if they sign in after all.
+     */
+    askSignIn?(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot">;
 }
 
 export interface ToolContext {

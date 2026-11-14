@@ -160,21 +160,27 @@ export class SessionSignIns {
     }
 
     /**
-     * A sign-in one of Cavvy's own features needs (a push that found GitHub signed out): the card, with no tool call
-     * behind it. Resolves with whether it's signed in now; put off, `then` runs if the user signs in later.
+     * A sign-in one of Cavvy's own features needs (a push that found GitHub signed out, a turn that stopped on a
+     * signed-out CLI): the card, with no tool call behind it. "signed-in": the user did, in the card. "later": they
+     * put it off, and `then` runs if they sign in after all. "cannot": there was nothing to show (it already says
+     * it's signed in, its CLI isn't installed, or Cavvy has no sign-in for it).
      */
-    async ask(req: SignInRequest, then?: () => void): Promise<boolean> {
+    async ask(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot"> {
         let machine: SignInMachine;
         try {
             machine = await this.o.machine(req.machine, req.account);
         } catch {
-            return false;
+            return "cannot";
         }
         const wants = this.wants(req.targets);
         const id = this.o.newId();
-        const o = await this.start(id, wants, machine, undefined);
-        if (o.end === "later") this.putOff(o, wants, machine, req, then ?? (() => undefined));
-        return o.end === "done";
+        let shown = false;
+        const o = await this.start(id, wants, machine, undefined, false, () => { shown = true; });
+        if (o.end === "later") {
+            this.putOff(o, wants, machine, req, then ?? (() => undefined));
+            return "later";
+        }
+        return shown && o.end === "done" && o.results.every((r) => r.state === "in" || r.state === "unverified") ? "signed-in" : "cannot";
     }
 
     /** The user's step in a card. Throws what the card should say when it can't be taken. */
@@ -248,7 +254,7 @@ export class SessionSignIns {
         });
     }
 
-    private start(id: string, wants: SignInWant[], machine: SignInMachine, signal: AbortSignal | undefined, asked = false): Promise<SignInOutcome> {
+    private start(id: string, wants: SignInWant[], machine: SignInMachine, signal: AbortSignal | undefined, asked = false, onShow?: () => void): Promise<SignInOutcome> {
         const stop = new AbortController();
         const entry: Active = { stop, kept: !signal, flow: undefined as unknown as SignInFlow };
         // A turn that's interrupted takes its card with it, unless the card has since been left for the user.
@@ -261,7 +267,10 @@ export class SessionSignIns {
             pollMs: this.o.pollMs,
             windowForwards: this.o.windowForwards?.(),
             asked,
-            show: (view) => this.o.cards.show(id, machine.name ? { ...view, machine: machine.name } : view, entry.kept),
+            show: (view) => {
+                onShow?.();
+                this.o.cards.show(id, machine.name ? { ...view, machine: machine.name } : view, entry.kept);
+            },
             save: this.o.save ? (w) => this.keep(w) : undefined,
         });
         this.active.set(id, entry);

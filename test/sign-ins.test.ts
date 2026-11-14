@@ -21,6 +21,11 @@ const { BashTool } = await import("../src/tools/bash");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { SIGN_IN_RECIPES } = await import("../src/agent/sign-in-recipes");
 const { loadSettings, settingsPath } = await import("../src/config/settings");
+const { Agent } = await import("../src/agent/agent");
+const { Session } = await import("../src/agent/session");
+const { PermissionChecker } = await import("../src/permissions/checker");
+const { ProviderError } = await import("../src/providers/types");
+const { adviseSignIn, signInAdvice, signInAdvised } = await import("../src/backends/account-login");
 import type { SignInView } from "../src/agent/sign-in";
 import type { SignInRecipe } from "../src/agent/sign-in-recipes";
 import type { SignInRequest } from "../src/agent/sign-ins";
@@ -228,13 +233,21 @@ describe("a feature of Cavvy's own asks", () => {
         let after = 0;
         const first = x.s.ask(ask(), () => void after++);
         x.s.act(await x.card("ask"), { action: "later" });
-        expect(await first).toBe(false);
+        expect(await first).toBe("later");
         acme.signIn("me@example.com");
         const end = Date.now() + 5000;
         while (!after && Date.now() < end) await Bun.sleep(10);
         expect(after).toBe(1);
         expect(x.wakes.size).toBe(0);
-        expect(await x.s.ask(ask())).toBe(true);
+        // Nothing to show: it already says it's signed in.
+        expect(await x.s.ask(ask())).toBe("cannot");
+        acme.reset();
+        const second = x.s.ask(ask());
+        x.s.act(await x.card("ask"), { action: "start" });
+        await x.card("code");
+        acme.approve();
+        expect(await second).toBe("signed-in");
+        expect(await x.s.ask(ask("nope"))).toBe("cannot");
     });
 });
 
@@ -345,6 +358,60 @@ describe("a failed command that says something is signed out", () => {
     test("not for an agent that can't ask (a sub-agent, a -p run), nor for a command that worked", async () => {
         expect((await bash("acme status")).content).not.toContain("Ask the user to sign in");
         expect((await bash("echo 'Not logged in. Run: acme login'", "RequestSignIn")).content).not.toContain("Ask the user to sign in");
+    });
+});
+
+describe("a turn that stops because something isn't signed in", () => {
+    /** An agent whose model fails as `error` says, with or without someone to ask. */
+    function failing(error: () => Error, ui: Record<string, unknown>) {
+        const proj = tempDir("cavvy-signin-agent-");
+        const settings = { autoCompact: false } as any;
+        const events: any[] = [];
+        let mode = "default" as any;
+        const agent = new Agent({
+            session: Session.create(proj, { system: "test" }),
+            model: { provider: "test", id: "test", pricing: { input: 3, output: 15 } } as any,
+            client: { async stream() { throw error(); }, async listModels() { return []; } } as any,
+            settings: () => settings,
+            checker: new PermissionChecker(() => settings, proj),
+            tools: BUILTIN_TOOLS,
+            mode: { get: () => mode, set: (m: any) => (mode = m) },
+            toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as any,
+            host: { emit: (e: any) => events.push(e), ui },
+        } as any);
+        const run = () => agent.run([{ type: "text", text: "hi" }], { signal: new AbortController().signal, display: "hi" });
+        const said = () => events.filter((e) => e.type === "notice" && e.level === "error").map((e) => e.message as string);
+        return { agent, run, said };
+    }
+    const asks = { requestSignIn: async () => ({ text: "", summary: "", signedIn: false }) };
+    const gcloud = () => new ProviderError(`gcloud couldn't get a token for me@example.com: Reauthentication required. ${adviseSignIn("gcloud", "default", "Sign in again with: gcloud auth login me@example.com")}`, 401);
+
+    test("with someone to ask: the host is told which sign-in, and the message doesn't tell the user to run one", async () => {
+        const x = failing(gcloud, asks);
+        expect(await x.run()).toBe("error");
+        expect(x.agent.signedOutStop).toEqual({ target: "gcloud", account: "default", advice: "Sign in again with: gcloud auth login me@example.com" });
+        expect(x.said()).toEqual(["gcloud couldn't get a token for me@example.com: Reauthentication required."]);
+    });
+
+    test("with no one to ask (-p): the advice stays, as the only way through", async () => {
+        const x = failing(gcloud, {});
+        await x.run();
+        expect(x.agent.signedOutStop).toBeUndefined();
+        expect(x.said()[0]).toContain("Sign in again with: gcloud auth login me@example.com");
+    });
+
+    test("an agent CLI's own sign-in, by its account; any other failure is left alone", async () => {
+        const cli = failing(() => new Error(`Codex isn't signed in. ${signInAdvice("codex", "default")}`), asks);
+        await cli.run();
+        expect(cli.agent.signedOutStop).toMatchObject({ target: "codex", account: "default" });
+        expect(cli.said()).toEqual(["Codex isn't signed in."]);
+        expect(signInAdvised("In a terminal, run `codex login`, then try again.")).toMatchObject({ target: "codex" });
+        const other = failing(() => new Error("The model is overloaded."), asks);
+        await other.run();
+        expect(other.agent.signedOutStop).toBeUndefined();
+        expect(other.said()).toEqual(["The model is overloaded."]);
+        // The next turn starts clean.
+        expect(signInAdvised("something else entirely")).toBeUndefined();
     });
 });
 

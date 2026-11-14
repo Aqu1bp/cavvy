@@ -1498,6 +1498,8 @@ export interface GitPublishInfo {
     protected: boolean;
     defaultUnknown: boolean;
     gh: boolean;
+    /** The GitHub CLI is here and only signed out: a sign-in is all that pull requests lack. */
+    ghSignedOut?: boolean;
     prError?: string;
     title: string;
     body: string;
@@ -2146,6 +2148,8 @@ export interface Methods {
     /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
     "session.restartCli": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
+    /** A sign-in a window's own feature needs (publishing found GitHub signed out): the session's card. Answers when the user is done with it. */
+    "session.askSignIn": { params: { id: string; target: string }; result: "signed-in" | "later" | "cannot" };
     /** Brings back the card of a sign-in the user put off (a watch of kind "sign-in"). */
     "session.signIn": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */

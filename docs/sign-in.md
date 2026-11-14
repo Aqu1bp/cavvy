@@ -74,6 +74,15 @@ Commands are words, not shell: no pipes, quotes or variables. Only your own sett
 
 Claude Code and Codex give one of Cavvy's tools about an hour. A sign-in still waiting near that limit answers "still waiting" and the agent ends its turn; the card stays, and the agent is told when you've signed in.
 
+## Where Cavvy asks by itself
+
+The same card comes up without an agent asking, wherever Cavvy used to say "run this, then try again":
+
+- **A turn that stops because its CLI is signed out** (Claude Code, Codex), or because `gcloud` can't get a token for a Vertex model. The message says what's signed out, the card offers to fix it, and once it's signed in the agent carries on with what you asked. Later leaves it above the message box.
+- **Pull requests.** `CreatePullRequest`, `GitPush` and `WatchPullRequest` ask when GitHub turns out signed out, then go on. A pull request being watched waits for the sign-in rather than giving up; the agent isn't woken for it. In the desktop app, **Push and open pull request** shows **Sign in to GitHub** in place of the pull request's fields.
+
+Where there's nothing to show (the CLI says it's signed in though the service refused it, or it isn't installed), you get the old message with the command.
+
 ## What goes where
 
 - The command runs as you, on the machine named, with Cavvy's own process: not in the agent's shell, not in its sandbox.

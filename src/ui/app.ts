@@ -79,7 +79,7 @@ import { redact } from "../util/redact";
 import { SESSION_VAR } from "../util/session-processes";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { SessionSignIns, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
-import { signInRecipes } from "../agent/sign-in-recipes";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { onServer } from "../servers/role";
 import { SignInDialog } from "./sign-in-dialog";
 import { planLimitKey } from "../server/protocol";
@@ -925,6 +925,7 @@ export class App {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
+                    askSignIn: (req, then) => this.signIns.ask(req, then),
                 },
                 drainQueued: (_record, admit) => this.drainQueued(admit),
                 unsteered: (steers) => this.unsteered(steers.flatMap((s) => s.texts), steers.map((s) => s.id)),
@@ -1951,6 +1952,16 @@ export class App {
         });
     }
 
+    /** The turn stopped on something signed out: its prompt, and once it's signed in the agent carries on (as the GUI does). */
+    private offerSignIn(out: { target: string; account: string; advice: string }) {
+        const name = findRecipe(out.target, signInRecipes(this.settings.signIns))?.name ?? out.target;
+        const carryOn = () => this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
+            if (r === "signed-in") carryOn();
+            else if (r === "cannot") this.notice(out.advice, "warn");
+        });
+    }
+
     /** /sign-in: back to a sign-in that was put off (the one named, or the only one). */
     resumeSignIn(which?: string): string | undefined {
         const waiting = [...(this.toolState.watchers?.values() ?? [])].filter((w) => w.kind === "sign-in");
@@ -2657,6 +2668,7 @@ export class App {
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
         if (reason && !(goal?.active && goal.view()?.state !== "paused")) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (reason) this.schedules.turnEnded(reason, agent.limitStop);
+        if (reason === "error" && agent.signedOutStop) this.offerSignIn(agent.signedOutStop);
         if (ac.signal.aborted) {
             if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
             this.returnQueued();

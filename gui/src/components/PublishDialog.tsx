@@ -46,8 +46,22 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             if (revision !== version) return;
             p.onPublished(result.pr);
             p.onClose();
-        } catch (e) { if (revision === version) setError(errorText(e)); }
+        } catch (e) {
+            if (revision !== version) return;
+            // Signed out since the dialog opened: the button for it, not the CLI's advice.
+            if ((e as { code?: string }).code === "sign_in") setView({ ...info, gh: false, ghSignedOut: true });
+            else setError(errorText(e));
+        }
         finally { setBusy(false); }
+    };
+    // GitHub is only signed out: the session's own card takes it from here, and this closes to let it show.
+    const signIn = async () => {
+        const id = p.id;
+        if (!id) return;
+        p.onClose();
+        try {
+            if ((await rpc.call("session.askSignIn", { id, target: "gh" })) === "signed-in") toast("Signed in to GitHub", "success");
+        } catch (e) { toast(errorText(e), "error"); }
     };
     return (
         <Dialog open={Boolean(p.id)} onClose={close} title="Push and open pull request" width={620}>
@@ -65,7 +79,9 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>#{view()?.pr?.number} {view()?.pr?.title} · {view()?.pr?.state}</button>
                         </Show>
                         <Show when={view()?.gh} fallback={<>
-                            <p class="muted small">To open pull requests here, install GitHub CLI and run gh auth login.</p>
+                            <Show when={view()?.ghSignedOut} fallback={<p class="muted small">Pull requests need the GitHub CLI.</p>}>
+                                <button class="btn sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
+                            </Show>
                             <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                         </>}>
                             <label class="commit-message-label" for="pr-base">Base branch</label>

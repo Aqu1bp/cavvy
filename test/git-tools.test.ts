@@ -344,12 +344,42 @@ describe("CreatePullRequest", () => {
         expect(calls(state).some((a) => a[1] === "create")).toBe(false);
     });
 
-    test("without a logged-in gh nothing is pushed", async () => {
+    test("GitHub signed out with no one to ask: nothing is pushed, and the model is told what the user has to run", async () => {
         const { cwd, state } = repo(true);
         process.env.FAKE_PUBLISH_MODE = "unauthenticated";
         const r = await run(CreatePullRequestTool, { title: "T" }, ctxFor(cwd));
         delete process.env.FAKE_PUBLISH_MODE;
         expect(r).toMatchObject({ isError: true, content: expect.stringContaining("gh auth login") });
+        expect(calls(state, ".git-calls").some((a) => a.includes("push"))).toBe(false);
+    });
+
+    test("GitHub signed out: the user is asked to sign in, and the pull request is opened once they have", async () => {
+        const { cwd, state } = repo(true);
+        process.env.FAKE_PUBLISH_MODE = "unauthenticated";
+        const ctx = ctxFor(cwd);
+        const asked: unknown[] = [];
+        ctx.ui.requestSignIn = async (req) => {
+            asked.push(req.targets);
+            delete process.env.FAKE_PUBLISH_MODE;
+            return { text: "Signed in to GitHub as me.", summary: "Signed in as me", signedIn: true };
+        };
+        const r = await run(CreatePullRequestTool, { title: "T" }, ctx);
+        expect(asked).toEqual([[{ target: "gh" }]]);
+        expect(r.isError).toBeFalsy();
+        expect(r.content).toContain("Opened pull request");
+        expect(calls(state).some((a) => a[1] === "create")).toBe(true);
+    });
+
+    test("GitHub signed out and put off: nothing is pushed, and the model hears the user chose Later, not a command to pass on", async () => {
+        const { cwd, state } = repo(true);
+        process.env.FAKE_PUBLISH_MODE = "unauthenticated";
+        const ctx = ctxFor(cwd);
+        ctx.ui.requestSignIn = async () => ({ text: "Not signed in to GitHub: the user chose Later.", summary: "Not signed in", signedIn: false });
+        const r = await run(CreatePullRequestTool, { title: "T" }, ctx);
+        delete process.env.FAKE_PUBLISH_MODE;
+        expect(r.isError).toBe(true);
+        expect(r.content).toContain("the user chose Later");
+        expect(r.content).not.toContain("gh auth login");
         expect(calls(state, ".git-calls").some((a) => a.includes("push"))).toBe(false);
     });
 
@@ -408,6 +438,13 @@ describe("WatchPullRequest", () => {
         const ctx = ctxFor(cwd);
         gitToolDeps.gh = () => async () => ({ out: "", err: "HTTP 401: Bad credentials", code: 1 });
         expect(await run(WatchPullRequestTool, { pr: 7 }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("gh auth login") });
+        // With someone to ask, they're asked; put off, the model hears that.
+        const asking = ctxFor(cwd);
+        asking.ui.requestSignIn = async () => ({ text: "Not signed in to GitHub: the user chose Later.", summary: "Not signed in", signedIn: false });
+        const later = await run(WatchPullRequestTool, { pr: 7 }, asking);
+        expect(later.isError).toBe(true);
+        expect(later.content).toContain("the user chose Later");
+        expect(later.content).not.toContain("gh auth login");
         gitToolDeps.gh = () => async () => ({ out: "", err: "GraphQL: Could not resolve to a PullRequest with the number of 7.", code: 1 });
         expect(await run(WatchPullRequestTool, { pr: 7 }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("not found") });
         expect(ctx.state.watchers!.size).toBe(0);

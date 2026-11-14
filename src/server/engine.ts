@@ -4,6 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
@@ -2892,6 +2893,10 @@ export class Engine {
             case "session.restartCli":
                 await this.runtime(p.id).restartCli();
                 return null;
+            case "session.askSignIn":
+                // Only one of Cavvy's own: a window names what, never a command.
+                if (!findRecipe(str(p.target, "target"), signInRecipes(this.runtime(p.id).settings().signIns))) throw new RpcError("Cavvy has no sign-in for that.", "invalid");
+                return await this.runtime(p.id).askSignIn({ targets: [{ target: p.target }] });
             case "session.signIn":
                 this.runtime(p.id).reopenSignIn(str(p.watchId, "watchId"));
                 return null;

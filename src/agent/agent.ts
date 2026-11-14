@@ -72,6 +72,7 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { signedOutIn, signInRecipes } from "./sign-in-recipes";
+import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
@@ -566,6 +567,8 @@ export class Agent {
     private serverTools: ServerTool[] = [];
     /** The last run stopped on the plan's usage limit (an agent CLI said so), and when that resets if known. */
     limitStop?: { resetsAt?: number };
+    /** The turn stopped because something isn't signed in (an agent CLI, gcloud for Vertex): which, and the advice the host's card replaces. */
+    signedOutStop?: { target: string; account: string; advice: string };
     private serverInstructions = "";
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
@@ -732,6 +735,7 @@ export class Agent {
         const thisRun: { over: boolean } = (this.thisRun = { over: false });
         this.prompted = false;
         this.limitStop = undefined;
+        this.signedOutStop = undefined;
         // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
         // turn or an earlier one) run on: only an explicit stop ends them (#228, stopBackground).
         const onAbort = () => this.cancelTasks();
@@ -1264,6 +1268,12 @@ export class Agent {
      * never sent to a model).
      */
     private endNotice(level: "warn" | "error", message: string, data?: NoticeData) {
+        // It stopped on something signed out, and there's someone to ask: the host shows the sign-in in place of the advice to run it by hand.
+        const out = level === "error" && !this.o.isSubagent && this.o.host.ui.requestSignIn ? signInAdvised(message) : undefined;
+        if (out) {
+            this.signedOutStop = { target: out.target, account: out.account, advice: out.advice };
+            message = message.replace(out.advice, "").replace(/[\s:.]+$/, "") + ".";
+        }
         if (level === "error") this.turnError = message;
         this.session.recordNotice(level, message, data);
         this.emit({ type: "notice", level, message, ...(data ? { data } : {}) });

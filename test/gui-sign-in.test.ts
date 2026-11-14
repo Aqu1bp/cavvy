@@ -294,6 +294,28 @@ describe("a sign-in in a GUI session", () => {
         c.close();
     });
 
+    test("a window's own feature asks (publishing found GitHub signed out): the card with no turn behind it, answered when the user is done", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        const asked = c.call<string>("session.askSignIn", { id, target: "acme" });
+        const ask = await c.card(id, "ask");
+        expect(ask.toolId).toBeUndefined();
+        expect(c.view(id).state.status).toBe("waiting");
+        expect(c.view(id).turns).toHaveLength(0);
+        await step(c, id, ask.id, { action: "start" });
+        await c.card(id, "code");
+        acme.approve();
+        expect(await asked).toBe("signed-in");
+        await c.until(id, (v) => !v.state.interactions.length && v.state.status === "idle", "the card gone");
+        // No agent was waiting: nothing wakes one.
+        await Bun.sleep(400);
+        expect(c.view(id).turns).toHaveLength(0);
+        // Signed in already: nothing to show. And only what Cavvy has a sign-in for: a window names it, never a command.
+        expect(await c.call<string>("session.askSignIn", { id, target: "acme" })).toBe("cannot");
+        await expect(c.call("session.askSignIn", { id, target: "rm -rf" })).rejects.toThrow("no sign-in for that");
+        c.close();
+    });
+
     test("a sign-in Cavvy doesn't know: the command is typed into a terminal for the user, not run, and Done is their word", async () => {
         const c = await client();
         const cwd = project();

@@ -234,7 +234,14 @@ Never forces and never pushes tags. Refuses the repository's main branch: work o
             const refused = pushRefusal(info);
             if (refused) return fail(refused);
             // gitPublish checks the repository still matches this fingerprint right before pushing.
-            const { pr } = await gitPublish(cwd, { fingerprint: approved.fingerprint, action: "push" }, ctx.signal);
+            const push = () => gitPublish(cwd, { fingerprint: approved.fingerprint, action: "push" }, ctx.signal);
+            const { pr } = await push().catch(async (e) => {
+                // GitHub refused for want of a sign-in: the user is asked, and the same push goes again.
+                if (!PUSH_SIGNED_OUT.test(message(e))) throw e;
+                const no = await signInToGitHub(ctx);
+                if (no) throw new Error(`${message(e)}\n${no}`);
+                return push();
+            });
             const commits = info.hasUpstream ? (info.ahead ?? 0) : undefined;
             const what = commits === undefined ? "" : commits === 0 ? " (already up to date)" : ` (${commits} commit${commits === 1 ? "" : "s"})`;
             return {
@@ -290,12 +297,18 @@ If the branch already has an open pull request, nothing new is opened: you get t
         let pr: GitPrInfo | undefined;
         let existed = false;
         try {
-            const info = await gitPublishInfo(cwd, ctx.signal);
+            let info = await gitPublishInfo(cwd, ctx.signal);
+            if (info.ghSignedOut) {
+                // Only signed out: the user is asked, and this goes on if they sign in.
+                const no = await signInToGitHub(ctx);
+                if (no) return fail(`${no}\nThe branch isn't pushed yet. GitPush pushes it without a pull request.`);
+                info = await gitPublishInfo(cwd, ctx.signal);
+            }
             const approved = pushApproved(i, info, cwd);
             if ("refused" in approved) return fail(approved.refused);
             const refused = pushRefusal(info);
             if (refused) return fail(refused);
-            if (!info.gh) return fail("The GitHub CLI isn't installed or isn't logged in (or the remote isn't on github.com). Ask the user to run gh auth login, or push with GitPush and give them the compare link.");
+            if (!info.gh) return fail("Pull requests need the GitHub CLI (gh) installed here and a remote on github.com. Push with GitPush and give the user the compare link.");
             const base = i.base?.trim() || info.base;
             if (!base) return fail("The remote doesn't say which branch is its main one: pass base.");
             existed = info.pr?.state === "open" || info.pr?.state === "draft";
@@ -315,6 +328,20 @@ If the branch already has an open pull request, nothing new is opened: you get t
 
 // ---------------------------------------------------------------------------
 
+/**
+ * GitHub turned out signed out: the user is asked to sign in (the card), and what needed it goes on if they do.
+ * Returns undefined once it's signed in, else what the model is told.
+ */
+async function signInToGitHub(ctx: ToolContext): Promise<string | undefined> {
+    // With no one to show the card to, the command is all there is to pass on.
+    if (!ctx.ui.requestSignIn) return "GitHub isn't signed in, and no one is here to sign in (non-interactive session): the user has to run `gh auth login` themselves.";
+    const r = await ctx.ui.requestSignIn({ targets: [{ target: "gh" }], tool: ctx.signInTool ?? "RequestSignIn" }, ctx.signal);
+    return r.signedIn ? undefined : r.text;
+}
+
+/** A push that failed because GitHub wouldn't take the credentials it was offered (or was offered none). */
+const PUSH_SIGNED_OUT = /could not read Username for 'https:\/\/github\.com|Authentication failed for 'https:\/\/github\.com|Invalid username or (password|token)/i;
+
 async function resolvePr(ctx: ToolContext, ref: string | number | undefined, url?: string): Promise<{ repo: string; number: number } | string> {
     const cwd = ctx.state.cwd;
     const parsed = parsePrRef(url ?? ref);
@@ -330,7 +357,7 @@ async function resolvePr(ctx: ToolContext, ref: string | number | undefined, url
     if (parsed) return { repo, number: parsed.number };
     try {
         const pr = await gitPrState(cwd, ctx.signal);
-        if (!pr) return "This branch has no pull request (or the GitHub CLI isn't logged in). Open one with CreatePullRequest, or pass a number or URL.";
+        if (!pr) return "This branch has no pull request that the GitHub CLI can see. Open one with CreatePullRequest, or pass a number or URL.";
         return { repo, number: pr.number };
     } catch (e) {
         return `Couldn't find this branch's pull request: ${message(e)}`;
@@ -347,14 +374,21 @@ async function startWatch(ctx: ToolContext, ref: string | number | undefined, ur
     const gh = gitToolDeps.gh(ctx.state.cwd);
     let snap: PrSnapshot;
     try {
-        snap = await readPullRequest(gh, target.repo, target.number, ctx.signal);
+        snap = await readPullRequest(gh, target.repo, target.number, ctx.signal).catch(async (e) => {
+            // Signed out: the user is asked, and it's read again if they sign in.
+            if (!(e instanceof PrReadError) || e.kind !== "auth") throw e;
+            const no = await signInToGitHub(ctx);
+            if (no) throw new PrReadError(`${e.message}\n${no}`, "auth");
+            return readPullRequest(gh, target.repo, target.number, ctx.signal);
+        });
     } catch (e) {
         return fail(e instanceof PrReadError ? e.message : `Couldn't read the pull request: ${message(e)}`);
     }
     const state = describeSnapshot(snap);
     if (snap.state !== "open") return { content: `${state}\n\nIt's ${snap.state}, so there's nothing to watch.` };
     if (watchers.has(id)) return { content: `${state}\n\nAlready watching it: you'll be woken on the next change.` };
-    const watch = new PrWatch({ repo: target.repo, number: target.number, gh, wakes, snapshot: snap, onEnd: () => watchers.get(id) === watch && watchers.delete(id) });
+    const ask = ctx.ui.askSignIn?.bind(ctx.ui);
+    const watch = new PrWatch({ repo: target.repo, number: target.number, gh, wakes, snapshot: snap, onEnd: () => watchers.get(id) === watch && watchers.delete(id), signIn: ask && ((resume) => ask({ targets: [{ target: "gh" }] }, resume)) });
     watchers.set(id, watch);
     watch.start();
     return {

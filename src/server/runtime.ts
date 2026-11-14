@@ -30,7 +30,7 @@ import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custo
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { signInRecipes } from "../agent/sign-in-recipes";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
@@ -1657,6 +1657,7 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
+                    askSignIn: (req, then) => this.askSignIn(req, then),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -2753,8 +2754,23 @@ export class Runtime {
     }
 
     /** A sign-in one of Cavvy's own features needs for this session: the same card, with no tool call behind it. */
-    askSignIn(req: SignInRequest, then?: () => void): Promise<boolean> {
+    askSignIn(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot"> {
         return this.signIns.ask(req, then);
+    }
+
+    /**
+     * The turn stopped because something isn't signed in (the session's own CLI, gcloud for Vertex): its card, and
+     * once it's signed in (there, or later) the agent is told to carry on. Where there's nothing to show, the way
+     * to do it by hand is said after all.
+     */
+    private offerSignIn(out: { target: string; account: string; advice: string }) {
+        const name = findRecipe(out.target, signInRecipes(this.settings().signIns))?.name ?? out.target;
+        const carryOn = () => this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
+            if (this.closed) return;
+            if (r === "signed-in") carryOn();
+            else if (r === "cannot") this.notice(out.advice, "warn");
+        });
     }
 
     /** What a sign-in card's "Open in terminal" types into the new terminal: the command it shows, for the user to run. */
@@ -3390,6 +3406,7 @@ export class Runtime {
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
         if (!(this.goal.active && this.goal.view()?.state !== "paused")) notify();
         if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
+        if (reason === "error" && agent.signedOutStop && !this.closed) this.offerSignIn(agent.signedOutStop);
         const queued = Boolean(this.nextQueued());
         if (ac.signal.aborted) void this.goal.afterTurn("aborted", index, Boolean(opts.goal));
         // What was queued goes first. If none of it is a turn (a !command, /compact), the goal takes this turn's end after it.

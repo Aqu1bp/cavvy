@@ -402,6 +402,80 @@ describe("the watch", () => {
         }
     });
 
+    describe("GitHub signed out, with someone to ask", () => {
+        function asking(answer: "signed-in" | "later" | "cannot") {
+            let signedIn = false;
+            const wakes = new WakeQueue({ coalesceMs: 60_000 });
+            const ended: string[] = [];
+            const asked: (() => void)[] = [];
+            const { gh, calls } = fakeGh(() => (signedIn ? { out: graphql() } : { err: "HTTP 401: Bad credentials", code: 1 }));
+            const w = new PrWatch({ repo: "acme/app", number: 12, gh, wakes, snapshot: parseSnapshot("acme/app", graphql()), onEnd: (r) => ended.push(r), signIn: async (resume) => {
+                asked.push(resume);
+                if (answer === "signed-in") signedIn = true;
+                return answer;
+            } });
+            return { w, wakes, ended, asked, calls, signIn: () => { signedIn = true; } };
+        }
+        const settle = () => Bun.sleep(20);
+
+        test("the user is asked once and the watch waits: the agent isn't woken, and nothing is read meanwhile", async () => {
+            const x = asking("later");
+            await x.w.poll();
+            await settle();
+            expect(x.asked).toHaveLength(1);
+            expect(x.ended).toEqual([]);
+            expect(x.wakes.size).toBe(0);
+            expect(x.w.active).toBe(true);
+            expect(x.w.detail).toContain("GitHub signed out");
+            expect(x.calls).toHaveLength(1);
+            // Signed in later: it reads again, and carries on as before.
+            x.signIn();
+            x.asked[0]!();
+            // The watch never polls sooner than a second after it's told to.
+            await Bun.sleep(1150);
+            expect(x.calls.length).toBeGreaterThan(1);
+            expect(x.w.detail).not.toContain("signed out");
+            expect(x.ended).toEqual([]);
+            x.w.stop();
+            x.wakes.dispose();
+        });
+
+        test("signed in through the card: it reads again", async () => {
+            const x = asking("signed-in");
+            await x.w.poll();
+            await Bun.sleep(1150);
+            expect(x.calls.length).toBeGreaterThan(1);
+            expect(x.ended).toEqual([]);
+            expect(x.wakes.size).toBe(0);
+            x.w.stop();
+            x.wakes.dispose();
+        });
+
+        test("nothing to show (it says it's signed in, yet GitHub refuses): it ends as before, and the agent hears why", async () => {
+            const x = asking("cannot");
+            await x.w.poll();
+            await settle();
+            expect(x.ended).toHaveLength(1);
+            const [wake] = x.wakes.pending();
+            expect(wake!.label).toBe("PR #12: stopped watching");
+            expect(wake!.text).toContain("GitHub isn't signed in");
+            expect(wake!.text).not.toContain("gh auth login in a terminal");
+            x.wakes.dispose();
+        });
+
+        test("stopped while it waits: a late sign-in starts nothing", async () => {
+            const x = asking("later");
+            await x.w.poll();
+            await settle();
+            x.w.stop();
+            x.signIn();
+            x.asked[0]!();
+            await settle();
+            expect(x.calls).toHaveLength(1);
+            x.wakes.dispose();
+        });
+    });
+
     test("a poll that comes back after stop() raises nothing", async () => {
         let release!: () => void;
         const wakes = new WakeQueue({ coalesceMs: 60_000 });
