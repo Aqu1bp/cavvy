@@ -491,7 +491,7 @@
 
 /* Narrow Settings (settings.css drops a row's controls under its text there): the problem's line
    starts at the row's edge, as the key field does. */
-:where(.main[data-narrow~="520"]) {
+:where(:is(.main, .session-pane)[data-narrow~="520"]) {
     .prov-err-line {
         padding-left: calc(14 * var(--sp));
     }

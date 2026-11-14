@@ -144,7 +144,9 @@ let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undef
 const renews = new Map<string, () => (() => void) | void>();
 /** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
 const workOpen = new Map<string, boolean>();
+let activeSession = "a";
 const scope = {
+    app: { get activeId() { return activeSession; } },
     loadEarlier: (h: any, how: any) => loadMore(h, how),
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
@@ -229,6 +231,7 @@ const b = { id: "b", view: { state: {}, turns: turns(90) } };
 let firstFrameTurns = 0;
 let firstFrameEarlier: string | undefined;
 const mount = (handle: any, runFrame = true, View = Transcript) => {
+    activeSession = handle.id;
     top = 0;
     root = node("root");
     const dispose = renderer.render(() => View({ handle }), root);
@@ -838,6 +841,7 @@ try {
     dispose();
     const [dockH, setDockH] = solid.createSignal<number | undefined>(244);
     top = 0; root = node("root");
+    activeSession = a.id;
     dispose = renderer.render(() => Transcript({ handle: a, get dock() { return dockH(); } }), root); flush();
     scroll(0); setFindShown(true);
     const box = (cls: string) => all(root).find((n) => has(n, cls))!;

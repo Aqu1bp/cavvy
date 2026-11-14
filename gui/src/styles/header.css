@@ -253,7 +253,7 @@
 }
 
 /* A narrow column: the title has the room, not a stub of the branch. */
-:where(.main[data-narrow~="640"]) .br {
+:where(:is(.main, .session-pane)[data-narrow~="640"]) .br {
     display: none;
 }
 
@@ -373,16 +373,16 @@ button.bc:hover {
 }
 
 /* Getting narrow: the title gives up room first, so the session's own title keeps some. */
-:where(.main[data-narrow~="700"]) .needs {
+:where(:is(.main, .session-pane)[data-narrow~="700"]) .needs {
     max-width: calc(220 * var(--sp));
 }
 
 /* Under 600px: just the hand and how many. */
-:where(.main[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
     display: none;
 }
 
-:where(.main[data-narrow~="600"]) .needs {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) .needs {
     padding: 0 calc(11 * var(--sp));
 }
 
@@ -391,7 +391,7 @@ button.bc:hover {
     display: none;
 }
 
-:where(.main[data-narrow~="600"]) .needs .needs-one {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) .needs .needs-one {
     display: inline;
 }
 

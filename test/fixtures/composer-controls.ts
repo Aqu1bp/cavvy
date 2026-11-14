@@ -86,7 +86,7 @@ const sent: { text: string; followUp?: string }[] = [];
 const sentAttachments: unknown[][] = [];
 const calls: { method: string; params: any }[] = [];
 const [homeCwd, setHomeCwd] = solid.createSignal("/workspace");
-const appState = { conn: "open", get homeCwd() { return homeCwd(); }, settings: {} as { followUpBehavior?: string }, models: [] };
+const appState = { get activeId() { return session(); }, conn: "open", get homeCwd() { return homeCwd(); }, settings: {} as { followUpBehavior?: string }, models: [] };
 /** The composer opening or closing its large size told the conversation to glide with it. */
 let dockGlides = 0;
 const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, textPieces, argsHint, firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,

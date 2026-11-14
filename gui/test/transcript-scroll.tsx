@@ -1,3 +1,4 @@
+import { setApp } from "../src/state/app";
 // Real-browser layout checks; the fixture uses local in-memory sessions only.
 import { render } from "solid-js/web";
 import { createStore } from "solid-js/store";
@@ -24,7 +25,7 @@ const y = (selector: string) => row(selector).getBoundingClientRect().top;
 const click = (selector: string) => row(selector).click();
 let dispose = () => {};
 // A 100px composer dock under the transcript, as SessionView passes it.
-const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); await grown(); };
+const mount = async (handle: any) => { dispose(); setApp("activeId", handle.id); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); await grown(); };
 /** Past the first screens, turns go in a few at a time, a frame apart (Transcript's staged mount): until the count holds. */
 const grown = async () => {
     let same = 0;

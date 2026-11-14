@@ -86,7 +86,7 @@
     transform: scale(0.88);
 }
 
-:where(.main[data-narrow~="640"]) {
+:where(:is(.main, .session-pane)[data-narrow~="640"]) {
     .agent-bar-model,
     .agent-sep {
         display: none;

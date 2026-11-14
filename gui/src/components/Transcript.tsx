@@ -1,4 +1,5 @@
-import { splitSessions } from "../state/split";
+import { clampSplitRatio } from "../lib/session-split";
+import { splitSessions, splitRatio } from "../state/split";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
@@ -929,8 +930,12 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let fromEnd = false;
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
-        const held = panelHold();
-        return held && { width: `${held.column.w / (splitSessions() ? 2 : 1)}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
+        const whole = panelHold();
+        const ratio = whole && clampSplitRatio(splitRatio(), whole.column.w);
+        const held = whole && splitSessions() ? { ...whole, column: { ...whole.column,
+            w: whole.column.w * (splitSessions()?.[0] === p.handle.id ? ratio! : 1 - ratio!),
+        } } : whole;
+        return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
     // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
     // following the end any more), it's scrolled by as much, so what's read stays where it is.

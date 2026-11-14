@@ -199,7 +199,7 @@ function ChangesChip(p: { handle: SessionHandle }) {
 }
 
 /** `title`: no session yet (one opening), what to call it. */
-export function Header(p: { handle?: SessionHandle; title?: string }) {
+export function Header(p: { handle?: SessionHandle; title?: string; onCloseSplit?: () => void }) {
     const [editing, setEditing] = createSignal(false);
     const [menuOpen, setMenuOpen] = createSignal(false);
     let moreBtn: HTMLButtonElement | undefined;
@@ -237,6 +237,9 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
                                 <Ellipsis size={16} />
                             </button>
+                        </Show>
+                        <Show when={p.onCloseSplit}>
+                            <button class="hb split-exit" aria-label="Close split view" onClick={() => p.onCloseSplit?.()}>Close split</button>
                         </Show>
                     </div>
                 </>

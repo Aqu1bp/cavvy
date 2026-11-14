@@ -34,7 +34,7 @@ test("the conversation column isn't a query container: its size changing doesn't
 });
 
 test("the column's size steps stand for the queries they replaced, at the same sizes", () => {
-    const used = (attr: string) => new Set(styles.flatMap((f) => [...read(`styles/${f}`).matchAll(new RegExp(`:where\\(\\.main\\[data-${attr}~="(\\d+)"\\]\\)`, "g"))].map((m) => Number(m[1]))));
+    const used = (attr: string) => new Set(styles.flatMap((f) => [...read(`styles/${f}`).replaceAll(":is(.main, .session-pane)", ".main").matchAll(new RegExp(`:where\\(\\.main\\[data-${attr}~="(\\d+)"\\]\\)`, "g"))].map((m) => Number(m[1]))));
     expect([...used("narrow")].sort()).toEqual([...COLUMN_NARROW].sort());
     expect([...used("short")].sort()).toEqual([...COLUMN_SHORT].sort());
     // `max-width: 700px` held at 700px and below.

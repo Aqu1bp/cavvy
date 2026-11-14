@@ -709,7 +709,7 @@
 }
 
 /* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
-:where(.main[data-narrow~="520"]) {
+:where(:is(.main, .session-pane)[data-narrow~="520"]) {
     .set-in {
         padding: 0 calc(16 * var(--sp)) calc(50 * var(--sp));
     }
@@ -964,7 +964,7 @@
     background: var(--sheet-2);
 }
 
-:where(.main[data-narrow~="520"]) {
+:where(:is(.main, .session-pane)[data-narrow~="520"]) {
     .ap-tiles {
         flex-wrap: wrap;
     }

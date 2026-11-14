@@ -69,7 +69,7 @@
     pointer-events: auto;
 }
 
-:where(.main[data-narrow~="600"]) {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) {
     .stage {
         --stage-x: calc(10 * var(--sp));
     }

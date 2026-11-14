@@ -42,7 +42,7 @@
 .account-note { display: block; padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp)); }
 .account-path { overflow-wrap: anywhere; }
 
-:where(.main[data-narrow~="520"]) {
+:where(:is(.main, .session-pane)[data-narrow~="520"]) {
     .account-row { margin-left: calc(14 * var(--sp)); }
     .account-form { margin-left: calc(14 * var(--sp)); padding: calc(10 * var(--sp)); }
     .account-note, .cli-prov > .account-rename { padding-left: calc(14 * var(--sp)); }

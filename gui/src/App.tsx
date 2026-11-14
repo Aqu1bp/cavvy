@@ -1,4 +1,6 @@
-import { SESSION_DRAG, splitPair, splitSessions, setSplitSessions } from "./state/split";
+import { SplitResizer } from "./components/SplitResizer";
+import { clampSplitRatio } from "./lib/session-split";
+import { SESSION_DRAG, splitPair, splitSessions, setSplitSessions, splitRatio } from "./state/split";
 import { inspectorPane, setInspectorPane } from "./state/ui";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
@@ -77,7 +79,7 @@ function Disconnected() {
 }
 
 /** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
-function SessionView(p: { handle: SessionHandle }) {
+function SessionView(p: { handle: SessionHandle; onCloseSplit?: () => void }) {
     let dock: HTMLDivElement | undefined;
     // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
     const [dockH, setDockH] = createSignal<number>();
@@ -87,7 +89,6 @@ function SessionView(p: { handle: SessionHandle }) {
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
             setDockH(h);
-            if (app.activeId === p.handle.id) setDockHeight(h);
         });
         if (dock) ro.observe(dock);
         onCleanup(() => {
@@ -98,7 +99,7 @@ function SessionView(p: { handle: SessionHandle }) {
     createEffect(() => { if (app.activeId === p.handle.id) setDockHeight(dockH() ?? 0); });
     return (
         <>
-            <Header handle={p.handle} />
+            <Header handle={p.handle} onCloseSplit={p.onCloseSplit} />
             <div class="stage">
                 <Transcript handle={p.handle} dock={dockH()} />
                 <FloatingBrowser handle={p.handle} />
@@ -391,6 +392,7 @@ export function App() {
         const original = splitSessions()?.[0];
         ++dropVersion;
         setSplitLoading(false);
+        setPanelFull(false);
         if (original) void activate(original);
         setSplitSessions(undefined);
     };
@@ -557,7 +559,9 @@ export function App() {
     // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
     // The steps of the column's size that its contents' styles read (shell.css .main); none until it's measured.
-    const narrow = createMemo(() => (layout().sheet.w ? columnSteps(layout().column.w / (splitSessions() ? 2 : 1), COLUMN_NARROW) : undefined));
+    const splitWidth = () => clampSplitRatio(splitRatio(), layout().column.w);
+    const paneShare = (id: string) => !splitSessions() ? 1 : id === splitSessions()?.[0] ? splitWidth() : 1 - splitWidth();
+    const narrow = createMemo(() => (layout().sheet.w && !splitSessions() ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
     const short = createMemo(() => (layout().sheet.h ? columnSteps(layout().column.h, COLUMN_SHORT) : undefined));
 
     return (
@@ -652,12 +656,13 @@ export function App() {
                                             <AgentView handle={active()!} agent={agent()!} />
                                         </Match>
                                         <Match when={stage()}>
-                                            <div class="session-panes">
-                                                <For each={panes()}>{(h) => <section class="session-pane" classList={{ focused: app.activeId === h.id }} aria-label={h.view.state.title ?? "Session"}
+                                            <div class="session-panes" inert={layout().inspector.full || layout().terminal.maximized}>
+                                                <Show when={splitSessions()}><SplitResizer width={layout().column.w} ratio={splitWidth()} /></Show>
+                                                <For each={panes()}>{(h) => <section class="session-pane" style={{ flex: `${paneShare(h.id)} 1 0px` }} data-narrow={splitSessions() ? columnSteps(layout().column.w * paneShare(h.id), COLUMN_NARROW) : undefined} classList={{ focused: app.activeId === h.id }} aria-label={h.view.state.title ?? "Session"}
                                                     onPointerDown={() => { if (app.activeId !== h.id) void activate(h.id); }}
                                                     onFocusIn={() => { if (app.activeId !== h.id) void activate(h.id); }}>
-                                                    <Show when={splitSessions() && h.id === splitSessions()?.[1]}><button class="split-close hb" aria-label="Close split view" title="Close split view" onClick={closeSplit}>×</button></Show>
-                                                    <Show when={app.activeId === h.id && agent()} fallback={<SessionView handle={h} />}>
+
+                                                    <Show when={app.activeId === h.id && agent()} fallback={<SessionView handle={h} onCloseSplit={splitSessions()?.[1] === h.id ? closeSplit : undefined} />}>
                                                         <AgentView handle={h} agent={agent()!} />
                                                     </Show>
                                                 </section>}</For>

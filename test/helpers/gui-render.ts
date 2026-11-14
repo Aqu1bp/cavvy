@@ -1,3 +1,4 @@
+import { clampSplitRatio, splitPair } from "../../gui/src/lib/session-split";
 import { transformSync } from "../../gui/node_modules/@babel/core/lib/index.js";
 import solidPreset from "../../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
@@ -31,7 +32,10 @@ export function component(source: string, name: string, dependencies: Record<str
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;")
         .replace(/export function /g, "function ");
-    const scope = { ...solid, renderer: { ...solid, ...renderer }, ...dependencies };
+    const [splitSessions, setSplitSessions] = solid.createSignal();
+    const [inspectorPane, setInspectorPane] = solid.createSignal("agents");
+    const scope = { splitSessions, setSplitSessions, splitRatio: () => 0.5, clampSplitRatio, splitPair,
+        inspectorPane, setInspectorPane, setPrefs() {}, ...solid, renderer: { ...solid, ...renderer }, ...dependencies };
     return new Function(...Object.keys(scope), `${js}; return ${name};`)(...Object.values(scope));
 }
 

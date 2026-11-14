@@ -10,9 +10,9 @@ bun run gui:demo           # try it without API keys: a mock model and a demo pr
 
 ## Split sessions
 
-Drag a session from the sidebar onto an open conversation to view both side by side. The original stays on the left; dropping a third session replaces the right one. Dropping either visible session again does nothing. Both sessions must be on the same machine. If the new session cannot open, the existing view stays in place.
+Drag a session from the sidebar onto an open conversation to view both side by side. The original stays on the left; dropping a third session replaces the right one. Dropping either visible session again does nothing. Drag the divider to resize the chats; double-click it to reset. With the divider focused, use the arrow keys to resize or Enter to reset. Both sessions must be on the same machine. If the new session cannot open, the existing view stays in place.
 
-Click or tab into a pane to focus it (the blue top edge marks it). Keyboard actions and the right panel follow the focused session; each session remembers its panel tab and open review while the window is open. Each conversation keeps its own draft and scroll position. Close the split with the right pane's × to return to the original. Reloading restores the pair; choosing a different session from the sidebar leaves the split.
+Click or tab into a pane to focus it (the blue top edge marks it). Keyboard actions and the right panel follow the focused session; each session remembers its panel tab and open review while the window is open. Each conversation keeps its own draft and scroll position. Choose **Close split** in the right chat’s header to return to the original. Reloading restores the pair; choosing a different session from the sidebar leaves the split.
 
 ## The desktop app
 

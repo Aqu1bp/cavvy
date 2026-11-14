@@ -3111,7 +3111,7 @@ button.att-card:hover {
 
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
-:where(.main[data-narrow~="600"]) {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) {
     .ask .pbtn kbd {
         display: none;
     }
