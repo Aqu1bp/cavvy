@@ -24,6 +24,9 @@ export interface FindMatch {
 }
 
 const shownText = new Map<string, string>();
+/** How much shownText holds (characters, sources and texts): let go of past SHOWN_MOST, as 4,000 long replies were many megabytes kept for good. */
+let shownChars = 0;
+const SHOWN_MOST = 1_000_000;
 
 /**
  * The text of HTML the transcript renders, as the page has it (an element's textContent): its tags taken out and its
@@ -66,8 +69,12 @@ export function plain(md: string): string {
     if (text === undefined) {
         text = htmlText(renderMarkdown(md));
         // Finished replies don't change; a streaming one is a new key each time, so old ones go.
-        if (shownText.size > 4000) shownText.clear();
+        if (shownChars > SHOWN_MOST) {
+            shownText.clear();
+            shownChars = 0;
+        }
         shownText.set(md, text);
+        shownChars += md.length + text.length;
     }
     return text;
 }
