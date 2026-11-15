@@ -535,6 +535,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     /** The page shown, whole, where it goes: what's read stays put (restore). */
     const unstage = () => {
         if (!staged) return;
+        // The button had the keyboard ("Show earlier" pressed by a key): if the page shown is the last, the button goes.
+        const button = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("earlier") && scroller?.contains(document.activeElement) ? document.activeElement : undefined;
         // Not skipped: each is drawn once before it can be (what it's skipped at is the size it was drawn at).
         for (const el of staged) {
             el.removeAttribute(STAGED);
@@ -542,6 +544,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         }
         staged = undefined;
         setButtonHeld(undefined);
+        // Gone with it: the keyboard goes to the first turn, the one it brought in on top (not to the page's body, where a
+        // key reaches nothing).
+        if (button && !button.isConnected) {
+            const first = turnEls.get(visible()[0]?.id ?? "");
+            if (first) {
+                if (!first.hasAttribute("tabindex")) first.tabIndex = -1;
+                first.focus({ preventScroll: true });
+            }
+        }
     };
     const restore = () => {
         if (!scroller || !content || !reading) return;
