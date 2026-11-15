@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Socket } from "./helpers/gui-socket";
 import { Rpc } from "../gui/src/lib/rpc";
-import { RequestAges, requestNoticeMs } from "../gui/src/lib/request-age";
+import { RequestAges, requestNoticeMs, waitingLabel } from "../gui/src/lib/request-age";
 
 test("request notices use 15s / 60s thresholds and clear only when the last slow reply arrives", () => {
     const ages = new RequestAges();
@@ -23,6 +23,22 @@ test("request notices use 15s / 60s thresholds and clear only when the last slow
     ages.clear();
     expect(ages.slow(100_000)).toBe(false);
     expect(ages.nextDelay(100_000)).toBeUndefined();
+});
+
+test("the notice names what it waits on, longest first, and forgets what was answered", () => {
+    const ages = new RequestAges();
+    ages.add(1, "session.open", 0);
+    ages.add(2, "models.list", 0);
+    ages.add(3, "settings.get", 10_000);
+    expect(ages.waiting(14_999)).toEqual([]);
+    expect(ages.waiting(25_000)).toEqual([{ method: "session.open", ms: 25_000 }, { method: "settings.get", ms: 15_000 }]);
+    ages.remove(1);
+    expect(ages.waiting(192_000)).toEqual([{ method: "models.list", ms: 192_000 }, { method: "settings.get", ms: 182_000 }]);
+    expect(waitingLabel(ages.waiting(192_000))).toBe("models.list · 3m 12s\nsettings.get · 3m 2s");
+    expect(waitingLabel([{ method: "hello", ms: 15_400 }])).toBe("hello · 15s");
+    expect(waitingLabel([{ method: "session.gitChanges", ms: 16_000 }, { method: "hello", ms: 70_000 }, { method: "session.gitChanges", ms: 18_000 }])).toBe("hello · 1m 10s\nsession.gitChanges ×2 · 18s");
+    ages.clear();
+    expect(ages.waiting(500_000)).toEqual([]);
 });
 
 const originalSocket = globalThis.WebSocket;
