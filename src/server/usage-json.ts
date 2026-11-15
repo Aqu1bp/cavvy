@@ -50,25 +50,51 @@ export class UsageJson {
         } catch { this.invalid = true; }
         this.token = ""; this.primitive = false;
     }
+    /**
+     * Where the string being skipped ends in `bytes` from `i`: its closing quote, or -1 when it runs past them (with
+     * `escaped` set if they end on a backslash). Native searches: most of a transcript is text nobody reads.
+     */
+    private skipString(bytes: Buffer, i: number): number {
+        // A backslash is looked for only before the next quote, so each byte is searched once.
+        let quote = bytes.indexOf(34, i);
+        for (;;) {
+            const slash = (quote === -1 ? bytes.subarray(i) : bytes.subarray(i, quote)).indexOf(92);
+            if (slash === -1) return quote;
+            i += slash + 2;
+            if (i > bytes.length) { this.escaped = true; return -1; }
+            if (quote !== -1 && quote < i) quote = bytes.indexOf(34, i);
+        }
+    }
     feed(bytes: Buffer) {
-        for (const byte of bytes) {
+        for (let i = 0; i < bytes.length; i++) {
             if (this.invalid) return;
-            const c = String.fromCharCode(byte);
+            const byte = bytes[i]!;
             if (this.quoted) {
+                if (!this.capture) {
+                    // Unread, so not checked for raw control bytes: a line can't hold a newline, and nothing else in it matters.
+                    if (this.escaped) { this.escaped = false; continue; }
+                    const end = this.skipString(bytes, i);
+                    if (end === -1) return;
+                    i = end; this.quoted = false; this.scalar();
+                    continue;
+                }
                 if (byte < 32) { this.invalid = true; continue; }
-                if (this.capture) { this.token += c; if (this.token.length > 2048) { this.invalid = true; continue; } }
+                this.token += String.fromCharCode(byte);
+                if (this.token.length > 2048) { this.invalid = true; continue; }
                 if (this.escaped) this.escaped = false;
-                else if (c === "\\") this.escaped = true;
-                else if (c === '"') { this.quoted = false; this.scalar(); }
+                else if (byte === 92) this.escaped = true;
+                else if (byte === 34) { this.quoted = false; this.scalar(); }
                 continue;
             }
-            if (this.primitive && !/[\s,}\]]/.test(c)) {
-                this.token += c;
+            const space = byte === 32 || byte === 10 || byte === 13 || byte === 9;
+            if (this.primitive && !(space || byte === 44 || byte === 125 || byte === 93)) {
+                this.token += String.fromCharCode(byte);
                 if (this.token.length > 128) this.invalid = true;
                 continue;
             }
             if (this.primitive) this.scalar();
-            if (/\s/.test(c)) continue;
+            if (space) continue;
+            const c = String.fromCharCode(byte);
             const f = this.stack.at(-1);
             if (c === '"') {
                 this.quoted = true; this.capture = f?.phase === "key" ? !!f.fields : this.selection() === true;
