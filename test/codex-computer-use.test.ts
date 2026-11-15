@@ -61,6 +61,11 @@ describe("computerUseAsk", () => {
         expect(neverOfferedApp({ name: "Term", bundleId: "com.apple.Terminal" })).toBe("terminal");
         expect(neverOfferedApp({ name: "1Password" })).toBe("credentials");
         expect(neverOfferedApp({ name: "Safari", bundleId: "com.apple.Safari" })).toBeUndefined();
+        // Named otherwise than by a bundle id, and shown by another name: what it was named by counts too.
+        expect(computerUseAsk(appAsk({ tool_params: { app: "Terminal" }, tool_params_display: [{ name: "app", display_name: "App", value: "Notes" }] }))).toMatchObject({ name: "Notes", target: "Terminal" });
+        expect(neverOfferedApp({ name: "Notes", target: "Terminal" })).toBe("terminal");
+        expect(neverOfferedApp({ name: "Notes", target: "/System/Applications/Utilities/Terminal.app" })).toBe("terminal");
+        expect(neverOfferedApp({ name: "Notes", target: "Notes" })).toBeUndefined();
     });
 });
 

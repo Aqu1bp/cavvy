@@ -79,7 +79,7 @@ const APP_QUESTION = /^Allow (?:ChatGPT|Computer Use|Codex) to use "?(.+?)"?\?$/
 /** What Codex's computer use asks the person through an MCP elicitation. */
 export type ComputerUseAsk =
     /** Using one of the Mac's apps. `persist`: what Codex can keep a yes for besides this once. */
-    | { kind: "app"; name: string; bundleId?: string; persist: ("session" | "always")[]; callId?: string }
+    | { kind: "app"; name: string; bundleId?: string; /** What it named the app by, when that's not a bundle id (a name, a path). */ target?: string; persist: ("session" | "always")[]; callId?: string }
     /** Recording the Mac's audio: never offered (Cavvy doesn't start it with audio). */
     | { kind: "audio" }
     /** A link to open (to set it up): cancelled, as a decline would be kept as a refusal. */
@@ -113,14 +113,15 @@ export function computerUseAsk(p: any): ComputerUseAsk | undefined {
     if (!name || (!id && !asked)) return { kind: "unknown", question: (message || "Codex's computer use asks for approval").slice(0, 200) };
     const persist = (Array.isArray(meta.persist) ? meta.persist : []).filter((x: unknown): x is "session" | "always" => x === "session" || x === "always");
     const callId = typeof meta.tool_call_id === "string" && meta.tool_call_id ? meta.tool_call_id : undefined;
-    return { kind: "app", name, ...(id && looksLikeBundleId(id) ? { bundleId: id } : {}), persist, ...(callId ? { callId } : {}) };
+    const raw = typeof params.app === "string" && params.app.trim() ? params.app.trim() : undefined;
+    return { kind: "app", name, ...(id && looksLikeBundleId(id) ? { bundleId: id } : raw ? { target: raw } : {}), persist, ...(callId ? { callId } : {}) };
 }
 
 const looksLikeBundleId = (s: string) => /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+){2,}$/.test(s);
 
-/** Why an app Codex asks for is never offered, if it is. */
-export function neverOfferedApp(ask: { name: string; bundleId?: string }): NeverReason | undefined {
-    return neverOffered({ name: ask.name, bundleId: ask.bundleId });
+/** Why an app Codex asks for is never offered, if it is: by its bundle id, the name it's shown by, or what else it was named by. */
+export function neverOfferedApp(ask: { name: string; bundleId?: string; target?: string }): NeverReason | undefined {
+    return neverOffered({ name: ask.name, bundleId: ask.bundleId }) ?? (ask.target ? neverOffered({ name: ask.target }) : undefined);
 }
 
 /** The app a computer-use call used, by bundle id, as its result says (`codex/toolSurface`, kind computerUse). */
