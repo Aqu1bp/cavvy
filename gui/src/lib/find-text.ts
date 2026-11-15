@@ -2,7 +2,6 @@
 // appears in it. No page needed: the window counts the turns it has, the server those it hasn't sent
 // (src/server/find.ts), and both count the same way.
 
-import { decodeHTML } from "entities";
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "./cards";
 import { planTitle } from "./plan-chat";
@@ -32,7 +31,33 @@ const shownText = new Map<string, string>();
  * HTML in a reply is shown as text (escaped), so there's nothing else to parse.
  */
 export function htmlText(html: string): string {
-    return decodeHTML(html.replace(/<[^>]*>/g, ""));
+    return decodeEntities(html.replace(/<[^>]*>/g, ""));
+}
+
+/**
+ * Character references as a page reads them. In a window, by its own parser (a textarea's text is parsed for them and
+ * nothing else); on the server, by the same table (setEntityDecoder: entity-decoder.ts), which the window's bundle
+ * needn't carry (47 KB). Without either (a test without a page), the references the renderer itself writes.
+ */
+let decoder: ((s: string) => string) | undefined;
+/** (Read through globalThis: the server's own type check has no page.) */
+type Area = { innerHTML: string; value: string };
+let area: Area | undefined;
+
+export function setEntityDecoder(decode: (s: string) => string) {
+    decoder = decode;
+}
+
+function decodeEntities(s: string): string {
+    if (!s.includes("&")) return s;
+    if (decoder) return decoder(s);
+    const page = (globalThis as { document?: { createElement?: (tag: "textarea") => Area } }).document;
+    if (typeof page?.createElement === "function") {
+        area ??= page.createElement("textarea");
+        area.innerHTML = s;
+        return area.value;
+    }
+    return s.replace(/&(lt|gt|quot|#39|amp);/g, (_, e: string) => ({ lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" })[e]!);
 }
 
 /** Markdown as it reads on the page: rendered the way the transcript renders it, then its text. */

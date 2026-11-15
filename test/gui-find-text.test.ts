@@ -6,7 +6,11 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderMarkdown } from "../gui/src/lib/markdown";
-import { htmlText } from "../gui/src/lib/find-text";
+import { htmlText, setEntityDecoder } from "../gui/src/lib/find-text";
+import { decodeHTML } from "../gui/src/lib/entity-decoder";
+
+// As the server reads them (src/server/find.ts): the window reads them with its own parser, the page itself.
+setEntityDecoder(decodeHTML);
 import { STREAM_DEMO, longMarkdown } from "../scripts/mock-llm";
 
 const chrome = [process.env.CAVVY_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome", "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome"].find((p) => p && existsSync(p));
@@ -52,6 +56,9 @@ test.skipIf(!chrome)("the text Find counts is the text a browser shows for the s
         expect(shown).toHaveLength(html.length);
         const differ = html.map((h, i) => ({ html: h, ours: htmlText(h), browser: shown[i] })).filter((x) => x.ours !== x.browser);
         expect(differ.slice(0, 3)).toEqual([]);
+        // In a window, read by its own parser instead (find-text.ts decodeEntities): tags out as htmlText takes them, then a textarea's.
+        const windowed = (await call("Runtime.evaluate", { expression: `${JSON.stringify(html)}.map((h) => { const a = document.createElement("textarea"); a.innerHTML = h.replace(/<[^>]*>/g, ""); return a.value; })`, returnByValue: true }, sessionId)).result.value as string[];
+        expect(html.map((h, i) => ({ html: h, window: windowed[i], browser: shown[i] })).filter((x) => x.window !== x.browser).slice(0, 3)).toEqual([]);
         ws.close();
     } finally {
         browser.kill();

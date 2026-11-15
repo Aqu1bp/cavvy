@@ -3,10 +3,14 @@
 // are, by the window's own code (gui/src/lib/find-text.ts: the text each part shows, as the page shows it), so the
 // count is the one the window would make, and only the matches go to it.
 
-import { foldedParts, matchesIn, MAX_MATCHES } from "../../gui/src/lib/find-text";
+import { foldedParts, matchesIn, MAX_MATCHES, setEntityDecoder } from "../../gui/src/lib/find-text";
+import { decodeHTML } from "../../gui/src/lib/entity-decoder";
 import type { SessionFindMatch, Turn } from "./protocol";
 
 export { MAX_MATCHES };
+
+// No page here to read character references: the table a page reads them by.
+setEntityDecoder(decodeHTML);
 
 /**
  * Each turn's parts as Find searches them, kept with what they were worked out from: a long session has thousands of
