@@ -893,6 +893,11 @@ export class Runtime {
      * each is, it's here built, as it was. (Meanwhile trimBuilt left them be: it let go of them all at once as a new
      * turn came, the model's notice as a Claude Code session of 100,000 items opened, and held the server 1.1 s.)
      */
+    /** A turn of its store couldn't be read (TurnStore.get): it's built from its logs next time it's opened. */
+    get storeDamaged(): boolean {
+        return Boolean(this.store?.damaged);
+    }
+
     private storeOlderSoon(store: TurnStore) {
         // Another one before it (a rewind's turns put in afresh): its file let go of.
         if (this.store && this.store !== store) this.store.close();

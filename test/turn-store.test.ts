@@ -411,9 +411,9 @@ test("a session whose store is damaged opens anyway, built from its logs", async
     await close(t.id);
 }, 120_000);
 
-// One of its earlier turns damaged (read only as it's asked for: scrolled up to, found): that open can't show it, but
-// the store isn't indexed again over it as the session closes, so the next open is built from the logs.
-test("a session whose store has an earlier turn damaged opens whole the next time", async () => {
+// One of its earlier turns damaged (read only as it's sent: an open sends a session whole here): found as it's sent, the
+// session is let go of and opened again from its logs, at once; its store isn't indexed again over the damage either.
+test("a session whose store has an earlier turn damaged opens whole", async () => {
     const cwd = join(tempDir("cavvy-turn-store-damaged-early-"), "project");
     mkdirSync(cwd, { recursive: true });
     const t = writeThread({ cwd, items: 1500, kind: "native", seed: 6 });
@@ -424,7 +424,7 @@ test("a session whose store has an earlier turn damaged opens whole the next tim
     const fd = openSync(data, "r+");
     writeSync(fd, Buffer.alloc(64), 0, 64, 0);
     closeSync(fd);
-    await everything(t.id).catch(() => undefined);
+    expect(canon(await everything(t.id))).toEqual(canon(whole));
     await close(t.id);
     expect(canon(await everything(t.id))).toEqual(canon(whole));
     await close(t.id);

@@ -2663,7 +2663,21 @@ export class Engine {
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
                 if (resumed) return resumed;
                 // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
-                return await rt.snapshotSoon(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined, p.fold === true);
+                const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
+                const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                try {
+                    return await rt.snapshotSoon(last, budget, p.fold === true);
+                } catch (e) {
+                    // A turn of its store turned out damaged as it was sent (TurnStore.get): when no other window has it,
+                    // it's let go of and opened again, built from its logs (its store isn't read or indexed again).
+                    if (!rt.storeDamaged || this.runtimes.get(id) !== rt || [...this.clients].some((c) => c !== client && c.subs.has(id))) throw e;
+                    client.subs.delete(id);
+                    await this.unload(rt);
+                    const again = this.openSession(id);
+                    this.watch(client, again.id);
+                    await again.ready.catch(() => undefined);
+                    return await again.snapshotSoon(last, budget, p.fold === true);
+                }
             }
             case "session.turns": {
                 const rt = this.runtimes.get(str(p.id, "id"));
