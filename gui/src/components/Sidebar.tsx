@@ -8,7 +8,7 @@
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
@@ -999,7 +999,12 @@ export function Sidebar() {
                 onDragStart={dragRow}
                 onDragEnd={() => setDraggedSession(undefined)}
                 onPointerEnter={() => setHovered(true)}
-                onPointerLeave={() => setHovered(false)}>
+                onPointerLeave={() => setHovered(false)}
+                // Another machine's session: connected to as the pointer comes to it (warmFor), not as it's clicked.
+                onPointerOver={(e) => {
+                    const id = (e.target as HTMLElement | null)?.closest?.("[data-session-id]")?.getAttribute("data-session-id");
+                    if (id) warmFor(id);
+                }}>
                 <For each={keys()}>{(key) => {
                     const entry = () => entriesByKey().get(key)!;
                     // A held row keeps its component (and menu/rename) through status changes.

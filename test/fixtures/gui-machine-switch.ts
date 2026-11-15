@@ -53,7 +53,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, handleFor, upsertSession, modelsFor, rpcFor } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, handleFor, upsertSession, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -71,6 +71,11 @@ try {
     let lost: string[] = [];
     const watch = setInterval(() => { for (const id of before) if (!rows().has(id)) lost.push(id); }, 0);
 
+    // The pointer on its row: box is connected to then, nothing opened yet; the click has only the session to open.
+    warmFor("b1");
+    await settle();
+    assert.ok(Socket.instances.some((x) => (x as ServerSocket).url.includes("box") && x.readyState === 1), "connected to box as the pointer came to its row");
+    assert.equal(opened.filter((o) => o.id === "b1").length, 0, "nothing opened on the way");
     await activate("b1");
     await settle();
     clearInterval(watch);

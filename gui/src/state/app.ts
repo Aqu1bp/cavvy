@@ -49,6 +49,19 @@ rpc.route = (method, params) => {
     const link = id !== undefined ? away.get(id) : undefined;
     return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
 };
+/** The last row the pointer came to (warmFor): coming to it again asks nothing more. */
+let warmed: string | undefined;
+/**
+ * The pointer is on a session's row: one of another machine's, its machine is connected to now, so a click opens it
+ * without waiting for that too (an address and a sign-in, then the connection: rounds trips before its own).
+ */
+export function warmFor(id: string) {
+    if (id === warmed || away.has(id)) return;
+    warmed = id;
+    const at = app.sessions.find((s) => s.id === id);
+    if (at && at.machine !== machine) void linkFor(at.machine).catch(() => undefined);
+}
+
 /** The connection to ask about `sessionId` over what isn't named by it (the files in its folder: fs.mentions). */
 export function rpcFor(sessionId: string | undefined): Rpc {
     return (sessionId !== undefined && away.get(sessionId)) || rpc;
