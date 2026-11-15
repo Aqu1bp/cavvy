@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
@@ -62,6 +62,11 @@ function fadeOut(el: HTMLElement, scrolled: Map<Element, number>) {
 export function Popover(p: PopoverProps) {
     const [pos, setPos] = createSignal<PopoverPlace>();
     let el: HTMLDivElement | undefined;
+    // `open` read once, here, where it's owned. A prop like `open={a() && b()}` is compiled to a getter that makes a memo
+    // each time it's read: read from the page's listeners below (every pointerdown, key and resize), outside anything
+    // that owns it, each was never let go of, and kept the component that passed it (the composer, its conversation
+    // with it) alive after it was gone: 2.3 MB and 13,000 nodes a session switch.
+    const open = createMemo(() => Boolean(p.open));
 
     const place = () => {
         const a = p.anchor();
@@ -76,35 +81,35 @@ export function Popover(p: PopoverProps) {
 
     // Placed as it opens, and again when it asks for another width (the model picker's two views differ).
     createEffect(() => {
-        if (!p.open) return;
+        if (!open()) return;
         void p.width;
         requestAnimationFrame(place);
     });
 
     createEffect(() => {
-        if (p.open && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
+        if (open() && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
     });
 
     // Settings hides what it covers without unmounting it (App.tsx): a menu there closes as Settings opens, as it did
     // when that went, and one opened while it's covered (a shortcut, say) closes at once.
     createEffect(() => {
-        if (settingsTab() && p.open && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
+        if (settingsTab() && open() && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
     });
 
     onMount(() => {
         const onDown = (e: PointerEvent) => {
-            if (!p.open) return;
+            if (!open()) return;
             const t = e.target as Node;
             if (el?.contains(t) || p.anchor()?.contains(t)) return;
             p.onClose();
         };
         const onKey = (e: KeyboardEvent) => {
-            if (p.open && !p.behavior && e.key === "Escape") {
+            if (open() && !p.behavior && e.key === "Escape") {
                 e.stopPropagation();
                 p.onClose();
             }
         };
-        const onResize = () => p.open && place();
+        const onResize = () => open() && place();
         document.addEventListener("pointerdown", onDown, true);
         document.addEventListener("keydown", onKey, true);
         window.addEventListener("resize", onResize);
@@ -120,7 +125,7 @@ export function Popover(p: PopoverProps) {
     const onScroll = (e: Event) => scrolled.set(e.target as Element, (e.target as Element).scrollTop);
 
     return (
-        <Show when={p.open}>
+        <Show when={open()}>
             {(() => {
                 if (p.exit) {
                     scrolled.clear();

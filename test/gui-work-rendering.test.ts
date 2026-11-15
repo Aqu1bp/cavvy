@@ -10,6 +10,7 @@ class Box {
     parentElement?: Box;
     attributes = new Set<string>();
     style = { containIntrinsicBlockSize: "" };
+    dataset: Record<string, string> = {};
     top = -300;
     height = 31;
     natural = 31;
@@ -224,4 +225,33 @@ test("a row skipped from here ends what it was still bringing in; what goes on f
     expect(spin.finished).toBe(false);
     expect(elsewhere.finished).toBe(false);
     f.dispose();
+});
+
+// Switched back to, a session's rows are skipped at once at the sizes they were, not all laid out before its first
+// frame (one ending in a 60 KB reply laid that reply out whole, every switch: 30 ms of layout of a 70-100 ms frame).
+test("a session's rows shown again are skipped at once at the sizes they were; another session's aren't", () => {
+    const shown = (session: string) => {
+        (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
+        (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
+        (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
+        const root = new Box(); root.top = 0;
+        const content = new Box(); root.append(content);
+        const turn = new Box(); turn.setAttribute("data-turn"); turn.dataset.turn = "t1"; content.append(turn);
+        const rows = Array.from({ length: 80 }, () => new Box(true)); rows.forEach((row) => turn.append(row));
+        const dispose = observeWorkRendering(root as any, content as any, () => {}, () => true, session);
+        return { rows, dispose };
+    };
+    const first = shown("s1");
+    first.rows.forEach((row, i) => ro.emit([{ target: row, contentRect: { height: 40 + i } }]));
+    first.dispose();
+    const again = shown("s1");
+    expect(again.rows.every((row) => row.hasAttribute("data-work-far"))).toBe(true);
+    expect(again.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.rows.map((_, i) => `auto ${40 + i}px`));
+    // One in view comes near as it's seen: drawn as it is.
+    io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
+    again.dispose();
+    const other = shown("s2");
+    expect(other.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
+    other.dispose();
 });

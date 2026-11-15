@@ -563,7 +563,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE));
+        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE, id));
         const ro = new ResizeObserver(() => {
             // Laid out just now, so this reads nothing new: where the column starts, for a slide that begins from here.
             columnLeft = content!.offsetLeft;
@@ -679,8 +679,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         stopGlide();
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
+        // Where the last scroll left it (lastTop), not read from the page: by now the next session is in it, and reading
+        // a scroll position lays that out there and then (43 ms of a switch to one ending in a 60 KB reply, headless).
         transcriptPositions.set(id, keyed(turns(), {
-            bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
+            bottom: stick(), top: (ready ? lastTop : saved?.top) ?? 0,
             anchor: reading, openWork: [...openWork],
         }));
     });

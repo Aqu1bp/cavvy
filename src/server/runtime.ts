@@ -1106,7 +1106,7 @@ export class Runtime {
     }
 
     /** What's changed put in the store, and its index written with the logs as they are now: as the session is let go of. */
-    private async saveTurns() {
+    private async saveTurns(logs?: ReturnType<TurnStore["stamps"]>) {
         // Not all of them here yet (buildEarlier): none stored, and it's built from its logs next time.
         if (this.earlierBuilt) return;
         const all = this.view.turns;
@@ -1138,7 +1138,7 @@ export class Runtime {
             // Mostly versions since replaced: without them.
             const moved = await this.store.compact([...heads, ...agents]);
             if (moved) for (const x of [...heads, ...agents]) x.at = moved.get(x.at)!;
-            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState());
+            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState(), logs);
         } catch {
             // Not kept: it's built from the logs next time, as before there was a store.
             this.store.forget();
@@ -5402,8 +5402,10 @@ export class Runtime {
             this.ui.close();
             this.session.release();
             // Its turns, for the next time it's opened (turn-store.ts): written once nothing more is (letting the
-            // session go may note when it last worked).
-            await this.saveTurns();
+            // session go may note when it last worked). The logs as they are now, before another process can take
+            // the session up: its index isn't written if they've changed by then.
+            const logs = (this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path])).stamps();
+            await this.saveTurns(logs);
         }
     }
 }

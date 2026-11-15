@@ -430,6 +430,30 @@ test("a session whose store has an earlier turn damaged opens whole", async () =
     await close(t.id);
 }, 120_000);
 
+// Still at work (a command running in it) as it's opened again with a damaged turn among those sent: it isn't let go of
+// to be built again (that would stop the command); the open fails as it did, and its work goes on.
+test("a session at work isn't let go of to rebuild a damaged store", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-damaged-busy-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 8 });
+    await everything(t.id);
+    await close(t.id);
+    const data = storeOf(findSessionAnywhere(t.id)!, t.id).replace(/\.json$/, ".jsonl");
+    const fd = openSync(data, "r+");
+    writeSync(fd, Buffer.alloc(64), 0, 64, 0);
+    closeSync(fd);
+    await open(t.id, { last: 1 });
+    await call("session.send", { id: t.id, text: "!sleep 3; echo still-working" });
+    await until(t.id, (v) => v.state.busy === true);
+    await close(t.id);
+    await open(t.id).catch(() => undefined);
+    await open(t.id, { last: 1 });
+    expect(views.get(t.id)!.state.busy).toBe(true);
+    await until(t.id, (v) => !v.state.busy);
+    expect(JSON.stringify(views.get(t.id)!.turns.at(-1))).toContain("still-working");
+    await close(t.id);
+}, 120_000);
+
 test("a rewind builds only the turns since the last compaction again, and they're what building all of them makes", async () => {
     const cwd = join(tempDir("cavvy-turn-store-rewind-"), "project");
     mkdirSync(cwd, { recursive: true });

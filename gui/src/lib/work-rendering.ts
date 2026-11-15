@@ -24,10 +24,20 @@ const sizes = (to: Callbacks): ResizeObserverCallback => (entries, observer) => 
 const mutations = (to: Callbacks): MutationCallback => (entries, observer) => to.mutations?.(entries, observer);
 
 /**
- * `shift`: compensate height changes above the reader when skipped rows become visible again. `parkFar`: whether rows of
- * turns far from the view are let go of (below).
+ * The rows' sizes of the conversations shown lately, by session: put in again (switched back to), each row is skipped at
+ * once at the size it was, rather than all of them laid out before the first frame (a session ending in a 60 KB reply:
+ * that reply whole, every switch). Its own turn and place in it say which row is which.
  */
-export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true) {
+const remembered = new Map<string, Map<string, number>>();
+const REMEMBERED = 8;
+const turnOf = (el: HTMLElement) => el.closest<HTMLElement>("[data-turn]")?.dataset.turn;
+
+/**
+ * `shift`: compensate height changes above the reader when skipped rows become visible again. `parkFar`: whether rows of
+ * turns far from the view are let go of (below). `session`: whose conversation it is, so its rows' sizes are kept for
+ * the next time it's shown.
+ */
+export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true, session?: string) {
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
     const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
@@ -176,6 +186,25 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         }
     };
     collect(content);
+    // Shown before: its rows skipped at the sizes they were, before anything's laid out (those in view are drawn
+    // anyway, and taken as near as soon as they're seen).
+    const sizesWere = session !== undefined ? remembered.get(session) : undefined;
+    if (sizesWere && rows.size >= MIN_ROWS) {
+        const nth = new Map<string, number>();
+        for (const [el, row] of rows) {
+            const turn = turnOf(el);
+            if (turn === undefined) continue;
+            const i = nth.get(turn) ?? 0;
+            nth.set(turn, i + 1);
+            const h = sizesWere.get(`${turn}:${i}`);
+            if (h === undefined || h <= 0) continue;
+            row.height = h;
+            row.near = false;
+            el.style.containIntrinsicBlockSize = `auto ${h}px`;
+            el.setAttribute(TRACKED, "sized");
+            el.setAttribute(FAR, "");
+        }
+    }
     start();
     sync();
     const mo = new MutationObserver(mutations(to));
@@ -185,6 +214,22 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         ro?.disconnect();
         mo.disconnect();
         to.intersections = to.sizes = to.mutations = undefined;
+        // Its rows' sizes, for the next time it's shown (in their order in each turn, as they're found then).
+        if (session !== undefined) {
+            const sizes = new Map<string, number>();
+            const nth = new Map<string, number>();
+            for (const el of content.querySelectorAll<HTMLElement>(`[${TRACKED}]`)) {
+                const turn = turnOf(el);
+                if (turn === undefined || !rows.has(el)) continue;
+                const i = nth.get(turn) ?? 0;
+                nth.set(turn, i + 1);
+                const h = rows.get(el)!.height;
+                if (h !== undefined && h > 0) sizes.set(`${turn}:${i}`, h);
+            }
+            remembered.delete(session);
+            if (sizes.size) remembered.set(session, sizes);
+            while (remembered.size > REMEMBERED) remembered.delete(remembered.keys().next().value!);
+        }
         for (const el of rows.keys()) remove(el);
     };
 }

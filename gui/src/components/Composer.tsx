@@ -706,13 +706,18 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
     // The model (with its effort) and the permission mode, in the card's bar; and the context.
+    // Worked out once, here: a prop like `open={a() && b()}` makes a memo each time it's read, and the pickers read it
+    // from their listeners too (a click, the page's pointerdown), where nothing owns it: each was kept for good, and with
+    // it this composer and its conversation (ui/Popover.tsx).
+    const modelOpen = createMemo(() => modelPickerOpen() && pane.focused());
+    const modeOpen = createMemo(() => modePickerOpen() && pane.focused());
     const pickers = () => (
         <>
             <ModelPicker
-                sessionId={p.sessionId} current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen() && pane.focused()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                sessionId={p.sessionId} current={st()?.model} currentRef={app.settings.model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen() && pane.focused()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;

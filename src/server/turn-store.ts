@@ -8,8 +8,8 @@
 // Written as the session is closed: a session opened again with its logs unchanged since opens from it. One whose
 // logs changed (a crash after the store was written, the session written to elsewhere) doesn't: it's built again.
 
-import { closeSync, existsSync, fstatSync, fsync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
-import { dirname, join } from "path";
+import { closeSync, existsSync, fstatSync, fsync, readdirSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { basename, dirname, join } from "path";
 import type { UiLight } from "./history";
 import type { AgentRun, Turn } from "./protocol";
 
@@ -104,6 +104,7 @@ export class TurnStore {
 
     /** What it was when written, if its logs are still as they were then (else nothing: the turns are built again). */
     read(): { heads: { head: TurnHead; at: number; len: number }[]; agents: StoredAgent[]; ids: number; ui: UiLight } | undefined {
+        this.dropLeftovers();
         let index: Index;
         try {
             index = JSON.parse(readFileSync(this.indexFile, "utf-8")) as Index;
@@ -194,6 +195,22 @@ export class TurnStore {
         return moved;
     }
 
+    /** A rewrite (compact) another process didn't finish (it was stopped mid-way): its copy let go of. */
+    private dropLeftovers() {
+        const dir = dirname(this.file);
+        const name = `${basename(this.file)}.`;
+        let files: string[];
+        try {
+            files = readdirSync(dir);
+        } catch {
+            return;
+        }
+        for (const f of files) {
+            if (!f.startsWith(name) || !f.endsWith(".tmp") || f === `${name}${process.pid}.tmp`) continue;
+            rmSync(join(dir, f), { force: true });
+        }
+    }
+
     /** Starts the store afresh (the turns were built again: nothing in it is theirs). */
     clear() {
         this.close();
@@ -205,9 +222,20 @@ export class TurnStore {
      * Writes the index: each turn's head and place (in order), the sub-agents, and the logs as they are now. Written
      * last, and whole (a new file put in place): a store without it, or with one from before, isn't read.
      */
-    async writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight) {
+    /** The logs as they are now (taken as the session is let go of: writeIndex checks they're still so). */
+    stamps(): LogStamp[] {
+        return this.logs.map(stamp);
+    }
+
+    /**
+     * `as`: the logs as they were when the turns were taken (stamps()). Written to since (another process took the
+     * session up meanwhile): no index, as it would vouch for turns that lack what was written.
+     */
+    async writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight, as?: LogStamp[]) {
         if (this.damaged) return;
-        const index: Index = { v: VERSION, logs: this.logs.map(stamp), ids, turns, agents, ui };
+        const logs = this.logs.map(stamp);
+        if (as && logs.some((l, i) => l.size !== as[i]?.size || l.tail !== as[i]?.tail || l.ino !== as[i]?.ino)) return;
+        const index: Index = { v: VERSION, logs, ids, turns, agents, ui };
         // On the disk before the index that points into it is (a power cut leaves no index over turns that aren't).
         // Off the server's thread: 30-44 ms for a 30,000-item session's store, at its close (Linux).
         if (this.fd !== undefined) await synced(this.fd);
