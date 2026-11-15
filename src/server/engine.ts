@@ -2667,7 +2667,7 @@ export class Engine {
             case "session.find": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
-                return { matches: rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined) };
+                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined) };
             }
             case "session.agent": {
                 const rt = this.runtimes.get(str(p.id, "id"));

@@ -35,21 +35,45 @@ function partsOf(t: Turn, whole: (t: Turn) => Turn = (x) => x, stamped?: (t: Tur
     return parts;
 }
 
+/** How long Find works before it lets the server get on with the rest (other sessions streaming, the windows' calls). */
+const SLICE_MS = 8;
+
 /**
  * Where `query` appears in `turns` before the one with id `before` (all of them without it), in order, at most
  * MAX_MATCHES. An empty query finds nothing, but works out what's searched: Find asks it as it opens, so the first
  * words typed don't wait for every reply of a long session to be rendered (0.6-1.1 s for 100,000 items; 34-64 ms after).
+ *
+ * A slice at a time, never holding the server longer than SLICE_MS: worked out at once, a 100,000-item session held
+ * it 2.3 s (an M5), and every other session's replies with it. Undefined once `stale` says another query took its
+ * place (the window counts only the latest).
  */
-export function findBefore(turns: readonly Turn[], query: string, before?: string, whole?: (t: Turn) => Turn, stamped?: (t: Turn) => string | undefined): SessionFindMatch[] {
+export async function findBefore(
+    turns: readonly Turn[],
+    query: string,
+    o: { before?: string; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean } = {},
+): Promise<SessionFindMatch[] | undefined> {
     // `whole`: a turn kept as its head, whole (the session's store has its blocks); `stamped`: what it is, for it.
-    const parts = (t: Turn) => partsOf(t, whole, stamped);
-    const end = before === undefined ? turns.length : turns.findIndex((t) => t.id === before);
+    const parts = (t: Turn) => partsOf(t, o.whole, o.stamped);
+    const end = o.before === undefined ? turns.length : turns.findIndex((t) => t.id === o.before);
     if (end < 0) return [];
+    // As they are now: turns that come in meanwhile are the window's to count.
     const scope = turns.slice(0, end);
-    if (!query) {
-        for (const t of scope) parts(t);
-        return [];
+    const out: SessionFindMatch[] = [];
+    let since = performance.now();
+    for (const t of scope) {
+        if (performance.now() - since > SLICE_MS) {
+            await new Promise((r) => setImmediate(r));
+            if (o.stale?.()) return undefined;
+            since = performance.now();
+        }
+        if (!query) {
+            parts(t);
+            continue;
+        }
+        for (const m of matchesIn([t], parts, query)) {
+            out.push(t.pos ? { ...m, pos: t.pos } : m);
+            if (out.length >= MAX_MATCHES) return out;
+        }
     }
-    const pos = new Map(scope.map((t) => [t.id, t.pos]));
-    return matchesIn(scope, parts, query).map((m) => ({ ...m, ...(pos.get(m.turnId) ? { pos: pos.get(m.turnId)! } : {}) }));
+    return out;
 }

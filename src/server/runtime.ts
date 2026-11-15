@@ -391,6 +391,8 @@ export class Runtime {
     private agentAt = new WeakMap<AgentRun, { at: number; len: number }>();
     private agentHeads = new WeakSet<AgentRun>();
     private agentChanged = new WeakSet<AgentRun>();
+    /** Find calls so far (find): an earlier one still working stops. */
+    private finding = 0;
     /** Notices shown and not kept (notice()): building the turns again leaves them out, and so does the store. */
     private liveOnly = new Set<string>();
     /** Compactions so far: the transcript segment new prompts belong to. */
@@ -1236,9 +1238,17 @@ export class Runtime {
     }
 
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
-    find(query: string, before?: string): SessionFindMatch[] {
+    async find(query: string, before?: string): Promise<SessionFindMatch[]> {
         this.flush();
-        return findBefore(this.view.turns, query, before, (t) => this.whole(t), (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined));
+        // The latest asked: one asked before it stops (the window counts only the latest).
+        const asked = ++this.finding;
+        const found = await findBefore(this.view.turns, query, {
+            before,
+            whole: (t) => this.whole(t),
+            stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
+            stale: () => asked !== this.finding || this.closed,
+        });
+        return found ?? [];
     }
 
     /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
