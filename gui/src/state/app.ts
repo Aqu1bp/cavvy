@@ -588,6 +588,11 @@ export function loadAgent(h: SessionHandle, agentId: string): Promise<void> {
     return run;
 }
 
+/** The fetch of earlier turns under way for this session, if one is (one fetched ahead, say): done when it is. */
+export function earlierArriving(h: SessionHandle): Promise<boolean> {
+    return loadingEarlier.get(h.id) ?? Promise.resolve(true);
+}
+
 /**
  * The turns back to `key`'s, in one request: where the session was being read, opened again with fewer turns than that
  * (new ones pushed it out). Undefined, with nothing asked, when it's here already or would be here if it still were.

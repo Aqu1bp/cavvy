@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -684,7 +684,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (hiddenHere() < PAGE && p.handle.view.earlier) {
             if (loadingEarlier()) return;
             setLoadingEarlier(true);
-            const ok = await loadEarlier(p.handle, { count: PAGE }).finally(() => setLoadingEarlier(false));
+            // One fetched ahead may be on its way: it may be all this page needs.
+            await earlierArriving(p.handle);
+            const ok = hiddenHere() >= PAGE || !p.handle.view.earlier || (await loadEarlier(p.handle, { count: PAGE }));
+            setLoadingEarlier(false);
             if (!ok && p.handle.view.earlier) return void toast("Couldn't load earlier turns.");
         }
         reading = capture();
@@ -693,6 +696,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         setShown((n) => Math.max(n, target) + PAGE);
         // Solid has inserted the page synchronously; compensate before paint.
         restore();
+        // The next page fetched now, above what's drawn (nothing on screen moves): the next "Show earlier" has it.
+        if (hiddenHere() < PAGE && p.handle.view.earlier && !loadingEarlier()) void loadEarlier(p.handle, { count: PAGE });
     };
     const toggleWork = (el: HTMLElement, toggle: () => void) => {
         const top = el.getBoundingClientRect().top;
@@ -817,6 +822,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (!stick()) {
             if (!moved) restore();
             reading = capture();
+            // Read up toward the top of what's here: the next page is fetched now, above what's drawn, so "Show
+            // earlier" has it when it's reached. Only for a reader who goes up there: nothing more is fetched otherwise.
+            if (top < scroller.clientHeight * 1.5 && hiddenHere() < PAGE && p.handle.view.earlier && !loadingEarlier()) void loadEarlier(p.handle, { count: PAGE });
         }
         // Growth above seen here lands here, before it's drawn.
         else if (grewAbove() && !smoothScroll) toBottom();
