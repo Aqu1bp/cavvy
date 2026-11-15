@@ -504,12 +504,48 @@ type Listed = { id: string; file: string; size: number; mtimeMs: number; ino: nu
 
 /** The session files as last listed: the same list again while none has changed (lastScan holds to it). */
 let listing: Listed[] | undefined;
+/** When the files were last listed whole, and each project folder's mtime then (a file put in or taken out changes it). */
+let listedAt = -Infinity;
+let folders: Map<string, number> | undefined;
+/**
+ * Typed into, a search a keystroke: within this of the last whole listing, only the newest RECENT files are looked at
+ * again (what's being written to is among them), not each one of thousands (10,000 sessions: 23 of a search's 26 ms).
+ * One older than those, written to meanwhile by another process, is seen at the next whole listing.
+ */
+const LIST_FRESH_MS = 1000;
+const RECENT = 64;
+
+function foldersAsListed(): boolean {
+    if (!folders) return false;
+    try {
+        const root = paths.projectsDir();
+        const dirs = readdirSync(root);
+        if (dirs.length !== folders.size) return false;
+        for (const d of dirs) if (plainStat(join(root, d))?.mtimeMs !== folders.get(d)) return false;
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /** The session files, newest first. The list from before when every one is as it was then. */
 async function sessionFiles(ctl: Control): Promise<Listed[] | undefined> {
+    const was = listing;
+    if (was && performance.now() - listedAt < LIST_FRESH_MS && foldersAsListed()) {
+        let changed = false;
+        const head = was.slice(0, RECENT).map((f) => {
+            const st = plainStat(f.file);
+            if (st && st.size === f.size && st.mtimeMs === f.mtimeMs && st.ino === f.ino) return f;
+            changed = true;
+            return st?.isFile() ? { ...f, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino } : undefined;
+        });
+        if (!changed) return was;
+        listing = [...head.filter((f): f is Listed => f !== undefined), ...was.slice(RECENT)].sort((x, y) => y.mtimeMs - x.mtimeMs);
+        return listing;
+    }
     const files = await listSessionFiles(ctl);
     if (!files) return undefined;
-    const was = listing;
+    listedAt = performance.now();
     if (was && was.length === files.length && files.every((f, i) => f.file === was[i]!.file && f.size === was[i]!.size && f.mtimeMs === was[i]!.mtimeMs && f.ino === was[i]!.ino)) return was;
     listing = files;
     return files;
@@ -525,12 +561,15 @@ async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
         return out;
     }
     let seen = 0;
+    const stamps = new Map<string, number>();
     for (const d of dirs) {
         if (!(await ctl.tick())) return undefined;
         const dir = join(root, d);
         let names: string[];
         try {
-            if (!plainStat(dir)?.isDirectory()) continue;
+            const st = plainStat(dir);
+            if (st) stamps.set(d, st.mtimeMs);
+            if (!st?.isDirectory()) continue;
             names = readdirSync(dir);
         } catch {
             continue;
@@ -550,7 +589,9 @@ async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
     }
     out.sort((x, y) => y.mtimeMs - x.mtimeMs);
     // The budget may have run out while listing: then nothing after it counts as whole.
-    return (await ctl.tick()) ? out : undefined;
+    if (!(await ctl.tick())) return undefined;
+    folders = stamps;
+    return out;
 }
 
 /**

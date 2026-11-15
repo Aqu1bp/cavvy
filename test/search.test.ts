@@ -72,6 +72,19 @@ describe("searching session files", () => {
         expect((await searchSessions("zephyr")).hits.map((h) => h.id)).toEqual([a.id]);
     });
 
+    // Typed into, searches don't look at each of thousands of files again at every keystroke (search.ts LIST_FRESH_MS):
+    // what's new or being written to is still found at once.
+    test("a session made, or written to, just after a search is found by the next one at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-many-"), "proj");
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("quokka")).hits).toEqual([]);
+        const made = write([prompt("a quokka appears"), reply("ok")], { cwd });
+        expect((await searchSessions("quokka")).hits.map((h) => h.id)).toEqual([made.id]);
+        appendFileSync(made.file, JSON.stringify(prompt("and then a wombat")) + "\n");
+        expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
+    });
+
     test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
         const cwd = tempDir("cavvy-search-import-");
         const title = `Imported ${source} conversation`;
