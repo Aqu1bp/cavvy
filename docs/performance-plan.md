@@ -47,8 +47,8 @@ A session's files are append-only logs: its transcript (`~/.cavvy/projects/<proj
 - As a session with more than 20 turns is let go of, its turns and sub-agents are written to its turn store (`turns/<session>.jsonl`, with an index in `turns/<session>.json`). Opened again, it reads the index and its latest 20 turns from there; any other turn is read when it's sent. A notice shown only while the session was open (a model that isn't available, say) isn't kept, as building the turns again wouldn't show it.
 - The store is used only if both logs are byte for byte as they were when it was written. A session written to elsewhere since (a terminal, another copy of Cavvy), or one that crashed, is built from its logs again. Deleting a session moves its store to the trash with its other files.
 - What a turn is sent with leaves out what its rows don't show until they're opened. A finished turn's work comes folded: each call's name, status and summary, not its output or diff (the turn comes whole as its work is opened or found in), unless Settings → Expand tool activity is on. Its thoughts come without their text, fetched as a row is pointed at or opened. An edit's change comes once, in its diff. Finished sub-agents of turns not sent are counted, and the Agents list's Finished fold fetches them as it's shown.
-- Find works through turns the window hasn't been sent in slices of 8 ms, so other sessions keep streaming meanwhile.
-- Opened for the first time (or after its logs changed), a session's turns are sent first and stored after, 8 ms at a time.
+- Find works through turns the window hasn't been sent in slices of 8 ms, so other sessions keep streaming meanwhile. What it searches in each turn is kept for the next query and let go of 2 minutes after Find was last used: 30 MB for a 100,000-item session.
+- Opened for the first time (or after its logs changed), a session's turns are sent first and stored after, 8 ms at a time, a new turn meanwhile included.
 - A rewind builds again only the turns since the last compaction (it can't reach past one); those before stay as they are.
 - Back at the end of a session for 5 s after reading far up, with nothing coming, the window draws its first page again and keeps only those turns; scrolling up brings the rest back as "Show earlier" does.
 - A remote window's SSH tunnel is compressed: a reply's messages are mostly the same few ids each time.
@@ -60,8 +60,13 @@ Not yet:
 - Bytes on the wire per character of a reply streamed to a remote window: 1.5 through the compressed tunnel, at about Opus's pace (target 1.2). The text is 0.26 of it, flushing a message for each chunk the model sends 0.56, and the message around it 0.71 (mostly its sequence number). Fewer messages means sending text less often than every 24 ms, which made a reply feel worse. A smaller message doesn't get there: a run of appends to one block sent with only its session, sequence number and text came to 1.47, and without the sequence number (which keeps them in order) 1.27.
 - Palette search: 19-27 ms a keystroke with 10,000 sessions (Linux), most of it a stat of every session file, so that what another process just wrote is found. Watching the folders instead (inotify, on Linux) isn't enough: under load its events came after the search that needed them, so a session just written was missed.
 - Find jumping far back loads every turn between.
+- Opened for the first time, every turn is built before it's stored: at 100,000 items, 135 MB (Cavvy's own models) and 294 MB (Claude Code) in the server just after the window is sent its turns, 15 and 61 MB once they're stored, a second or so later (Linux). Storing them as they're built would put about a second of writing into that first open.
 
 `test/perf-size.test.ts` checks these at 3,000 and 30,000 items. On a Linux container, opening a 30,000-item session again: a Claude Code session in 28 ms, reading 4.7 MB and keeping 6.7 MB in the server; built from its logs, 521 ms and 58.6 MB read (and 132 MB kept, before the store). A session of one of Cavvy's own models: 43 ms and 2.9 MB kept; built, 327 ms.
+
+## Big repositories
+
+@-mention completion in a repository with a listing of 2 MB or more (about 50,000 files) is indexed and searched on up to four worker threads, each with a part of the paths, so the server's own thread never scores them. Each keeps its paths as bytes and finds a query in all of them with the engine's own search. `scripts/mention-bench.ts`, a million files on a 4-core Linux container with 3 workers: a keystroke takes 15-16 ms at the median, 41-54 ms at most ("e", "ts"), against 70-180 ms for most queries on the server's thread before. Indexing takes about a second, on the workers. Their memory is about what the index took on the server's thread: 228 MB for a million files once settled, near 400 MB for a few seconds as they index.
 
 ## Recovery
 
