@@ -64,6 +64,7 @@ mock.module("../../gui/src/state/ui", () => ({
         "setModelPickerOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax", "railOpen", "setRailOpen", "freeRail",
     ].map((name) => [name, noop])),
     shellLayout: () => ({ railMode: "dock" }),
+    splitActions: {},
 }));
 const { send } = await import("../../gui/src/state/actions");
 const textFile = "# attached notes\n";

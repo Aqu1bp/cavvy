@@ -37,3 +37,15 @@ export function component(source: string, name: string, dependencies: Record<str
 
 export const all = (n: Node): Node[] => [n, ...n.children.flatMap(all)];
 export const text = (n: Node): string => (n.text ?? "") + n.children.map(text).join("");
+
+/** App.tsx's split view (state/split.ts) with no split: for fixtures that render App with one session. */
+export const noSplit = { split: () => undefined, focusMoved: () => false, prune() {}, restoreSplit() {}, conversationLeast: () => 480 };
+
+/**
+ * Panes (components/Panes.tsx) as it stages one session: a SessionView, made by `make`, for each handle it's given,
+ * kept while the handle is the same.
+ */
+export const singlePane = (make: (tag: string) => Node = node) => (p: { single?: unknown }) => {
+    const handle = solid.createMemo(() => p.single);
+    return solid.createMemo(() => (handle() ? make("SessionView") : undefined));
+};

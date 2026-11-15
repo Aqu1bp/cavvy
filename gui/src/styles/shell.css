@@ -262,8 +262,8 @@
 /* The conversation column. Not a query container: WebKit restyles everything in one each time its size
    changes, which with a long conversation took 300ms or more (a panel opening, a window resize). Other
    areas size their parts by the steps its size is within, which App.tsx sets from lib/layout.ts:
-   `:where(.main[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
-   adds no specificity either. Its height, which `cqh` measured, is --column-h on the boxes that use it
+   `:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
+   adds no specificity either. Two sessions side by side each carry their own width's steps (components/Panes.tsx). Its height, which `cqh` measured, is --column-h on the boxes that use it
    (state/ui.ts columnHeight). */
 .main {
     grid-row: 1;
@@ -282,7 +282,8 @@
 
 /* The title bar: the top row of the conversation column, over what scrolls under it. */
 .main > .header,
-.main > .keep > .header {
+.main > .keep > .header,
+.stage-pane > .header {
     position: relative;
     z-index: 5;
     flex: none;

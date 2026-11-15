@@ -10,6 +10,24 @@ export const RAIL_DOCK_MIN = 900;
 export const WINDOW_PAD = 0;
 /** A docked inspector leaves the conversation at least this wide; otherwise it floats over it. */
 export const CONVERSATION_MIN = 480;
+/** Two sessions side by side (state/split.ts): a docked inspector narrows to leave each this wide, where it can. */
+export const SPLIT_PANE_MIN = 320;
+
+/** Dragging the bar between two sessions leaves each at least this wide (where the column has room for two). */
+export const SPLIT_DRAG_MIN = 340;
+
+/**
+ * The left session's share of the column in a split: the one given (dragged, or saved), kept so neither is narrower
+ * than SPLIT_DRAG_MIN; halves in a column too narrow for that.
+ */
+export function splitShare(ratio: number, columnWidth: number): number {
+    if (!(columnWidth > 2 * SPLIT_DRAG_MIN) || !Number.isFinite(ratio)) return 0.5;
+    const least = SPLIT_DRAG_MIN / columnWidth;
+    return Math.min(1 - least, Math.max(least, ratio));
+}
+
+/** What a docked inspector narrows to leave the conversation column: one conversation's least, or two side by side's. */
+export const conversationLeast = (split?: boolean) => (split ? 2 * SPLIT_PANE_MIN : CONVERSATION_MIN);
 /** A floating inspector's top, clear of the title bar, and its gap to what's under it. */
 export const FLOAT_TOP = 54;
 export const FLOAT_GAP = 8;
@@ -69,9 +87,9 @@ export function inspectorMode(sheetWidth: number, inspectorWidth: number): "dock
 }
 
 /** Dragging the docked inspector's edge: within its bounds, and never so wide it stops docking. */
-export function clampInspectorWidth(width: number, sheetWidth: number): number {
+export function clampInspectorWidth(width: number, sheetWidth: number, conversation = CONVERSATION_MIN): number {
     // Down, never up: a width rounded past the conversation's least would float (and so close) the inspector.
-    const most = Math.max(INSPECTOR_MIN, Math.floor(Math.min(INSPECTOR_MAX, sheetWidth - CONVERSATION_MIN)));
+    const most = Math.max(INSPECTOR_MIN, Math.floor(Math.min(INSPECTOR_MAX, sheetWidth - conversation)));
     return Math.max(INSPECTOR_MIN, Math.min(most, Math.round(width)));
 }
 
@@ -141,6 +159,13 @@ export function requestCloses(cleared: string | undefined, wasOpen: boolean, o: 
  * the styles read where they'd use `@container main (max-width: …)` (shell.css says why they don't).
  */
 export const COLUMN_NARROW = [700, 640, 600, 520, 440] as const;
+/** A pane of a split (components/Panes.tsx): the column's steps, and more for the narrowest. */
+export const PANE_NARROW = [...COLUMN_NARROW, 360, 240] as const;
+/**
+ * What the first pane's title bar gives the rail where the rail isn't docked and shown (header.css): the room left of
+ * the window's buttons on macOS, and the rail's two buttons with their hairline.
+ */
+export const BAR_RAIL_ROOM = { traffic: 160, plain: 80 } as const;
 export const COLUMN_SHORT = [600, 560, 360] as const;
 
 /** The steps `size` is within, as an attribute's words: 650 against [700, 640, 600] is "700 640". */
@@ -187,13 +212,17 @@ export function windowLayout(o: {
     terminalPreferred: number;
     terminalMax: boolean;
     dock: number;
+    /** Two sessions side by side: the inspector and the diff reader narrow to leave each SPLIT_PANE_MIN where they can; they dock as for one. */
+    split?: boolean;
 }): WindowLayout {
+    const least = conversationLeast(o.split);
     const mode = railMode(o.win.w);
     const docked = mode === "dock" && o.rail;
     const sheet = sheetSize(o.win, docked, o.railWidth);
     const saved = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
-    const inspector = saved > INSPECTOR_KEEP ? Math.max(INSPECTOR_KEEP, Math.min(saved, Math.floor(sheet.w - CONVERSATION_MIN))) : saved;
-    const width = o.review ? reviewWidth(o.reviewBase, sheet.w, inspector) : inspector;
+    const inspector = saved > INSPECTOR_KEEP ? Math.max(INSPECTOR_KEEP, Math.min(saved, Math.floor(sheet.w - least))) : saved;
+    const reader = o.review ? reviewWidth(o.reviewBase, sheet.w, inspector) : 0;
+    const width = !o.review ? inspector : o.split ? Math.max(REVIEW_DOCK_MIN, Math.min(reader, Math.floor(sheet.w - least))) : reader;
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);
     const open = o.panel || o.review;

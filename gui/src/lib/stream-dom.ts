@@ -7,31 +7,29 @@
 // end of a list of children are marked `md-fresh`.
 //
 // What has just come out is drawn lighter for a moment, an ink trail: each
-// mark gets a tier by its age (md-t1 to md-t3, a static opacity in
-// markdown.css), worked out again only when more text comes out (which draws
-// the block again anyway) and once more after the last of it. Nothing
-// animates, so nothing is drawn between the reply's own updates. Past the last
-// tier a mark is taken out, its text joined to the text beside it; what's left
-// when the reply is finished is taken out too.
+// mark gets a tier by its age (md-t1 to md-t7, a static opacity in
+// markdown.css), worked out again on each step of the stream clock while any
+// mark is in the trail (lib/stream-clock.ts: the step text comes out on, so
+// nothing is drawn between them). Without new text, the words still go on
+// darkening a step at a time rather than standing light and then turning
+// plain at once. Past the last tier a mark is taken out, its text joined to
+// the text beside it; what's still in the trail when the reply is finished
+// darkens the rest of the way.
+
+import { onStep } from "./stream-clock";
 
 const FRESH = "md-fresh";
-/** The trail's tiers by a mark's age (ms): younger than the first, tier 1, and so on; older than the last, plain. */
-export const TRAIL_MS = [35, 70, 120] as const;
-const TIERS = ["md-t1", "md-t2", "md-t3"] as const;
-/** Once more this long after the last text came out, so a stream that stalls doesn't leave words light. */
-const SETTLE_MS = 130;
-/** Inline elements a caret goes after rather than inside. */
-const INLINE = new Set(["A", "B", "CODE", "DEL", "EM", "I", "S", "SPAN", "STRONG"]);
+/** A block first painted while the reply streams, for good: its lines wrap as they came (markdown.css). */
+const WRITTEN = "md-written";
+/** The trail's tiers by a mark's age (ms), between the clock's steps: younger than the first, tier 1, and so on; older than the last, plain. */
+export const TRAIL_MS = [25, 75, 125, 175, 225, 275, 325] as const;
+const TIERS = ["md-t1", "md-t2", "md-t3", "md-t4", "md-t5", "md-t6", "md-t7"] as const;
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
 const KEPT = new Set(["src", "tabindex", "data-loading"]);
-/** The writing mark pulses once nothing has come out for this long: while text flows, it's in a new place every step. */
-export const CARET_WAIT_MS = 400;
 
 const painted = new WeakMap<Element, string>();
-const carets = new WeakMap<Element, HTMLElement>();
-let caretWait: ReturnType<typeof setTimeout> | undefined;
 
-/** The trail's tier (0 to 2) for a mark this many ms old, or -1 once it's past the trail. */
+/** The trail's tier (0 to 6) for a mark this many ms old, or -1 once it's past the trail. */
 export function trailTier(age: number): number {
     return TRAIL_MS.findIndex((t) => age < t);
 }
@@ -40,7 +38,12 @@ export function trailTier(age: number): number {
 let trail: { el: HTMLElement; at: number }[] = [];
 /** When the text being painted came out. */
 let paintedAt = 0;
-let settling: ReturnType<typeof setTimeout> | undefined;
+/** The trail is worked out again at the clock's next step. */
+let aging = false;
+const age = () => {
+    aging = false;
+    retier(performance.now());
+};
 
 /** What's just come out: in the trail from now. */
 function mark(el: HTMLElement) {
@@ -63,8 +66,10 @@ function retier(now: number) {
         parent?.normalize();
         return false;
     });
-    clearTimeout(settling);
-    settling = trail.length ? setTimeout(() => retier(performance.now()), SETTLE_MS) : undefined;
+    if (trail.length && !aging) {
+        aging = true;
+        onStep(age);
+    }
 }
 
 /** Shows HTML in `el` that mostly grows: what only grew is added to the end, so what's there stays as it is, laid out. */
@@ -90,25 +95,25 @@ export function trailBlock(el: HTMLElement) {
 /**
  * Shows `html` in `el`. While `live`, an update changes only what's different
  * and marks what's new (a block first painted while live is marked whole);
- * otherwise it's plain innerHTML. `caret`: the writing mark goes after the
- * block's last text.
+ * otherwise it's plain innerHTML.
  */
-export function paint(el: HTMLElement, html: string, live: boolean, caret: boolean) {
+export function paint(el: HTMLElement, html: string, live: boolean) {
     paintedAt = performance.now();
-    carets.get(el)?.remove();
-    carets.delete(el);
     const before = painted.get(el);
     if (before !== html) {
         if (live && before !== undefined) morph(el, html);
         else {
             el.innerHTML = html;
-            if (live) mark(el);
+            if (live) {
+                el.classList.add(WRITTEN);
+                mark(el);
+            }
         }
         painted.set(el, html);
     }
-    if (live) retier(paintedAt);
+    // Finished as it was last drawn: its last words darken the rest of the way, as they would have.
+    if (live || before === html) retier(paintedAt);
     else settleFresh(el);
-    if (caret) placeCaret(el);
 }
 
 /** One mark taken out: wrapped text goes back to plain text. */
@@ -219,31 +224,4 @@ function attributes(el: Element, want: Element) {
         const value = a.name === "class" && marks ? `${a.value} ${marks}` : a.value;
         if (el.getAttribute(a.name) !== value) el.setAttribute(a.name, value);
     }
-}
-
-/** The last text with something in it, depth first from the end. */
-function lastText(node: Node): Text | undefined {
-    for (let c = node.lastChild; c; c = c.previousSibling) {
-        if (c.nodeType === Node.TEXT_NODE) {
-            if ((c as Text).data.trim()) return c as Text;
-        } else if (c.nodeType === Node.ELEMENT_NODE) {
-            const found = lastText(c);
-            if (found) return found;
-        }
-    }
-    return undefined;
-}
-
-function placeCaret(el: HTMLElement) {
-    const text = lastText(el);
-    if (!text) return;
-    let at: Node = text;
-    while (at.parentElement && at.parentElement !== el && INLINE.has(at.parentElement.nodeName)) at = at.parentElement;
-    const caret = document.createElement("span");
-    caret.className = "md-caret";
-    caret.setAttribute("aria-hidden", "true");
-    at.parentNode!.insertBefore(caret, at.nextSibling);
-    carets.set(el, caret);
-    clearTimeout(caretWait);
-    caretWait = setTimeout(() => caret.classList.add("waiting"), CARET_WAIT_MS);
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Socket } from "../helpers/gui-socket";
-import { all, component, node, renderer, text } from "../helpers/gui-render";
+import { all, component, node, renderer, text, noSplit, singlePane } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
@@ -47,6 +47,7 @@ const App = component(source.slice(source.indexOf("export function App")), "App"
     railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, onMount() {},
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
+    ...noSplit, Panes: singlePane(),
 });
 const root = node("root");
 const dispose = renderer.render(App, root);

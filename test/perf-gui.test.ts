@@ -162,6 +162,48 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         withinBudget("idleStyleUpdatesAfterReply", after.RecalcStyleCount! - before.RecalcStyleCount!, { room: true });
         const running = await js(`document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations !== Infinity).length`);
         withinBudget("idleEntrancesRunningAfterReply", running);
+
+        // A reply that comes a paragraph at a time, between tools: while it comes, the words being written never move
+        // down (room under them taken back as the words stop for a tool or a pause, then made again as they go on);
+        // only once the turn's over does the room close. And nothing new is shown whole before the ink trail has it:
+        // each piece of a reply's text is drawn faint the first time it's on screen (code being highlighted aside).
+        await js(`(() => {
+            window.__down = [];
+            window.__bright = [];
+            window.__watch = true;
+            const seen = new WeakMap();
+            const shown = (n) => { let o = 1; for (let e = n.parentElement; e && !e.classList.contains("md"); e = e.parentElement) o *= Number(getComputedStyle(e).opacity); return o; };
+            let el, last;
+            const frame = () => {
+                if (!window.__watch) return;
+                const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
+                const md = [...(turn?.querySelectorAll(".md") ?? [])].at(-1);
+                const top = md?.getBoundingClientRect().top;
+                if (turn?.getAttribute("aria-busy") === "true" && md === el && last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
+                el = md;
+                last = top;
+                // Only text that's new at the end: a path already shown, drawn again as a link once it's known, isn't.
+                for (const live of document.querySelectorAll(".md.streaming")) {
+                    const walk = document.createTreeWalker(live, NodeFilter.SHOW_TEXT);
+                    let at = 0;
+                    const had = seen.get(live) ?? 0;
+                    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+                        at += n.data.length;
+                        if (at <= had || !n.data.trim()) continue;
+                        if (!n.parentElement.closest(".code") && shown(n) > 0.6) window.__bright.push(n.data.slice(0, 40));
+                    }
+                    seen.set(live, at);
+                }
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        await send("fastdemo burst");
+        await until("the bursts to finish", 120_000, finished);
+        await sleep(1000);
+        await js(`window.__watch = false`);
+        expect(await js(`window.__down`)).toEqual([]);
+        expect(await js(`window.__bright`)).toEqual([]);
     } finally {
         tools?.close();
         browser?.kill();

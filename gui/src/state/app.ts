@@ -354,6 +354,8 @@ export const OPEN_TURNS = 100;
 const loadingEarlier = new Map<string, Promise<boolean>>();
 const [handleVersion, setHandleVersion] = createSignal(0);
 const KEEP_OPEN = 8;
+/** Sessions on screen besides the one in view (two side by side, state/split.ts sets it): kept open, as that one is. */
+export const onScreen: { beside: () => readonly string[] } = { beside: () => [] };
 /** How many turns each session this window let go of had, when more than it opens with ("Show earlier"). */
 const closedWith = new Map<string, number>();
 
@@ -432,7 +434,8 @@ function letGo(h: SessionHandle) {
 /** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
 function trim() {
     if (handles.size <= KEEP_OPEN) return;
-    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
+    const shown = onScreen.beside();
+    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !shown.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
     for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
@@ -467,12 +470,25 @@ export function dropHandle(id: string) {
     setHandleVersion((v) => v + 1);
 }
 
-export async function openSession(id: string): Promise<SessionHandle> {
+/** Each open under way: one asked for again meanwhile (the other of two side by side, state/split.ts) waits for it. */
+const openingNow = new Map<string, Promise<SessionHandle>>();
+
+export function openSession(id: string): Promise<SessionHandle> {
     const h = handles.get(id);
     if (h) {
         h.lastUsed = Date.now();
-        return h;
+        return Promise.resolve(h);
     }
+    const going = openingNow.get(id);
+    if (going) return going;
+    const opened = openNow(id);
+    openingNow.set(id, opened);
+    const done = () => { if (openingNow.get(id) === opened) openingNow.delete(id); };
+    opened.then(done, done);
+    return opened;
+}
+
+async function openNow(id: string): Promise<SessionHandle> {
     // Asked for already, with the lists (openAhead): that answer, whatever it was.
     const early = aheadFor(id);
     if (early) {

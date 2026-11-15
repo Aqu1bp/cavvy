@@ -4,8 +4,9 @@
 // into room kept under it, the conversation holding still, and the conversation glides up by a room's worth once the
 // room is used: one glide every few lines, as smooth as before. The room is what the reply writes in a couple of
 // seconds: it opens only once words come steadily, and a slow reply leaves less of it empty. When the words stop (a
-// tool, the reply's end) the room goes in one glide, so nothing stands empty under a wait; what lands between words
-// (a tool's row) glides in as before.
+// tool, a stall, the reply's end) the room stays: taken back at the end of the view it could only move the
+// conversation down, and up again as the words went on. What lands meanwhile (a tool's row, the reply's footer) goes
+// into it, and only what doesn't fit glides in. It goes once it's wholly out of sight, or used.
 
 /** Follow in room kept under a reply (false: a glide for each new line, as before). */
 export const FOLLOW_ROOM = true;

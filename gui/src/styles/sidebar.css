@@ -1292,3 +1292,9 @@
 [data-motion="instant"] .rail-sel {
     animation: none;
 }
+
+/* In a split, the session beside the open one: a faint fill, no outline (that's the open one's). */
+.card.beside,
+.slim.beside {
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+}

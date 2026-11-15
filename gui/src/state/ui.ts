@@ -80,6 +80,12 @@ export const [comparePicks, setComparePicks] = createSignal<string[] | undefined
 /** A worktree's setup run: the server's single-use ticket, the tab's name, and the command for its tooltip. */
 export interface SetupRun { ticket: string; label: string; command: string }
 
+/**
+ * Set by state/split.ts. `leave`: `id` leaves the screen (archived); in a split only its pane closes. True when it was
+ * in one. `closeBesideReader`: the side panel closed while the other session's diff reader held it open; true if it did.
+ */
+export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
+
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {
     loginAccount?: (provider: string, accountId: string, name: string) => void;
@@ -113,6 +119,14 @@ export const [terminalMax, setTerminalMax] = createSignal(false);
 export const [terminalShown, setTerminalShown] = createSignal(false);
 /** The composer dock's height, requests included: a floating inspector ends above it. */
 export const [dockHeight, setDockHeight] = createSignal(0);
+/** Each shown view's dock (components/Panes.tsx, Agents.tsx), by a key of its own: two side by side in a split. */
+const docks = new Map<object, number>();
+/** A view's dock measured at `h`, or gone (undefined): dockHeight is the tallest (a diff reader filling the sheet spans both panes). */
+export function paneDock(key: object, h: number | undefined) {
+    if (h === undefined) docks.delete(key);
+    else docks.set(key, h);
+    setDockHeight(docks.size ? Math.max(...docks.values()) : 0);
+}
 /** Until when the dock's next change of height is the composer opening or closing its large size: the conversation glides with it. */
 let dockGlideUntil = -Infinity;
 /** The composer is about to open or close its large size (Composer.tsx). */

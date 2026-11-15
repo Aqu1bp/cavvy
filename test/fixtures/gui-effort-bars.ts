@@ -134,6 +134,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
     mock.module("../../gui/src/state/ui", () => ({
         ...names(["freeRail", "railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
         shellLayout: () => ({ railMode: "dock" }),
+        splitActions: {},
     }));
     const { setEffort } = await import("../../gui/src/state/actions");
     // The model picker holds the effort now: it opens on the slider, under the model's name, and the level in force

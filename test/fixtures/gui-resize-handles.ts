@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { all, component, node, renderer } from "../helpers/gui-render";
 import { frameDrag } from "../../gui/src/lib/drag";
-import { clampInspectorWidth, INSPECTOR_DEFAULT } from "../../gui/src/lib/layout";
+import { clampInspectorWidth, conversationLeast, INSPECTOR_DEFAULT } from "../../gui/src/lib/layout";
 import { fakeFrames } from "../helpers/frames";
 
 const between = (path: string, from: string, to: string) => {
@@ -88,7 +88,7 @@ test("the inspector's edge: shown once a frame within its bounds, saved on relea
     const Resizer = component(between("../../gui/src/App.tsx", "function InspectorResizer(", "const INSPECTOR_KEY"), "InspectorResizer", {
         // A 1200px sheet: the conversation keeps 480, so it can widen to 720.
         shellLayout: () => ({ sheet: { w: 1200 }, inspector: { width: 360 } }),
-        clampInspectorWidth, INSPECTOR_DEFAULT,
+        clampInspectorWidth, conversationLeast, split: () => undefined, INSPECTOR_DEFAULT,
         setInspectorWidth: (w: number) => saved.push(w),
         setInspectorDrag: (w: number | undefined) => shown.push(w),
         frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames }),

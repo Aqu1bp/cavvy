@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
+import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -584,7 +584,10 @@ export async function archiveSessions(ids: readonly string[], archived: boolean)
         undo: archived ? (id) => rpc.call("session.archive", { id, archived: false }) : undefined,
         // As for one: the open session, archived, leaves the screen for Home.
         after: (done) => {
-            if (archived && app.activeId && done.includes(app.activeId)) newSession(app.homeCwd);
+            if (!archived) return;
+            // In a split, those of its two archived close their panes; the one in view alone goes to Home.
+            for (const id of done) splitActions.leave?.(id);
+            if (app.activeId && done.includes(app.activeId)) newSession(app.homeCwd);
         },
     });
 }
@@ -649,7 +652,7 @@ export async function setArchived(id: string, archived: boolean, said = "Session
         reportError(e);
         return false;
     }
-    if (archived && app.activeId === id) newSession(app.homeCwd);
+    if (archived && !splitActions.leave?.(id) && app.activeId === id) newSession(app.homeCwd);
     toast(
         archived ? said : "Session restored",
         "info",
@@ -672,7 +675,7 @@ export function archivedWithWorktree(id: string, r: Extract<ArchiveResult, { arc
     const gone = r.removed && r.worktree;
     const inside = (p: string | undefined) => Boolean(gone && p && (p === r.worktree || p.startsWith(`${r.worktree}/`)));
     if (inside(app.homeCwd) && r.main) setApp("homeCwd", r.main);
-    if (app.activeId === id) newSession(app.homeCwd);
+    if (!splitActions.leave?.(id) && app.activeId === id) newSession(app.homeCwd);
     toast(
         r.removed ? "Session archived; worktree removed" : `Session archived; worktree kept: ${r.kept ?? "it couldn't be removed."}`,
         r.removed ? "success" : "info",
@@ -688,6 +691,8 @@ export function archivedWithWorktree(id: string, r: Extract<ArchiveResult, { arc
 /** The side panel's button and key. The diff reader is one of the panel's views: closing the panel closes it too. */
 export function togglePanel() {
     if (review()) return batch(() => (setReview(undefined), setPrefs("panel", false)));
+    // Held open by the other session's diff reader (state/split.ts): closing it closes that too.
+    if (!prefs.panel && splitActions.closeBesideReader?.()) return;
     setPrefs("panel", !prefs.panel);
 }
 

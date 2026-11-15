@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
-import { LAG_MS, revealEnd, revealStep } from "../gui/src/lib/reveal";
+import { LAG_MS, lagFor, MAX_LAG_MS, nextGap, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
 import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
@@ -183,17 +183,35 @@ test("reveal drains a burst at one speed by its deadline, never crawls, and stop
     expect(revealEnd("x https://example.com/a/very/long/path", 0, 3)).toBe(19);
 });
 
+test("a stream that comes in bursts runs as far behind as they're apart, a steady one hardly at all", () => {
+    // Text comes in on the clock's steps: steady, 50ms apart.
+    let gap: number | undefined;
+    for (let i = 0; i < 10; i++) gap = nextGap(gap, 50);
+    expect(lagFor(gap)).toBe(LAG_MS);
+    // A paragraph every half second: each one sweeps in over most of the wait for the next, no more than the most.
+    gap = undefined;
+    for (let i = 0; i < 10; i++) gap = nextGap(gap, 500);
+    expect(lagFor(gap)).toBe(MAX_LAG_MS);
+    // One long wait (a tool) doesn't hold the words after it back for long: steady again, the lag comes back down.
+    gap = nextGap(gap, 60_000);
+    expect(gap).toBeLessThanOrEqual(MAX_LAG_MS * 2);
+    for (let i = 0; i < 12; i++) gap = nextGap(gap, 50);
+    expect(lagFor(gap)).toBe(LAG_MS);
+    expect(lagFor(undefined)).toBe(LAG_MS);
+});
+
 test("what just came out is drawn lighter by its age, then plain", () => {
-    expect(TRAIL_MS).toEqual([35, 70, 120]);
-    expect([0, 34, 35, 69, 70, 119, 120, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, -1, -1]);
+    // A tier a step of the stream clock (50ms), the boundaries between steps.
+    expect(TRAIL_MS).toEqual([25, 75, 125, 175, 225, 275, 325]);
+    expect([0, 24, 25, 50, 75, 100, 150, 200, 250, 300, 325, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, 3, 4, 5, 6, -1, -1]);
 });
 
 test("streamed text has no animation: the trail is static opacity, none with Reduce motion", () => {
     const css = readFileSync(new URL("../gui/src/styles/markdown.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/md-fresh/);
     expect(css).not.toMatch(/code\.fresh/);
-    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf(".md-caret,"));
-    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.45], ["2", 0.7], ["3", 0.88]]);
+    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf("}\n}\n", css.indexOf("@media (prefers-reduced-motion: no-preference)")) + 4);
+    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.12], ["2", 0.28], ["3", 0.45], ["4", 0.61], ["5", 0.75], ["6", 0.87], ["7", 0.95]]);
     expect(trail).not.toMatch(/animation|transition/);
     // Outside that media query nothing draws the tiers.
     expect(css.replace(trail, "")).not.toMatch(/md-t\d/);

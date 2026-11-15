@@ -12,6 +12,7 @@ import { home } from "../lib/machines";
 import { signInPressed } from "../lib/card-keys";
 import { terminalActions } from "../state/ui";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
+import { usePane } from "../state/split";
 import { CopyButton, Spinner } from "./ui/bits";
 import "../styles/sign-in.css";
 
@@ -315,7 +316,7 @@ function Field(p: { it: SignInInteraction; label: string; placeholder: string; m
             setReady(false);
         }
     };
-    onMount(() => mayFocus() && input.focus());
+    onMount(() => mayFocus() && usePane().focused() && input.focus());
     onCleanup(() => {
         if (input) input.value = "";
     });
@@ -379,7 +380,7 @@ function Field(p: { it: SignInInteraction; label: string; placeholder: string; m
 /** What a CLI that asks at prompts shows, and the keyboard for it: each key goes to the CLI, which echoes what it wants seen. */
 function Prompt(p: { term: string; keys: (text: string) => void; later: () => void }) {
     let el!: HTMLPreElement;
-    onMount(() => mayFocus() && el.focus());
+    onMount(() => mayFocus() && usePane().focused() && el.focus());
     createEffect(on(() => p.term, () => { el.scrollTop = el.scrollHeight; }));
     return (
         <pre

@@ -11,6 +11,7 @@ import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
+import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { finishEntrances } from "../lib/entrances";
 import { TurnView } from "./TurnView";
@@ -19,6 +20,7 @@ import { CardFoldsProvider } from "./blocks/Activity";
 import { Spinner } from "./ui/bits";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
+import { usePane } from "../state/split";
 
 /** How long new content takes to glide into place at the end, before Settings → Motion scales it. */
 const GLIDE_MS = 240;
@@ -29,6 +31,11 @@ const MUTATION_MS = 40;
 /** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
 const REPIN_MS = 300;
 const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+/** The end of a turn settling (settle()): one longer, softer move than a glide. */
+const SETTLE_MS = 380;
+const SETTLE_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
+/** How long a finished turn's work fades before it folds (TurnView). */
+const FOLD_WAIT_MS = 200;
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -58,12 +65,17 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
 }
 
 function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
+    // In a split (state/split.ts): Find is the focused pane's, a floating inspector is over the rightmost, and each
+    // pane is half the conversation column.
+    const pane = usePane();
+    const finding = () => findOpen() && pane.focused();
+    const share = pane.share;
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     // What a side panel floating over the conversation covers, with its gap to the edge: "Latest" centres in the rest.
     const floatOver = () => {
         const i = shellLayout().inspector;
-        return i.open && i.mode === "float" ? `${i.width + 8}px` : "0px";
+        return i.open && i.mode === "float" && pane.rightmost() ? `${i.width + 8}px` : "0px";
     };
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
@@ -333,29 +345,34 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         roomLast = h;
         if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
     };
-    /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
-    let settledAt = -Infinity;
     /**
-     * The words stopped (a tool, the reply's end): the room goes, and the conversation settles onto the end in one
-     * glide (with what lands at the end as it does), so nothing stands empty under it. False with no room to let go of.
+     * The words stopped (a tool, a stall, the reply's end): the room stays where it is. Taken back at the end of the
+     * view, it could only move the conversation down, and up again when the words go on. What they write next is
+     * counted from here.
      */
-    const settleRoom = () => {
-        roomBase = roomLast = undefined;
+    const wordsStopped = () => {
         written = [];
         wordsPx = 0;
         columnWas = undefined;
-        if (!scroller || smoothScroll) return false;
-        if (room()) {
-            // Where it was, read before the room goes (the browser brings the view back within the column once it has).
-            const before = scroller.scrollTop;
-            setRoom(0);
-            settledAt = performance.now();
-            pin(before);
-            return true;
+    };
+    /**
+     * What lands at the end while no words come (a tool's row, the reply's footer) goes into the room, the conversation
+     * holding still; only what doesn't fit moves it up. What goes from the end is given to the room, so nothing moves
+     * down.
+     */
+    const fill = (live: boolean) => {
+        if (!scroller || !content) return;
+        const before = scroller.scrollTop;
+        const h = content.offsetHeight;
+        if (roomBase === undefined) {
+            roomBase = h;
+            roomMade = room();
         }
-        if (performance.now() - settledAt >= GLIDE_MS) return false;
-        pin();
-        return true;
+        const left = roomMade - (h - roomBase);
+        roomBase = roomLast = h;
+        roomMade = Math.min(Math.max(0, left), scroller.clientHeight);
+        setRoom(roomMade);
+        if (left < 0) live ? pin(before) : toBottom();
     };
     /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
     const dropRoomUnseen = () => {
@@ -368,43 +385,70 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         columnWas = undefined;
     };
 
+    /** The room goes (the reply's done): nothing kept under it any more. */
+    const dropRoom = () => {
+        setRoom(0);
+        roomBase = roomLast = undefined;
+        written = [];
+        wordsPx = 0;
+        columnWas = undefined;
+    };
+    /** The turn's over and its last words are out: the room under it can go. */
+    const settled = () => turns().at(-1)?.status !== "running" && !revealing();
     /**
-     * A finished turn's work folds into "Worked for" (TurnView, once it has faded out). Following the end, the answer
-     * stays put and what's above it comes down by what folded away: drawn from where it was, it glides down rather
-     * than jumping, as growth glides up.
+     * Something changes above the end at the end of a turn (its work folding into "Worked for", the room under its
+     * reply going): following the end, each part in sight glides from where it was drawn to where it is now, in one
+     * move. A turn's parts and its reply's are each their own, as they move by different amounts (the answer comes
+     * down by the room, what's above it by the work as well).
+     */
+    const settle = (change: () => void) => {
+        const ms = motionMs(SETTLE_MS);
+        if (!scroller || !content || !stick() || smoothScroll || !ms || typeof content.animate !== "function") {
+            change();
+            if (scroller && stick() && !smoothScroll) toBottom();
+            return;
+        }
+        const parts = () => inSight(scroller!.clientHeight).reverse().flatMap((row) => !row.hasAttribute("data-turn") ? [row]
+            : ([...row.children] as HTMLElement[]).flatMap((part) => (part.classList.contains("reply") ? ([...part.children] as HTMLElement[]) : [part])));
+        // Where each is drawn: a glide still running counts.
+        const was = new Map(parts().map((el) => [el, el.getBoundingClientRect().top]));
+        stopGlide();
+        change();
+        toBottom();
+        const now = parts();
+        const moved = now.map((el) => (was.has(el) ? was.get(el)! - el.getBoundingClientRect().top : undefined));
+        // One that's new here ("Worked for", in the work's place) or comes into sight moves with the part before it (or after).
+        for (let i = 0; i < moved.length; i++) moved[i] ??= moved.slice(0, i).reverse().find((m) => m !== undefined) ?? moved.slice(i).find((m) => m !== undefined);
+        now.forEach((el, i) => {
+            const from = glideFrom(moved[i] ?? 0, 0, scroller!.clientHeight);
+            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: SETTLE_EASE }) });
+        });
+    };
+    /**
+     * A finished turn's work folds into "Worked for" (TurnView, once it has faded out). The answer stays put and what's
+     * above it comes down by what folded away, unless the room under the answer goes too: then all of it comes down,
+     * in the one move. While the last words still come out, the fold waits for them, so it's one move, not two.
      */
     const fold = (turn: HTMLElement, run: () => void) => {
-        const ms = motionMs(GLIDE_MS);
-        if (!scroller || !content || !turn.isConnected || !stick() || smoothScroll || !ms || typeof content.animate !== "function") return run();
-        // The turn's top (its prompt): where it was, and where it is once the work has folded.
-        const was = turn.getBoundingClientRect().top;
-        const running = shift();
-        run();
-        toBottom();
-        const moved = was - turn.getBoundingClientRect().top;
-        // A fold is one move, not growth that goes on: all the way, up to a screen.
-        const max = scroller.clientHeight;
-        if (glideFrom(moved, 0, max) === undefined) return;
-        // What moved: the column's rows above the turn in sight (or coming into it on the way), the turn's parts
-        // before its reply, and "Worked for", which takes the work's place under the prompt.
-        const rows = inSight(Math.min(Math.abs(moved), max));
-        const at = rows.indexOf(turn);
-        const parts = [...turn.children] as HTMLElement[];
-        const reply = parts.find((el) => el.classList.contains("reply"));
-        const els = [
-            ...(at < 0 ? [] : rows.slice(at + 1)),
-            ...parts.filter((el) => el !== reply),
-            ...([...(reply?.children ?? [])] as HTMLElement[]).filter((el) => el.classList.contains("worked")),
-        ];
-        folds = folds.filter((f) => f.anim.playState === "running");
-        for (const el of els) {
-            // A row still gliding up goes on from where that glide has it.
-            const glide = glides.find((g) => g.el === el);
-            glide?.anim.cancel();
-            const from = glideFrom(moved, glide ? running : 0, max);
-            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) });
-        }
+        if (!turn.isConnected) return run();
+        if (revealing()) return onStep(() => fold(turn, run));
+        settle(() => {
+            run();
+            // What folded is above the answer: not the end's to give to the room.
+            roomAbove();
+            if (settled()) dropRoom();
+        });
     };
+    /** The reply's done: a moment for its work to fold (which takes the room with it), then the room goes if it's still there. */
+    let roomGoing: ReturnType<typeof setTimeout> | undefined;
+    const settleRoom = () => {
+        clearTimeout(roomGoing);
+        roomGoing = setTimeout(() => {
+            roomGoing = undefined;
+            if (ready && room() > 0 && settled()) settle(dropRoom);
+        }, motionMs(FOLD_WAIT_MS) + 50);
+    };
+    onCleanup(() => clearTimeout(roomGoing));
 
     /**
      * How far running glides and folds draw this element from its place (the moves on it and on what it's in):
@@ -535,13 +579,14 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 // Room only while words come out: what lands between them (a tool's row) glides in, and the room
                 // isn't left standing empty under a wait.
                 if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
-                // Growth above the view as a reply runs: the end stays where it is, and the room is still all there.
-                else if (FOLLOW_ROOM && above && (running || revealing())) {
+                // Growth above the view as a reply runs (or with room left): the end stays where it is, and the room is still all there.
+                else if (FOLLOW_ROOM && above && (running || revealing() || room() > 0)) {
                     roomAbove();
                     toBottom();
                 }
-                // The words stopped, or the reply's done: the room goes, in one glide.
-                else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
+                // The words stopped, or the reply's done: what lands goes into the room left.
+                else if (FOLLOW_ROOM && room() > 0 && !above) fill(live);
+                else live ? pin() : toBottom();
             }
             else {
                 if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
@@ -670,11 +715,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = capture();
     };
 
-    // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
-    // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
-    // the wrong place).
+    // The words stop (a tool, the reply's end): what they write next is counted afresh. The room stays while the turn
+    // runs (taken back, it would move the conversation down, and up again as the words go on); once it's over, it goes.
     createEffect(on(wordsFlowing, (flowing, was) => {
-        if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
+        if (!FOLLOW_ROOM || !was || flowing) return;
+        wordsStopped();
+        settleRoom();
+    }, { defer: true }));
+    createEffect(on(() => turns().at(-1)?.status === "running", (running, was) => {
+        if (FOLLOW_ROOM && was && !running) settleRoom();
     }, { defer: true }));
 
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
@@ -881,7 +930,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
     // reconnect that came with fewer).
-    createEffect(on([findOpen, () => p.handle.view.earlier], ([open, earlier]) => {
+    createEffect(on([finding, () => p.handle.view.earlier], ([open, earlier]) => {
         if (open && earlier) void loadEarlier(p.handle, { all: true });
     }));
 
@@ -929,7 +978,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
         const held = panelHold();
-        return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
+        return held && { width: `${held.column.w * share()}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
     // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
     // following the end any more), it's scrolled by as much, so what's read stays where it is.
@@ -951,7 +1000,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // From where the column's left edge was: text is set from the left, so that edge is the line the eye follows.
         // (While the column is centred at its full width at both ends, that's half the difference of the widths. Once
         // it's narrower than that at one end it isn't, and the edge jumped one way before sliding the other.)
-        const x = !held ? 0 : drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : (held.from.w - held.to.w) / 2);
+        const x = !held ? 0 : drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : ((held.from.w - held.to.w) / 2) * share());
         const y = held && atEnd() ? held.from.h - held.to.h : 0;
         if (!slide || !box || (!x && !y)) return;
         const { duration, easing } = slide.effect!.getTiming();
@@ -1018,7 +1067,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 </div>
             </div>
             </div>
-            <Show when={findOpen()}>
+            <Show when={finding()}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>

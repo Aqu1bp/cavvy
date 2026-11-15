@@ -12,13 +12,13 @@ import { prefs } from "../state/prefs";
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
-import { setAgentFocus, setDockHeight } from "../state/ui";
+import { paneDock, setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { shortModelRef } from "../lib/tool-words";
 import { Markdown } from "./blocks/Markdown";
-import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
+import { ClosePane, Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
 import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
@@ -132,25 +132,26 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
     // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
     // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.) A floating
-    // inspector or diff reader ends above it, as in the session (App.tsx SessionView).
+    // inspector or diff reader ends above it, as in the session (Panes.tsx SessionView).
     let dock: HTMLDivElement | undefined;
+    const key = {};
     const [dockH, setDockH] = createSignal(72);
     onMount(() => {
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
             setDockH(h);
-            setDockHeight(h);
+            paneDock(key, h);
         });
         if (dock) ro.observe(dock);
         onCleanup(() => {
             ro.disconnect();
-            setDockHeight(0);
+            paneDock(key, undefined);
         });
     });
 
     return (
         <>
-            <TitleBar>
+            <TitleBar end={<ClosePane />}>
                 <Crumb title={`New session in ${st().projectName}`} onClick={() => newSession(st().cwd)}>
                     <Monogram name={st().projectName} size={14} />
                     <span class="truncate">{st().projectName}</span>
