@@ -442,6 +442,18 @@ describe("the theme tools", () => {
         expect(all).toContain("How to make a Cavvy theme");
     });
 
+    test("ThemeList starts with the theme the windows show, so the agent needn't ask", async () => {
+        const { themeList } = await tools();
+        saveTheme("listed", checkTheme(minimal({ name: "Listed" })).theme!, join(home, "themes"));
+        const first = async (now: { id: string | null; scheme: "light" | "dark" } | undefined) => (await themeList({}, { ui: { themeShowing: () => now } })).text.split("\n")[0];
+        expect(await first({ id: "night-rain", scheme: "dark" })).toBe("Showing now: night-rain (Night Rain), its dark look.");
+        expect(await first({ id: "listed", scheme: "dark" })).toBe("Showing now: listed (Listed), its dark look.");
+        expect(await first({ id: null, scheme: "light" })).toBe("Showing now: no theme (Cavvy's own light look).");
+        expect(await first(undefined)).toBe("No Cavvy window is open, so no theme is showing.");
+        // Where there are no windows to ask (the terminal), it says nothing of it.
+        expect((await themeList({}, { ui: {} })).text.split("\n")[0]).toBe("Built in (can't be changed; copy one under a new id):");
+    });
+
     test("saving over a theme the user made says so and hands the window the old one for Undo; refining its own doesn't", async () => {
         const { themeSet } = await tools();
         const calls: unknown[][] = [];

@@ -115,7 +115,7 @@ import type {
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
-import type { ThemeEntry } from "../themes/format";
+import { ID as THEME_ID, type ThemeEntry } from "../themes/format";
 import type { ThemeReplaced } from "./protocol";
 import { listPlugins } from "../plugins/install";
 import { pluginLogo } from "../plugins/logos";
@@ -211,6 +211,8 @@ export interface EngineClient {
     window?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
+    /** The theme its window shows (null: none), as it last said, and when. */
+    theme?: { id: string | null; scheme: "light" | "dark"; at: number };
     /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
     machine?: string;
     /** It shows the other machines' sessions (servers.overview): it's told how they change, and what they have to say. */
@@ -584,6 +586,13 @@ export class Engine {
 
     themeWindows(): number {
         return this.themeWindowClients().length;
+    }
+
+    /** The theme this machine's windows show (null: none), as the one that changed last says; undefined with no window. */
+    themeShowing(): { id: string | null; scheme: "light" | "dark" } | undefined {
+        let last: EngineClient["theme"];
+        for (const c of this.themeWindowClients()) if (c.theme && (!last || c.theme.at >= last.at)) last = c.theme;
+        return last && { id: last.id, scheme: last.scheme };
     }
 
     async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
@@ -2673,6 +2682,11 @@ export class Engine {
             case "themes.report": {
                 const r = p as unknown as ThemeReport;
                 if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}), ...(typeof r.picture === "string" && r.picture.length < 2_000_000 && /^[A-Za-z0-9+/]+=*$/.test(r.picture) ? { picture: r.picture } : {}) });
+                return null;
+            }
+            case "themes.showing": {
+                const id = typeof p.id === "string" && THEME_ID.test(p.id) ? p.id : null;
+                client.theme = { id, scheme: p.scheme === "light" ? "light" : "dark", at: Date.now() };
                 return null;
             }
             case "keybindings.create": {

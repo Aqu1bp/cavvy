@@ -2131,6 +2131,8 @@ export interface Methods {
     "themes.restore": { params: { id: string; text: string; replace?: boolean }; result: null };
     /** A window's answer to theme.apply. */
     "themes.report": { params: ThemeReport; result: null };
+    /** The theme a window shows now (null: none) and in which scheme: sent as it changes, for ThemeList. */
+    "themes.showing": { params: { id: string | null; scheme: ThemeScheme }; result: null };
     /** Creates the keybindings file from the template when there's none; true when it did. */
     "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };

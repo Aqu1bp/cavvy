@@ -130,7 +130,17 @@ async function withCopies(raw: unknown): Promise<{ theme: unknown; problems: str
     return { theme: out, problems };
 }
 
-export async function themeList(input: Record<string, unknown>): Promise<{ text: string; isError?: boolean }> {
+/** What the user's windows show now, for the list's first line: so "change this theme" needs no asking. */
+function showingLine(ui: ToolContext["ui"] | undefined, mine: ThemeEntry[]): string | undefined {
+    if (!ui?.themeShowing) return undefined;
+    const now = ui.themeShowing();
+    if (!now) return "No Cavvy window is open, so no theme is showing.";
+    if (!now.id) return `Showing now: no theme (Cavvy's own ${now.scheme} look).`;
+    const name = builtin(now.id)?.name ?? mine.find((e) => e.id === now.id)?.theme?.name;
+    return `Showing now: ${now.id}${name ? ` (${name})` : ""}, its ${now.scheme} look.`;
+}
+
+export async function themeList(input: Record<string, unknown>, ctx?: Pick<ToolContext, "ui">): Promise<{ text: string; isError?: boolean }> {
     if (typeof input.id === "string" && input.id.trim()) {
         const id = input.id.trim();
         if (!ID.test(id)) return { text: `No theme "${id}". ThemeList with no id lists them.`, isError: true };
@@ -144,9 +154,11 @@ export async function themeList(input: Record<string, unknown>): Promise<{ text:
         return { text: problems?.[0]?.startsWith("can't be read") ? `No theme "${id}". ThemeList with no id lists them.` : `The theme file "${id}" doesn't check out:\n- ${problems?.join("\n- ")}`, isError: true };
     }
     const mine = listThemes();
+    const showing = showingLine(ctx?.ui, mine);
     const line = (e: ThemeEntry) => (e.theme ? `- ${e.id}: ${e.theme.name} (${schemesOf(e.theme)})` : `- ${e.id}: doesn't check out: ${e.problems?.[0]}`);
     return {
         text: [
+            ...(showing ? [showing, ""] : []),
             "Built in (can't be changed; copy one under a new id):",
             ...BUILTINS.map((b) => `- ${b.id}: ${b.name} (${b.schemes.join(" and ")})`),
             "",
@@ -260,7 +272,7 @@ const asResult = (r: { text: string; isError?: boolean; summary?: string; pictur
     display: { summary: r.isError ? undefined : r.summary },
 });
 
-const LIST_DESCRIPTION = "List Cavvy's themes (built in, and the user's own), with how to make one; with an id, that theme's JSON. Call it before making or changing a theme.";
+const LIST_DESCRIPTION = "List Cavvy's themes (built in, and the user's own) and which one is showing, with how to make one; with an id, that theme's JSON. Call it before making or changing a theme.";
 const SET_DESCRIPTION = `Change how Cavvy's window looks: show a theme by id, or make one by giving its JSON as theme (saved under id, replacing one of the user's own of that id), or id "none" to turn the theme off. ThemeList gives the format; read it first. Answers how it came out in the window, or what to fix.`;
 
 const LIST_SCHEMA = {
@@ -286,8 +298,8 @@ export const ThemeListTool: Tool<{ id?: string; layer?: string }> = {
     category: "meta",
     readOnly: true,
     title: (i) => (typeof i.id === "string" && i.id ? `ThemeList(${i.id})` : "ThemeList"),
-    async run(input) {
-        return asResult(await themeList(input));
+    async run(input, ctx) {
+        return asResult(await themeList(input, ctx));
     },
 };
 
@@ -328,4 +340,4 @@ export function servedThemeName(tool: string): string | undefined {
 
 export const THEME_INSTRUCTIONS = `# Themes (cavvy)
 
-To change how Cavvy's window looks (its colours, an animated scene behind it), when the user asks: theme_list first (it says how to make one), then theme_set.`;
+To change how Cavvy's window looks (its colours, an animated scene behind it), when the user asks: theme_list first (it says which theme is showing and how to make one), then theme_set.`;

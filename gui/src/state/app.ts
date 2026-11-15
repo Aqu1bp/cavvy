@@ -10,7 +10,7 @@ import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, Project
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
-import { prefs, setPrefs } from "./prefs";
+import { activeTheme, prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
@@ -1081,6 +1081,14 @@ export function start() {
         const id = hidden() ? undefined : app.activeId;
         if (app.conn === "open") void rpc.call("session.shown", { id }).catch(() => undefined);
     }));
+    // And which theme it shows, so an agent asked to change "this theme" knows which (ThemeList). A window on a
+    // server has no theme tools there.
+    if (!machine)
+        createRoot(() => createEffect(() => {
+            const id = prefs.themeId ?? null;
+            const scheme = activeTheme();
+            if (app.conn === "open") void rpc.call("themes.showing", { id, scheme }).catch(() => undefined);
+        }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
         batch(() => {
