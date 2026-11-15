@@ -177,6 +177,11 @@ export interface Settings {
     browser?: { enabled?: boolean; executable?: string; headless?: boolean };
     /** Xcode's iOS simulators, which agents drive and the GUI's Simulator pane shows (src/simulator). `enabled` (default true) offers the Simulator tools. */
     simulator?: { enabled?: boolean };
+    /**
+     * The person's Mac apps, which agents use once the person says so (src/desktop). `enabled` (default false) offers the
+     * Desktop tools; only the user's own settings can turn it on (a project mustn't hand over the Mac), any can turn it off.
+     */
+    desktop?: { enabled?: boolean };
     /** Plugins turned on or off at this scope, by "name@marketplace" (src/plugins). */
     enabledPlugins?: Record<string, boolean>;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
@@ -476,6 +481,11 @@ export function simulatorEnabled(s: Settings): boolean {
     return !(typeof s.simulator === "object" && s.simulator !== null && s.simulator.enabled === false);
 }
 
+/** Whether the Desktop tools are on: off unless turned on (loadSettings keeps it on only from the user's own settings). */
+export function desktopEnabled(s: Settings): boolean {
+    return typeof s.desktop === "object" && s.desktop !== null && s.desktop.enabled === true;
+}
+
 export function hookConfigWarnings(s: Settings): readonly string[] {
     return hookWarnings.get(s) ?? [];
 }
@@ -491,7 +501,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const merged: Settings = {};
     const warnings = new Set<string>();
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, worktree, lsp, browser: _browser, simulator: _simulator, enabledPlugins: _, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, lsp, browser: _browser, simulator: _simulator, desktop: _desktop, enabledPlugins: _, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -527,6 +537,9 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     mergeBrowser(merged, layers, user);
     // Any layer can turn the simulator off; none can turn it back on.
     if (layers.some((l) => !simulatorEnabled(l))) merged.simulator = { enabled: false };
+    // On from the user's own settings alone; off from any.
+    const desktopOff = layers.some((l) => typeof l.desktop === "object" && l.desktop !== null && l.desktop.enabled === false);
+    if (desktopEnabled(user) && !desktopOff) merged.desktop = { enabled: true };
     mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
     const unreadable = userFile.unreadable || userFile.empty ? settingsPath("user", cwd) : localFile.unreadable || localFile.empty ? settingsPath("local", cwd) : undefined;

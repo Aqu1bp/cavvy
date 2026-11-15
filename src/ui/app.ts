@@ -4,6 +4,7 @@
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
 import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
+import { DESKTOP_TOOL_HEADINGS } from "../tools/desktop-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
@@ -468,7 +469,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds; the last turn's closing snapshot, which goes on after the turn, as long.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, this.agent?.turnSnapshots?.stop(), killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(),this.toolState.simulator?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, this.agent?.turnSnapshots?.stop(), killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(),this.toolState.simulator?.dispose(), this.toolState.desktop?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
@@ -1782,7 +1783,11 @@ export class App {
         let hiddenNote = "";
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
-        if (isShellTool(tool.name)) {
+        if (decision.appGrant !== undefined) {
+            // One of the user's Mac apps: the question is the whole of it.
+            title = "Mac app";
+            header.push(bold(`${req.preview?.summary ?? `Use ${decision.appGrant}`}?`));
+        } else if (isShellTool(tool.name)) {
             title = tool.name === "Monitor" ? "Monitor command" : req.secrets?.length ? "Bash command with secrets" : "Bash command";
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
@@ -1827,6 +1832,9 @@ export class App {
         } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
             title = SIMULATOR_TOOL_HEADINGS[tool.name]!;
             header.push(bold(req.preview?.summary ?? req.title));
+        } else if (DESKTOP_TOOL_HEADINGS[tool.name]) {
+            title = DESKTOP_TOOL_HEADINGS[tool.name]!;
+            header.push(bold(req.preview?.summary ?? req.title));
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             title = BROWSER_TOOL_HEADINGS[tool.name]!;
             header.push(bold(tool.name === "BrowserNavigate" ? String(input.url ?? "") : req.title));
@@ -1855,7 +1863,7 @@ export class App {
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
         // What it does in a line, above the command, marked as the model's.
         if (req.summary) header.unshift(theme.muted("AI summary: ") + bold(req.summary) + (hiddenNote ? theme.warning(hiddenNote) : ""), "");
-        header.push("", "Do you want to proceed?");
+        if (decision.appGrant === undefined) header.push("", "Do you want to proceed?");
         items.push({ label: `No, and tell ${APP_TITLE} what to do differently ${theme.muted("(esc)")}`, value: "no" });
         // Its sub-agent was stopped while this was put together.
         if (req.signal?.aborted) return { allow: false };

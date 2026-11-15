@@ -13,6 +13,7 @@ import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { BrowserSession } from "../browser/session";
 import { SimulatorSession } from "../simulator/session";
 import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
+import { DESKTOP_TOOL_HEADINGS } from "../tools/desktop-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, wakesFrom, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -2626,7 +2627,11 @@ export class Runtime {
         // A shell grant is commands or paths (shown as code); any other is in words ("browser actions").
         if (decision.grant) it.options.push({ id: "session", label: isShellTool(tool.name) ? `Allow \`${redact(decision.grant.label)}\` for the session` : `Allow ${redact(decision.grant.label)} this session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
-        if (isShellTool(tool.name)) {
+        if (decision.appGrant !== undefined) {
+            // One of the user's Mac apps ("Use Notes?"): it lasts the session, so the yes isn't "once".
+            it.heading = redact(req.preview?.summary ?? `Use ${decision.appGrant}`);
+            it.options = [{ id: "yes", label: "Allow" }];
+        } else if (isShellTool(tool.name)) {
             it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
             it.command = redact(String(input.command ?? ""));
             if (input.description) it.description = redact(String(input.description));
@@ -2659,6 +2664,9 @@ export class Runtime {
         } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
             // What it does ("Start iPhone 17", "Tap e4 on the simulator") heads the prompt where the preview says.
             it.heading = req.preview?.summary ? redact(req.preview.summary) : SIMULATOR_TOOL_HEADINGS[tool.name]!;
+        } else if (DESKTOP_TOOL_HEADINGS[tool.name]) {
+            // What it does, in which app ("Click e4 in TextEdit", "Open Notes").
+            it.heading = req.preview?.summary ? redact(req.preview.summary) : DESKTOP_TOOL_HEADINGS[tool.name]!;
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
             if (tool.name === "BrowserNavigate") it.url = String(input.url ?? "");
@@ -4558,6 +4566,7 @@ export class Runtime {
             this.toolState.lsp?.dispose(),
             this.toolState.browser?.dispose(),
             this.toolState.simulator?.dispose(),
+            this.toolState.desktop?.dispose(),
             commit,
         ]);
         try {

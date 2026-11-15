@@ -11,6 +11,7 @@ import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
+import type { DesktopSession } from "../desktop/session";
 import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
 import type { ServerSetup } from "./server-tools";
@@ -98,6 +99,8 @@ export interface ToolState {
     browser?: BrowserSession;
     /** The session's use of Xcode's simulators (src/simulator); made when it's first needed, closed with the session, shared with its sub-agents. */
     simulator?: SimulatorSession;
+    /** The person's Mac apps the session may use (src/desktop): made when first needed, its grants kept until the session ends, shared with its sub-agents. */
+    desktop?: DesktopSession;
     /** The way to a machine that lends this one tools it hasn't got (the user's Mac and its simulators: src/tools/lent.ts). */
     lends?: Lends;
     /** This session runs tools for a session on another of the user's machines (Runtime.guestOf): nothing is kept here for it, and what's refused doesn't describe this machine. */
@@ -236,6 +239,13 @@ const SIMULATOR_TOOL_NAMES = new Set(["SimulatorControl", "SimulatorSnapshot", "
 
 export function isSimulatorTool(name: string): boolean {
     return SIMULATOR_TOOL_NAMES.has(name);
+}
+
+/** The tools that use the person's Mac apps (src/tools/desktop-tools.ts). */
+const DESKTOP_TOOL_NAMES = new Set(["DesktopControl", "DesktopSnapshot", "DesktopAct", "DesktopScreenshot"]);
+
+export function isDesktopTool(name: string): boolean {
+    return DESKTOP_TOOL_NAMES.has(name);
 }
 
 /** A browser call that only moves the pointer over the page: it goes unasked, though not in plan mode (a page's hover handlers run). */

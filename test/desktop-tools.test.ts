@@ -1,0 +1,480 @@
+// The Desktop tools (src/tools/desktop-tools.ts) without touching the Mac: which apps are never offered, what the
+// session sends the helper (only approved apps' pids), what the helper's refusals become, the person taking over,
+// stale refs, missing macOS grants, how the permission checker and the agent treat each call, and the setting.
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { dirname } from "path";
+import { isolate, tempDir } from "./helpers/isolate";
+
+isolate();
+const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable } = await import("../src/tools/desktop-tools");
+const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE } = await import("../src/desktop/session");
+const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
+const { DesktopGrants } = await import("../src/desktop/grants");
+const { PermissionChecker } = await import("../src/permissions/checker");
+const { loadSettings, desktopEnabled } = await import("../src/config/settings");
+const { paths } = await import("../src/config/paths");
+type DesktopHelperLike = import("../src/desktop/helper").DesktopHelperLike;
+type Reply = import("../src/desktop/helper").Reply;
+type DesktopNode = import("../src/desktop/outline").DesktopNode;
+
+const W = realpathSync(tempDir());
+
+// ---------------------------------------------------------------------------
+// A helper that answers as the Swift one does, from a Mac of its own.
+
+const APPS = [
+    { pid: 100, name: "TextEdit", bundleId: "com.apple.TextEdit", path: "/System/Applications/TextEdit.app" },
+    { pid: 200, name: "Terminal", bundleId: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app" },
+    { pid: 300, name: "cavvy-desktop", bundleId: "dev.cavvy.desktop", path: "/Applications/Cavvy.app" },
+    { pid: 400, name: "Notes", bundleId: "com.apple.Notes", path: "/System/Applications/Notes.app" },
+    { pid: 500, name: "Ghostly", bundleId: "com.example.ghostly", path: "/Applications/Ghostly.app" },
+];
+
+const tree = (text = "Hello", button = "Bold"): DesktopNode => ({
+    role: "AXApplication",
+    title: "TextEdit",
+    children: [{ role: "AXWindow", title: "Untitled", frame: [0, 0, 800, 600], children: [{ role: "AXButton", title: button, frame: [10, 10, 60, 20] }, { role: "AXTextArea", value: text, frame: [0, 40, 800, 560] }] }],
+});
+
+class FakeHelper implements DesktopHelperLike {
+    running = true;
+    pid = 9999;
+    human = 0;
+    ready = Promise.resolve({ accessibility: true } as Reply);
+    calls: Record<string, unknown>[] = [];
+    cancelled = 0;
+    front = 100;
+    accessibility = true;
+    screen = true;
+    tree = tree();
+    /** What the next call of an op answers, instead of what it would. */
+    answers: Record<string, Reply | ((c: Record<string, unknown>) => Reply)> = {};
+    /** The person's input, as the helper would count it by the time it answers the next call. */
+    humanNext?: number;
+    private exits: (() => void)[] = [];
+
+    async call(c: Record<string, unknown>): Promise<Reply> {
+        this.calls.push(c);
+        if (this.humanNext !== undefined) {
+            this.human = this.humanNext;
+            this.humanNext = undefined;
+        }
+        const op = String(c.op);
+        const given = this.answers[op];
+        if (given) {
+            delete this.answers[op];
+            const r = typeof given === "function" ? given(c) : given;
+            if (r.error) throw Object.assign(new (await import("../src/desktop/helper")).DesktopError(String(r.error), r.code as string | undefined));
+            return { ...r, human: this.human };
+        }
+        const needAx = ["look", "open", "click", "drag", "scroll", "press", "type"].includes(op);
+        const { DesktopError } = await import("../src/desktop/helper");
+        if (needAx && !this.accessibility) throw new DesktopError("Accessibility isn't on.", "accessibility");
+        switch (op) {
+            case "status":
+                return { accessibility: this.accessibility, screen: this.screen, human: this.human };
+            case "apps":
+                return { apps: APPS.map((a) => ({ ...a, front: a.pid === this.front })), ancestors: [300, 1234], human: this.human };
+            case "find": {
+                const want = String(c.name).toLowerCase();
+                const app = APPS.find((a) => a.name.toLowerCase() === want || a.bundleId.toLowerCase() === want) ?? (want === "calculator" ? { name: "Calculator", bundleId: "com.apple.calculator", path: "/System/Applications/Calculator.app" } : want === "shellapp" ? APPS[1] : undefined);
+                return app ? { found: true, app: { ...app, running: "pid" in app }, ancestors: [300, 1234], human: this.human } : { found: false, ancestors: [], human: this.human };
+            }
+            case "look":
+                return { front: this.front, windows: [{ pid: 100, frame: [0, 0, 800, 600] }], ...(c.pid !== undefined ? { tree: this.tree } : {}), human: this.human };
+            case "screenshot":
+                if (!this.screen) throw new DesktopError("Screen Recording isn't on.", "screen");
+                return { png: Buffer.from("png").toString("base64"), x: 0, y: 0, width: 800, height: 600, human: this.human };
+            default:
+                return { human: this.human };
+        }
+    }
+    cancel() {
+        this.cancelled++;
+    }
+    stop() {
+        this.running = false;
+        for (const fn of this.exits) fn();
+    }
+    onExit(fn: () => void) {
+        this.exits.push(fn);
+    }
+    sent(op: string) {
+        return this.calls.filter((c) => c.op === op);
+    }
+}
+
+let helper: FakeHelper;
+let started = 0;
+beforeEach(() => {
+    helper = new FakeHelper();
+    started = 0;
+    setDesktopHelperStarter(async () => {
+        started++;
+        return helper;
+    });
+});
+afterEach(() => {
+    resetDesktop();
+    setDesktopHelperStarter(undefined);
+});
+
+const session = () => new DesktopSession({ settleMs: 0 });
+const ctxWith = (s = session(), signal = new AbortController().signal) => ({ state: { cwd: W, projectRoot: W, desktop: s }, settings: { desktop: { enabled: true } }, signal }) as any;
+
+// ---------------------------------------------------------------------------
+
+describe("apps that are never offered", () => {
+    test("terminals, password managers and Cavvy, by name and by bundle id", () => {
+        for (const name of ["Terminal", "iTerm2", "iTerm", "Ghostty", "Warp", "WezTerm", "Alacritty", "kitty", "Terminal.app", "/System/Applications/Utilities/Terminal.app", "com.apple.Terminal", "Cool Retro Term"]) expect(neverOffered({ name }), name).toBe("terminal");
+        for (const name of ["Passwords", "Keychain Access", "1Password", "1Password 7", "Bitwarden", "KeePassXC", "com.apple.keychainaccess"]) expect(neverOffered({ name }), name).toBe("credentials");
+        for (const name of ["Cavvy", "cavvy-desktop", "Cavvy.app"]) expect(neverOffered({ name }), name).toBe("cavvy");
+        expect(neverOffered({ name: "Whatever", bundleId: "com.googlecode.iterm2" })).toBe("terminal");
+        expect(neverOffered({ name: "Whatever", bundleId: "com.1password.1password" })).toBe("credentials");
+        expect(neverOffered({ name: "Electron", bundleId: "dev.cavvy.desktop" })).toBe("cavvy");
+        // Whatever Cavvy runs in: a dev build called Electron, the terminal `cavvy` was started in.
+        expect(neverOffered({ name: "Electron", bundleId: "com.github.Electron", own: true })).toBe("cavvy");
+    });
+
+    test("everyday apps are offered", () => {
+        for (const name of ["TextEdit", "Calculator", "Notes", "Safari", "Preview", "Cloudflare WARP", "Hyper Backup"]) expect(neverOffered({ name }), name).toBeUndefined();
+        expect(neverOffered({ name: "Notes", bundleId: "com.apple.Notes" })).toBeUndefined();
+    });
+});
+
+describe("asking for an app", () => {
+    test("one that's never offered is refused before the user is asked, without starting the helper", async () => {
+        const ctx = ctxWith();
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "Terminal" }, ctx)).toMatch(/Terminal can't be used: it's a terminal/);
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "1Password" }, ctx)).toMatch(/password manager/);
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "Cavvy" }, ctx)).toMatch(/Cavvy itself/);
+        expect(started).toBe(0);
+    });
+
+    test("one found to be never offered (another name for a terminal, found by its bundle id) is refused too", async () => {
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "Shellapp" }, ctxWith())).toMatch(/Terminal can't be used/);
+    });
+
+    test("one that isn't on the Mac is refused before asking; one that is is named as it's installed", async () => {
+        const ctx = ctxWith();
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "Nopeapp" }, ctx)).toBe("There's no app called Nopeapp on this Mac.");
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "textedit" }, ctx)).toBeUndefined();
+        expect(await DesktopControlTool.preview!({ action: "request_access", app: "textedit" }, ctx)).toEqual({ summary: "Use TextEdit" });
+        expect(await DesktopControlTool.validate!({ action: "request_access" }, ctx)).toMatch(/needs app/);
+    });
+
+    test("a yes lasts the session; an app that isn't running says how to start it", async () => {
+        const s = session();
+        const r = await DesktopControlTool.run({ action: "request_access", app: "Calculator" }, ctxWith(s));
+        expect(r.content).toBe("You can use Calculator until this session ends. It isn't running: DesktopControl action=open starts it.");
+        expect(s.approved()).toEqual([{ name: "Calculator", bundleId: "com.apple.calculator" }]);
+    });
+
+    test("without Accessibility, the yes holds and the result says in one line what to turn on, after macOS's own prompt", async () => {
+        helper.accessibility = false;
+        const s = session();
+        const r = await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        expect(r.content).toBe(`You can use TextEdit until this session ends. ${ACCESSIBILITY_LINE}`);
+        expect(ACCESSIBILITY_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Accessibility, then try again.");
+        expect(helper.calls.filter((c) => c.op === "status" && c.ask === "accessibility")).toHaveLength(1);
+        // A snapshot says the same, and doesn't show the prompt again.
+        const snap = await DesktopSnapshotTool.run({}, ctxWith(s));
+        expect(snap).toMatchObject({ isError: true, content: ACCESSIBILITY_LINE });
+        expect(helper.calls.filter((c) => c.op === "status" && c.ask === "accessibility")).toHaveLength(1);
+    });
+});
+
+describe("what reaches the Mac", () => {
+    const granted = async (...names: string[]) => {
+        const s = session();
+        for (const n of names) await s.grant(n);
+        return s;
+    };
+
+    test("with no app given, nothing is read or done", async () => {
+        const s = session();
+        const r = await DesktopSnapshotTool.run({}, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>." });
+        const act = await DesktopActTool.run({ action: "click", x: 10, y: 10 }, ctxWith(s));
+        expect(act.isError).toBe(true);
+        expect(helper.sent("click")).toHaveLength(0);
+        expect(helper.sent("look").filter((c) => c.pid !== undefined)).toHaveLength(0);
+    });
+
+    test("only the given apps' pids go with a read or an action, never another app's (Notes, the terminal, Cavvy)", async () => {
+        const s = await granted("TextEdit");
+        const snap = await s.snapshot();
+        expect(snap).toStartWith("Apps you may use: TextEdit (in front).\nApp: TextEdit");
+        await DesktopActTool.run({ action: "click", x: 20, y: 20 }, ctxWith(s));
+        await DesktopActTool.run({ action: "type", text: "hi" }, ctxWith(s));
+        await DesktopActTool.run({ action: "press", key: "Meta+S" }, ctxWith(s));
+        for (const op of ["click", "type", "press"]) {
+            expect(helper.sent(op).length, op).toBeGreaterThan(0);
+            for (const c of helper.sent(op)) expect(c.pids, op).toEqual([100]);
+        }
+        for (const c of helper.sent("look")) expect(c.pid === undefined || c.pid === 100).toBe(true);
+        expect(helper.sent("press")[0]).toMatchObject({ key: "s", modifiers: ["cmd"] });
+    });
+
+    test("an app not given can't be read by name or opened", async () => {
+        const s = await granted("TextEdit");
+        expect(await DesktopSnapshotTool.run({ app: "Notes" }, ctxWith(s))).toMatchObject({ isError: true, content: "Notes isn't an app you may use: ask with DesktopControl action=request_access app=Notes." });
+        expect(await DesktopControlTool.run({ action: "open", app: "Notes" }, ctxWith(s))).toMatchObject({ isError: true, content: "Notes isn't an app you may use: ask with DesktopControl action=request_access app=Notes." });
+        expect(helper.sent("open")).toHaveLength(0);
+    });
+
+    test("a click outside an approved app's window is refused by the helper, and the agent is told", async () => {
+        const s = await granted("TextEdit");
+        helper.answers.click = { error: "Not done: 900,700 isn't on a window of an app you may use.", code: "outside" };
+        const r = await DesktopActTool.run({ action: "click", x: 900, y: 700 }, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: "Not done: 900,700 isn't on a window of an app you may use." });
+    });
+
+    test("a keystroke while another app is in front is refused, and a snapshot says to bring one forward", async () => {
+        const s = await granted("TextEdit");
+        helper.front = 400;
+        helper.answers.type = { error: "Not done: an app you may use isn't in front, so keys would go elsewhere.", code: "front" };
+        const r = await DesktopActTool.run({ action: "type", text: "secret" }, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: "Not done: an app you may use isn't in front, so keys would go elsewhere." });
+        expect(await s.snapshot()).toContain("Another app is in front: keys reach only an app you may use, so bring one to the front first (DesktopControl action=open)");
+    });
+
+    test("when the user uses the Mac during an action, it stops and says so, with the app as it is", async () => {
+        const s = await granted("TextEdit");
+        helper.answers.type = { error: "Stopped: the user used the Mac.", code: "human:3" };
+        const r = await DesktopActTool.run({ action: "type", text: "hello world" }, ctxWith(s));
+        expect(r.isError).toBe(true);
+        expect(r.content).toStartWith("Stopped: the user used the Mac (the mouse or keyboard) during this action, so it's unfinished. Take a new snapshot before going on. (3 characters were typed.)");
+        expect(r.content).toContain("App: TextEdit");
+    });
+
+    test("Esc stops an action under way: the helper is told to stop", async () => {
+        const s = await granted("TextEdit");
+        const ac = new AbortController();
+        helper.answers.type = () => {
+            ac.abort();
+            return { error: "Stopped.", code: "cancelled" };
+        };
+        const r = await DesktopActTool.run({ action: "type", text: "hello" }, ctxWith(s, ac.signal));
+        expect(r).toMatchObject({ isError: true, content: "Interrupted by user" });
+        expect(helper.cancelled).toBe(1);
+    });
+
+    test("a ref is refused, with nothing sent, when the user used the Mac since the agent looked", async () => {
+        const s = await granted("TextEdit");
+        const snap = await s.snapshot();
+        const ref = /"Bold" \[(e\d+)\]/.exec(snap)![1]!;
+        helper.humanNext = 2;
+        const r = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
+        expect(r.isError).toBe(true);
+        expect(r.content).toStartWith(`Not done: ${ref} may not be what it was.`);
+        expect(r.content).toContain(USED_NOTE);
+        expect(helper.sent("click")).toHaveLength(0);
+    });
+
+    test("a ref is refused, with nothing sent, when what it stood for has gone; and is good for one action", async () => {
+        const s = await granted("TextEdit");
+        let ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        helper.tree = tree("Hello", "Italic");
+        const r = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
+        expect(r.content).toStartWith(`Not done: ${ref} isn't there any more: the app has changed.`);
+        expect(helper.sent("click")).toHaveLength(0);
+        // The outline that came back has new refs: one of them works, once.
+        ref = /"Italic" \[(e\d+)\]/.exec(r.content)![1]!;
+        const ok = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
+        expect(ok.content).toStartWith(`Clicked "Italic" [${ref}].`);
+        expect(helper.sent("click")[0]).toMatchObject({ x: 40, y: 20, pids: [100] });
+    });
+
+    test("a screenshot has only the given apps' windows; without Screen Recording, one line says what to turn on", async () => {
+        const s = await granted("TextEdit");
+        const shot = await DesktopScreenshotTool.run({}, ctxWith(s));
+        expect(shot.content).toStartWith("Screenshot of TextEdit (in front), 800×600");
+        expect(helper.sent("screenshot")[0]).toMatchObject({ pids: [100] });
+        helper.screen = false;
+        const none = await DesktopScreenshotTool.run({}, ctxWith(s));
+        expect(none).toMatchObject({ isError: true, content: SCREEN_LINE });
+        expect(SCREEN_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Screen & System Audio Recording, then try again.");
+        // The helper starts again for the next call: a new grant shows only to a new process.
+        expect(helper.running).toBe(false);
+    });
+});
+
+describe("keys", () => {
+    test("names and combinations as the agent writes them", () => {
+        expect(parseKey("Enter")).toEqual({ key: "enter", modifiers: [] });
+        expect(parseKey("Meta+Shift+Z")).toEqual({ key: "z", modifiers: ["cmd", "shift"] });
+        expect(parseKey("a", ["Control"])).toEqual({ key: "a", modifiers: ["ctrl"] });
+        expect(parseKey("Esc")).toEqual({ key: "escape", modifiers: [] });
+        expect(parseKey("+")).toEqual({ key: "+", modifiers: [] });
+        expect(parseKey("Meta++")).toEqual({ key: "+", modifiers: ["cmd"] });
+        expect(parseKey("Hyper+A")).toMatch(/Unknown modifier/);
+        expect(parseKey("Banana")).toMatch(/Unknown key/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("permissions", () => {
+    const checker = (settings: object = {}) => new PermissionChecker(() => settings as any, W);
+    const ask = { action: "request_access", app: "TextEdit" };
+
+    test("asking for an app goes to the user in every mode, past rules that allow it, and offers nothing wider", () => {
+        for (const mode of ["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as const) {
+            const d = checker().check(DesktopControlTool, ask, mode, W);
+            expect(d, mode).toMatchObject({ behavior: "ask", appGrant: "TextEdit", everyTime: true });
+            expect(d.needsClassifier, mode).toBeUndefined();
+        }
+        for (const rule of ["DesktopControl", "DesktopControl(request_access)"]) expect(checker({ permissions: { allow: [rule] } }).check(DesktopControlTool, ask, "bypassPermissions", W).behavior, rule).toBe("ask");
+        const c = checker();
+        const d = c.check(DesktopControlTool, ask, "default", W);
+        expect(c.withGrant(DesktopControlTool, ask, d, W).grant).toBeUndefined();
+        // A yes isn't remembered as one: each ask is the user's.
+        c.approve(DesktopControlTool, ask, W);
+        expect(c.check(DesktopControlTool, ask, "default", W).behavior).toBe("ask");
+        expect(c.recentApprovals()).toEqual([]);
+        // A deny rule still wins.
+        expect(checker({ permissions: { deny: ["DesktopControl(request_access)"] } }).check(DesktopControlTool, ask, "default", W).behavior).toBe("deny");
+    });
+
+    test("reading never asks; acting asks like other tools that execute, and the reviewer decides in auto mode", () => {
+        const c = checker();
+        expect(c.check(DesktopSnapshotTool, {}, "default", W).behavior).toBe("allow");
+        expect(c.check(DesktopScreenshotTool, {}, "default", W).behavior).toBe("allow");
+        expect(c.check(DesktopControlTool, { action: "list" }, "default", W).behavior).toBe("allow");
+        expect(c.check(DesktopActTool, { action: "wait" }, "default", W).behavior).toBe("allow");
+        const click = c.check(DesktopActTool, { action: "click", ref: "e1" }, "default", W);
+        expect(click).toMatchObject({ behavior: "ask", suggestions: ["DesktopAct"] });
+        expect(c.withGrant(DesktopActTool, { action: "click", ref: "e1" }, click, W).grant).toEqual({ label: "actions in the apps you gave", rules: ["DesktopAct"] });
+        expect(c.check(DesktopActTool, { action: "click", ref: "e1" }, "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        expect(c.check(DesktopActTool, { action: "click", ref: "e1" }, "bypassPermissions", W).behavior).toBe("allow");
+        // A yes to a click covers that click: the same ref on the next screen asks again.
+        c.approve(DesktopActTool, { action: "click", ref: "e1" }, W);
+        expect(c.check(DesktopActTool, { action: "click", ref: "e1" }, "default", W).behavior).toBe("ask");
+        const open = c.check(DesktopControlTool, { action: "open", app: "TextEdit" }, "default", W);
+        expect(open).toMatchObject({ behavior: "ask", suggestions: ["DesktopControl(open)"] });
+        expect(checker({ permissions: { allow: ["DesktopControl(open)"] } }).check(DesktopControlTool, { action: "open", app: "TextEdit" }, "default", W).behavior).toBe("allow");
+    });
+
+    test("plan mode reads the apps but doesn't open, click or type", () => {
+        const c = checker();
+        expect(c.check(DesktopSnapshotTool, {}, "plan", W).behavior).toBe("allow");
+        expect(c.check(DesktopControlTool, { action: "list" }, "plan", W).behavior).toBe("allow");
+        for (const [tool, input] of [
+            [DesktopActTool, { action: "click", x: 1, y: 1 }],
+            [DesktopActTool, { action: "type", text: "x" }],
+            [DesktopControlTool, { action: "open", app: "TextEdit" }],
+        ] as const) {
+            const d = c.check(tool, input, "plan", W);
+            expect(d.behavior).toBe("deny");
+            expect(d.reason).toMatch(/can be read .* but not opened, clicked or typed into/);
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("the agent", () => {
+    test("an app is the user's to give: not a mode, a rule that allows the tool, or a hook", async () => {
+        const { Agent } = await import("../src/agent/agent");
+        const { Session } = await import("../src/agent/session");
+        const { BUILTIN_TOOLS } = await import("../src/tools/index");
+        const run = async (settings: object, mode: "default" | "bypassPermissions", tool: any, input: Record<string, unknown>, answer = true) => {
+            const asked: any[] = [];
+            const s = session();
+            const agent = new Agent({
+                session: Session.create(W, { persist: false }),
+                model: { provider: "anthropic", id: "default" },
+                client: {} as any,
+                settings: () => settings as any,
+                checker: new PermissionChecker(() => settings as any, W),
+                tools: BUILTIN_TOOLS,
+                mode: { get: () => mode, set: () => undefined },
+                toolState: { cwd: W, projectRoot: W, fileState: new Map(), todos: [], shells: new Map(), desktop: s },
+                helpers: { resolveModel: async () => undefined } as any,
+                host: {
+                    emit: () => undefined,
+                    ui: {},
+                    askPermission: async (req: any) => {
+                        asked.push(req);
+                        return { allow: answer };
+                    },
+                },
+            } as any);
+            // The checks a call of the agent's own goes through (runLent is runServed: prepare, then run).
+            const r = await agent.runLent(tool, input, new AbortController().signal);
+            return { r, asked, s };
+        };
+        const on = { desktop: { enabled: true } };
+        // Asked for in bypass mode, with a rule allowing the tool; the prompt reads "Use TextEdit".
+        const given = await run({ ...on, permissions: { allow: ["DesktopControl"] } }, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "TextEdit" });
+        expect(given.asked).toHaveLength(1);
+        expect(given.asked[0].decision).toMatchObject({ appGrant: "TextEdit" });
+        expect(given.asked[0].preview).toEqual({ summary: "Use TextEdit" });
+        expect(given.s.approved().map((a) => a.name)).toEqual(["TextEdit"]);
+        // Declined: no app.
+        const declined = await run(on, "default", DesktopControlTool, { action: "request_access", app: "TextEdit" }, false);
+        expect(declined.r.isError).toBe(true);
+        expect(declined.s.approved()).toEqual([]);
+        // A hook that allows the tool doesn't give an app away.
+        const allowAll = `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'`;
+        const hooked = await run({ ...on, hooks: { PreToolUse: [{ matcher: "DesktopControl", command: allowAll }] } }, "default", DesktopControlTool, { action: "request_access", app: "TextEdit" });
+        expect(hooked.asked).toHaveLength(1);
+        // Never offered: refused before the user is asked.
+        const terminal = await run(on, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "Terminal" });
+        expect(terminal.asked).toHaveLength(0);
+        expect(terminal.r.text).toMatch(/Terminal can't be used/);
+    });
+});
+
+describe("for other agents' computer use", () => {
+    test("the never-offered apps are listed by bundle id, with names", () => {
+        const ids = NEVER_OFFERED.map((a) => a.bundleId);
+        for (const id of ["com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.apple.Passwords", "com.apple.keychainaccess", "com.1password.1password", "com.bitwarden.desktop", "dev.cavvy.desktop"]) expect(ids).toContain(id);
+        expect(new Set(ids).size).toBe(ids.length);
+        for (const a of NEVER_OFFERED) expect(neverOffered({ name: "Anything", bundleId: a.bundleId }), a.bundleId).toBe(a.reason);
+    });
+
+    test("the grants are kept by bundle id, and can't hold an app that's never offered", () => {
+        const g = new DesktopGrants();
+        g.add({ name: "TextEdit", bundleId: "com.apple.TextEdit" });
+        g.add({ name: "TextEdit", bundleId: "com.apple.textedit" });
+        expect(g.bundleIds()).toEqual(["com.apple.textedit"]);
+        expect(g.has("COM.APPLE.TEXTEDIT")).toBe(true);
+        expect(() => g.add({ name: "Terminal", bundleId: "com.apple.Terminal" })).toThrow();
+        expect(g.size).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+test("off unless the user's own settings turn it on; any settings file turns it off", () => {
+    expect(desktopEnabled({})).toBe(false);
+    expect(desktopEnabled({ desktop: { enabled: true } })).toBe(true);
+    expect(desktopEnabled({ desktop: "yes" } as any)).toBe(false);
+    const load = (user: object, project?: object, local?: object) => {
+        const cwd = realpathSync(tempDir("cavvy-desktop-settings-"));
+        mkdirSync(dirname(paths.userSettings()), { recursive: true });
+        writeFileSync(paths.userSettings(), JSON.stringify(user));
+        for (const [file, s] of [
+            [paths.projectSettings(cwd), project],
+            [paths.localSettings(cwd), local],
+        ] as const) {
+            if (!s) continue;
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, JSON.stringify(s));
+        }
+        return desktopEnabled(loadSettings(cwd));
+    };
+    expect(load({})).toBe(false);
+    expect(load({ desktop: { enabled: true } })).toBe(true);
+    // A project can't hand the Mac over.
+    expect(load({}, { desktop: { enabled: true } })).toBe(false);
+    expect(load({}, undefined, { desktop: { enabled: true } })).toBe(false);
+    expect(load({ desktop: { enabled: true } }, { desktop: { enabled: false } })).toBe(false);
+    expect(load({ desktop: { enabled: true } }, undefined, { desktop: { enabled: false } })).toBe(false);
+    expect(desktopAvailable({ desktop: { enabled: true } })).toBe(process.platform === "darwin");
+    expect(desktopAvailable({})).toBe(false);
+    expect(DESKTOP_TOOLS.every((t) => t.enabled!({ settings: {} }) === false)).toBe(true);
+});

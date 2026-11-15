@@ -280,6 +280,9 @@ function General() {
                     <Row title="Simulator" desc="Let agents use Xcode's iOS simulators, which you can watch in the side panel.">
                         <Toggle label="Simulator" checked={s().simulator !== false} onChange={(v) => void update({ simulator: v }).then(() => (app.activeId ? loadSimulatorState(app.activeId) : undefined)).catch(() => undefined)} />
                     </Row>
+                    <Row title="Mac apps" desc="Let agents use apps on this Mac. They ask you for each app.">
+                        <Toggle label="Mac apps" checked={s().desktop === true} onChange={(v) => void update({ desktop: v })} />
+                    </Row>
                 </Show>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
                     <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />

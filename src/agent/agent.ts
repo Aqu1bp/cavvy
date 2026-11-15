@@ -77,6 +77,7 @@ import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
+import { DesktopSession } from "../desktop/session";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
 import { nativeSessionCall, servedSessionName, servedSessionTool, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
@@ -3338,7 +3339,7 @@ export class Agent {
         if (req.hookDecision === "ask") ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
-        if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
+        if (req.hookDecision === "allow" && !decision.dangerous && decision.appGrant === undefined) return { allow: true };
         if (this.o.settings().hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
@@ -3549,7 +3550,8 @@ export class Agent {
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
-        if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
+        // Nor an app on the user's Mac: they give each themselves.
+        if (hookDecision === "allow" && !decision.dangerous && decision.appGrant === undefined) return { tool, input, sandbox, auto: "hook" };
 
         // A browser tool Claude Code or Codex calls, in auto mode: runs without Cavvy's reviewer, as T3 Code's do (that
         // reviewer would be a one-off run of the CLI itself). Rules, plan mode, read-only agents and hooks still hold.
@@ -3574,7 +3576,7 @@ export class Agent {
             }
         }
 
-        if (settings.hooks?.PermissionRequest?.length) {
+        if (settings.hooks?.PermissionRequest?.length && decision.appGrant === undefined) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
             if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`, undefined, quiet) };
@@ -4006,6 +4008,8 @@ export class Agent {
                 browser: this.state.browser,
                 // And its device, the session's.
                 simulator: this.state.simulator,
+                // And the apps the user gave the session.
+                desktop: (this.state.desktop ??= new DesktopSession()),
                 lends: this.state.lends,
             },
             host: {

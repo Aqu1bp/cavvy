@@ -47,6 +47,8 @@
 //   "repeats"        reads the same file three times in a row (one row, counted), then lists files
 //   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, takes a
 //                    screenshot, and shows it in its reply
+//   "macapps"        asks for TextEdit, opens it, types into a new document and takes a screenshot ("macapps terminal": asks
+//                    for Terminal, which is refused; "macapps long": types for several seconds)
 //   "simulator"      starts an iOS simulator, opens Settings by its ref, scrolls, takes a screenshot and shows it in
 //                    its reply (needs a Mac with Xcode)
 //   anything else    a short markdown answer
@@ -200,6 +202,29 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 3) return { text: "A screenshot, to show you.", calls: [{ name: "SimulatorScreenshot", args: {} }] };
         const saved = /put !\[[^\]]*\]\((<(?:\\.|[^\\<>\n])*>|[^\s()<>]+)\) in your last message/.exec(lastResult)?.[1];
         return { text: `Settings opens and scrolls.${saved ? `\n\n![Settings in the simulator](${saved})` : ""}` };
+    }
+    // The Mac's apps (needs desktop.enabled in the user's settings): TextEdit asked for, opened, read, typed into and
+    // pictured; "macapps terminal" asks for Terminal, which is never offered; "macapps long" types for several seconds
+    // (time to take over with the mouse).
+    if (/\bmacapps\b/.test(p)) {
+        const app = /\bterminal\b/.test(p) ? "Terminal" : "TextEdit";
+        if (toolRounds === 0) return { text: `I'll ask you for ${app}.`, calls: [{ name: "DesktopControl", args: { action: "request_access", app } }] };
+        if (app === "Terminal" || /declined|can't be used|no app/i.test(lastResult)) return { text: lastResult.split("\n")[0]! };
+        if (toolRounds === 1) return { text: "I'll bring it to the front.", calls: [{ name: "DesktopControl", args: { action: "open", app } }] };
+        if (toolRounds === 2) return { text: "Reading it.", calls: [{ name: "DesktopSnapshot", args: {} }] };
+        if (/^Screenshot of/.test(lastResult)) {
+            const saved = /put !\[[^\]]*\]\((<(?:\\.|[^\\<>\n])*>|[^\s()<>]+)\) in your last message/.exec(lastResult)?.[1];
+            return { text: `Done.${saved ? `\n\n![TextEdit](${saved})` : ""}` };
+        }
+        if (/^Typed /.test(lastResult)) return { text: `${lastResult.split("\n")[0]} A screenshot, to show you.`, calls: [{ name: "DesktopScreenshot", args: {} }] };
+        const area = /- textarea[^\n]*\[(e\d+)\]/.exec(lastResult)?.[1];
+        const fresh = /button "New Document" \[(e\d+)\]/.exec(lastResult)?.[1];
+        if (area && toolRounds < 6) {
+            const text = /\blong\b/.test(p) ? Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of a long note typed by the agent, slowly enough to take over.`).join("\n") : "Hello from Cavvy.";
+            return { text: "Typing into the document.", calls: [{ name: "DesktopAct", args: { action: "type", ref: area, text } }] };
+        }
+        if (fresh && toolRounds < 6) return { text: "It's showing its open panel: a new document.", calls: [{ name: "DesktopAct", args: { action: "click", ref: fresh } }] };
+        return { text: lastResult.split("\n")[0]! };
     }
     // A monitor's lines woke the agent: say what they were.
     if (/<event source="monitor"/.test(prompt)) {

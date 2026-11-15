@@ -6,6 +6,7 @@ import { BashTool, BashOutputTool, KillShellTool } from "./bash";
 import { MonitorTool } from "./monitor";
 import { BROWSER_TOOLS } from "./browser-tools";
 import { SIMULATOR_TOOLS } from "./simulator-tools";
+import { DESKTOP_TOOLS } from "./desktop-tools";
 import { GlobTool, GrepTool, LSTool } from "./search-tools";
 import { WebFetchTool, WebSearchTool } from "./web-tools";
 import { GitCommitTool, GitPushTool, CreatePullRequestTool, WatchPullRequestTool, UnwatchPullRequestTool } from "./git-tools";
@@ -33,6 +34,7 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     WebSearchTool,
     ...BROWSER_TOOLS,
     ...SIMULATOR_TOOLS,
+    ...DESKTOP_TOOLS,
     GitCommitTool,
     GitPushTool,
     CreatePullRequestTool,

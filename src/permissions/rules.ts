@@ -225,7 +225,7 @@ export interface RuleTarget {
     path?: string;
     url?: string;
     agentType?: string;
-    /** SimulatorControl's action (launch, shutdown, …). */
+    /** SimulatorControl's or DesktopControl's action (launch, shutdown, open, …). */
     action?: string;
 }
 
@@ -273,7 +273,7 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
         }
     }
     if (t.toolName === "Task") return rule.spec === t.agentType;
-    if (t.toolName === "SimulatorControl") return rule.spec === t.action;
+    if (t.toolName === "SimulatorControl" || t.toolName === "DesktopControl") return rule.spec === t.action;
     return false;
 }
 

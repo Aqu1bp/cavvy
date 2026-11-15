@@ -75,6 +75,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 | [Changes, worktrees and comparing models](docs/git.md) | The review pane, committing and pushing, pull requests, worktrees, one task on several models |
 | [Browser](docs/browser.md) | The browser tools and the Browser pane |
 | [Simulator](docs/simulator.md) | iOS simulators the agent drives, and the Simulator pane |
+| [Mac apps](docs/mac-apps.md) | Apps on your Mac that agents use once you say yes to each |
 | [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
 | [Other sessions](docs/other-sessions.md) | The agent listing, reading, messaging and starting your other sessions |
 | [Servers](docs/servers.md) | Running Cavvy on a machine you reach with SSH, and working there from this one |

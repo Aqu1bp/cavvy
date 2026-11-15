@@ -30,7 +30,7 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
-import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
+import { isBrowserTool, isDesktopTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { onServer } from "../servers/role";
 import { antigravityConfigDirs, cavvyHome, opencodeConfigDir, paths } from "../config/paths";
@@ -70,6 +70,8 @@ export interface Decision {
     grant?: SessionGrant;
     /** Allowed because the user said yes to this exact action earlier in the session. */
     remembered?: boolean;
+    /** Asks the user for one of their Mac's apps (DesktopControl request_access): in every mode, past rules that allow, hooks and the reviewer. */
+    appGrant?: string;
 }
 
 /** What "Yes, and allow this for the session" covers, derived from what triggered the popup. */
@@ -118,11 +120,13 @@ function isLink(p: string): boolean {
 
 /** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
-const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval", "SimulatorAct"]);
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval", "SimulatorAct", "DesktopAct"]);
 /** What a simulator is told that acts on whatever runs there then: ending an app, a link opened in one, the device shut down or taken back. */
 const ONE_CALL_CONTROLS = new Set(["shutdown", "terminate", "open_url", "take_control"]);
 const oneCall = (tool: Tool<any>, input: any) =>
     ONE_CALL_APPROVAL.has(tool.name) ||
+    // An app is the user's to give each time it's asked for.
+    (tool.name === "DesktopControl" && input?.action === "request_access") ||
     // A launch with arguments ends the app if it's running, to start it with them.
     (tool.name === "SimulatorControl" && (ONE_CALL_CONTROLS.has(input?.action) || (input?.action === "launch" && Array.isArray(input.args) && input.args.length > 0)));
 const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".agents", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
@@ -187,7 +191,7 @@ export class PermissionChecker {
         else if (READ_TOOLS.has(tool.name)) t.path = cwd;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") t.url = String(input?.url ?? "");
         if (tool.name === "Task") t.agentType = String(input?.subagent_type ?? "general-purpose");
-        if (tool.name === "SimulatorControl") t.action = String(input?.action ?? "");
+        if (tool.name === "SimulatorControl" || tool.name === "DesktopControl") t.action = String(input?.action ?? "");
         return t;
     }
 
@@ -300,7 +304,7 @@ export class PermissionChecker {
      * configuration (a grant there would let the model widen its permissions).
      */
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
-        if (d.dangerous || d.config || d.rule || tool.category === "edit" || tool.category === "read") return undefined;
+        if (d.dangerous || d.config || d.rule || d.appGrant !== undefined || tool.category === "edit" || tool.category === "read") return undefined;
         if (isShellTool(tool.name)) {
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
@@ -315,6 +319,7 @@ export class PermissionChecker {
         if (!rules.length) return undefined;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
         if (tool.name === "SimulatorControl") return { label: SIMULATOR_CONTROL_NOUNS[String(input?.action)] ?? rules[0]!, rules };
+        if (tool.name === "DesktopControl") return { label: input?.action === "open" ? "opening the apps you gave" : rules[0]!, rules };
         return { label: toolNoun(tool.name), rules };
     }
 
@@ -439,6 +444,11 @@ export class PermissionChecker {
         const resolved: RuleTarget | undefined = t.path && canonical(t.path) !== t.path ? { ...t, path: canonical(t.path) } : undefined;
         const denied = findMatch(deny, t, this.root, "deny") ?? (resolved && findMatch(deny, resolved, this.root, "deny"));
         if (denied) return { behavior: "deny", rule: denied, reason: `Denied by permission rule ${denied}` };
+        // One of the user's Mac apps: they say yes to each themselves, whatever the mode (plan and bypass too), and
+        // whatever rule, hook or reviewer would allow it.
+        if (tool.name === "DesktopControl" && input?.action === "request_access") {
+            return { behavior: "ask", appGrant: String(input?.app ?? ""), everyTime: true, reason: "The agent can see and use it until this session ends." };
+        }
 
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to Cavvy credential store is blocked." };
@@ -483,6 +493,9 @@ export class PermissionChecker {
             }
             if (isSimulatorTool(tool.name) && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: the simulator can be read (snapshots, screenshots, the device list), but not started, tapped or typed into. Call ExitPlanMode with your plan first." };
+            }
+            if (isDesktopTool(tool.name) && !isReadOnly(tool, input)) {
+                return { behavior: "deny", reason: "Plan mode is active: the apps you may use can be read (snapshots, screenshots, the app list), but not opened, clicked or typed into. Call ExitPlanMode with your plan first." };
             }
             if (tool.name === "EnterWorktree" || tool.name === "ExitWorktree") {
                 return { behavior: "deny", reason: "Plan mode is active: the session stays where it is, in no new worktree. Call ExitPlanMode with your plan first." };
@@ -606,8 +619,11 @@ export class PermissionChecker {
                 // again" allows the tool. Starting, installing or shutting down asks per action: allowing launches
                 // doesn't allow shutting the device down.
                 if (isSimulatorTool(tool.name) && isReadOnly(tool, input)) return { behavior: "allow" };
+                // Listing the Mac's apps and waiting on one change nothing. Clicking and typing ask, then "don't ask
+                // again" allows the tool (in the apps the user gave, which only they can give).
+                if (isDesktopTool(tool.name) && isReadOnly(tool, input)) return { behavior: "allow" };
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
-                const suggestions = [tool.name === "SimulatorControl" ? `SimulatorControl(${t.action})` : tool.name];
+                const suggestions = [tool.name === "SimulatorControl" || tool.name === "DesktopControl" ? `${tool.name}(${t.action})` : tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
                 if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { everyTime: true, reason: "Pushing to the remote always asks in auto mode." } : {}) };
                 return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
@@ -1055,6 +1071,7 @@ const TOOL_NOUNS: Record<string, string> = {
     BrowserAct: "browser actions",
     BrowserEval: "scripts in the page",
     SimulatorAct: "simulator actions",
+    DesktopAct: "actions in the apps you gave",
     GitCommit: "commits",
     GitPush: "pushes",
     CreatePullRequest: "pull requests",

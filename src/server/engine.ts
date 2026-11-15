@@ -2188,6 +2188,7 @@ export class Engine {
             webSearch: s.webSearch,
             browser: s.browser?.enabled,
             simulator: s.simulator?.enabled,
+            desktop: s.desktop?.enabled === true || undefined,
             allowBypass: s.permissions?.allowBypass || onServer() || undefined,
             bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
@@ -2216,6 +2217,7 @@ export class Engine {
                 s.browser = patch.browser === false ? { ...rest, enabled: false } : Object.keys(rest).length ? rest : undefined;
             }
             if ("simulator" in patch) s.simulator = patch.simulator === false ? { enabled: false } : undefined;
+            if ("desktop" in patch) s.desktop = patch.desktop === true ? { enabled: true } : undefined;
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;

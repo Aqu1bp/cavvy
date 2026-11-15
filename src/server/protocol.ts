@@ -1600,6 +1600,8 @@ export interface GuiSettings {
     browser?: boolean;
     /** The Simulator tools and pane (false turns them off; true, the default, is stored as unset). */
     simulator?: boolean;
+    /** The Desktop tools (true turns them on; false, the default, is stored as unset). Only the user's settings hold it. */
+    desktop?: boolean;
     allowBypass?: boolean;
     /** Bypass can always be chosen here (one of the user's servers): the switch that allows it has nothing to do. */
     bypassAlways?: boolean;
