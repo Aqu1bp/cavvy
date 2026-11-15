@@ -230,14 +230,14 @@ test("a row skipped from here ends what it was still bringing in; what goes on f
 // Switched back to, a session's rows are skipped at once at the sizes they were, not all laid out before its first
 // frame (one ending in a 60 KB reply laid that reply out whole, every switch: 30 ms of layout of a 70-100 ms frame).
 test("a session's rows shown again are skipped at once at the sizes they were; another session's aren't", () => {
-    const shown = (session: string) => {
+    const shown = (session: string, count = 80) => {
         (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
         (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
         (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
         const root = new Box(); root.top = 0;
         const content = new Box(); root.append(content);
         const turn = new Box(); turn.setAttribute("data-turn"); turn.dataset.turn = "t1"; content.append(turn);
-        const rows = Array.from({ length: 80 }, () => new Box(true)); rows.forEach((row) => turn.append(row));
+        const rows = Array.from({ length: count }, () => new Box(true)); rows.forEach((row) => turn.append(row));
         const dispose = observeWorkRendering(root as any, content as any, () => {}, () => true, session);
         return { rows, dispose };
     };
@@ -247,11 +247,23 @@ test("a session's rows shown again are skipped at once at the sizes they were; a
     const again = shown("s1");
     expect(again.rows.every((row) => row.hasAttribute("data-work-far"))).toBe(true);
     expect(again.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.rows.map((_, i) => `auto ${40 + i}px`));
-    // One in view comes near as it's seen: drawn as it is.
-    io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    // One coming near is drawn, and what it brings in (a step rising in) came in long ago: ended, not played again.
+    const fade = { finished: false, effect: { target: again.rows[79], getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
+    const had = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [fade] };
+    try {
+        io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    } finally {
+        (globalThis as any).document = had;
+    }
     expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
+    expect(fade.finished).toBe(true);
     again.dispose();
     const other = shown("s2");
     expect(other.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
     other.dispose();
+    // The turn changed while it wasn't shown (a row more: it went on): its sizes aren't taken for other rows.
+    const grown = shown("s1", 81);
+    expect(grown.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
+    grown.dispose();
 });

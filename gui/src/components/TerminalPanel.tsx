@@ -1,4 +1,4 @@
-import { batch, createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Maximize2, Minimize2, Play, Plus, RotateCw, TerminalIcon, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -205,7 +205,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                     <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || app.conn !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
                 </div>
             </Show>
-            <For each={tabs()}>{(tab) => <TerminalScreen tab={tab} visible={visible() && active()?.id === tab.id} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
+            {/* `shown` worked out once, owned by the tab: `visible={a() && b()}` makes a memo each time it's read, and the
+                screen reads it from resize frames and after awaits, where nothing owns it: each was kept for good. */}
+            <For each={tabs()}>{(tab) => { const shown = createMemo(() => visible() && active()?.id === tab.id); return <TerminalScreen tab={tab} visible={shown()} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
                 if (previous) {
                     try { await rpc.call("terminal.close", { id: previous }); }
                     catch (e) {
@@ -214,7 +216,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                     }
                 }
                 tab.terminal = terminal; save();
-            }} />}</For>
+            }} />; }}</For>
         </section>
     );
 }

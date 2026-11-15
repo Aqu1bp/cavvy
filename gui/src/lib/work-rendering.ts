@@ -39,7 +39,8 @@ const turnOf = (el: HTMLElement) => el.closest<HTMLElement>("[data-turn]")?.data
  */
 export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true, session?: string) {
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
-    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
+    /** `again`: skipped as it was put in, at its remembered size (shown before): its entrances end as it first comes near. */
+    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean; again?: boolean }>();
     const to: Callbacks = {};
     let io: SettlingObserver | undefined;
     let ro: ResizeObserver | undefined;
@@ -116,10 +117,20 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                 if (!row.near) going.push(el);
             }
             skip(going);
+            const first: HTMLElement[] = [];
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
-                if (rows.get(el)?.near) el.removeAttribute(FAR);
+                const row = rows.get(el);
+                if (!row?.near) continue;
+                el.removeAttribute(FAR);
+                if (row.again) {
+                    row.again = false;
+                    first.push(el);
+                }
             }
+            // Drawn for the first time since it was put in again: what it brings in (a step rising in) came in long ago.
+            // Ended now, while it's still a screen away, rather than played as it scrolls into view.
+            finishEntrancesIn(first);
             const moved = above.reduce((sum, { el, height }) => sum + el.getBoundingClientRect().height - height, 0);
             if (Math.abs(moved) > 0.5) shift(moved);
         };
@@ -190,16 +201,31 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     // anyway, and taken as near as soon as they're seen).
     const sizesWere = session !== undefined ? remembered.get(session) : undefined;
     if (sizesWere && rows.size >= MIN_ROWS) {
+        // Only a turn with as many rows as it had then: one that changed meanwhile (it went on, its work folded) would
+        // have each row after the change take another's size.
+        const count = new Map<string, number>();
+        for (const el of rows.keys()) {
+            const turn = turnOf(el);
+            if (turn !== undefined) count.set(turn, (count.get(turn) ?? 0) + 1);
+        }
         const nth = new Map<string, number>();
+        const known: [HTMLElement, NonNullable<ReturnType<typeof rows.get>>, number][] = [];
         for (const [el, row] of rows) {
             const turn = turnOf(el);
-            if (turn === undefined) continue;
+            if (turn === undefined || sizesWere.get(`${turn}#`) !== count.get(turn)) continue;
             const i = nth.get(turn) ?? 0;
             nth.set(turn, i + 1);
             const h = sizesWere.get(`${turn}:${i}`);
-            if (h === undefined || h <= 0) continue;
+            if (h !== undefined && h > 0) known.push([el, row, h]);
+        }
+        // Not the last two screens of them: shown again at its end, those are in sight, drawn in its first frame as
+        // they were (its entrances ended there: Transcript).
+        let tail = typeof window === "undefined" ? 0 : 2 * window.innerHeight;
+        while (known.length && tail > 0) tail -= known.pop()![2];
+        for (const [el, row, h] of known) {
             row.height = h;
             row.near = false;
+            row.again = true;
             el.style.containIntrinsicBlockSize = `auto ${h}px`;
             el.setAttribute(TRACKED, "sized");
             el.setAttribute(FAR, "");
@@ -226,6 +252,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                 const h = rows.get(el)!.height;
                 if (h !== undefined && h > 0) sizes.set(`${turn}:${i}`, h);
             }
+            for (const [turn, n] of nth) sizes.set(`${turn}#`, n);
             remembered.delete(session);
             if (sizes.size) remembered.set(session, sizes);
             while (remembered.size > REMEMBERED) remembered.delete(remembered.keys().next().value!);
