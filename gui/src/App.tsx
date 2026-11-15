@@ -1,4 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
+import { noteScrollbars } from "./lib/scrollbars";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
@@ -162,6 +163,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         if (saved) setInspectorWidth(saved);
     } catch { /* private mode: the default width */ }
     onMount(() => {
+        noteScrollbars();
         const resized = () => setWin(size());
         window.addEventListener("resize", resized);
         onCleanup(() => window.removeEventListener("resize", resized));

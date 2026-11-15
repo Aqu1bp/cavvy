@@ -1,5 +1,5 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createRenderEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { endWriting, highlight, highlighted, highlightMore, newWriting } from "../../lib/highlight";
 import { growing, trailBlock } from "../../lib/stream-dom";
 import { CopyButton } from "../ui/bits";
@@ -125,6 +125,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
         const l = lit();
         return l && l.lang === p.lang && p.code.startsWith(l.code) ? l : undefined;
     };
+    const lines = createMemo(() => linesOf(p.code));
     const label = () => (p.lang ? (LABELS[p.lang.toLowerCase()] ?? p.lang) : "");
     return (
         <div class={`code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}`} ref={box}>
@@ -134,7 +135,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
                     <CopyButton text={() => p.code} label="Copy code" />
                 </div>
             </Show>
-            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "--lines": String(linesOf(p.code)) }}>
+            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "--lines": String(lines()) }}>
                 <code>
                     <Show when={head()}>{(h) => <span class="code-lit" classList={{ lines: h().lines }} ref={(el) => {
                         const show = growing(el);
