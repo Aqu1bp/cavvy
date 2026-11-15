@@ -366,6 +366,8 @@ export class DesktopSession {
             } catch (e) {
                 const code = e instanceof DesktopError ? (e.code ?? "") : "";
                 const [kind, count] = code.split(":");
+                // Gone quiet: whatever it's still doing for this action stops.
+                if (kind === "timeout") h.cancel(token);
                 if (signal?.aborted || kind === "cancelled") throw new DesktopError("Interrupted by user.", "cancelled");
                 const typed = count ? ` (${count} characters were typed.)` : "";
                 if (kind === "human") {

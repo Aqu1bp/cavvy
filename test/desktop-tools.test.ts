@@ -371,6 +371,14 @@ describe("what reaches the Mac", () => {
         expect((await DesktopActTool.run({ action: "click", x: 1, y: 1 }, ctxWith(s))).content).toBe(`Not done: Cavvy Desktop Control can't watch for the user's mouse and keyboard, so it won't act. ${WATCH_LINE}`);
     });
 
+    test("an action the Mac doesn't answer in time is told to stop", async () => {
+        const s = await granted("TextEdit");
+        helper.answers.type = { error: "The Mac didn't answer in time.", code: "timeout" };
+        const r = await DesktopActTool.run({ action: "type", text: "hello" }, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: "The Mac didn't answer in time." });
+        expect(helper.cancelled).toEqual([helper.sent("type")[0]!.token as string]);
+    });
+
     test("an action's prompt names what its ref stands for", async () => {
         const s = await granted("TextEdit");
         const ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;

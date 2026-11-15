@@ -233,7 +233,7 @@ export class DesktopHelper implements DesktopHelperLike {
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(id);
-                reject(new DesktopError("The Mac didn't answer in time."));
+                reject(new DesktopError("The Mac didn't answer in time.", "timeout"));
             }, timeoutMs);
             this.pending.set(id, { resolve, reject, timer });
             this.child.stdin.write(`${JSON.stringify({ ...command, id })}\n`);

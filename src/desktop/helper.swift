@@ -126,9 +126,11 @@ func humans() -> Int {
 
 /// The person's clicks, keys and scrolls into these apps since the helper started.
 func used(_ pids: Set<pid_t>) -> Int {
+    // A sandboxed app's Open and Save panels are another process's: typing there is using the app.
+    let all = pids.isEmpty ? pids : pids.union(NSWorkspace.shared.runningApplications.filter { PANEL_SERVICES.contains($0.bundleIdentifier ?? "") }.map(\.processIdentifier))
     humanLock.lock()
     defer { humanLock.unlock() }
-    return pids.reduce(0) { $0 + (usedBy[$1] ?? 0) }
+    return all.reduce(0) { $0 + (usedBy[$1] ?? 0) }
 }
 
 /// Cavvy, and the terminal it may run in: never offered.
@@ -337,7 +339,8 @@ func windows(_ pids: Set<pid_t>) -> [[String: Any]] {
 /// Cavvy's own page in a browser (`cavvy gui`): its title is "Cavvy", or ends " · Cavvy". It's where the person
 /// watches and stops the agent: never read, clicked or typed into, whichever browser shows it.
 func cavvyPage(_ title: String?) -> Bool {
-    guard let t = title?.trimmingCharacters(in: .whitespaces) else { return false }
+    // "(2) Cavvy": sessions waiting for the person.
+    guard let t = title?.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression) else { return false }
     return t == "Cavvy" || t.hasSuffix(" · Cavvy") || t.hasPrefix("Cavvy - ") || t.contains(" · Cavvy - ")
 }
 
@@ -393,16 +396,17 @@ func menuBarItems(_ app: AXUIElement) -> [AXUIElement] {
 }
 
 /// Whether keys may go now: an app you may use has focus, the Apple menu isn't open (keys would choose in it), and
-/// the focused window isn't Cavvy's own page. Returns whether one of the app's menus is open.
+/// the focused window isn't Cavvy's own page. With `menus`, also whether one of the app's menus is open (read only
+/// then: it's an accessibility call for each menu).
 @discardableResult
-func typeable(_ pids: Set<pid_t>) throws -> Bool {
+func typeable(_ pids: Set<pid_t>, menus: Bool = false) throws -> Bool {
     guard let pid = focusedPid(), pids.contains(pid) else { throw Refusal("Not done: an app you may use isn't in front, so keys would go elsewhere.", "front") }
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1)
     let items = menuBarItems(app)
     if let apple = items.first, flag(attribute(apple, kAXSelectedAttribute)) { throw Refusal("Not done: the Apple menu is open, and it isn't an app's.", "outside") }
     if let w = attribute(app, kAXFocusedWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID(), cavvyPage(text(attribute(w as! AXUIElement, kAXTitleAttribute))) { throw Refusal("Not done: that's Cavvy's own page.", "outside") }
-    return items.contains { flag(attribute($0, kAXSelectedAttribute)) }
+    return menus && items.contains { flag(attribute($0, kAXSelectedAttribute)) }
 }
 
 /// A screen's frame in global points from the top left of the main display, as CGEvents and accessibility have them.
@@ -542,9 +546,30 @@ func layoutKeys() -> [String: (CGKeyCode, Bool)] {
     return map
 }
 
+/// What each key types with Command held, on the current layout: a non-Latin layout's Command keys are Latin ones,
+/// which is how shortcuts are matched there.
+func commandChars() -> [CGKeyCode: String] {
+    var map: [CGKeyCode: String] = [:]
+    guard let src = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(), let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return map }
+    let data = Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data
+    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        guard let layout = raw.bindMemory(to: UCKeyboardLayout.self).baseAddress else { return }
+        for code in 0..<128 {
+            var dead: UInt32 = 0
+            var length = 0
+            var chars = [UniChar](repeating: 0, count: 4)
+            let r = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), UInt32((cmdKey >> 8) & 0xFF), UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, 4, &length, &chars)
+            if r == noErr, length > 0 { map[CGKeyCode(code)] = String(utf16CodeUnits: chars, count: length).lowercased() }
+        }
+    }
+    return map
+}
+
 var keysOfLayout: [String: (CGKeyCode, Bool)] = [:]
+var commandOfKey: [CGKeyCode: String] = [:]
 func refreshLayout() {
-    if Thread.isMainThread { keysOfLayout = layoutKeys() } else { DispatchQueue.main.sync { keysOfLayout = layoutKeys() } }
+    let read = { keysOfLayout = layoutKeys(); commandOfKey = commandChars() }
+    if Thread.isMainThread { read() } else { DispatchQueue.main.sync(execute: read) }
 }
 
 func flags(_ modifiers: [String]) -> CGEventFlags {
@@ -567,14 +592,25 @@ func plainKey(_ ch: String) -> CGKeyCode? {
     return c
 }
 
+/// The keys that make a character in a shortcut: where it is on this layout without Shift, where Command makes it
+/// (a non-Latin layout's), and where it is on a US keyboard (`us`), which some shortcuts are matched by.
+func shortcutKeys(_ ch: String, us: CGKeyCode) -> Set<CGKeyCode> {
+    var keys: Set<CGKeyCode> = [us]
+    if let c = plainKey(ch) { keys.insert(c) }
+    for (c, s) in commandOfKey where s == ch { keys.insert(c) }
+    return keys
+}
+
 /// Shortcuts no app's own, by the key and modifiers that go out: logging out, locking the screen, force quit,
-/// pictures of the whole screen, and moving to the menu bar (Control-F2), whence keys could reach the Apple menu.
+/// pictures of the whole screen, and moving keyboard focus out of the app (Control-F2 to F8: the menu bar, whence keys
+/// could reach the Apple menu, the Dock, the status menus).
 func systemShortcut(_ code: CGKeyCode, _ f: CGEventFlags) -> Bool {
     let cmd = f.contains(.maskCommand)
-    if cmd && (f.contains(.maskShift) || f.contains(.maskControl)) && code == plainKey("q") { return true }
+    if cmd && (f.contains(.maskShift) || f.contains(.maskControl)) && shortcutKeys("q", us: 12).contains(code) { return true }
     if cmd && f.contains(.maskAlternate) && code == 53 { return true }
-    if cmd && f.contains(.maskShift) && ["3", "4", "5", "6"].compactMap(plainKey).contains(code) { return true }
-    if f.contains(.maskControl) && code == 120 { return true }
+    let shots: [(String, CGKeyCode)] = [("3", 20), ("4", 21), ("5", 23), ("6", 22)]
+    if cmd && f.contains(.maskShift) && shots.contains(where: { shortcutKeys($0.0, us: $0.1).contains(code) }) { return true }
+    if f.contains(.maskControl) && [120, 99, 118, 96, 97, 98, 100].contains(code) { return true }
     return false
 }
 
@@ -584,7 +620,7 @@ func appleMenuShortcut(_ code: CGKeyCode, _ f: CGEventFlags, _ pid: pid_t) -> Bo
     AXUIElementSetMessagingTimeout(app, 1)
     guard let apple = menuBarItems(app).first, let menu = elements(attribute(apple, kAXChildrenAttribute)).first else { return false }
     for item in elements(attribute(menu, kAXChildrenAttribute)) {
-        guard let ch = text(attribute(item, kAXMenuItemCmdCharAttribute)), let c = keysOfLayout[ch.lowercased()]?.0 ?? keysOfLayout[ch]?.0, c == code else { continue }
+        guard let ch = text(attribute(item, kAXMenuItemCmdCharAttribute))?.lowercased(), keysOfLayout[ch]?.0 == code || commandOfKey[code] == ch else { continue }
         // kAXMenuItemModifier: Shift 1, Option 2, Control 4, no Command 8.
         let m = Int(text(attribute(item, kAXMenuItemCmdModifiersAttribute)) ?? "0") ?? 0
         if f.contains(.maskCommand) == (m & 8 == 0) && f.contains(.maskShift) == (m & 1 != 0) && f.contains(.maskAlternate) == (m & 2 != 0) && f.contains(.maskControl) == (m & 4 != 0) { return true }
@@ -610,7 +646,7 @@ func press(_ key: String, modifiers: [String], pids: Set<pid_t>, _ g: Guard) thr
     // Checked before the key goes: once it's down, it's pressed.
     try g.check()
     // Left and right move between open menus, round to the Apple menu: a menu is clicked instead.
-    if try typeable(pids), code == 123 || code == 124 { throw Refusal("Not done: with a menu open, moving between menus could reach the Apple menu. Click the menu instead.", "outside") }
+    if try typeable(pids, menus: code == 123 || code == 124), code == 123 || code == 124 { throw Refusal("Not done: with a menu open, moving between menus could reach the Apple menu. Click the menu instead.", "outside") }
     let d = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
     d?.flags = f
     post(d)
