@@ -365,6 +365,46 @@ test("bounds are strict, partial scans resume, and changed/truncated files inval
     expect((await usageSummary(1, now)).truncated).toContain("took too long");
 });
 
+test("a summary counts the whole range however many scans that takes", async () => {
+    const line = cavvyLine();
+    for (const name of ["a", "b", "c"]) write(join(iso.home, `projects/p/${name}.jsonl`), line.repeat(20));
+    usageBounds.maxBytes = line.length * 3;
+    const s = await usageSummary(1, now);
+    expect(s.truncated).toBeUndefined();
+    expect(s.totals.cost).toBe(60);
+    // A line longer than a scan's bytes never gets finished: it says what's left out instead of trying until totalMs.
+    clearUsageCache();
+    usageBounds.maxBytes = 10;
+    const started = Date.now();
+    expect((await usageSummary(1, now)).truncated).toContain("too much to read");
+    expect(Date.now() - started).toBeLessThan(1000);
+});
+
+test("Claude Code's own notes (model <synthetic>) aren't a model", async () => {
+    const line = (model: string, id: string, input: number) => JSON.stringify({ type: "assistant", timestamp: new Date(now - 1000).toISOString(), sessionId: "s", requestId: id, message: { id, model, content: [{ type: "text", text: "No response requested." }], usage: { input_tokens: input, output_tokens: 0 } } }) + "\n";
+    write(join(claude, "projects/p/notes.jsonl"), line("claude-opus-5-5", "a", 1000) + line("<synthetic>", "b", 0));
+    const s = await usageSummary(1, now);
+    expect(s.rows.map(r => r.model)).toEqual(["claude-opus-5-5"]);
+    expect(s.totals.unknown).toBe(false);
+});
+
+test("projection skips unread strings split anywhere, escapes and quotes included", () => {
+    const texts = ["a\\", "\\\"", "\"\\\\\"", "x\\\\", "\\\\\\\"q", "é\"\n", "", "\\u0041"];
+    const line = JSON.stringify({ type: "assistant", message: { content: texts.map(text => ({ type: "text", text, nested: { "k\\\"": [text, { text }] } })), model: "m\"\\x", usage: { input_tokens: 5 } }, sessionId: "s\\\"1" });
+    const expected = JSON.stringify({ type: "assistant", message: { model: "m\"\\x", usage: { input_tokens: 5 } }, sessionId: "s\\\"1" });
+    const b = Buffer.from(line);
+    for (let k = 0; k <= b.length; k++) {
+        const p = new UsageJson(); p.feed(b.subarray(0, k)); p.feed(b.subarray(k));
+        expect(JSON.stringify(p.finish())).toBe(expected);
+    }
+    for (const size of [1, 2, 3, 7]) {
+        const p = new UsageJson();
+        for (let i = 0; i < b.length; i += size) p.feed(b.subarray(i, i + size));
+        expect(JSON.stringify(p.finish())).toBe(expected);
+    }
+    const open = new UsageJson(); open.feed(Buffer.from('{"message":{"content":"never closed \\"')); expect(open.finish()).toBeUndefined();
+});
+
 test("file discovery is bounded; symlinks are not followed into arbitrary files", async () => {
     for (let i = 0; i < 6; i++) write(join(iso.home, `projects/p/${i}.jsonl`), cavvyLine());
     usageBounds.maxFiles = 2;

@@ -7,7 +7,7 @@ import { getProvider } from "../providers/registry";
 import type { ModelInfo } from "../providers/types";
 import { USAGE_DAYS, type UsageDays, type UsageSummary, type UsageTotals, type UsageRow, type UsageSourceRow, type UsageBucket, type UsageAccountRow, type UsageDetailBucket, type PlanLimits } from "./protocol";
 import { RpcError } from "./rpc-error";
-import { scanUsage, type Source, type UsageRecord } from "./usage-reader";
+import { scanUsage, usageBounds, type Source, type UsageRecord } from "./usage-reader";
 export { usageBounds, clearUsageCache } from "./usage-reader";
 
 export function usageDays(v: unknown): UsageDays {
@@ -41,7 +41,12 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
     const seen = new Set<string>();
     const models = new Map<string, ModelInfo | undefined>();
     let approxDated = 0, approxPriced = 0;
-    const scan = await scanUsage(since);
+    // Scanned until everything in the range is read: a figure for part of it would read as the whole. Each scan is
+    // bounded, so another range's request isn't held up behind this one.
+    const started = Date.now();
+    let scan = await scanUsage(since), note = scan.note;
+    while (scan.more && Date.now() - started < usageBounds.totalMs) { scan = await scanUsage(since); note ??= scan.note; }
+    let truncated = note ?? scan.truncated;
     const modelInfo = (provider: string, id: string): ModelInfo | undefined => {
         const key = `${provider}:${id}`;
         if (!models.has(key)) {
@@ -83,7 +88,7 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         const source = sources.find(s => s.source === f.source)!;
         for (const r of f.records) {
             if (aggregated && aggregated % 2000 === 0) await new Promise<void>(resolve => setImmediate(resolve));
-            if (aggregated++ % 1000 === 0 && Date.now() - aggregationStart > 4000) { scan.truncated ??= "Aggregating the sessions took too long; some usage is left out."; break outer; }
+            if (aggregated++ % 1000 === 0 && Date.now() - aggregationStart > 4000) { truncated ??= "Aggregating the sessions took too long; some usage is left out."; break outer; }
             if (r.at < since || r.at > now) continue;
             // By the folder read (scope), not the account: one thread can be under two accounts sharing it (#428).
             const session = JSON.stringify([f.source, f.scope, r.session]);
@@ -114,5 +119,5 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
     }
     for (const group of [rows.values(), accounts.values(), buckets.values(), sources.values(), series.values()]) for (const r of group) r.sessions = sessions.get(r)?.size ?? 0;
     return { days, since, totals, rows: [...rows.values()].sort((a, b) => b.cost - a.cost), sources, accounts: [...accounts.values()], buckets: [...buckets.values()], series, interval, limits,
-        sessions: sessions.get(totals)?.size ?? 0, approxDated, approxPriced, ...(scan.truncated ? { truncated: scan.truncated } : {}) };
+        sessions: sessions.get(totals)?.size ?? 0, approxDated, approxPriced, ...(truncated ? { truncated } : {}) };
 }
