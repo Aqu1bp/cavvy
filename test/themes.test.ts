@@ -12,7 +12,7 @@ import { checkTheme, lookFor, onlyScheme, svgProblem, withNamespace, type Theme 
 import { CellColors, palette, veilCells, veilFor, WINDOW_TEXT } from "../src/themes/palette";
 import { listThemes, removeTheme, restoreTheme, saveTheme } from "../src/themes/store";
 import { STEP_MS } from "../gui/src/lib/stream-clock";
-import { layerAnimation, poseAt } from "../gui/src/lib/theme-motion";
+import { frameFor, layerAnimation, poseAt, SMOOTH_MS } from "../gui/src/lib/theme-motion";
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#123"/></svg>';
 const minimal = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -297,18 +297,41 @@ describe("a scene's motion", () => {
     });
 
     test("is transform and opacity only, in whole steps of the window's grid, from a start on it", () => {
-        for (const duration of [0.5, 1.6, 3.2, 7, 13.7, 240]) {
-            const a = layerAnimation({ duration, keyframes: [{ x: -10 }, { x: 10, opacity: 0.5 }], delay: -3.33 }, "t");
+        for (const frame of [STEP_MS, SMOOTH_MS]) for (const duration of [0.5, 1.6, 3.2, 7, 13.7, 240]) {
+            const a = layerAnimation({ duration, keyframes: [{ x: -10 }, { x: 10, opacity: 0.5 }], delay: -3.33 }, "t", 1, frame);
             expect(a.durationMs % STEP_MS).toBe(0);
             const steps = Number(/steps\((\d+)\)/.exec(a.animation)![1]);
             const stops = a.keyframes.match(/[\d.]+%\{/g)!.length - 1;
             expect((a.durationMs / stops) % STEP_MS).toBe(0);
-            expect(a.durationMs / stops / steps).toBe(STEP_MS);
+            expect(a.durationMs / stops / steps).toBeCloseTo(frame, 9);
             const delay = Number(/ (-?\d+)ms infinite/.exec(a.animation)![1]);
             expect(Math.abs(delay % STEP_MS)).toBe(0);
             for (const m of a.keyframes.matchAll(/([a-z-]+):/g)) expect(["transform", "opacity"]).toContain(m[1]!);
             expect(a.animation).toContain("infinite");
         }
+    });
+
+    test("steps 60 a second only where 20 would show", async () => {
+        // 60 a second is three to each of the window's steps: still on its grid.
+        expect((STEP_MS / SMOOTH_MS) % 1).toBe(0);
+        const layers = async (id: string) => {
+            const t = await BUILTINS.find((b) => b.id === id)!.load();
+            return (t.light ?? t.dark)!.layers!.filter((l) => l.motion);
+        };
+        const meadow = await layers("meadow");
+        // The seeds blow across; the grass sways a fraction of a unit a step.
+        expect(meadow.filter((l) => l.width === 40).map(frameFor)).toEqual(meadow.filter((l) => l.width === 40).map(() => SMOOTH_MS));
+        expect(meadow.filter((l) => l.width === 1600).map(frameFor)).toEqual([STEP_MS, STEP_MS]);
+        const rain = await layers("night-rain");
+        // The rain falls a sheet's height in seconds; the lights breathe.
+        expect(rain.filter((l) => l.height === 2000).every((l) => frameFor(l) === SMOOTH_MS)).toBe(true);
+        expect(rain.filter((l) => l.height === 670).every((l) => frameFor(l) === STEP_MS)).toBe(true);
+        // A turn counts as far as the edge goes, a fade by how much it fades in a step.
+        expect(frameFor({ svg: "", width: 1000, height: 1000, motion: { duration: 60, keyframes: [{ rotate: 0 }, { rotate: 10 }] } })).toBe(STEP_MS);
+        expect(frameFor({ svg: "", width: 1000, height: 1000, motion: { duration: 10, keyframes: [{ rotate: 0 }, { rotate: 10 }] } })).toBe(SMOOTH_MS);
+        expect(frameFor({ svg: "", motion: { duration: 10, keyframes: [{ opacity: 0.9 }, { opacity: 1 }] } })).toBe(STEP_MS);
+        expect(frameFor({ svg: "", motion: { duration: 2, keyframes: [{ opacity: 0 }, { opacity: 1 }] } })).toBe(SMOOTH_MS);
+        expect(frameFor({ svg: "" })).toBe(STEP_MS);
     });
 
     test("eases into and out of each keyframe, and keeps to the timed ones", () => {

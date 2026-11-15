@@ -7,7 +7,7 @@ import { Moon, Plus, Sun, X } from "lucide-solid";
 import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
-import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
+import { frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { refreshThemes, reportError, rpc, toast } from "../state/app";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
@@ -26,7 +26,7 @@ let serial = 0;
 function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element {
     const n = ++serial;
     const scale = p.width / STAGE.width;
-    const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1) : undefined));
+    const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1, frameFor(l)) : undefined));
     return (
         <span class="tg-scene" aria-hidden="true">
             <Show when={p.moving}>

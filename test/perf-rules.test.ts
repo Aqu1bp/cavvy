@@ -82,6 +82,19 @@ test("what animates for as long as something waits changes only when it must, an
     }
 });
 
+test("a theme's scene moves on the grid, 60 a second at most, and only while someone's at the window", async () => {
+    // Its animations are made in lib/theme-motion.ts, not written in a stylesheet: each frame a layer moves at costs the
+    // window a draw, whatever the layer's size (measured: 20 a second to 60 took Meadow's idle window from 190 to 293
+    // million instructions a second, and 120 to 371; resting, 86, as with no theme). So no faster than 60, three to each step of the grid, and none while
+    // nobody's there (test/gui-away.test.ts).
+    const { STEP_MS } = await import("../gui/src/lib/stream-clock");
+    const { SMOOTH_MS } = await import("../gui/src/lib/theme-motion");
+    expect(SMOOTH_MS).toBe(STEP_MS / 3);
+    expect(read("gui/src/lib/theme-motion.ts")).toContain("steps(${Math.round(stretch / frame)})");
+    expect(read("gui/src/components/ThemeBackdrop.tsx")).toContain('data-away={resting() ? "" : undefined}');
+    expect(read("gui/src/styles/theme-backdrop.css")).toMatch(/\.theme-backdrop\[data-away\] \.tb-layer > img \{\s*animation-play-state: paused !important;/);
+});
+
 test("what animates for good changes on the stream clock's grid, or the window is drawn again for each one out of step", async () => {
     const { STEP_MS } = await import("../gui/src/lib/stream-clock");
     const css = files("gui/src/styles", "*.css").map(read).join("\n");

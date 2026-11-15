@@ -58,6 +58,12 @@
     background-size: 100% 100%;
 }
 
+/* Nobody at the window: each layer stops where it is, and carries on from there (ThemeBackdrop.tsx away). Over the
+   layer's own animation shorthand, which sets it running. */
+.theme-backdrop[data-away] .tb-layer > img {
+    animation-play-state: paused !important;
+}
+
 /* Animate off, or the system asks for less motion: every layer rests at its first keyframe. */
 .theme-backdrop[data-still] .tb-layer > img {
     animation: none !important;
