@@ -1787,6 +1787,9 @@ export interface ServerSummary {
     rented?: boolean;
     /** Who it's rented from and where, as recorded when an agent created it: "AWS Lightsail, Mumbai". */
     provider?: string;
+    /** How it's reached, beyond its destination: a port other than ssh's own, a key file. */
+    port?: number;
+    identityFile?: string;
 }
 
 /**

@@ -194,6 +194,8 @@ export class ServerLinks {
             // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
             ...(s.cloud?.teardown?.length ? { rented: true } : {}),
             ...(s.cloud?.provider ? { provider: [s.cloud.provider, s.cloud.where].filter(Boolean).join(", ") } : {}),
+            ...(s.port ? { port: s.port } : {}),
+            ...(s.identityFile ? { identityFile: s.identityFile } : {}),
         }));
     }
 

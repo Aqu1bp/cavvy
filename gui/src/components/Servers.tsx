@@ -103,11 +103,15 @@ function Problem(p: { problem: ServerProblem }) {
     );
 }
 
+/** Asking to trust a server's key: why it's asked, and the key, quietly, for whoever checks it. */
 function HostKey(p: { unknown: UnknownHost }) {
     return (
-        <div class="server-key">
-            <For each={p.unknown.fingerprints}>{(f) => <div class="mono small">{f}</div>}</For>
-        </div>
+        <>
+            <p class="muted">{HERE} hasn't connected to it before.</p>
+            <div class="server-print mono small muted">
+                <For each={p.unknown.fingerprints}>{(f) => <div>{f}</div>}</For>
+            </div>
+        </>
     );
 }
 
@@ -310,7 +314,7 @@ function AddServerDialog() {
                     <Match when={step().at === "trust" && (step() as Extract<AddStep, { at: "trust" }>)}>
                         {(s) => (
                             <>
-                                <h2 id={titleId}>Trust {s().unknown.host}?</h2>
+                                <h2 id={titleId}>Trust {name().trim()}?</h2>
                                 <HostKey unknown={s().unknown} />
                                 <div class="server-actions">
                                     <button class="btn secondary" onClick={() => setStep({ at: "form" })}>
@@ -606,8 +610,10 @@ async function agentAsk(name: string, problem: ServerProblem): Promise<string> {
         .call("servers.list", {})
         .then((r) => r.servers.find((x) => x.name === name))
         .catch(() => undefined);
+    // The way Cavvy connects, word for word, so the agent needn't look for where the server is defined.
+    const ssh = s ? ["ssh", ...(s.port ? ["-p", String(s.port)] : []), ...(s.identityFile ? ["-i", s.identityFile] : []), s.destination].join(" ") : undefined;
     return [
-        `I can't connect to my server ${name}${s && s.destination !== name ? ` (${s.destination})` : ""} from ${here}.`,
+        `I can't connect to my server ${name} from ${here}.${ssh ? ` Cavvy connects to it with: ${ssh}` : ""}`,
         `Cavvy says: ${[problem.message, problem.hint].filter(Boolean).join(" ")}`,
         ...(problem.detail ? [`ssh says: ${problem.detail.replace(/^ssh: /, "")}`] : []),
         ...(s?.provider ? [`It's on ${s.provider}.`] : []),
@@ -653,16 +659,18 @@ function ReachDialog() {
     };
     // A window that lost its server can't put the question away: it goes back to this computer, or answers it.
     const close = () => !lost() && cancelReach();
+    // A window that lost its server has nothing to show without it: Cancel takes it back to this computer.
     const Leave = () => (
         <button class="btn secondary" onClick={() => (lost() ? switchMachine(undefined) : cancelReach())}>
-            {lost() ? HERE : "Cancel"}
+            Cancel
         </button>
     );
     const issue = <K extends MachineIssue["kind"]>(kind: K) => (r()?.issue.kind === kind ? (r()!.issue as Extract<MachineIssue, { kind: K }>) : undefined);
     const title = (text: string) => text.replace(/\.$/, "");
     return (
         <Dialog open={Boolean(r()?.shown)} onClose={close} bare labelledBy={titleId} width={440}>
-            <div class="server-dialog">
+            {/* Focused itself, not a button: it can open while the user is typing, and Enter mustn't answer it. */}
+            <div class="server-dialog" tabindex="-1" autofocus>
                 <Switch>
                     <Match when={r()?.updating}>
                         <h2 id={titleId}>Updating {r()!.name}…</h2>
@@ -708,7 +716,7 @@ function ReachDialog() {
                     <Match when={issue("unknown-host")}>
                         {(i) => (
                             <>
-                                <h2 id={titleId}>Trust {i().unknown.host}?</h2>
+                                <h2 id={titleId}>Trust {r()!.name}?</h2>
                                 <HostKey unknown={i().unknown} />
                                 <div class="server-actions">
                                     <Leave />

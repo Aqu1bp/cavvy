@@ -495,7 +495,7 @@ describe("from a window, with an agent doing it", () => {
         // It's listed already, with what it costs: the sign-ins aren't what adds it.
         const entry = getServer("aws-mumbai")!;
         expect(entry).toMatchObject({ destination: "dev@new.example", identityFile: made.identityFile, knownHostsFile: ownKnownHosts(), cloud: { provider: "AWS Lightsail", where: "Mumbai", cost: "$12/month", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "aws-mumbai"]] } });
-        expect((await c.call("servers.list")).servers).toEqual([{ name: "aws-mumbai", destination: "dev@new.example", connected: false, cost: "$12/month", rented: true }]);
+        expect((await c.call("servers.list")).servers).toEqual([{ name: "aws-mumbai", destination: "dev@new.example", connected: false, cost: "$12/month", rented: true, provider: "AWS Lightsail, Mumbai", identityFile: expect.stringMatching(/server-keys\/aws-mumbai$/) }]);
         expect(c.events.some((e) => e.type === "servers.changed" && e.count === 1)).toBe(true);
         // No trust question was asked, and the user's own known_hosts wasn't touched: the identity was known beforehand.
         expect(c.view(id).turns.flatMap((t) => t.blocks).some((b) => JSON.stringify(b).includes("Trust "))).toBe(false);

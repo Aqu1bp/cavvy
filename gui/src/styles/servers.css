@@ -12,6 +12,15 @@
     padding: calc(20 * var(--sp));
 }
 
+.server-dialog:focus {
+    outline: none;
+}
+
+.server-print {
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
 .server-dialog h2 {
     font-size: 1.05rem;
 }
@@ -44,14 +53,6 @@
     color: var(--fg-2);
 }
 
-.server-key {
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border: 0.5px solid var(--line);
-    border-radius: calc(8 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
-}
-
 .server-problem {
     display: flex;
     flex-direction: column;
@@ -72,23 +73,6 @@
 
 .server-cover {
     display: contents;
-}
-
-/* Over a window that had been on its server, when getting back needs the user. */
-.server-over {
-    position: fixed;
-    inset: 0;
-    z-index: 900;
-    background: var(--sheet);
-}
-
-.server-cover .server-actions {
-    justify-content: center;
-}
-
-.server-cover .server-key,
-.server-cover .server-problem {
-    max-width: calc(520 * var(--sp));
 }
 
 /* One mark in the sidebar's foot for the servers that can't be reached as they are (components/OtherMachines.tsx). */
