@@ -3210,14 +3210,14 @@ export class Engine {
                 const cwd = resolve(str(p.cwd, "cwd"));
                 const query = str(p.query ?? "", "query");
                 const ws = this.workspaces.get(cwd);
-                if (ws) return ws.files.search(query, 12);
+                if (ws) return await ws.files.searchSoon(query, 12);
                 // Home, before a session opens there: the folder's file names (listed, as for a session, nothing read).
                 if (!isDir(cwd) || [...this.removing].some((dir) => within(dir)(cwd))) return [];
                 const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
                 this.homeFiles.delete(cwd);
                 this.homeFiles.set(cwd, index);
                 for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
-                return index.search(query, 12);
+                return await index.searchSoon(query, 12);
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
