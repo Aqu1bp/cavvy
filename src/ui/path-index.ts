@@ -292,20 +292,30 @@ export class PathIndex {
         let at = 0;
         for (let i = 0; i < n; i++) {
             const p = paths[i]!;
-            const l = p.toLowerCase();
             start[i] = at;
             len[i] = p.length;
             const end = p.endsWith("/") ? p.length - 1 : p.length;
             baseEnd[i] = end;
             baseFrom[i] = p.lastIndexOf("/", end - 1) + 1;
-            masks[i] = charMask(l);
-            // Found at the start of its name, at a word's start (scoreIn), less what its length costs (top).
-            most[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
+            // Found at the start of its name, at a word's start (scoreIn), less what its length costs (top). (A path's
+            // length lower-cased is its own but beyond ASCII, where it's its string's.)
             if (NON_ASCII.test(p)) {
+                const l = p.toLowerCase();
                 wide.set(i, { p, l });
+                masks[i] = charMask(l);
+                most[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
             } else {
+                // Lower-cased as bytes: no string made for it (a million of them, all garbage the thread collects).
                 written.write(p, at, "latin1");
-                lower.write(l, at, "latin1");
+                let m = 0;
+                for (let k = at, e = at + p.length; k < e; k++) {
+                    let c = written[k]!;
+                    if (c >= 65 && c <= 90) c += 32;
+                    lower[k] = c;
+                    m |= charBit(c);
+                }
+                masks[i] = m;
+                most[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - p.length * 0.01) - p.length * 0.05;
                 at += p.length;
             }
             lower[at] = NL;

@@ -1,6 +1,6 @@
 // A big project's paths for @-mention completion on worker threads (mention-worker.ts), each with a part of them,
 // searched side by side: on the server's own thread a keystroke scored up to 180 ms of a million files, and held every
-// session's replies with it; on four workers 19-72 ms (Linux, 4 cores), with the server's thread free throughout.
+// session's replies with it (scripts/mention-bench.ts has what it takes on workers).
 
 import { availableParallelism } from "os";
 import type { ShardReply, ShardRequest } from "./mention-worker";
@@ -14,7 +14,9 @@ import { merged } from "./path-index";
 export const mentionSharding = {
     from: 2 * 1024 * 1024,
     perPart: 8 * 1024 * 1024,
-    most: Math.max(1, Math.min(4, availableParallelism() - 1)),
+    // A core left for the server's own thread and one more: on 4 cores, 3 workers indexing held it 5-10 ms at a time
+    // (waiting for a core: it had nothing to do), 2 didn't.
+    most: Math.max(1, Math.min(4, availableParallelism() - 2)),
 };
 
 /** A request, before it's numbered. */

@@ -50,8 +50,6 @@ async function take(r: Extract<ShardRequest, { t: "take" }>): Promise<ShardReply
     await next.take(kept < files.length ? files.slice(0, kept) : files, { first, slice: () => new Promise((r) => setImmediate(r)) });
     index = next;
     madeFrom = { from, to, hash };
-    // What making it took (every path as a string, its folders) given back now, not whenever this thread next needs it.
-    Bun.gc(true);
     return { id: r.id, t: "taken" };
 }
 
