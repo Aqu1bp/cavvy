@@ -2,7 +2,7 @@
 // browser skip the layout and paint of distant work. Measure each row before it can be skipped:
 // guessed heights in a long running turn move the end while the reader is clicking or scrolling.
 
-import { finishEntrances } from "./entrances";
+import { finishEntrancesIn } from "./entrances";
 import { settlingObserver, type SettlingObserver } from "./settling-observer";
 
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
@@ -54,29 +54,37 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         if (row) row.parkedFar = false;
         watch(el);
     };
-    const skip = (el: HTMLElement) => {
+    const skippable = (el: HTMLElement) => {
         const row = rows.get(el);
-        if (!row || row.near || row.height === undefined || row.height <= 0 || el.hasAttribute(FAR)) return;
-        // Content-box size: padding and borders remain the element's own. `auto` remembers later
-        // natural sizes too. It also lets native find, focus and selection reveal skipped content.
-        el.style.containIntrinsicBlockSize = `auto ${row.height}px`;
-        // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
-        finishEntrances(el);
-        el.setAttribute(FAR, "");
+        return !(!row || row.near || row.height === undefined || row.height <= 0 || el.hasAttribute(FAR));
+    };
+    /** Skipped from here, those of `els` that can be: all their entrances ended first, then all marked (one style pass). */
+    const skip = (els: HTMLElement[]) => {
+        const going = els.filter(skippable);
+        // What they were still bringing in is over now, not left part way (lib/entrances.ts).
+        finishEntrancesIn(going);
+        for (const el of going) {
+            // Content-box size: padding and borders remain the element's own. `auto` remembers later
+            // natural sizes too. It also lets native find, focus and selection reveal skipped content.
+            el.style.containIntrinsicBlockSize = `auto ${rows.get(el)!.height}px`;
+            el.setAttribute(FAR, "");
+        }
     };
     const start = () => {
         if (io || rows.size < MIN_ROWS) return;
         to.sizes = (entries) => {
             io?.wake();
+            const sized: HTMLElement[] = [];
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
                 const row = rows.get(el);
                 // A skipped box reports its placeholder, not its new natural height.
                 if (!row || el.hasAttribute(FAR)) continue;
                 row.height = entry.contentRect.height;
-                el.setAttribute(TRACKED, row.height > 0 ? "sized" : "");
-                skip(el);
+                sized.push(el);
             }
+            skip(sized);
+            for (const el of sized) el.setAttribute(TRACKED, rows.get(el)!.height! > 0 ? "sized" : "");
         };
         to.intersections = (entries) => {
             const top = root.getBoundingClientRect().top;
@@ -89,13 +97,18 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                     if (box.bottom <= top) above.push({ el, height: box.height });
                 }
             }
+            const going: HTMLElement[] = [];
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
                 const row = rows.get(el);
                 if (!row) continue;
                 row.near = entry.isIntersecting;
-                if (row.near) el.removeAttribute(FAR);
-                else skip(el);
+                if (!row.near) going.push(el);
+            }
+            skip(going);
+            for (const entry of entries) {
+                const el = entry.target as HTMLElement;
+                if (rows.get(el)?.near) el.removeAttribute(FAR);
             }
             const moved = above.reduce((sum, { el, height }) => sum + el.getBoundingClientRect().height - height, 0);
             if (Math.abs(moved) > 0.5) shift(moved);
