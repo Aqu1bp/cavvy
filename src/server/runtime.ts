@@ -86,6 +86,7 @@ import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
     AgentsMore,
+    DiffHunk,
     BackgroundTaskInfo,
     Block,
     ChangesInfo,
@@ -143,13 +144,15 @@ export const RESTART_LABEL = "Continued after a restart";
  * left to come with their turns or on their own. A long Claude Code session opened with every sub-agent it ever ran:
  * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
  */
-export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a): { agents: AgentRun[]; more?: AgentsMore } {
-    if (all) return { agents: agents.map((a) => sentAgent(whole(a))) };
+export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a, folded?: ReadonlySet<string>): { agents: AgentRun[]; more?: AgentsMore } {
     const ids = new Set(turns.map((t) => t.id));
     const sent: AgentRun[] = [];
     const more: AgentsMore = { count: 0, failed: 0 };
     for (const a of agents) {
-        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") sent.push(sentAgent(whole(a)));
+        if (a.status === "running" || a.status === "waiting") sent.push(sentAgent(whole(a)));
+        // Of a turn sent with its work folded: its row is in that work, and comes whole with the turn (session.turn).
+        else if (folded?.has(a.turnId)) sent.push(listedAgent(a));
+        else if (all || ids.has(a.turnId)) sent.push(sentAgent(whole(a)));
         // One a background task is (its row is the task's): as its list shows it.
         else if (a.taskId) sent.push(listedAgent(a));
         // The rest only counted: its Finished fold asks for them (session.agentList). Every one of them listed was
@@ -182,6 +185,54 @@ export function omitThinking(blocks: Block[]): Block[] {
         if (b.t === "thinking" && b.text) blocks[i] = { ...b, text: "", omitted: true };
     }
     return blocks;
+}
+
+/** The ids of those of these turns sent folded. */
+function foldedIds(turns: readonly Turn[]): Set<string> | undefined {
+    const ids = turns.filter((t) => t.folded).map((t) => t.id);
+    return ids.length ? new Set(ids) : undefined;
+}
+
+/** Longer than this, an input's value or a tool's output isn't sent with folded work (it's read opened). */
+const FOLDED_KEEPS = 200;
+
+/**
+ * A finished turn's work as a window that folds it is sent it (session.open's `fold`): what's shown with it folded and
+ * no more. Its plans (a card outside the work), each call's name, status, summary and short values, an output that short
+ * (a command still running in the background says so in it: TurnView stoppedText), a diff's counts and its first change
+ * (the changes card says where each file changed). What its rows show opened comes with the turn whole (session.turn),
+ * as its work is shown. Changes the blocks given: a copy's. Whether it left anything out.
+ */
+export function foldWork(blocks: Block[]): boolean {
+    let left = false;
+    for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]!;
+        if (b.t !== "tool" || cardOf(b) === "plan") continue;
+        const t = { ...b };
+        if (t.output !== undefined && t.output.length > FOLDED_KEEPS) delete t.output;
+        if (t.progress !== undefined) delete t.progress;
+        if (t.diagnostics !== undefined) delete t.diagnostics;
+        if (t.input) {
+            const input: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(t.input)) if ((typeof v === "string" ? v.length : JSON.stringify(v)?.length ?? 0) <= FOLDED_KEEPS) input[k] = v;
+            t.input = input;
+        }
+        if (t.diff?.hunks.length) t.diff = { ...t.diff, hunks: firstChange(t.diff.hunks) };
+        if (JSON.stringify(t).length < JSON.stringify(b).length) {
+            blocks[i] = t;
+            left = true;
+        }
+    }
+    return left;
+}
+
+/** A diff's hunks up to its first changed line (where firstChangedLine finds it). */
+function firstChange(hunks: DiffHunk[]): DiffHunk[] {
+    for (const h of hunks) {
+        const i = h.lines.findIndex((l) => l.t !== "ctx");
+        if (i >= 0) return [{ ...h, lines: h.lines.slice(0, i + 1) }];
+    }
+    return [];
 }
 
 /** A copy of a sub-agent whole, as a window is sent it. */
@@ -795,12 +846,24 @@ export class Runtime {
     }
 
     /** A copy of the turn whole, to send. */
-    private sent(t: Turn): Turn {
+    /** `fold`: a finished turn with its work folded (foldWork), for a window that folds it. */
+    private sent(t: Turn, fold = false): Turn {
         const w = this.whole(t);
         const c = w === t ? structuredClone(t) : w;
         slimEdits(c.blocks);
-        if (c.status !== "running") omitThinking(c.blocks);
+        if (c.status !== "running") {
+            omitThinking(c.blocks);
+            if (fold && foldWork(c.blocks)) c.folded = true;
+        }
         return c;
+    }
+
+    /** A turn whole, and its sub-agents (session.turn: one sent folded). */
+    turnWhole(turnId: string): { turn: Turn; agents: AgentRun[] } | null {
+        this.flush();
+        const t = findTurn(this.view, turnId);
+        if (!t) return null;
+        return { turn: this.sent(t), agents: this.view.agents.filter((a) => a.turnId === turnId).map((a) => sentAgent(this.agentFull(a))) };
     }
 
     /** A block of a turn whole (session.block: one sent without its thinking's text). */
@@ -1286,33 +1349,37 @@ export class Runtime {
      * `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest);
      * `budget`: and only as many as fit that many bytes, one at least.
      */
-    snapshot(last?: number, budget?: number): SessionSnapshot {
+    snapshot(last?: number, budget?: number, fold = false): SessionSnapshot {
         this.flush();
         const all = this.view.turns;
         let from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
-        // No more than fit the budget, back from the latest (what's measured is what's sent: no more than that).
-        if (budget !== undefined) {
-            let size = 0;
-            for (let i = all.length - 1; i > from; i--) {
-                size += JSON.stringify(this.whole(all[i]!)).length;
-                if (size >= budget) {
-                    from = i;
-                    break;
-                }
+        // No more than fit the budget, back from the latest (what's measured is what's sent: no more than that), one at least.
+        const sent: Turn[] = [];
+        let size = 0;
+        for (let i = all.length - 1; i >= from; i--) {
+            const t = this.sent(all[i]!, fold);
+            sent.push(t);
+            if (budget === undefined || i === from) continue;
+            size += JSON.stringify(t).length;
+            if (size >= budget) {
+                from = i;
+                break;
             }
         }
+        sent.reverse();
         const turns = from ? all.slice(from) : all;
-        const { agents, more } = agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a));
-        return { state: structuredClone(this.view.state), turns: turns.map((t) => this.sent(t)), agents, seq: this.batch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
+        const { agents, more } = agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a), foldedIds(sent));
+        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
     }
 
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
-    async find(query: string, before?: string): Promise<SessionFindMatch[]> {
+    async find(query: string, before?: string, also?: readonly string[]): Promise<SessionFindMatch[]> {
         this.flush();
         // The latest asked: one asked before it stops (the window counts only the latest).
         const asked = ++this.finding;
         const found = await findBefore(this.view.turns, query, {
             before,
+            also: also?.length ? new Set(also) : undefined,
             whole: (t) => this.whole(t),
             stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
             stale: () => asked !== this.finding || this.closed,
@@ -1336,7 +1403,7 @@ export class Runtime {
      * Turns before `before` (session.turns), as they are now: what's been sent of them so far is in them (flushed first),
      * and what changes after goes as ops, in order after this. Undefined when the window's turns aren't this view's.
      */
-    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean }): SessionTurnsPage | undefined {
+    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean }): SessionTurnsPage | undefined {
         this.flush();
         const all = this.view.turns;
         const at = all.findIndex((t) => t.id === before);
@@ -1355,8 +1422,10 @@ export class Runtime {
         }
         const turns = all.slice(from, at);
         const ids = new Set(turns.map((t) => t.id));
-        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => sentAgent(this.agentFull(a)));
-        return { turns: turns.map((t) => this.sent(t)), earlier: from, seq: this.batch, ...(agents.length ? { agents } : {}) };
+        const sent = turns.map((t) => this.sent(t, o.fold));
+        const folded = foldedIds(sent);
+        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => (folded?.has(a.turnId) ? listedAgent(a) : sentAgent(this.agentFull(a))));
+        return { turns: sent, earlier: from, seq: this.batch, ...(agents.length ? { agents } : {}) };
     }
 
     /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */

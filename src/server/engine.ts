@@ -2653,21 +2653,22 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
-                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined);
+                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined, p.fold === true);
             }
             case "session.turns": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 // Only a session this window has open: its ops come to it, so what it's sent stays right.
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
-                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true });
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
             }
             case "session.find": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
-                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined) };
+                const also = Array.isArray(p.turns) ? (p.turns as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 10_000) : undefined;
+                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also) };
             }
             case "session.agentList": {
                 const rt = this.runtimes.get(str(p.id, "id"));
@@ -2850,6 +2851,11 @@ export class Engine {
                     }
                 }
                 return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
+            }
+            case "session.turn": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.turnWhole(str(p.turnId, "turnId"));
             }
             case "session.block": {
                 const rt = this.runtimes.get(str(p.id, "id"));

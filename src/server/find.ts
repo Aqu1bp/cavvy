@@ -54,14 +54,15 @@ const SLICE_MS = 8;
 export async function findBefore(
     turns: readonly Turn[],
     query: string,
-    o: { before?: string; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean } = {},
+    o: { before?: string; also?: ReadonlySet<string>; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean } = {},
 ): Promise<SessionFindMatch[] | undefined> {
     // `whole`: a turn kept as its head, whole (the session's store has its blocks); `stamped`: what it is, for it.
     const parts = (t: Turn) => partsOf(t, o.whole, o.stamped);
     const end = o.before === undefined ? turns.length : turns.findIndex((t) => t.id === o.before);
     if (end < 0) return [];
-    // As they are now: turns that come in meanwhile are the window's to count.
-    const scope = turns.slice(0, end);
+    // As they are now: turns that come in meanwhile are the window's to count. And `also`, after them (those a window
+    // was sent folded: it hasn't what it would count in them).
+    const scope = o.also?.size ? turns.filter((t, i) => i < end || o.also!.has(t.id)) : turns.slice(0, end);
     const out: SessionFindMatch[] = [];
     let since = performance.now();
     for (const t of scope) {

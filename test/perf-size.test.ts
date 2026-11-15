@@ -14,7 +14,8 @@ const iso = isolate();
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { startServer } = await import("../src/server/server");
 const { writeThread } = await import("../scripts/perf-thread");
-// The window's own numbers, not copies: a change to them is measured here too.
+// The window's own numbers, not copies: a change to them is measured here too. Opened as a window opens one with
+// work shown folded (the default: gui/src/state/app.ts opening).
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
 
 const SMALL = 3_000;
@@ -58,7 +59,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const read0 = readSoFar();
     // As the window opens one (gui/src/state/app.ts: OPEN_TURNS, OPEN_BYTES).
     let at = performance.now();
-    const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES });
+    const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
     const openMs = performance.now() - at;
     const read1 = readSoFar();
     const kept = heap() - before;
@@ -84,7 +85,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         const before2 = heap();
         const read2 = readSoFar();
         at = performance.now();
-        await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES });
+        await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
         const ms = performance.now() - at;
         const read3 = readSoFar();
         const kept2 = heap() - before2;
@@ -188,7 +189,7 @@ describe("a Claude Code session", () => {
     const t = writeThread({ cwd, items: 100_000, kind: "cli", heavy: true, seed: 3 });
     expect(t.uiBytes).toBeGreaterThan(2 ** 31);
     // As the window opens one (gui/src/state/app.ts: OPEN_TURNS, OPEN_BYTES).
-    const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES });
+    const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
     const tools = (open.msg.result.turns as { blocks: { t: string }[] }[]).flatMap((x) => x.blocks).filter((b) => b.t === "tool");
     expect(tools.length).toBeGreaterThan(100);
 }, 600_000);

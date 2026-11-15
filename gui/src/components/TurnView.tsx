@@ -18,7 +18,7 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app } from "../state/app";
+import { activate, app, handleFor, loadTurn } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -365,6 +365,11 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const [all, setAll] = createSignal(false);
     // The other worktrees the turn worked in (sub-agents' own, one it entered): with its own folder, the card's places.
     const places = () => (captured() ? recorded()?.places ?? [] : []);
+    // Who worked where is read from each one's calls: a turn sent folded hasn't all of them (long commands), nor its
+    // sub-agents' steps. Asked for when there's more than its own folder to say it of.
+    createEffect(() => {
+        if (places().length && p.turn.folded) void loadTurn(handleFor(p.sessionId), p.turn.id);
+    });
     const own = createMemo<OwnPlace | undefined>(() => (files().length ? { files: files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), ...total() } : undefined));
     const shape = () => cardShape(own(), places());
     const rows = createMemo(() => placeRows(own(), places()));
@@ -630,6 +635,11 @@ function TurnViewContent(p: TurnViewProps) {
         setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
+    // Sent with its work folded (Turn.folded): what its rows show opened comes as the work is to be shown, and the work
+    // is shown once it has (not a moment with rows missing their output).
+    createEffect(() => {
+        if (showWork() && p.turn.folded) void loadTurn(handleFor(p.state.id), p.turn.id);
+    });
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
@@ -689,7 +699,7 @@ function TurnViewContent(p: TurnViewProps) {
                 </Show>
             }
         >
-            <Show when={showWork()}>
+            <Show when={showWork() && !p.turn.folded}>
                 <div class={`worklog ${folding() ? "leaving" : ""}`}>
                     {/* One quiet line for the run, opening into its steps' rows. */}
                     <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>

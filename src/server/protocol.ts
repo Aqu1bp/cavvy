@@ -431,6 +431,11 @@ export interface Turn {
     endedAt?: number;
     /** Before the last compaction: shown, but no longer in the model's context. */
     archived?: boolean;
+    /**
+     * Sent with its work folded (session.open's and session.turns' `fold`): its tools without what only their opened rows
+     * show (outputs, diffs past their first change, long inputs). session.turn has it whole, as its work is shown.
+     */
+    folded?: true;
     /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
     imported?: boolean;
     /**
@@ -2140,21 +2145,24 @@ export interface Methods {
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     /** `last`: only the last that many turns (the rest are counted in `earlier`); all without it. */
     /** `last`: no more than this many of its latest turns; `budget`: and no more than fit this many bytes (at least one). */
-    "session.open": { params: { id: string; last?: number; budget?: number }; result: SessionSnapshot };
+    "session.open": { params: { id: string; last?: number; budget?: number; fold?: boolean }; result: SessionSnapshot };
+    /** A turn whole: one sent folded (Turn.folded), as its work is shown. Null when it's gone (a rewind). */
+    "session.turn": { params: { id: string; turnId: string }; result: { turn: Turn; agents: AgentRun[] } | null };
     /**
      * The turns before `before` (a turn the window has): `count` of them (40 by default), or all back to the one holding
      * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).
      */
-    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
+    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean }; result: SessionTurnsPage };
     /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
     "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
     /** Every sub-agent, as its row in the Agents list shows it (AgentRun.partial): those a window wasn't sent (agentsMore). */
     "session.agentList": { params: { id: string }; result: AgentRun[] };
     /**
      * Find, in the turns before `before` (the first the window has): where `query` appears, counted as the window
-     * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`.
+     * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`. And in `turns` (those
+     * it was sent folded: it can't count them itself), in order with the rest.
      */
-    "session.find": { params: { id: string; query: string; before?: string }; result: { matches: SessionFindMatch[] } };
+    "session.find": { params: { id: string; query: string; before?: string; turns?: string[] }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };

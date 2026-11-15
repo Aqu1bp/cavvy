@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
 import type { SessionFindMatch, Turn } from "@shared/protocol";
-import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
+import { allMatches, clearPaint, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
 import { FAR } from "../lib/transcript-scroll";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
 
@@ -19,10 +19,15 @@ export function FindBar(p: {
     turns: () => readonly Turn[];
     /** How many of the session's turns the window hasn't been sent: those are searched where they are (`elsewhere`). */
     earlier: () => number;
-    /** Where `query` appears in the turns before `before`, the first the window has (session.find). */
-    elsewhere: (query: string, before: string) => Promise<SessionFindMatch[]>;
+    /**
+     * Where `query` appears in the turns before `before`, the first the window has, and in `folded` (those it has with
+     * their work folded: Turn.folded, without what it would count in them), in order (session.find).
+     */
+    elsewhere: (query: string, before: string, folded: string[]) => Promise<SessionFindMatch[]>;
     /** Brings a match's turn into the window (one of those it hadn't been sent), back through it. */
     bring: (m: SessionFindMatch) => Promise<void>;
+    /** A turn the window has folded, whole (loadTurn): a match in its work is shown once it is. */
+    whole: (turnId: string) => Promise<void>;
     scroller: () => HTMLElement | undefined;
     col: () => HTMLElement | undefined;
     /** The composer dock's height: a match is shown above it. */
@@ -69,20 +74,19 @@ export function FindBar(p: {
     // something's typed.
     const [elsewhere, setElsewhere] = createSignal<SessionFindMatch[]>([]);
     let asking = 0;
-    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id], ([q, earlier, first]) => {
+    // The turns the window has folded, by id, changing only as one comes whole or another comes folded.
+    const folded = createMemo(() => p.turns().filter((t) => t.folded).map((t) => t.id).join("\n"));
+    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded], ([q, earlier, first, ids]) => {
         const ask = ++asking;
-        if (!earlier || !first) return setElsewhere([]);
-        void p.elsewhere(q, first).then((ms) => ask === asking && setElsewhere(ms), () => ask === asking && setElsewhere([]));
+        if ((!earlier && !ids) || !first) return setElsewhere([]);
+        void p.elsewhere(q, first, ids ? ids.split("\n") : []).then((ms) => ask === asking && setElsewhere(ms), () => ask === asking && setElsewhere([]));
     }));
     const matches = createMemo(() => {
         const q = findQuery();
         edits();
-        const here = untrack(() => findMatches(p.turns(), q));
+        folded();
         const there = elsewhere();
-        if (!there.length) return here;
-        // Those of turns that have come in since are counted here.
-        const ids = new Set(untrack(p.turns).map((t) => t.id));
-        return [...there.filter((m) => !ids.has(m.turnId)), ...here].slice(0, MAX_MATCHES);
+        return untrack(() => allMatches(p.turns(), q, there));
     });
 
     const onInput = (v: string) => {
@@ -146,8 +150,10 @@ export function FindBar(p: {
             // Once the page and the rows opened for it are drawn.
             requestAnimationFrame(() => requestAnimationFrame(() => shownMatch === m && focusMatch(m, true)));
         };
-        // One the window hasn't been sent: brought in first, back through its turn.
-        if (untrack(p.turns).some((t) => t.id === m.turnId)) reveal();
+        // One the window hasn't been sent: brought in first, back through its turn. One it has folded: whole first.
+        const turn = untrack(p.turns).find((t) => t.id === m.turnId);
+        if (turn && !turn.folded) reveal();
+        else if (turn) void p.whole(turn.id).then(reveal);
         else void p.bring(m).then(reveal);
     };
 

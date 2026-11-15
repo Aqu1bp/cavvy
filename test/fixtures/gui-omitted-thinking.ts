@@ -1,5 +1,6 @@
 // A finished turn's thought comes without its text (ThinkingBlock.omitted): its row asks for it (session.block) as
-// the pointer comes to it or it's opened, and it's put in its place.
+// the pointer comes to it or it's opened, and it's put in its place. And a turn sent with its work folded
+// (Turn.folded) is filled in where it is when it's asked for whole (session.turn), its sub-agents with it.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Socket } from "../helpers/gui-socket";
@@ -19,7 +20,9 @@ class ServerSocket extends Socket {
         const { id, method, params } = JSON.parse(raw);
         const reply = (result: unknown) => queueMicrotask(() => this.message({ id, result }));
         asked.push({ method, params });
-        if (method === "session.open") reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: false, interactions: [] }, turns: [{ id: "t1", status: "done", startedAt: 1, prompt: { text: "why?" }, blocks: [thought, { t: "text", id: "r", text: "because" }] }], agents: [] });
+        if (method === "session.open" && params.id === "f") reply({ seq: 0, state: { id: "f", cwd: "/project", busy: false, interactions: [] }, turns: [{ id: "w", status: "done", startedAt: 1, folded: true, prompt: { text: "run it" }, blocks: [{ t: "tool", id: "c", name: "Bash", title: "Bash", status: "ok", input: { command: "npm test" } }] }], agents: [{ id: "a", turnId: "w", status: "done", description: "helper", agentType: "general-purpose", startedAt: 1, toolCount: 1, tokens: 1, blocks: [], partial: true }] });
+        else if (method === "session.turn") reply({ turn: { id: "w", status: "done", startedAt: 1, prompt: { text: "run it" }, blocks: [{ t: "tool", id: "c", name: "Bash", title: "Bash", status: "ok", input: { command: "npm test" }, output: "12 pass" }] }, agents: [{ id: "a", turnId: "w", status: "done", description: "helper", agentType: "general-purpose", startedAt: 1, toolCount: 1, tokens: 1, report: "found it", blocks: [{ t: "text", id: "ab", text: "a step" }] }] });
+        else if (method === "session.open") reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: false, interactions: [] }, turns: [{ id: "t1", status: "done", startedAt: 1, prompt: { text: "why?" }, blocks: [thought, { t: "text", id: "r", text: "because" }] }], agents: [] });
         else if (method === "session.block") reply({ t: "thinking", id: "th", text: "the reasons, at length", durationMs: 4000 });
         else if (method === "hello" || method === "settings.get") reply({});
         else if (method === "session.close" || method === "session.shown") reply(null);
@@ -30,7 +33,7 @@ globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 const calls = (m: string) => asked.filter((a) => a.method === m);
 
-const { start, rpc, openSession, loadBlock } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, loadBlock, loadTurn } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 try {
     start();
@@ -78,6 +81,21 @@ try {
     await loadBlock("s", "th");
     await loadBlock("s", "r");
     assert.equal(calls("session.block").length, 1);
+
+    // A turn with its work folded, asked for whole twice at once: once, filled in where it is.
+    const f = await openSession("f");
+    const turn = f.view.turns[0]!;
+    await Promise.all([loadTurn(f, "w"), loadTurn(f, "w")]);
+    assert.equal(calls("session.turn").length, 1);
+    assert.equal(f.view.turns[0], turn);
+    assert.equal(turn.folded, undefined);
+    assert.equal((turn.blocks[0] as { output?: string }).output, "12 pass");
+    // Its sub-agent whole (it was listed).
+    assert.equal(f.view.agents[0]!.partial, undefined);
+    assert.equal(f.view.agents[0]!.report, "found it");
+    // Whole now: nothing asked for.
+    await loadTurn(f, "w");
+    assert.equal(calls("session.turn").length, 1);
 } catch (e) {
     console.error(e);
     process.exit(1);

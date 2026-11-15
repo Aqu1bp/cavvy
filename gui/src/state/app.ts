@@ -349,12 +349,12 @@ export interface SessionHandle {
 
 const handles = new Map<string, SessionHandle>();
 /**
- * A session opens with its last this many turns at most, and no more than fit OPEN_BYTES (its first screens: about 10 of
- * a long Claude Code session's turns, against 100 that were 2.4 MB). The rest of its first page comes after its first
- * frame (Transcript), and the rest as they're asked for (loadEarlier).
+ * A session opens with its last this many turns at most, and no more than fit OPEN_BYTES (its first screens: with their
+ * work folded, 7 to 17 of a long session's turns, against 100 that were 2.4 MB). The rest of its first page comes after
+ * its first frame (Transcript), and the rest as they're asked for (loadEarlier).
  */
 export const OPEN_TURNS = 100;
-export const OPEN_BYTES = 256 * 1024;
+export const OPEN_BYTES = 64 * 1024;
 /** Each handle's fetch of earlier turns under way: one at a time, so a page is never put in twice. */
 const loadingEarlier = new Map<string, Promise<boolean>>();
 const [handleVersion, setHandleVersion] = createSignal(0);
@@ -366,7 +366,11 @@ export const onScreen: { beside: () => readonly string[] } = { beside: () => [] 
  * last turns, as fit its first screens. Not every turn the window had of it: after "Show earlier" or Find had them all,
  * that was the whole session again each time. The place read comes back with them (Transcript: loadEarlierTo).
  */
-const opening = (id: string) => ({ id, last: OPEN_TURNS, budget: OPEN_BYTES });
+/**
+ * How a window opens a session: its last turns, as many as fit OPEN_BYTES; finished ones with their work folded (what
+ * only an opened row shows comes as the work is shown: loadTurn), unless work is shown expanded.
+ */
+const opening = (id: string) => ({ id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: !prefs.expandActivity });
 
 export function handleFor(id: string | undefined): SessionHandle | undefined {
     handleVersion();
@@ -534,7 +538,7 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
         if (!h.view.earlier) return true;
         const first = h.view.turns[0]?.id;
         if (!first) return false;
-        const page = await rpc.call("session.turns", { id: h.id, before: first, ...how });
+        const page = await rpc.call("session.turns", { id: h.id, before: first, fold: !prefs.expandActivity, ...how });
         // Ops sent before this answer are in it: those still queued go first, to the turns already here.
         flush(h);
         if (h.view.turns[0]?.id !== first) return false;
@@ -545,8 +549,10 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
             // counted them (agentsMore).
             for (const a of page.agents ?? []) {
                 const i = v.agents.findIndex((x) => x.id === a.id);
-                if (i >= 0) v.agents[i] = a;
-                else {
+                // (One listed, of a turn sent folded, doesn't take the place of one whole.)
+                if (i >= 0) {
+                    if (!a.partial || v.agents[i]!.partial) v.agents[i] = a;
+                } else {
                     v.agents.push(a);
                     if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
                 }
@@ -594,6 +600,40 @@ export function loadAgentList(h: SessionHandle): Promise<void> {
         }));
     }, () => undefined).finally(() => loadingAgentList.delete(h.id));
     loadingAgentList.set(h.id, run);
+    return run;
+}
+
+/** Each turn's fetch under way (loadTurn). */
+const loadingTurn = new Map<string, Promise<void>>();
+
+/**
+ * A turn whole, and its sub-agents, for one sent with its work folded (Turn.folded), put in its place: as its work is
+ * about to be shown (opened, found in), which waits for it.
+ */
+export function loadTurn(h: SessionHandle | undefined, turnId: string): Promise<void> {
+    if (!h || !h.view.turns.some((t) => t.id === turnId && t.folded)) return Promise.resolve();
+    const key = `${h.id}:${turnId}`;
+    const going = loadingTurn.get(key);
+    if (going) return going;
+    const run = rpc.call("session.turn", { id: h.id, turnId }).then((r) => {
+        if (!r) return;
+        // Ops sent before this answer are in it: those still queued go first.
+        flush(h);
+        batch(() => h.set(produce((v) => {
+            // Filled in where it is (the same turn: its view isn't made again).
+            const t = v.turns.find((x) => x.id === turnId);
+            if (t?.folded) {
+                Object.assign(t, r.turn);
+                delete t.folded;
+            }
+            for (const a of r.agents) {
+                const j = v.agents.findIndex((x) => x.id === a.id);
+                if (j < 0) v.agents.push(a);
+                else if (v.agents[j]!.partial) v.agents[j] = a;
+            }
+        })));
+    }, () => undefined).finally(() => loadingTurn.delete(key));
+    loadingTurn.set(key, run);
     return run;
 }
 

@@ -63,3 +63,25 @@ for (const kind of ["cli", "native"] as const) {
         await call("session.close", { id: t.id });
     }, 60_000);
 }
+
+test("in turns a window has folded, the server finds what the window would in them whole, in order with the rest", async () => {
+    const cwd = join(tempDir("cavvy-session-find-folded-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 6 });
+    const all = (await call("session.open", { id: t.id })).turns as { id: string; blocks: unknown[] }[];
+    await call("session.close", { id: t.id });
+    // Opened as a window opens it, folding work: its last turns, those finished folded.
+    const open = await call("session.open", { id: t.id, last: 30, fold: true });
+    const folded = (open.turns as { id: string; folded?: true }[]).filter((x) => x.folded).map((x) => x.id);
+    expect(folded.length).toBeGreaterThan(10);
+    // Words in commands' output (which a folded row doesn't have).
+    let inFolded = 0;
+    for (const query of ["npm test", "the server", "PASS"]) {
+        const found = (await call("session.find", { id: t.id, query, before: open.turns[0].id, turns: folded })).matches as { turnId: string; part: string; n: number }[];
+        const want = findMatches(all as never, query).filter((m) => all.findIndex((x) => x.id === m.turnId) < all.length - 30 || folded.includes(m.turnId));
+        expect({ query, found: found.map(({ turnId, part, n }) => ({ turnId, part, n })) }).toEqual({ query, found: want });
+        inFolded += want.filter((m) => folded.includes(m.turnId)).length;
+    }
+    expect(inFolded).toBeGreaterThan(0);
+    await call("session.close", { id: t.id });
+}, 60_000);

@@ -193,3 +193,56 @@ test("a finished turn's thoughts are sent without their text, which comes when o
     expect(rt.blockWhole("gone", "a")).toBeNull();
     expect((view.turns[1]!.blocks[0] as { text: string }).text).toBe("thinking about a");
 });
+
+test("a window that folds work is sent a finished turn's work with what shows folded, and the turn whole when it's shown", async () => {
+    const { rt, view } = runtime(3);
+    const long = "x".repeat(500);
+    const diff = { path: "a.ts", status: "modified", added: 2, removed: 1, hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [{ t: "ctx", a: 1, b: 1, text: "keep" }, { t: "del", a: 2, text: "old" }, { t: "add", b: 2, text: "new" }, { t: "add", b: 3, text: "more" }] }, { oldStart: 20, oldLines: 1, newStart: 21, newLines: 1, lines: [{ t: "add", b: 21, text: "later" }] }] };
+    const tool = (id: string, name: string, more: object) => ({ t: "tool", id, name, title: name, status: "ok", ...more });
+    view.turns[1]!.blocks = [
+        tool("cmd", "Bash", { input: { command: "npm test", description: "Run the tests" }, output: long, summary: "exit 0" }),
+        tool("left", "Bash", { input: { command: "npm run dev" }, output: "Still running in the background (process 7)." }),
+        tool("ed", "Edit", { input: { file_path: "a.ts", old_string: long, new_string: "y" }, diff, diagnostics: { errors: 1 } }),
+        tool("plan", "ExitPlanMode", { input: { plan: long }, output: long }),
+        tool("sub", "Task", { agent: true, input: { description: "Map it", prompt: long }, output: long }),
+        { t: "text", id: "r", text: "the reply" },
+    ] as Turn["blocks"];
+    view.turns[2]!.status = "running";
+    view.turns[2]!.blocks = [tool("now", "Bash", { input: { command: "ls" }, output: long })] as Turn["blocks"];
+    const agent = (id: string, turnId: string): AgentRun => ({ id, turnId, status: "done", description: id, agentType: "general-purpose", startedAt: 1, toolCount: 1, tokens: 1, report: "found it", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"] });
+    (view as { agents: AgentRun[] }).agents = [agent("sub", "t1")];
+
+    const snap = rt.snapshot(undefined, undefined, true);
+    const [first, folded, running] = snap.turns;
+    // Nothing in it to leave out: as it is.
+    expect(first!.folded).toBeUndefined();
+    expect(folded!.folded).toBe(true);
+    const byId = Object.fromEntries(folded!.blocks.map((b) => [b.id, b as any]));
+    // Its row as it reads folded: its name, what it was for, how it ended; not its output.
+    expect(byId.cmd).toEqual(tool("cmd", "Bash", { input: { command: "npm test", description: "Run the tests" }, summary: "exit 0" }));
+    // A short output (a command left running says so in it: the turn's "Stopped" line reads it).
+    expect(byId.left.output).toBe("Still running in the background (process 7).");
+    // An edit: its file and counts, and its diff as far as its first change (the changes card says where).
+    expect(byId.ed.input).toEqual({ file_path: "a.ts" });
+    expect(byId.ed.diagnostics).toBeUndefined();
+    expect(byId.ed.diff).toEqual({ ...diff, hunks: [{ ...diff.hunks[0], lines: diff.hunks[0]!.lines.slice(0, 2) }] });
+    // A plan's card shows outside the work: whole.
+    expect(byId.plan.input.plan).toBe(long);
+    expect(byId.plan.output).toBe(long);
+    expect(byId.sub.output).toBeUndefined();
+    expect(byId.r.text).toBe("the reply");
+    // One under way: whole.
+    expect(running!.folded).toBeUndefined();
+    expect((running!.blocks[0] as any).output).toBe(long);
+    // Its sub-agents as they're listed (their row is in its work).
+    expect(snap.agents).toEqual([{ ...agent("sub", "t1"), report: undefined, blocks: [], partial: true }].map(({ report: _r, ...a }) => a));
+    // Not folding: whole.
+    expect(rt.snapshot().turns[1]!.folded).toBeUndefined();
+    expect(rt.turnsBefore("t2", { all: true, fold: true })!.turns[1]!.folded).toBe(true);
+    // Shown: whole, and its sub-agents whole.
+    const whole = rt.turnWhole("t1")!;
+    expect(whole.turn.folded).toBeUndefined();
+    expect((whole.turn.blocks.find((b) => b.id === "cmd") as any).output).toBe(long);
+    expect(whole.agents).toEqual([agent("sub", "t1")]);
+    expect(rt.turnWhole("gone")).toBeNull();
+});

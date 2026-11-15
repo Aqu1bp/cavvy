@@ -18,7 +18,7 @@ const sessions = new Map<string, number>([["long", 130]]);
 let numbering = 2;
 const turnsOf = (id: string) => Array.from({ length: sessions.get(id) ?? 0 }, (_, i) => ({ id: `${id}-${i + numbering}`, status: "done", blocks: [], prompt: { text: `prompt ${i}` }, pos: { seg: 0, index: 2 * i }, startedAt: 1000 + i }));
 /** What each session.open, and each session.turns, asked for. */
-const opens: { id: string; last?: number; budget?: number }[] = [];
+const opens: { id: string; last?: number; budget?: number; fold?: boolean }[] = [];
 const pages: Record<string, unknown>[] = [];
 let server: ServerSocket | undefined;
 
@@ -29,7 +29,7 @@ class ServerSocket extends Socket {
         const { id, method, params } = JSON.parse(raw);
         const reply = (result: unknown) => queueMicrotask(() => this.message({ id, result }));
         if (method === "session.open") {
-            opens.push({ id: params.id, last: params.last, budget: params.budget });
+            opens.push({ id: params.id, last: params.last, budget: params.budget, fold: params.fold });
             const all = turnsOf(params.id);
             const from = Math.max(0, all.length - (params.last ?? all.length));
             reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: false, interactions: [] }, turns: all.slice(from), agents: [], ...(from ? { earlier: from } : {}) });
@@ -79,7 +79,7 @@ try {
     Socket.instances.at(-1)!.open();
     await settle();
     assert.equal(opens.filter((o) => o.id === "long").length, 2, "opened again on the reconnect");
-    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES });
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
     assert.equal(h.view.turns.length, 100);
     assert.equal(h.view.earlier, 30);
 
@@ -87,7 +87,7 @@ try {
     server!.message({ event: { type: "session.reload", sessionId: "long" } });
     await settle();
     assert.equal(opens.filter((o) => o.id === "long").length, 3);
-    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES });
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
 
     // Read back up to its first again ("Show earlier"), and the place read is up there.
     assert.ok(await loadEarlier(h, { count: 40 }));
@@ -105,7 +105,7 @@ try {
     sessions.set("long", 133);
     numbering = 0;
     const again = await openSession("long");
-    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES });
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
     assert.equal(again.view.turns.length, 100);
     // The place read was in a turn the new ones pushed out: brought back first, in one request, and no more than it.
     assert.equal(keyedTurn(again.view.turns, read), undefined);
@@ -114,7 +114,8 @@ try {
     pages.length = 0;
     const first = again.view.turns[0]!.id;
     assert.ok(await loadEarlierTo(again, read));
-    assert.deepEqual(pages, [{ id: "long", before: first, through: { seg: 0, index: 2 }, count: 1 }]);
+    // (Its work folded, as it opened: what only an opened row shows comes as it's shown.)
+    assert.deepEqual(pages, [{ id: "long", before: first, through: { seg: 0, index: 2 }, count: 1, fold: true }]);
     assert.equal(keyedTurn(again.view.turns, read)?.prompt?.text, "prompt 1");
     assert.equal(again.view.turns[0]!.prompt?.text, "prompt 1");
     // Here already: nothing asked.

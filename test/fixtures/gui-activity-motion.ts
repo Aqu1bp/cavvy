@@ -34,6 +34,9 @@ const row = (root: Node, id: string) => {
 };
 const liveLineOf = (root: Node) => all(root).find((n) => has(n, "live-line"));
 
+/** The turns a TurnView asked for whole (loadTurn: one sent with its work folded). */
+const turnLoads: string[] = [];
+
 /** `busy` false: a turn left running (no live line), whose calls under way are rows like the others. */
 function setup(blocks: any[], expanded = true, agents: any[] = [], session?: string, busy = true) {
     const [view, setView] = createStore<any>({ state: { id: "session", busy, interactions: [], shells: [] }, turns: [{ id: "turn", status: "running", startedAt: 1000, blocks }], agents });
@@ -45,7 +48,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const scope = {
         ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, ...cards, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
-        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
+        handleFor: () => ({ view }), loadTurn: (_h: unknown, id: string) => { turnLoads.push(id); return Promise.resolve(); }, stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
         Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); solid.createRenderEffect(() => n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" ")); return n; },
@@ -756,3 +759,40 @@ test("with tool activity set to open, a command card starts open", () => {
     } finally { h.dispose(); }
 });
 
+test("a turn sent with its work folded shows its work once it's whole, and asks for it as it's opened", () => {
+    turnLoads.length = 0;
+    const h = setup([command("c", "ok")], false, [], undefined, false);
+    try {
+        h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000, folded: true })));
+        const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
+        const work = () => all(h.root).find((n) => has(n, "worklog"));
+        // Folded: "Worked for", nothing asked for.
+        expect(worked().props["aria-expanded"]).toBe(false);
+        expect(turnLoads).toEqual([]);
+        // Opened: asked for, and its work isn't drawn without what its rows show.
+        worked().props.onClick({ currentTarget: worked() });
+        expect(worked().props["aria-expanded"]).toBe(true);
+        expect(turnLoads).toEqual(["turn"]);
+        expect(work()).toBeUndefined();
+        // Whole: drawn.
+        h.setView(produce((v: any) => { v.turns[0].blocks = [{ ...command("c", "ok"), output: "all done" }]; delete v.turns[0].folded; }));
+        expect(work()).toBeDefined();
+        expect(turnLoads).toEqual(["turn"]);
+    } finally {
+        h.dispose();
+    }
+});
+
+test("a turn sent whole isn't asked for again as its work is opened", () => {
+    turnLoads.length = 0;
+    const h = setup([command("c", "ok")], false, [], undefined, false);
+    try {
+        h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000 })));
+        const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
+        worked().props.onClick({ currentTarget: worked() });
+        expect(all(h.root).some((n) => has(n, "worklog"))).toBe(true);
+        expect(turnLoads).toEqual([]);
+    } finally {
+        h.dispose();
+    }
+});
