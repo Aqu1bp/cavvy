@@ -1,6 +1,7 @@
 // The scene behind the window, when the theme showing has one: its layers on a 1600 × 1000 stage scaled to cover the
 // window, and over them the theme's background, as much of it as text needs (measured from the scene's own pixels:
-// palette.ts veilFor). A new scene fades in over the old one once it's drawn. What moves is the compositor's alone
+// palette.ts veilFor). A new scene is drawn out of sight, then put up with the theme's colours in one crossfade
+// (state/theme.ts putUp). What moves is the compositor's alone
 // (lib/theme-motion.ts); layers for "working" show while the session on screen works.
 
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
@@ -12,7 +13,7 @@ import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
-import { drawnTheme, sceneKey, shown, type Shown } from "../state/theme";
+import { drawnTheme, onScreen, sceneKey, sceneReady, shown, type Shown } from "../state/theme";
 import "../styles/theme-backdrop.css";
 
 /** How a scene was measured: its veil as an image to stretch over the stage, how much it covers on average and at most, and the layers that couldn't be drawn. */
@@ -148,8 +149,8 @@ function LayerView(p: { layer: Layer; index: number; animation?: string; working
     );
 }
 
-/** One theme's scene, transparent until it's drawn. */
-function Scene(p: { shown: Shown; sceneKey: string; leaving: boolean; onDrawn: (key: string) => void }): JSX.Element {
+/** One theme's scene, out of sight until it's put up. */
+function Scene(p: { shown: Shown; sceneKey: string; up: boolean }): JSX.Element {
     const look = p.shown.look;
     const n = ++serial;
     const anims = (look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tb${n}_${i}`, l.opacity ?? 1) : undefined));
@@ -159,11 +160,11 @@ function Scene(p: { shown: Shown; sceneKey: string; leaving: boolean; onDrawn: (
         void measure(p.sceneKey, look, p.shown).then((m) => {
             setVeil(m);
             drawnTheme({ key: p.sceneKey, id: p.shown.id, scheme: p.shown.scheme, veil: m.mean, veilMost: m.most, ...(m.map ? { map: m.map } : {}), failed: m.failed });
-            p.onDrawn(p.sceneKey);
+            sceneReady(p.sceneKey);
         });
     });
     return (
-        <div class="tb-scene" classList={{ on: veil() !== undefined && !p.leaving }}>
+        <div class="tb-scene" classList={{ on: p.up }}>
             <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
             <div class="tb-stage">
                 <For each={look.layers ?? []}>{(layer, i) => <LayerView layer={layer} index={i()} animation={anims[i()]?.animation} working={working} />}</For>
@@ -177,48 +178,33 @@ function Scene(p: { shown: Shown; sceneKey: string; leaving: boolean; onDrawn: (
 interface SceneEntry {
     key: string;
     shown: Shown;
-    leaving: () => boolean;
-    leave: () => void;
 }
+
+const sceneOf = (s: Shown | undefined): SceneEntry | undefined => (s?.look.layers?.length ? { key: sceneKey(s), shown: s } : undefined);
 
 export function ThemeBackdrop(): JSX.Element {
     let root!: HTMLDivElement;
     // Kept as the same objects while they're on screen: <For> would build a scene again for a new one.
     const [scenes, setScenes] = createSignal<SceneEntry[]>([]);
-    const current = createMemo(() => {
-        const s = shown();
-        return s?.look.layers?.length ? { key: sceneKey(s), shown: s } : undefined;
-    });
-    const dropLeft = () => setTimeout(() => setScenes((l) => l.filter((x) => !x.leaving())), 650);
+    // The one to draw next, and the one up: only these two are kept. One put up takes the other's place in the same
+    // update, inside the crossfade, so the window never shows no scene between two.
+    const wanted = createMemo(() => sceneOf(shown()));
+    const upNow = createMemo(() => sceneOf(onScreen()));
+    const upKey = () => upNow()?.key;
     createEffect(() => {
-        const c = current();
         const s = shown();
         // A theme with no scene is drawn as soon as it's on <html>.
-        if (s && !c) drawnTheme({ key: sceneKey(s), id: s.id, scheme: s.scheme, failed: [] });
+        if (s && !s.look.layers?.length) drawnTheme({ key: sceneKey(s), id: s.id, scheme: s.scheme, failed: [] });
+    });
+    createEffect(() => {
+        const keep = [upNow(), wanted()].filter((x): x is SceneEntry => x !== undefined);
         untrack(() => {
             const list = scenes();
-            const top = list.at(-1);
-            if (c && top?.key === c.key && !top.leaving()) return;
-            if (!c) {
-                for (const x of list) x.leave();
-                return void dropLeft();
-            }
-            // The ones under it stay until it has drawn (drawn below), so the window never shows no scene between two.
-            const [leaving, setLeaving] = createSignal(false);
-            setScenes([...list.filter((x) => x.key !== c.key), { key: c.key, shown: c.shown, leaving, leave: () => setLeaving(true) }]);
+            const next = list.filter((x) => keep.some((k) => k.key === x.key));
+            for (const k of keep) if (!next.some((x) => x.key === k.key)) next.push(k);
+            if (next.length !== list.length || next.some((x, i) => x !== list[i])) setScenes(next);
         });
     });
-    // Once the newest has drawn and faded in over them (theme-backdrop.css: 500 ms), the ones under it go.
-    const drawn = (key: string) => {
-        if (scenes().at(-1)?.key !== key) return;
-        setTimeout(() => {
-            const list = scenes();
-            const at = list.findIndex((x) => x.key === key);
-            if (at < 0) return;
-            for (const x of list.slice(0, at)) x.leave();
-            dropLeft();
-        }, 500);
-    };
     // The stage covers the window: scaled to the larger of the two fits.
     onMount(() => {
         const fit = () => {
@@ -231,8 +217,8 @@ export function ThemeBackdrop(): JSX.Element {
         onCleanup(() => ro.disconnect());
     });
     return (
-        <div ref={root} class="theme-backdrop" aria-hidden="true" data-still={prefs.themeMotion ? undefined : ""} hidden={!scenes().length}>
-            <For each={scenes()}>{(x) => <Scene shown={x.shown} sceneKey={x.key} leaving={x.leaving()} onDrawn={drawn} />}</For>
+        <div ref={root} class="theme-backdrop" aria-hidden="true" data-still={prefs.themeMotion ? undefined : ""} hidden={!upKey()}>
+            <For each={scenes()}>{(x) => <Scene shown={x.shown} sceneKey={x.key} up={x.key === upKey()} />}</For>
         </div>
     );
 }

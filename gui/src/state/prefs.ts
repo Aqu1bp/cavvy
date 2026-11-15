@@ -39,6 +39,9 @@ const bootForced = () => {
 };
 export const [forcedScheme, setForcedScheme] = createSignal<"light" | "dark" | undefined>(bootForced());
 
+/** The scheme of the theme on screen, while one is (state/theme.ts): the window turns light or dark with its crossfade, not before. */
+export const [heldScheme, setHeldScheme] = createSignal<"light" | "dark" | undefined>(undefined);
+
 /** What Settings needs to know of the theme showing (state/theme.ts sets it): kept here so Settings doesn't load the theme code. */
 export const [themeTraits, setThemeTraits] = createSignal<{ name: string; scened: boolean; accent: boolean } | undefined>(undefined);
 
@@ -57,7 +60,7 @@ createRoot(() => {
     // native window hears only of a change of scheme (each time is a call to the app).
     let shown: Appearance | undefined;
     createEffect(() => {
-        const next = appearanceOf(prefs, systemDark(), forcedScheme());
+        const next = appearanceOf(prefs, systemDark(), forcedScheme() ?? heldScheme());
         showAppearance(document.documentElement, next, shown);
         if (next.theme !== shown?.theme) void setNativeTheme(next.theme);
         shown = next;

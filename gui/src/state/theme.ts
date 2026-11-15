@@ -3,12 +3,12 @@
 // first shown; the user's own come from the server (~/.cavvy/themes), and a save to one shows at once. A theme file
 // that stops checking out while it's being written keeps its last good look on screen.
 
-import { batch, createEffect, createMemo, createRoot, createSignal } from "solid-js";
+import { batch, createEffect, createMemo, createRoot, createSignal, untrack } from "solid-js";
 import type { ThemeEntry } from "@shared/protocol";
 import { builtin, BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette, type Palette } from "../../../src/themes/palette";
-import { chosenScheme, prefs, setForcedScheme, setPrefs, setThemeTraits } from "./prefs";
+import { chosenScheme, prefs, setForcedScheme, setHeldScheme, setPrefs, setThemeTraits } from "./prefs";
 import { machine } from "../lib/platform";
 
 const CACHE = "cavvy.theme";
@@ -113,6 +113,72 @@ export const shown = createRoot(() =>
 
 export const themeLoading = () => current().state === "loading";
 
+/**
+ * What's on the screen: the palette on <html> and the scene behind it. It follows `shown`, but a new scene is drawn
+ * (ThemeBackdrop) before it's put up, so the colours and the scene change together, in one crossfade (swap).
+ */
+const [up, setUp] = createSignal<Shown | undefined | null>(null);
+/** null until the first is put up: till then, what theme-boot.js painted from the cache stays. */
+export const onScreen = () => up() ?? undefined;
+
+/** The scene being drawn to go up next, and how long it may take before the colours go up without it. */
+let drawing: string | undefined;
+let fallback: ReturnType<typeof setTimeout> | undefined;
+const PENDING_MS = 3000;
+/** Theme switches under way: the crossfade's CSS holds while any is. */
+let swapping = 0;
+
+/** Runs `apply` as one crossfade of the whole window (a view transition), or at once where motion's not wanted. */
+function swap(apply: () => void, animate: boolean) {
+    const motion = animate && prefs.motion !== "instant" && !document.hidden && typeof document.startViewTransition === "function" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!motion) return apply();
+    const root = document.documentElement;
+    swapping++;
+    root.dataset.themeSwitch = "";
+    const t = document.startViewTransition(apply);
+    // Skipped by the next switch, these reject; that's expected.
+    t.ready.catch(() => undefined);
+    t.updateCallbackDone.catch(() => undefined);
+    void t.finished.catch(() => undefined).finally(() => {
+        if (--swapping === 0) delete root.dataset.themeSwitch;
+    });
+}
+
+function putUp(s: Shown | undefined) {
+    clearTimeout(fallback);
+    drawing = undefined;
+    const before = untrack(up);
+    if (before === s) return;
+    // The same look again (its contrast or glass changed): no crossfade for that. Nothing there before and nothing
+    // drawn now (a start with a theme without a scene): its colours are on <html> already (theme-boot.js).
+    const same = before && s && sceneKey(before) === sceneKey(s);
+    swap(() => setUp(s), !same && Boolean(before || s?.look.layers?.length));
+}
+
+/** ThemeBackdrop: the scene for `key` is drawn, and can go up. */
+export function sceneReady(key: string) {
+    if (drawing !== key) return;
+    const s = untrack(shown);
+    if (s && sceneKey(s) === key) putUp(s);
+}
+
+createRoot(() =>
+    createEffect(() => {
+        const c = current();
+        // A built-in still loading: what's up stays.
+        if (c.state === "loading") return;
+        const s = shown();
+        if (!s?.look.layers?.length) return putUp(s);
+        const key = sceneKey(s);
+        const now = untrack(onScreen);
+        if (now && sceneKey(now) === key) return putUp(s);
+        // Drawn first (ThemeBackdrop calls sceneReady); the colours go up without it if it's slow to draw.
+        drawing = key;
+        clearTimeout(fallback);
+        fallback = setTimeout(() => sceneReady(key), PENDING_MS);
+    }),
+);
+
 /** Shows a theme (or none). */
 export function applyTheme(id: string | undefined) {
     setPrefs("themeId", id);
@@ -163,9 +229,8 @@ createRoot(() => {
     })();
     const root = document.documentElement;
     createEffect(() => {
-        const c = current();
-        if (c.state === "loading") return;
-        const s = shown();
+        if (up() === null) return;
+        const s = onScreen();
         const vars = s?.palette.vars ?? {};
         for (const name of applied) if (!(name in vars)) root.style.removeProperty(name);
         for (const [name, value] of Object.entries(vars)) root.style.setProperty(name, value);
@@ -173,24 +238,25 @@ createRoot(() => {
         if (s) root.dataset.themed = s.look.layers?.length ? "scene" : "colors";
         else delete root.dataset.themed;
         setThemeTraits(s ? { name: s.theme.name, scened: Boolean(s.look.layers?.length), accent: Boolean(s.look.colors.accent) } : undefined);
-        const only = c.state === "ready" ? onlyScheme(c.theme) : undefined;
+        const only = s ? onlyScheme(s.theme) : undefined;
         if (only) root.dataset.themeOnly = only;
         else delete root.dataset.themeOnly;
         setForcedScheme(only);
+        setHeldScheme(s?.scheme);
         // For the next start's first paint (theme-boot.js): the palette for each scheme the theme has.
         try {
-            if (c.state !== "ready") {
+            if (!s) {
                 localStorage.removeItem(CACHE);
                 if (!machine) localStorage.removeItem(MINE);
             } else {
                 // Kept whole for a window on a server; written only when it's another theme or a new version of it.
-                if (!machine && !builtin(c.id)) {
-                    const mine = JSON.stringify({ id: c.id, theme: c.theme });
+                if (!machine && !builtin(s.id)) {
+                    const mine = JSON.stringify({ id: s.id, theme: s.theme });
                     if (localStorage.getItem(MINE) !== mine) localStorage.setItem(MINE, mine);
                 } else if (!machine) localStorage.removeItem(MINE);
                 const o = { high: prefs.contrast === "high", glass: prefs.glass };
-                const forScheme = (sch: Scheme) => (c.theme[sch] ? palette(c.theme[sch]!, sch, o).vars : undefined);
-                localStorage.setItem(CACHE, JSON.stringify({ id: c.id, only, scened: Boolean(s?.look.layers?.length), vars: { light: forScheme("light"), dark: forScheme("dark") } }));
+                const forScheme = (sch: Scheme) => (s.theme[sch] ? palette(s.theme[sch]!, sch, o).vars : undefined);
+                localStorage.setItem(CACHE, JSON.stringify({ id: s.id, only, scened: Boolean(s.look.layers?.length), vars: { light: forScheme("light"), dark: forScheme("dark") } }));
             }
         } catch {
             // private mode: the next start paints the theme a moment late

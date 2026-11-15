@@ -15,11 +15,11 @@
     display: none;
 }
 
+/* Drawn out of sight; put up with the theme's colours, in one crossfade (base.css: data-theme-switch). */
 .tb-scene {
     position: absolute;
     inset: 0;
     opacity: 0;
-    transition: opacity 500ms var(--ease-out);
 }
 
 .tb-scene.on {
@@ -68,7 +68,6 @@
         animation: none !important;
     }
 
-    .tb-scene,
     .tb-layer {
         transition: none;
     }
