@@ -1484,6 +1484,11 @@ export class Runtime {
         return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, epoch: this.epoch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
     }
 
+    /** Its folder's first snapshot taken ahead of the first prompt (Agent.warmSnapshots), once its agent is there. */
+    warmSnapshots() {
+        void this.ready.then(() => this.agent?.warmSnapshots(), () => undefined);
+    }
+
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
     async find(query: string, before?: string, also?: readonly string[]): Promise<SessionFindMatch[]> {
         this.flush();

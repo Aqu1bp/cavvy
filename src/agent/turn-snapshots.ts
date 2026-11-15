@@ -782,6 +782,20 @@ export class TurnSnapshots {
         }).then(() => captured);
     }
 
+    /**
+     * A capture ahead of the first prompt (as a window shows the session), for that prompt's to be this one, taken
+     * again at once if the folder's watch saw nothing change (unchanged): the first capture of a session is a whole one,
+     * and the prompt waits for it (0.44 s in a 100,000-file repository, against 5 ms for the next). Once a session.
+     */
+    warm(): Promise<void> | undefined {
+        if (this.warmed || this.lastFast || this.active || this.stopped) return undefined;
+        this.warmed = true;
+        return this.record(async () => {
+            if (!this.stopped && !this.lastFast && !this.active) await this.capture(false, true);
+        });
+    }
+    private warmed = false;
+
     /** As `begin`, from what `prepare` captured. */
     beginWith(id: number, prompt: string, captured: TurnCapture | undefined): Promise<void> {
         this.takeReached();

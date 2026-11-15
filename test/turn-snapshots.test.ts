@@ -100,6 +100,22 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    // Taken as a window shows the session: the first prompt's is then taken from it at once, as a later prompt's is.
+    test("a capture ahead of the first prompt is what that prompt starts from, without looking at the folder again", async () => {
+        const { snapshots } = setup({ "a.txt": "a" });
+        await snapshots.warm();
+        // Once a session.
+        expect(snapshots.warm()).toBeUndefined();
+        const looked = snapshots.lookedCount;
+        expect(looked).toBe(1);
+        // As unchanged takes one again: the folder's watch quiet since, and the capture at least 250 ms old.
+        await Bun.sleep(300);
+        await snapshots.begin(1, "first");
+        expect(snapshots.lookedCount).toBe(looked);
+        expect(snapshots.list().map((t) => t.id)).toEqual([1]);
+        await snapshots.stop();
+    });
+
     test("prepare captures without cutting the open turn; beginWith starts the next turn from that capture, after an end that was asked first", async () => {
         const { snapshots } = setup({ "a.txt": "a" });
         await snapshots.begin(1, "first");

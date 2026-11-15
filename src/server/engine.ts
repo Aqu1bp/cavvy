@@ -2702,7 +2702,10 @@ export class Engine {
             }
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
-                if (client.shown) this.runtimes.get(client.shown)?.flush();
+                const rt = client.shown ? this.runtimes.get(client.shown) : undefined;
+                rt?.flush();
+                // On screen, it's likely to be sent to: its folder's first snapshot taken now, not as the prompt waits.
+                rt?.warmSnapshots();
                 return null;
             }
             case "session.send": {
