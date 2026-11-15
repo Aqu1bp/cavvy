@@ -21,6 +21,14 @@ export function terminalAsked(): void {
     askedAt = performance.now();
 }
 
+/**
+ * The terminal's screen came, `since` the moment it was sent for (its code, loaded the first time a terminal opens:
+ * seconds, on a slow link to another machine). Asked for while it came, it's asked for from now.
+ */
+export function terminalScreenCame(since: number): void {
+    if (askedAt >= since - ASKED_MS) askedAt = performance.now();
+}
+
 /** A card the user can see now: not one under Settings, or behind a terminal that covers the conversation. */
 function cardShowing(): boolean {
     const card = document.querySelector<HTMLElement>(".itab:not([data-parked] *)");
