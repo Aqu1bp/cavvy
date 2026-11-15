@@ -747,6 +747,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         transcriptPositions.set(id, keyed(turns(), {
             bottom: stick(), top: (ready ? lastTop : saved?.top) ?? 0,
             anchor: reading, openWork: [...openWork],
+            // A page asked for and still going in (staged): it comes with it, as it would have once in.
+            ...(staged ? { shown: goal() } : {}),
         }));
     });
 
