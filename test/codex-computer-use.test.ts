@@ -66,6 +66,10 @@ describe("computerUseAsk", () => {
         expect(neverOfferedApp({ name: "Notes", target: "Terminal" })).toBe("terminal");
         expect(neverOfferedApp({ name: "Notes", target: "/System/Applications/Utilities/Terminal.app" })).toBe("terminal");
         expect(neverOfferedApp({ name: "Notes", target: "Notes" })).toBeUndefined();
+        // A listed bundle id of two parts, which isn't taken for one.
+        expect(computerUseAsk(appAsk({ tool_params: { app: "org.alacritty" }, tool_params_display: [{ name: "app", display_name: "App", value: "Notes" }] }))).toMatchObject({ target: "org.alacritty" });
+        expect(neverOfferedApp({ name: "Notes", target: "org.alacritty" })).toBe("terminal");
+        expect(neverOfferedApp({ name: "Notes", target: "org.tabby" })).toBe("terminal");
     });
 });
 

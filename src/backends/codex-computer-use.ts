@@ -121,7 +121,8 @@ const looksLikeBundleId = (s: string) => /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+){2,}$/.
 
 /** Why an app Codex asks for is never offered, if it is: by its bundle id, the name it's shown by, or what else it was named by. */
 export function neverOfferedApp(ask: { name: string; bundleId?: string; target?: string }): NeverReason | undefined {
-    return neverOffered({ name: ask.name, bundleId: ask.bundleId }) ?? (ask.target ? neverOffered({ name: ask.target }) : undefined);
+    // The target as a bundle id too: some listed ones have only two parts (org.alacritty), unlike what's taken for one.
+    return neverOffered({ name: ask.name, bundleId: ask.bundleId }) ?? (ask.target ? (neverOffered({ name: "", bundleId: ask.target }) ?? neverOffered({ name: ask.target })) : undefined);
 }
 
 /** The app a computer-use call used, by bundle id, as its result says (`codex/toolSurface`, kind computerUse). */
