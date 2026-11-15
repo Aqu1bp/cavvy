@@ -411,7 +411,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         return { id, ready, setReady, view, set, seq: snap.seq, epoch: snap.epoch, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
-    trim();
+    trim(id);
     setHandleVersion((v) => v + 1);
     return h;
 }
@@ -456,11 +456,15 @@ function letGo(h: SessionHandle) {
     handles.delete(h.id);
 }
 
-/** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
-function trim() {
+/**
+ * Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed
+ * back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to be shown (not yet the one in view):
+ * with the others all working or waiting on the user, it was the one closed, and what was typed into it went nowhere.
+ */
+function trim(opened: string) {
     if (handles.size <= KEEP_OPEN) return;
     const shown = onScreen.beside();
-    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !shown.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
+    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
     for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
