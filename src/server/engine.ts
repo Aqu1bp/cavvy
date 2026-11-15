@@ -2669,6 +2669,11 @@ export class Engine {
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined) };
             }
+            case "session.agentList": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.agentList();
+            }
             case "session.agent": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");

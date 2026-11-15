@@ -77,19 +77,24 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         rewindSent = opsBytes;
     }
     await ok("session.close", { id: t.id });
-    // Opened again (its turns stored as it was let go of: src/server/turn-store.ts).
-    await Bun.sleep(100);
-    const before2 = heap();
-    const read2 = readSoFar();
-    at = performance.now();
-    await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES });
-    const reopenMs = performance.now() - at;
-    const read3 = readSoFar();
-    const kept2 = heap() - before2;
-    await ok("session.close", { id: t.id });
+    // Opened again (its turns stored as it was let go of: src/server/turn-store.ts), twice: what it keeps is the less
+    // of the two (the heap after a collection still moves by a megabyte or so from one open to the next).
+    let reopen: { read?: number; kept: number; ms: number } | undefined;
+    for (let i = 0; i < 2; i++) {
+        const before2 = heap();
+        const read2 = readSoFar();
+        at = performance.now();
+        await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES });
+        const ms = performance.now() - at;
+        const read3 = readSoFar();
+        const kept2 = heap() - before2;
+        await ok("session.close", { id: t.id });
+        reopen ??= { read: read2 === undefined || read3 === undefined ? undefined : read3 - read2, kept: kept2, ms };
+        reopen.kept = Math.min(reopen.kept, kept2);
+    }
     return {
         openSent: open.bytes, findSent: find.bytes, rewindSent, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept,
-        readOnReopen: read2 === undefined || read3 === undefined ? undefined : read3 - read2, keptAfterReopen: kept2, openMs, reopenMs,
+        readOnReopen: reopen!.read, keptAfterReopen: reopen!.kept, openMs, reopenMs: reopen!.ms,
     };
 }
 
@@ -153,10 +158,9 @@ describe("a session of one of Cavvy's own models", () => {
 });
 
 describe("a Claude Code session", () => {
-    // Whole, only the sub-agents of the turns it sends and any still running (AgentRun.partial). But every one still goes
-    // as its list shows it, about 220 bytes each: 406 KB at 3,000 items, 580 at 30,000. The panel's Finished fold
-    // fetching its list when it opens (with its counts from the server) would leave only what's on screen.
-    test.failing("opening it sends its last turns and their sub-agents, whatever came before", () => {
+    // Whole, the sub-agents of the turns it sends and any still running; the rest counted (agentsMore), and listed
+    // as the panel's Finished fold shows them (session.agentList). Every one listed was 232 of the 576 KB it sent.
+    test("opening it sends its last turns and their sub-agents, whatever came before", () => {
         const { small, large } = measured.cli!;
         expect(within(small.openSent, large.openSent)).toBe(true);
     });

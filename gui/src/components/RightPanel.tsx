@@ -205,7 +205,7 @@ function SessionGroup(p: { handle: SessionHandle }) {
 function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     return (
         <Show
-            when={p.rows.length}
+            when={p.rows.length || p.handle.view.agentsMore}
             fallback={
 <div class="none">No agents yet</div>
             }

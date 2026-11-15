@@ -85,6 +85,7 @@ import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
+    AgentsMore,
     BackgroundTaskInfo,
     Block,
     ChangesInfo,
@@ -141,14 +142,29 @@ export const RESTART_LABEL = "Continued after a restart";
  * left to come with their turns or on their own. A long Claude Code session opened with every sub-agent it ever ran:
  * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
  */
-export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a): AgentRun[] {
-    if (all) return agents.map((a) => structuredClone(whole(a)));
+export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a): { agents: AgentRun[]; more?: AgentsMore } {
+    if (all) return { agents: agents.map((a) => structuredClone(whole(a))) };
     const ids = new Set(turns.map((t) => t.id));
-    return agents.map((a) => {
-        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") return structuredClone(whole(a));
-        const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
-        return { ...structuredClone(listed), blocks: [], partial: true as const };
-    });
+    const sent: AgentRun[] = [];
+    const more: AgentsMore = { count: 0, failed: 0 };
+    for (const a of agents) {
+        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") sent.push(structuredClone(whole(a)));
+        // One a background task is (its row is the task's): as its list shows it.
+        else if (a.taskId) sent.push(listedAgent(a));
+        // The rest only counted: its Finished fold asks for them (session.agentList). Every one of them listed was
+        // most of what a long Claude Code session sent as it opened (232 of 576 KB at 30,000 items).
+        else {
+            more.count++;
+            if (a.status === "failed") more.failed++;
+        }
+    }
+    return { agents: sent, ...(more.count ? { more } : {}) };
+}
+
+/** A sub-agent as its row in the Agents list shows it, without its steps, instructions and report (AgentRun.partial). */
+export function listedAgent(a: AgentRun): AgentRun {
+    const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
+    return { ...structuredClone(listed), blocks: [], partial: true as const };
 }
 
 /**
@@ -1234,7 +1250,8 @@ export class Runtime {
             }
         }
         const turns = from ? all.slice(from) : all;
-        return { state: structuredClone(this.view.state), turns: turns.map((t) => this.sent(t)), agents: agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a)), seq: this.batch, ...(from ? { earlier: from } : {}) };
+        const { agents, more } = agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a));
+        return { state: structuredClone(this.view.state), turns: turns.map((t) => this.sent(t)), agents, seq: this.batch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
     }
 
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
@@ -1249,6 +1266,12 @@ export class Runtime {
             stale: () => asked !== this.finding || this.closed,
         });
         return found ?? [];
+    }
+
+    /** Every sub-agent as its row in the Agents list shows it (those a window wasn't sent: agentsFor). */
+    agentList(): AgentRun[] {
+        this.flush();
+        return this.view.agents.map(listedAgent);
     }
 
     /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
@@ -4393,7 +4416,8 @@ export class Runtime {
         // The windows get its last turns, and how many came before (session.turns has them), as when it opens: a long
         // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
         const from = Math.max(0, turns.length - RESET_TURNS);
-        this.op({ op: "reset", turns, agents }, from ? { op: "reset", turns: structuredClone(turns.slice(from)), agents: agentsFor(agents, turns.slice(from), false), earlier: from } : undefined);
+        const sent = from ? agentsFor(agents, turns.slice(from), false) : undefined;
+        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
         // Built anew: a long session's store starts again with them, and keeps all but the latest.
         if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
     }

@@ -108,29 +108,40 @@ test("a session opens with no more of its last turns than fit the budget, and on
     expect(rt.snapshot(3, size * 100).turns).toHaveLength(3);
 });
 
-test("a session opens with the sub-agents of the turns it sends, and any running, whole; the rest as they're listed", () => {
+test("a session opens with the sub-agents of the turns it sends, and any running, whole; the rest counted, and listed when asked", () => {
     const { rt, view } = runtime(10);
-    const agent = (id: string, turnId: string, status: AgentRun["status"]): AgentRun => ({ id, turnId, status, description: `does ${id}`, agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, prompt: "the instructions", report: "what it found", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"] });
-    (view as { agents: AgentRun[] }).agents = [agent("old", "t1", "done"), agent("busy", "t2", "running"), agent("new", "t8", "done")];
+    const agent = (id: string, turnId: string, status: AgentRun["status"], more: Partial<AgentRun> = {}): AgentRun => ({ id, turnId, status, description: `does ${id}`, agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, prompt: "the instructions", report: "what it found", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"], ...more });
+    (view as { agents: AgentRun[] }).agents = [agent("old", "t1", "done"), agent("broke", "t1", "failed"), agent("task", "t1", "done", { taskId: "task-1" }), agent("busy", "t2", "running"), agent("new", "t8", "done")];
     const some = rt.snapshot(3);
     const byId = Object.fromEntries(some.agents.map((a) => [a.id, a]));
     // Of a turn it sends, or still running: whole.
     expect(byId.new).toMatchObject({ blocks: [{ id: "new-b" }], prompt: "the instructions", report: "what it found" });
     expect(byId.new!.partial).toBeUndefined();
     expect(byId.busy).toMatchObject({ blocks: [{ id: "busy-b" }], prompt: "the instructions" });
-    // Of a turn it doesn't send: what the list shows of it, and no more.
-    expect(byId.old).toEqual({ id: "old", turnId: "t1", status: "done", description: "does old", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, blocks: [], partial: true });
-    // Every turn sent: every sub-agent whole.
-    expect(rt.snapshot().agents.every((a) => !a.partial && a.blocks.length === 1)).toBe(true);
+    // One a background task is: what the list shows of it (the task's row is its row), and no more.
+    expect(byId.task).toEqual({ id: "task", turnId: "t1", status: "done", description: "does task", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, taskId: "task-1", blocks: [], partial: true });
+    // The rest of a turn it doesn't send: counted, not sent; how many failed too (the Finished fold says it).
+    expect(Object.keys(byId).sort()).toEqual(["busy", "new", "task"]);
+    expect(some.agentsMore).toEqual({ count: 2, failed: 1 });
+    // Asked for (the fold shown): each as the list shows it.
+    const list = rt.agentList();
+    expect(list.map((a) => a.id)).toEqual(["old", "broke", "task", "busy", "new"]);
+    expect(list.find((a) => a.id === "old")).toEqual({ id: "old", turnId: "t1", status: "done", description: "does old", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, blocks: [], partial: true });
+    // Every turn sent: every sub-agent whole, none counted.
+    const all = rt.snapshot();
+    expect(all.agents.every((a) => !a.partial && a.blocks.length === 1)).toBe(true);
+    expect(all.agentsMore).toBeUndefined();
     // Its turn's page brings it whole, and so does asking for it.
     const page = rt.turnsBefore("t7", { count: 10 })!;
-    expect(page.agents?.map((a) => a.id).sort()).toEqual(["busy", "old"]);
+    expect(page.agents?.map((a) => a.id).sort()).toEqual(["broke", "busy", "old", "task"]);
     expect(page.agents?.find((a) => a.id === "old")).toMatchObject({ prompt: "the instructions", blocks: [{ id: "old-b" }] });
     expect(rt.agentWhole("old")).toMatchObject({ report: "what it found" });
     expect(rt.agentWhole("gone")).toBeNull();
     // Copies: what the window does with them doesn't touch the server's.
     byId.new!.blocks.length = 0;
-    expect(view.agents[2]!.blocks).toHaveLength(1);
+    list[0]!.description = "changed";
+    expect(view.agents[4]!.blocks).toHaveLength(1);
+    expect(view.agents[0]!.description).toBe("does old");
 });
 
 test("a finished step list written before the turns a window has is stale", () => {

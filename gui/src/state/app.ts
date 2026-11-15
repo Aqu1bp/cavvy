@@ -5,7 +5,7 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
@@ -387,14 +387,14 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         existing.queue = [];
         const after = [...(renewing.get(id) ?? [])].map((fn) => fn());
         batch(() => {
-            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         for (const fn of after) fn?.();
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 });
+        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
@@ -541,11 +541,15 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
         batch(() => h.set(produce((v) => {
             v.turns.unshift(...page.turns);
             v.earlier = page.earlier;
-            // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial).
+            // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial), or only
+            // counted them (agentsMore).
             for (const a of page.agents ?? []) {
                 const i = v.agents.findIndex((x) => x.id === a.id);
                 if (i >= 0) v.agents[i] = a;
-                else v.agents.push(a);
+                else {
+                    v.agents.push(a);
+                    if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
+                }
             }
         })));
         return true;
@@ -563,6 +567,34 @@ export function agentReady(agentId: string): Promise<void> {
         if (a) return a.partial ? loadAgent(h, agentId) : Promise.resolve();
     }
     return Promise.resolve();
+}
+
+/** A count of sub-agents not sent, less one that has come (with its turn). */
+function lessAgents(more: AgentsMore, a: AgentRun): AgentsMore | undefined {
+    const count = more.count - 1;
+    return count > 0 ? { count, failed: Math.max(0, more.failed - (a.status === "failed" ? 1 : 0)) } : undefined;
+}
+
+/** Each session's fetch of its sub-agents' list under way (loadAgentList). */
+const loadingAgentList = new Map<string, Promise<void>>();
+
+/**
+ * The sub-agents a session's window was only told the number of (agentsMore: finished, of turns it hasn't been sent),
+ * as their rows show them: for its Agents list's Finished fold, as that's shown.
+ */
+export function loadAgentList(h: SessionHandle): Promise<void> {
+    const going = loadingAgentList.get(h.id);
+    if (going) return going;
+    const run = rpc.call("session.agentList", { id: h.id }).then((list) => {
+        h.set(produce((v) => {
+            const have = new Set(v.agents.map((a) => a.id));
+            // In the server's order (as they started), those the window has kept where they are.
+            for (const a of list) if (!have.has(a.id)) v.agents.push(a);
+            v.agentsMore = undefined;
+        }));
+    }, () => undefined).finally(() => loadingAgentList.delete(h.id));
+    loadingAgentList.set(h.id, run);
+    return run;
 }
 
 /** Each sub-agent's fetch under way (loadAgent): one at a time. */

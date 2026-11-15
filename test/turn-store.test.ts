@@ -110,9 +110,11 @@ async function everything(id: string) {
     // A call that sends what's waiting first: the ops opening it made (a notice) are in the view.
     await call("session.find", { id, query: "" });
     const v = views.get(id)!;
+    // Every sub-agent: as listed (those not sent are only counted as it opens), and whole.
+    const list = (await call("session.agentList", { id })) as AgentRun[];
     const agents = [];
-    for (const a of v.agents) agents.push(await call("session.agent", { id, agentId: a.id }));
-    return unset({ turns: lessOpenNotice(v.turns), agents: v.agents, whole: agents });
+    for (const a of list) agents.push(await call("session.agent", { id, agentId: a.id }));
+    return unset({ turns: lessOpenNotice(v.turns), agents: v.agents, list, whole: agents });
 }
 
 for (const kind of ["cli", "native"] as const) {
@@ -123,7 +125,7 @@ for (const kind of ["cli", "native"] as const) {
             const t = writeThread({ cwd, items: 1500, kind, seed: 3 });
             expect(t.turns).toBeGreaterThan(40);
             const built = await everything(t.id);
-            if (kind === "cli") expect(built.agents.length).toBeGreaterThan(0);
+            if (kind === "cli") expect(built.list.length).toBeGreaterThan(0);
             const found = await call("session.find", { id: t.id, query: "Turn 7:" });
             await close(t.id);
 

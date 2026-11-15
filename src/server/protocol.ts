@@ -858,6 +858,14 @@ export interface SessionSnapshot {
     seq: number;
     /** Turns before these that weren't sent (session.open's `last`): session.turns has them. */
     earlier?: number;
+    /** Sub-agents not sent (finished, of those turns): session.agentList has them. */
+    agentsMore?: AgentsMore;
+}
+
+/** How many of its sub-agents a window hasn't been sent, and how many of those failed (its Finished fold counts them). */
+export interface AgentsMore {
+    count: number;
+    failed: number;
 }
 
 /** Turns before one a window has (session.turns), as they are when sent: later ops apply to them too. */
@@ -890,7 +898,7 @@ export type SessionOp =
     | { op: "block.remove"; turnId: string; blockId: string }
     | { op: "append"; turnId: string; blockId: string; field: "text" | "progress" | "output"; text: string }
     /** `earlier`: turns before these that weren't sent (session.turns has them), as a long session opens. */
-    | { op: "reset"; turns: Turn[]; agents?: AgentRun[]; earlier?: number }
+    | { op: "reset"; turns: Turn[]; agents?: AgentRun[]; earlier?: number; agentsMore?: AgentsMore }
     /** A sub-agent started (or replaced, with the same id). */
     | { op: "agent"; agent: AgentRun }
     | { op: "agent.patch"; id: string; patch: Partial<Omit<AgentRun, "id" | "blocks">> }
@@ -2137,6 +2145,8 @@ export interface Methods {
     "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
     /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
     "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
+    /** Every sub-agent, as its row in the Agents list shows it (AgentRun.partial): those a window wasn't sent (agentsMore). */
+    "session.agentList": { params: { id: string }; result: AgentRun[] };
     /**
      * Find, in the turns before `before` (the first the window has): where `query` appears, counted as the window
      * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`.

@@ -3,7 +3,7 @@
 // a Solid store's produce(), so only what changed re-renders). Pure: no Bun,
 // Node or DOM imports.
 
-import type { AgentRun, Block, PlanLimits, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
+import type { AgentRun, AgentsMore, Block, PlanLimits, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
 
 export interface SessionView {
     state: SessionState;
@@ -11,6 +11,8 @@ export interface SessionView {
     agents: AgentRun[];
     /** In a window: turns before `turns` it hasn't been sent yet (SessionSnapshot.earlier). The server's has them all. */
     earlier?: number;
+    /** In a window: sub-agents it hasn't been sent (SessionSnapshot.agentsMore). */
+    agentsMore?: AgentsMore;
 }
 
 /** A sub-agent's activity keeps this many blocks (the rest are counted in `dropped`). */
@@ -143,6 +145,7 @@ export function applyOp(view: SessionView, op: SessionOp): void {
             view.turns = op.turns;
             if (view.earlier || op.earlier) view.earlier = op.earlier ?? 0;
             if (op.agents) view.agents = op.agents;
+            if (op.agents && (view.agentsMore || op.agentsMore)) view.agentsMore = op.agentsMore;
             return;
         case "agent": {
             const i = view.agents.findIndex((a) => a.id === op.agent.id);

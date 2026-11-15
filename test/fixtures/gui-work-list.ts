@@ -6,6 +6,8 @@ import * as background from "../../gui/src/lib/background";
 import { agentStep } from "../../gui/src/lib/agent-marks";
 
 // The Agents tab's list (BackgroundTasks.tsx WorkList) with its real reactive grouping and keyed rows.
+/** Sessions whose sub-agents' list the fold asked for (loadAgentList). */
+const listAsked: string[] = [];
 const source = readFileSync(new URL("../../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8");
 const list = source.slice(source.indexOf("/** Rows cleared from"), source.indexOf("/** In the composer"));
 const icon = () => node("icon");
@@ -17,6 +19,10 @@ const WorkList = component(list, "WorkList", {
     ConfirmDialog: () => node("dialog"),
     app: { providers: [] },
     openAgents() {}, stopAgent() {}, stopBackground() {}, clearBackground() {},
+    loadAgentList: (h: { id: string }) => {
+        listAsked.push(h.id);
+        return Promise.resolve();
+    },
     shortModelRef: (ref?: string) => ref,
     duration: (ms: number) => `${ms}ms`,
     plural: (n: number, w: string) => `${n} ${w}s`,
@@ -67,6 +73,44 @@ try {
     finish("b");
     expect(rows()).toEqual(["c", "b", "d", "a"]);
     expect(text(root)).toContain("Finished3");
+    expect(listAsked).toEqual([]);
 } finally {
     dispose();
+}
+
+// Finished sub-agents the window was only told the number of (agentsMore): counted in the fold, and asked for as
+// it's shown, not before.
+{
+    const [more, setMore] = createSignal<{ count: number; failed: number } | undefined>({ count: 5, failed: 2 });
+    const [list, setList] = createSignal<any[]>([run("x")]);
+    const later = { id: "s2", view: { state: { shells: [], backgroundTasks: [] }, get agents() { return list(); }, get agentsMore() { return more(); } } };
+    const root2 = node("root");
+    const dispose2 = renderer.render(() => WorkList({ handle: later, tab: "agents", get rows() { return background.agentRows([], list()); } }), root2);
+    try {
+        // One running: the fold starts folded, and nothing is asked for.
+        expect(text(root2)).toContain("Finished5");
+        expect(text(root2)).toContain("2 failed");
+        expect(listAsked).toEqual([]);
+        all(root2).find((n) => n.props.class === "divi")!.props.onClick();
+        expect(listAsked).toEqual(["s2"]);
+        // They come: rows instead of a count.
+        setList([run("x"), ...["p", "q", "r", "s", "u"].map((id, i) => run(id, { status: i < 2 ? "failed" : "done", endedAt: 50 + i, partial: true }))]);
+        setMore(undefined);
+        expect(text(root2)).toContain("Finished5");
+        expect(text(root2)).toContain("2 failed");
+        expect(listAsked).toEqual(["s2"]);
+    } finally {
+        dispose2();
+    }
+    // With nothing running, the fold is open from the start: they're asked for at once.
+    listAsked.length = 0;
+    const idle = { id: "s3", view: { state: { shells: [], backgroundTasks: [] }, agents: [], agentsMore: { count: 3, failed: 0 } } };
+    const root3 = node("root");
+    const dispose3 = renderer.render(() => WorkList({ handle: idle, tab: "agents", rows: [] }), root3);
+    try {
+        expect(text(root3)).toContain("Finished3");
+        expect(listAsked).toEqual(["s3"]);
+    } finally {
+        dispose3();
+    }
 }
