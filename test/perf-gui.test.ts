@@ -73,7 +73,7 @@ async function devtools(profile: string, browser: { exitCode: number | null }) {
     return { page, js, close: () => ws.close() };
 }
 
-test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, and once it's done the page does nothing", async () => {
+test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, once it's done the page does nothing, and a long session opened cold is drawn at its end from its first frame", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "cavvy-perf-gui-"));
     const profile = join(scratch, "chrome");
     let demo: ReturnType<typeof Bun.spawn> | undefined;
@@ -204,6 +204,49 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         await js(`window.__watch = false`);
         expect(await js(`window.__down`)).toEqual([]);
         expect(await js(`window.__bright`)).toEqual([]);
+
+        // A long session opened cold (the window loaded again, another session on screen): every frame drawn shows
+        // the session that was there, or the long one at its end. None at its top, none blank. Read just before each
+        // paint (a resize observer made each frame, so it runs after the page's own): a frame callback reads too early,
+        // and the browser's layout shifts count turns put in above, with the scroll moved to match, as a shift.
+        await send("perfreply 60000 200 1");
+        await until("the long reply to finish", 120_000, finished);
+        const long = await js(`document.querySelector("[data-session-id].cur")?.dataset.sessionId`);
+        expect(typeof long).toBe("string");
+        await js(`document.querySelector(".nav-row[title^='New session']").click()`);
+        await until("a new session's composer", 10_000, () => js(`!document.querySelector(".transcript article.turn")`));
+        await send("a short one");
+        await until("the short reply to finish", 60_000, finished);
+        await page("Page.reload");
+        await until("the short session again", 30_000, () => js(`!!document.querySelector(".transcript .user-bubble") && document.querySelector("[data-session-id='${long}']") !== null`));
+        await sleep(1500);
+        await js(`(() => {
+            window.__frames = [];
+            window.__watch = true;
+            const probe = document.body.appendChild(document.createElement("div"));
+            probe.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none";
+            const frame = () => {
+                if (!window.__watch) return;
+                probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
+                const ro = new ResizeObserver(() => {
+                    ro.disconnect();
+                    const sc = document.querySelector(".transcript");
+                    const said = [...(sc?.querySelectorAll(".user-bubble") ?? [])].at(-1)?.textContent ?? "";
+                    const which = said.includes("perfreply 60000") ? "long" : said.includes("a short one") ? "short" : "blank";
+                    window.__frames.push(which === "long" ? which + (sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 1 ? "@end" : "@" + Math.round(sc.scrollTop)) : which);
+                });
+                ro.observe(probe);
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        const at = await js(`(() => { const r = document.querySelector("[data-session-id='${long}']").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await page("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+        await sleep(2000);
+        await js(`window.__watch = false`);
+        const frames = (await js(`window.__frames`)) as string[];
+        const seen = frames.filter((f, i) => f !== frames[i - 1]);
+        expect(seen).toEqual(seen[0] === "short" ? ["short", "long@end"] : ["long@end"]);
     } finally {
         tools?.close();
         browser?.kill();
