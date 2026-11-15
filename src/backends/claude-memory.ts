@@ -64,10 +64,12 @@ export function claudeMemoryDirectory(configDir: string | undefined, cwd: string
     if (!denied.some((f) => inside(given, f))) return undefined;
     const history = historyFolder("claude-code", configDir);
     if (!history || denied.some((f) => inside(history, f))) return undefined;
-    const settings = [join(configDir, "settings.json"), ...(trusted ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])];
+    const root = claudeMemoryRoot(cwd);
+    // A worktree's or subfolder's local settings can be the main checkout's.
+    const projects = trusted ? [...new Set([cwd, ...(root ? [root] : [])])] : [];
+    const settings = [join(configDir, "settings.json"), ...projects.flatMap((d) => [join(d, ".claude", "settings.json"), join(d, ".claude", "settings.local.json")])];
     if (settings.some(setsMemory)) return undefined;
     const pinned = process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
     if (pinned && /^[A-Za-z0-9_-]{1,64}$/.test(pinned)) return join(history, pinned, "memory");
-    const root = claudeMemoryRoot(cwd);
     return root ? join(history, claudePathSlug(root), "memory") : undefined;
 }

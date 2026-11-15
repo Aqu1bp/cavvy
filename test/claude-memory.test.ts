@@ -74,6 +74,8 @@ describe("a named account's memory folder", () => {
         writeFileSync(join(project, "settings.local.json"), JSON.stringify({ autoMemoryDirectory: "~/notes" }));
         try {
             expect(claudeMemoryDirectory(managed, repo, true)).toBeUndefined();
+            expect(claudeMemoryDirectory(managed, worktree, true)).toBeUndefined();
+            expect(claudeMemoryDirectory(managed, join(repo, "src"), true)).toBeUndefined();
             // An untrusted folder's settings are off (--setting-sources user): they don't count.
             expect(claudeMemoryDirectory(managed, repo, false)).toBe(memoryOf(repo));
         } finally {
