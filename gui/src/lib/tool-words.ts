@@ -225,7 +225,7 @@ function ownWords(t: ToolBlock): Words | undefined {
         case "ThemeSet": {
             const id = s("id")?.trim();
             if (id === "none") return { verb: "Turn the theme off", running: "Turning the theme off" };
-            return i.theme !== undefined && i.theme !== null ? { verb: "Save theme", running: "Saving theme", arg: id } : { verb: "Show theme", running: "Showing theme", arg: id };
+            return (i.theme !== undefined && i.theme !== null) || s("file") ? { verb: "Save theme", running: "Saving theme", arg: id } : { verb: "Show theme", running: "Showing theme", arg: id };
         }
         case "BrowserSnapshot":
             return { verb: "Read the page", running: "Reading the page" };

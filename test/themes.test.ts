@@ -3,7 +3,7 @@
 // compositor and on the window's 50 ms grid, and the tools save, show and explain.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BUILTINS } from "../src/themes/builtin";
@@ -370,6 +370,32 @@ describe("the theme tools", () => {
     async function tools() {
         return import("../src/themes/tools");
     }
+
+    test("ThemeSet takes a theme a script wrote to a file, only from the project or the temp folder, and never says what a file holds", async () => {
+        const { themeSet } = await tools();
+        const ui = { showTheme: async () => ({ sent: 1, report: { request: "r", shown: true, scheme: "dark" as const } }) };
+        const project = mkdtempSync(join(tmpdir(), "cavvy-project-"));
+        const state = { cwd: project, projectRoot: project };
+        writeFileSync(join(project, "rain.json"), JSON.stringify({ ...minimal({ name: "From File" }), dark: { ...(minimal().dark as object), layers: [{ copy: "night-rain:dark:0" }] } }));
+        const ok = await themeSet({ id: "from-file", file: "rain.json" }, { ui, state });
+        expect(ok.isError).toBeUndefined();
+        expect(JSON.parse(readFileSync(join(home, "themes", "from-file.json"), "utf8")).dark.layers[0].svg).toContain("<svg");
+        // Outside: the repository's own package.json; and a link in the project that points out of it.
+        const outside = join(import.meta.dir, "..", "package.json");
+        expect((await themeSet({ id: "x", file: outside }, { ui, state })).text).toContain("must be in the project or the temp folder");
+        symlinkSync(outside, join(project, "linked.json"));
+        expect((await themeSet({ id: "x", file: "linked.json" }, { ui, state })).text).toContain("must be in the project or the temp folder");
+        writeFileSync(join(project, "secret.json"), "API_TOKEN=sk-live-abc123");
+        const bad = await themeSet({ id: "x", file: join(project, "secret.json") }, { ui, state });
+        expect(bad.isError).toBe(true);
+        expect(bad.text).not.toContain("sk-live");
+        expect(bad.text).not.toContain("API_TOKEN");
+        writeFileSync(join(project, "notes.txt"), "{}");
+        expect((await themeSet({ id: "x", file: "notes.txt" }, { ui, state })).text).toContain(".json");
+        expect((await themeSet({ id: "x", file: "missing.json" }, { ui, state })).text).toContain("no file");
+        expect((await themeSet({ id: "x", file: "rain.json", theme: minimal() }, { ui, state })).text).toBe("Give theme or file, not both.");
+        rmSync(project, { recursive: true, force: true });
+    });
 
     test("without a window to show it in, ThemeSet says so and saves nothing", async () => {
         const { themeSet } = await tools();

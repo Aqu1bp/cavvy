@@ -19,6 +19,7 @@ test("theme calls say which theme and what of it, so a list and a theme's layers
         expect(toolLabel(call({ name: list, title: list, input: { id: "night-rain", layer: "dark.7" } }))).toEqual({ verb: "Read layer of", arg: "night-rain" });
         expect(toolLabel(call({ name: set, title: set, input: { id: "tokyo-rain", theme: { name: "Tokyo" } } }))).toEqual({ verb: "Save theme", arg: "tokyo-rain" });
         expect(toolLabel(call({ name: set, title: set, input: { id: "night-rain" } }))).toEqual({ verb: "Show theme", arg: "night-rain" });
+        expect(toolLabel(call({ name: set, title: set, input: { id: "tokyo-rain", file: "/tmp/tokyo.json" } }))).toEqual({ verb: "Save theme", arg: "tokyo-rain" });
         expect(toolLabel(call({ name: set, title: set, input: { id: "none" } }))).toEqual({ verb: "Turn the theme off", arg: undefined });
     }
     // The session that asked: list, read the theme, then four of its layers. Only the layers fold.

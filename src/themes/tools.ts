@@ -3,9 +3,12 @@
 // itself, so an agent whose sandbox can't write outside the project (Codex's) can make one too. Cavvy checks it,
 // saves it to ~/.cavvy/themes, shows it in this machine's windows and says how it came out.
 
+import { readFileSync, realpathSync, statSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { resolve, sep } from "path";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import type { ThemeReplaced } from "../server/protocol";
-import type { Tool, ToolContext, ToolResult } from "../tools/types";
+import type { Tool, ToolContext, ToolResult, ToolState } from "../tools/types";
 import { BUILTINS, builtin, BUILTIN_IDS } from "./builtin";
 import { checkTheme, ID, LIMITS, onlyScheme, STAGE, type Theme, type ThemeEntry } from "./format";
 import { listThemes, readThemeFile, saveTheme, themeFileText, themeText } from "./store";
@@ -47,7 +50,7 @@ Making it look good
 - Choose the background from the scene's own colours, and an accent that belongs to it.
 - Give it depth: two or three planes moving at different speeds (far slow, near faster).
 
-ThemeSet saves it under an id (lowercase letters, digits and hyphens) and shows it at once. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme (built in or the user's), ThemeList with its id gives its JSON, long layers left out; ThemeList with id and layer ("dark.3") gives one layer's SVG. To reuse a layer without writing it out, give { "copy": "<id>:<light or dark>:<index>" } in its place, with any other layer keys to change (x, opacity, motion…): "night-rain:dark:4".`;
+ThemeSet saves it under an id (lowercase letters, digits and hyphens) and shows it at once. A theme a script draws (rain drop by drop, a starfield) needn't be written out in the call: have the script write the theme's JSON to a .json file in the project or the temp folder, and give ThemeSet its path as file instead of theme. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme (built in or the user's), ThemeList with its id gives its JSON, long layers left out; ThemeList with id and layer ("dark.3") gives one layer's SVG. To reuse a layer without writing it out, give { "copy": "<id>:<light or dark>:<index>" } in its place, with any other layer keys to change (x, opacity, motion…): "night-rain:dark:4".`;
 
 const served = (text: string) => text.replaceAll("ThemeList", "theme_list").replaceAll("ThemeSet", "theme_set");
 
@@ -170,6 +173,37 @@ export async function themeList(input: Record<string, unknown>, ctx?: Pick<ToolC
     };
 }
 
+/** The most a theme's file may be: the theme's own limit, and room for its JSON. */
+const FILE_MOST = LIMITS.total + 200_000;
+
+/**
+ * A theme a script wrote to a file (ThemeSet's file), read where the agent works or the temp folder only, since
+ * this tool runs without asking. What the file holds is never said back, only whether it's a theme.
+ */
+function themeFromFile(file: string, state?: Pick<ToolState, "cwd" | "projectRoot">): { raw?: unknown; problem?: string } {
+    const real = (p: string) => {
+        try {
+            return realpathSync(p);
+        } catch {
+            return undefined;
+        }
+    };
+    const path = real(resolve(state?.cwd ?? process.cwd(), file.replace(/^~(?=\/)/, homedir())));
+    if (!path) return { problem: `file: there's no file "${file}".` };
+    const roots = [state?.cwd, state?.projectRoot, tmpdir(), "/tmp"].flatMap((r) => (r ? [real(r)] : [])).filter((r): r is string => Boolean(r));
+    if (!roots.some((r) => path === r || path.startsWith(r.endsWith(sep) ? r : r + sep))) return { problem: "file must be in the project or the temp folder." };
+    if (!path.endsWith(".json")) return { problem: "file must be a .json file." };
+    const st = statSync(path);
+    if (!st.isFile()) return { problem: "file must be a file." };
+    if (st.size > FILE_MOST) return { problem: `file is ${st.size} bytes; at most ${FILE_MOST}.` };
+    try {
+        return { raw: JSON.parse(readFileSync(path, "utf8")) };
+    } catch (e) {
+        const at = /position (\d+)/.exec((e as Error).message)?.[1];
+        return { problem: `file isn't JSON${at ? ` (at character ${at})` : ""}.` };
+    }
+}
+
 /** What the call says when a theme was shown (or wasn't): what the window reported. */
 function outcome(name: string | undefined, shown: Awaited<ReturnType<NonNullable<ToolContext["ui"]["showTheme"]>>>, saved?: string): string {
     const before = saved ? `Saved to ${saved}. ` : "";
@@ -215,7 +249,7 @@ function replacing(id: string, next: string, mine: Map<string, string>): ThemeRe
     return { name, text: before };
 }
 
-export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolContext, "ui">): Promise<{ text: string; isError?: boolean; summary?: string; picture?: string }> {
+export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolContext, "ui"> & { state?: Pick<ToolState, "cwd" | "projectRoot"> }): Promise<{ text: string; isError?: boolean; summary?: string; picture?: string }> {
     const show = ctx.ui.showTheme?.bind(ctx.ui);
     if (!show) return { text: "Themes show in Cavvy's window on the user's own computer; this session can't set one.", isError: true };
     const id = typeof input.id === "string" ? input.id.trim() : "";
@@ -228,9 +262,17 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
     let entry: ThemeEntry | undefined;
     let path: string | undefined;
     let replaced: ThemeReplaced | undefined;
-    if (input.theme !== undefined && input.theme !== null) {
+    const file = typeof input.file === "string" && input.file.trim() ? input.file.trim() : undefined;
+    const given = input.theme !== undefined && input.theme !== null;
+    if (file && given) return { text: "Give theme or file, not both.", isError: true };
+    if (given || file) {
         if (BUILTIN_IDS.has(id)) return { text: `"${id}" is a built-in theme: save yours under another id. ThemeList with id "${id}" gives its JSON to start from.`, isError: true };
         let raw = input.theme;
+        if (file) {
+            const read = themeFromFile(file, ctx.state);
+            if (read.problem) return { text: `Not saved: ${read.problem}`, isError: true };
+            raw = read.raw;
+        }
         if (typeof raw === "string") {
             try {
                 raw = JSON.parse(raw);
@@ -287,6 +329,7 @@ const SET_SCHEMA = {
     properties: {
         id: { type: "string", description: 'The theme\'s id: lowercase letters, digits and hyphens. "none" turns the theme off.' },
         theme: { type: "object", description: "The theme's JSON, as ThemeList describes, to save under id and show. Leave it out to show a theme that exists." },
+        file: { type: "string", description: "Instead of theme: the path of a .json file holding it, in the project or the temp folder (a theme a script wrote)." },
     },
     required: ["id"],
 };
@@ -303,7 +346,7 @@ export const ThemeListTool: Tool<{ id?: string; layer?: string }> = {
     },
 };
 
-export const ThemeSetTool: Tool<{ id: string; theme?: unknown }> = {
+export const ThemeSetTool: Tool<{ id: string; theme?: unknown; file?: string }> = {
     name: "ThemeSet",
     description: SET_DESCRIPTION,
     parameters: SET_SCHEMA,
