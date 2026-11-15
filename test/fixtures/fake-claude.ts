@@ -752,7 +752,9 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
         toolResult(id, `Permission to use ${tool} has been denied by your permission settings.`, true);
         return true;
     }
-    if (!askRules.some((r) => ruleHits(r, tool, input)) && selfApproved(tool, input)) {
+    // A hook that allows the call skips the permission prompt, as Claude Code's does (deny rules still hold, above).
+    const allowedByHook = pre.some((r) => r?.hookSpecificOutput?.permissionDecision === "allow");
+    if (allowedByHook || (!askRules.some((r) => ruleHits(r, tool, input)) && selfApproved(tool, input))) {
         const r = execute(tool, input);
         toolResult(id, r.content, false, r.structured);
         return true;

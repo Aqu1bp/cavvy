@@ -22,6 +22,7 @@ const trust = await import("../src/config/trust");
 const { createWorktreeWithHooks, planRemoval, runRemoval, listWorktrees } = await import("../src/server/worktrees");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { textOf } = await import("../src/providers/types");
+const { HELPER_GUARD } = await import("../src/backends/claude-helper-guard");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionMode = import("../src/permissions/modes").PermissionMode;
@@ -118,13 +119,37 @@ describe("Claude Code runs Cavvy's tool hooks itself", () => {
         const { run, events, session } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }] });
+        // The user's hook, then Cavvy's own guard for its helper for Mac apps (claude-helper-guard.ts).
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }, HELPER_GUARD] });
         expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: "no npm here" });
         // The handler saw Claude Code's input, under Cavvy's session id (Claude Code's is kept beside it).
         const [input] = jsonl(seen);
         expect(input).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "npm test" }, tool_use_id: "toolu_b", session_id: session.meta.id });
         expect(input.backend_session_id).toMatch(/^sess-/);
         expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers[0]).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+    });
+
+    test("a command naming Cavvy's helper for Mac apps comes to the person in every mode, bypass included; others don't", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const settings = { permissions: { allow: ["Bash"] } };
+        for (const mode of ["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as const) {
+            for (const answer of [false, true]) {
+                rmSync(LOG, { force: true });
+                process.env.FAKE_COMMAND = "ls ~/.cavvy/desktop";
+                const { run, events, asked } = await makeAgent("claude-code", settings, mode, () => ({ allow: answer }));
+                await run("look");
+                expect(asked.length, `${mode} ${answer}`).toBe(1);
+                expect(asked[0].decision, mode).toMatchObject({ personOnly: true });
+                expect(Boolean(toolEnds(events)[0]!.result.isError), `${mode} ${answer}`).toBe(!answer);
+            }
+        }
+        // An unrelated command, in bypass: Claude Code runs it, nobody is asked.
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = "ls ~/Desktop";
+        const { run, asked } = await makeAgent("claude-code", settings, "bypassPermissions", () => ({ allow: false }));
+        await run("look");
+        expect(asked).toHaveLength(0);
+        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}]);
     });
 
     test("SessionStart after compacting is Claude Code's to run, so its context reaches Claude Code's model, once", async () => {
@@ -148,7 +173,8 @@ describe("Claude Code runs Cavvy's tool hooks itself", () => {
         const { run } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }] });
+        // The user's hook, then Cavvy's own guard for its helper for Mac apps (claude-helper-guard.ts).
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }, HELPER_GUARD] });
         const argv = logLines()[0].argv as string[];
         const given = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
         // A Cavvy model reference (provider:model) is left to Claude Code's default.
@@ -185,7 +211,8 @@ describe("Claude Code runs Cavvy's tool hooks itself", () => {
         expect(await run("test it")).toBe("done");
         expect(Date.now() - started).toBeLessThan(1800);
         expect(existsSync(done)).toBe(false);
-        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}]);
+        // (The second answer is Cavvy's guard's: npm test doesn't name its helper.)
+        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}, {}]);
     });
 
     test("a PermissionRequest hook's rewritten input is what Claude Code is told to run", async () => {
@@ -204,7 +231,8 @@ describe("Claude Code runs Cavvy's tool hooks itself", () => {
         const { run, events } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         // npm test isn't a git command: the callback answers nothing, and the tool runs.
-        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}]);
+        // (The second answer is Cavvy's guard's: npm test doesn't name its helper.)
+        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}, {}]);
         expect(toolEnds(events)[0]!.result).toMatchObject({ isError: false });
     });
 });
