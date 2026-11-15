@@ -259,6 +259,9 @@ export function listedAgent(a: AgentRun): AgentRun {
     return { ...structuredClone(listed), blocks: [], partial: true as const };
 }
 
+/** How long putting turns in the store (storeOlderSoon) works before it lets the server get on with the rest. */
+const SLICE_MS = 8;
+
 /**
  * A long session keeps its latest this many turns built (beyond them, each only as its head: turn-store.ts): the one
  * under way and those a change most likely reaches. Any other is read from the store when it's sent.
@@ -683,7 +686,9 @@ export class Runtime {
         } else {
             const turns = opts.resumed ? replay({ segments: segments ?? readSegments(session.path), current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
             this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
-            if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlder(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
+            // After the window is sent them, a slice at a time: put in the store before, they held its first open back
+            // (220 ms of a 30,000-item session's).
+            if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
         }
         // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
         // held for an account, until one is picked: #410).
@@ -789,6 +794,38 @@ export class Runtime {
         this.trimBuilt();
         // Its steps were to build them: they're built (and stored) now.
         this.ui.lighten();
+    }
+
+    /**
+     * As storeOlder, but its turns let go of a slice of SLICE_MS at a time from the next task on, so what's built now is
+     * sent first and nothing else waits for it. Until each is, it's here built, as it was.
+     */
+    private storeOlderSoon(store: TurnStore) {
+        this.store = store;
+        store.clear();
+        this.storedAt = new WeakMap();
+        this.agentAt = new WeakMap();
+        this.agentHeads = new WeakSet();
+        this.built.clear();
+        const turns = this.view.turns;
+        setTimeout(async () => {
+            let since = performance.now();
+            for (let i = 0; ; i++) {
+                // Let go of meanwhile (closed), or built anew (a rewind): it's done, or for whoever did that.
+                if (this.closed || this.store !== store || this.view.turns !== turns) return;
+                const all = this.view.turns;
+                if (i >= all.length - KEEP_BUILT) break;
+                const t = all[i]!;
+                if (!this.built.has(t) && !(!t.blocks.length && this.storedAt.has(t))) this.letGo(t);
+                if (performance.now() - since > SLICE_MS) {
+                    await new Promise((r) => setImmediate(r));
+                    since = performance.now();
+                }
+            }
+            this.trimBuilt();
+            // Its steps were to build them: they're built (and stored) now.
+            this.ui.lighten();
+        }, 0);
     }
 
     /** Kept here as its head only: its blocks are in the store. */
