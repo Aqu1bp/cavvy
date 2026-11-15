@@ -446,10 +446,10 @@ button.bc:hover {
 }
 
 /* A session of two side by side, narrow (the room its title bar has: Panes.tsx data-bar): the title keeps the room.
-   The project before it goes first; then the window's own toggles (the terminal, the side panel), as they have
+   The project before it and the branch after it go first; then the window's own toggles (the terminal, the side panel), as they have
    shortcuts and are in the command palette; then the count of changed lines, the project's scripts, and the changes
    button (Review changes is in the conversation). */
-.stage-pane[data-bar~="640"] .header .proj-box,
+.stage-pane[data-bar~="640"] .header :is(.proj-box, .br),
 .stage-pane[data-bar~="440"] .header .hb.win,
 .stage-pane[data-bar~="440"] .header .diffchip :is(.a, .d),
 .stage-pane[data-bar~="360"] .header :is(.script-split, .scripts-sep),
