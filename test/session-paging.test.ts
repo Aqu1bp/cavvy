@@ -151,3 +151,26 @@ test("a finished step list written before the turns a window has is stale", () =
     expect(stepsStale(done, turns, 40)).toBe(true);
     expect(stepsStale(done, [{ blocks: [{ t: "tool", name: "TodoWrite" }] }], 40)).toBe(false);
 });
+
+test("an edit is sent with its change once: in its diff, not again in its input", () => {
+    const { rt, view } = runtime(2);
+    const diff = { path: "a.ts", status: "added", added: 1, removed: 0, hunks: [] };
+    const tool = (id: string, name: string, input: Record<string, unknown>, more: object = {}) => ({ t: "tool", id, name, title: name, status: "ok", input, ...more });
+    view.turns[1]!.blocks = [
+        tool("w", "Write", { file_path: "a.ts", content: "the whole file" }, { diff }),
+        tool("e", "Edit", { file_path: "b.ts", old_string: "x", new_string: "y", replace_all: true }, { diff }),
+        // No diff to show it: its input is what the card shows.
+        tool("n", "MultiEdit", { file_path: "c.ts", edits: [{ old_string: "x", new_string: "y" }] }),
+        // Not an edit: as it is.
+        tool("r", "Bash", { command: "cat a.ts", content: "kept" }, { diff }),
+    ] as Turn["blocks"];
+    const sent = rt.snapshot().turns[1]!.blocks as { id: string; input: Record<string, unknown> }[];
+    expect(sent.map((b) => [b.id, b.input])).toEqual([
+        ["w", { file_path: "a.ts" }],
+        ["e", { file_path: "b.ts", replace_all: true }],
+        ["n", { file_path: "c.ts", edits: [{ old_string: "x", new_string: "y" }] }],
+        ["r", { command: "cat a.ts", content: "kept" }],
+    ]);
+    // The server's own turn keeps all of it (Find, export, rewind read it).
+    expect((view.turns[1]!.blocks[0] as { input: object }).input).toEqual({ file_path: "a.ts", content: "the whole file" });
+});

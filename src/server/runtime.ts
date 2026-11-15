@@ -130,6 +130,7 @@ import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
 import { findBefore } from "./find";
+import { cardOf } from "../../gui/src/lib/cards";
 import { agentHeadOf, headOf, TurnStore, type TurnHead } from "./turn-store";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
@@ -143,12 +144,12 @@ export const RESTART_LABEL = "Continued after a restart";
  * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
  */
 export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a): { agents: AgentRun[]; more?: AgentsMore } {
-    if (all) return { agents: agents.map((a) => structuredClone(whole(a))) };
+    if (all) return { agents: agents.map((a) => sentAgent(whole(a))) };
     const ids = new Set(turns.map((t) => t.id));
     const sent: AgentRun[] = [];
     const more: AgentsMore = { count: 0, failed: 0 };
     for (const a of agents) {
-        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") sent.push(structuredClone(whole(a)));
+        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") sent.push(sentAgent(whole(a)));
         // One a background task is (its row is the task's): as its list shows it.
         else if (a.taskId) sent.push(listedAgent(a));
         // The rest only counted: its Finished fold asks for them (session.agentList). Every one of them listed was
@@ -159,6 +160,33 @@ export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], a
         }
     }
     return { agents: sent, ...(more.count ? { more } : {}) };
+}
+
+/** What an edit's input says that its diff shows too: the text it wrote, and what it replaced with what. */
+const EDIT_CONTENT = ["content", "old_string", "new_string", "edits", "new_source"];
+
+/**
+ * Blocks as a window is sent them whole (a turn it opens with or pages in, a sub-agent): an edit whose change is in
+ * its diff without the same change again in its input. Its card shows the diff, and its input only when there's no
+ * diff (gui/src/components/blocks/Activity.tsx EditCard). A whole file written was sent twice: a heavy session's turn
+ * of 1 MB had 223 KB of it. Changes the blocks given: a copy's.
+ */
+/** A copy of a sub-agent whole, as a window is sent it. */
+function sentAgent(a: AgentRun): AgentRun {
+    const c = structuredClone(a);
+    slimEdits(c.blocks);
+    return c;
+}
+
+export function slimEdits(blocks: Block[]): Block[] {
+    for (const b of blocks) {
+        if (b.t !== "tool" || !b.diff || !b.input || cardOf(b) !== "edit") continue;
+        if (!EDIT_CONTENT.some((k) => k in b.input!)) continue;
+        const input = { ...b.input };
+        for (const k of EDIT_CONTENT) delete input[k];
+        b.input = input;
+    }
+    return blocks;
 }
 
 /** A sub-agent as its row in the Agents list shows it, without its steps, instructions and report (AgentRun.partial). */
@@ -756,7 +784,9 @@ export class Runtime {
     /** A copy of the turn whole, to send. */
     private sent(t: Turn): Turn {
         const w = this.whole(t);
-        return w === t ? structuredClone(t) : w;
+        const c = w === t ? structuredClone(t) : w;
+        slimEdits(c.blocks);
+        return c;
     }
 
     /** Built here again, to be changed (its blocks from the store); kept built a while (the most recent EXTRA_BUILT). */
@@ -1277,7 +1307,7 @@ export class Runtime {
     /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
     agentWhole(agentId: string): AgentRun | null {
         const a = this.view.agents.find((x) => x.id === agentId);
-        return a ? structuredClone(this.agentFull(a)) : null;
+        return a ? sentAgent(this.agentFull(a)) : null;
     }
 
     /**
@@ -1303,7 +1333,7 @@ export class Runtime {
         }
         const turns = all.slice(from, at);
         const ids = new Set(turns.map((t) => t.id));
-        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => structuredClone(this.agentFull(a)));
+        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => sentAgent(this.agentFull(a)));
         return { turns: turns.map((t) => this.sent(t)), earlier: from, seq: this.batch, ...(agents.length ? { agents } : {}) };
     }
 
@@ -4417,7 +4447,7 @@ export class Runtime {
         // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
         const from = Math.max(0, turns.length - RESET_TURNS);
         const sent = from ? agentsFor(agents, turns.slice(from), false) : undefined;
-        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
+        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
         // Built anew: a long session's store starts again with them, and keeps all but the latest.
         if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
     }

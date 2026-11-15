@@ -11,6 +11,7 @@ import { FAKE, isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
+const { slimEdits } = await import("../src/server/runtime");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -3043,7 +3044,8 @@ describe("reopening a Claude Code session", () => {
             await restarted.stop();
         }
     }
-    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, b.input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
+    // Its input as a window is sent it whole (an edit's change once, in its diff: runtime.ts slimEdits).
+    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, (slimEdits([structuredClone(b)])[0] as ToolBlock).input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
 
     test("its turns come back as they were shown: the steps, the sub-agents and what they did, the mode, model and context", async () => {
         try {
