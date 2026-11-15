@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, loadEarlier, loadEarlierTo, loadTurn, onRenew, rpc, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, rpc, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -37,6 +37,8 @@ const SETTLE_MS = 380;
 const SETTLE_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 /** How long a finished turn's work fades before it folds (TurnView). */
 const FOLD_WAIT_MS = 200;
+/** How long the reader is back at the end, with nothing coming, before what's above its first page is let go of. */
+const LET_GO_MS = 5000;
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -678,6 +680,23 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             anchor: reading, openWork: [...openWork],
         }));
     });
+
+    // Back at the end a while after reading far up, with nothing coming: what's drawn above its first page goes, and so do
+    // the turns the window holds beyond it (scrolled up again, they come back as "Show earlier" brings them). Its memory
+    // stays what's on screen, not everything it was ever scrolled through.
+    let letGo: ReturnType<typeof setTimeout> | undefined;
+    createEffect(on([stick, () => p.handle.view.state.busy], ([atEnd, busy]) => {
+        clearTimeout(letGo);
+        if (!atEnd || busy) return;
+        letGo = setTimeout(() => {
+            const keep = Math.max(target, PAGE);
+            if (!stick() || p.handle.view.state.busy || loadingEarlier() || turns().length <= keep) return;
+            setShown((n) => Math.min(n, keep));
+            forgetEarlier(p.handle, keep);
+            toBottom();
+        }, LET_GO_MS);
+    }, { defer: true }));
+    onCleanup(() => clearTimeout(letGo));
 
     const earlier = async () => {
         // Fewer here than a page: the next ones come from the server first (put in above, out of sight).

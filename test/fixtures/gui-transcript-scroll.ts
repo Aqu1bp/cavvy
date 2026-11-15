@@ -144,8 +144,12 @@ let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undef
 const renews = new Map<string, () => (() => void) | void>();
 /** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
 const workOpen = new Map<string, boolean>();
+/** What the conversation let go of (state/app.ts forgetEarlier): how many turns it kept each time. */
+const forgets: number[] = [];
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
+    forgetEarlier: (_h: any, keep: number) => void forgets.push(keep),
+    loadTurn: async () => {},
     rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
@@ -829,6 +833,18 @@ try {
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
+    // Read all the way up, then back at the end: a while after, what's above its first page goes, from the page and from
+    // what the window holds (forgetEarlier), not while a reply comes.
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
+    assert.equal(articles().length, 400);
+    forgets.length = 0;
+    settle();
+    assert.deepEqual(forgets, [], "read up there: kept");
+    button("jump").props.onClick();
+    settle(); scroller().props.onScroll(); settle();
+    assert.deepEqual(forgets, [40], "back at the end a while: let go of, but for its first page");
+    assert.equal(articles().length, 40);
+    assert.ok(turn("turn-399"), "the end still there");
     dispose();
 
     // A conversation that fits (nothing to scroll): a wheel up there scrolls nothing, so it stops nothing, and the

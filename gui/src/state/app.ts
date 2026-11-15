@@ -575,6 +575,26 @@ export function agentReady(agentId: string): Promise<void> {
     return Promise.resolve();
 }
 
+/**
+ * The window keeps only the last `keep` of a session's turns (the reader's back at its end after reading far up): the
+ * rest are as the session opened without them (`earlier`, session.turns has them), and their sub-agents as their list
+ * shows them. What it holds stays what's on screen, not all it was ever scrolled through.
+ */
+export function forgetEarlier(h: SessionHandle, keep: number) {
+    const drop = h.view.turns.length - keep;
+    // Not while a page of them is coming: it's put in before the first it has.
+    if (drop <= 0 || loadingEarlier.has(h.id)) return;
+    batch(() => h.set(produce((v) => {
+        const gone = new Set(v.turns.splice(0, drop).map((t) => t.id));
+        v.earlier = (v.earlier ?? 0) + drop;
+        v.agents = v.agents.map((a) => {
+            if (!gone.has(a.turnId) || a.partial || a.status === "running" || a.status === "waiting") return a;
+            const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
+            return { ...listed, blocks: [], partial: true };
+        });
+    })));
+}
+
 /** A count of sub-agents not sent, less one that has come (with its turn). */
 function lessAgents(more: AgentsMore, a: AgentRun): AgentsMore | undefined {
     const count = more.count - 1;

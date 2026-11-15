@@ -32,7 +32,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, openSession, loadEarlier, agentReady, loadAgentList } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, loadEarlier, agentReady, loadAgentList, forgetEarlier } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 try {
     start();
@@ -67,6 +67,19 @@ try {
     await agentReady("early");
     await agentReady("late");
     assert.deepEqual(asked, []);
+    // The reader back at the end: the window keeps its last 100 turns, the rest counted as it opened without them, their
+    // sub-agents as their list shows them (the one still running stays whole).
+    const had = h.view.turns.length;
+    forgetEarlier(h, 100);
+    assert.equal(h.view.turns.length, 100);
+    assert.equal(h.view.turns[0]!.id, "t30");
+    assert.equal(h.view.earlier, 10 + had - 100);
+    assert.equal(agent("middle").partial, true);
+    assert.equal(agent("middle").report, undefined);
+    assert.equal(agent("late").partial, undefined);
+    // Fewer than that: nothing.
+    forgetEarlier(h, 500);
+    assert.equal(h.view.turns.length, 100);
 } catch (e) {
     console.error(e);
     process.exit(1);
