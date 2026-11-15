@@ -151,7 +151,7 @@ test("a code block being written goes to the highlighter a line at a time, each 
     const ended: number[] = [];
     let writings = 0;
     const CodeBlock = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: (p: { children: unknown }) => p.children, CopyButton: () => node("copy"), CARET_WAIT_MS: 400, trailBlock() {},
+        RenderBoundary: (p: { children: unknown }) => p.children, CopyButton: () => node("copy"), trailBlock() {},
         growing: () => (html: string) => shown.push(html),
         newWriting: () => ++writings, endWriting: (writing: number) => ended.push(writing),
         highlightMore: async (writing: number, lines: string) => { sent.push({ writing, lines }); return `[${lines}]`; },
