@@ -13,6 +13,7 @@ import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../l
 import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
+import { KeyedList } from "../lib/keyed-list";
 import { finishEntrances, finishEntrancesIn } from "../lib/entrances";
 import { settlingObserver, type SettlingObserver } from "../lib/settling-observer";
 import { TurnView } from "./TurnView";
@@ -105,8 +106,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let staged: HTMLElement[] | undefined;
     /** Rows of turns just put in, taken by lib/work-rendering.ts at once (before they're laid out): see its settle. */
     let settleRows: (() => void) | undefined;
-    /** How many turns were shown before the page: those before them in the list are the page's. */
-    let stagedAfter = 0;
+    /**
+     * The first turn shown before the page: those before it are the page's. By the turn, not a count: turns still
+     * going in below the place read (after Find) or a new one at the end would move a count off it.
+     */
+    let stagedBefore: string | undefined;
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
@@ -518,8 +522,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
      */
     const stage = () => {
         if (!staged) return;
-        const page = visible().slice(0, Math.max(0, visible().length - stagedAfter));
-        for (const t of page) {
+        const v = visible();
+        const at = v.findIndex((t) => t.id === stagedBefore);
+        for (const t of at < 0 ? [] : v.slice(0, at)) {
             const el = turnEls.get(t.id);
             if (el && !el.hasAttribute(STAGED)) {
                 el.setAttribute(STAGED, "");
@@ -765,6 +770,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     onCleanup(() => clearTimeout(letGo));
 
     const earlier = async () => {
+        // A page still going in: the next once it's shown (the button stays as it was meanwhile, focus on it).
+        if (buttonHeld() !== undefined) return;
         // Fewer here than a page: the next ones come from the server first (put in above, out of sight).
         if (hiddenHere() < PAGE && p.handle.view.earlier) {
             if (loadingEarlier()) return;
@@ -783,7 +790,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         const to = Math.max(shown(), goal()) + PAGE;
         if (!staged) {
             staged = [];
-            stagedAfter = shown();
+            stagedBefore = visible()[0]?.id;
             setButtonHeld(hidden());
         }
         setGoal(to);
@@ -1169,14 +1176,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                         )}
                     </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier() || buttonHeld() !== undefined}>
+                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()} aria-disabled={buttonHeld() !== undefined || undefined}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
                     <DrawnAgain.Provider value={() => settling}>
                     <CardFoldsProvider sessionId={id}>
-                        <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</For>
+                        {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
+                        <KeyedList each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</KeyedList>
                     </CardFoldsProvider>
                     </DrawnAgain.Provider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}

@@ -867,7 +867,7 @@ export function Sidebar() {
             const kind = clickKind(e, os === "macos");
             setRailSelection(clickSelect(railSelection(), id, kind, order(), listOf));
             // The one shown already: nothing to open, and the keyboard goes back to its composer, as for any other.
-            if (kind === "plain" && id === app.activeId && !agentFocus()) return void requestComposerFocus();
+            if (kind === "plain" && id === app.activeId && !agentFocus() && handleFor(id) && !app.opening) return void requestComposerFocus();
             if (kind === "plain") return void activate(id);
             // The keys that act on the selection need the focus in the list (WebKit doesn't focus a clicked button).
             (e.currentTarget as HTMLElement | null)?.focus?.({ preventScroll: true });
