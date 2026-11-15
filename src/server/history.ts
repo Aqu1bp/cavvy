@@ -616,6 +616,11 @@ export interface ReplayInput {
     ui: UiLog;
     meta: (call: ToolCallPart) => ToolMeta;
     newId: () => string;
+    /**
+     * The segment `segments[0]` is (they're the last ones: those before are built already), and that its compaction's
+     * turn is among those (it isn't made again). A segment a compaction kept a prompt in can't be the first given.
+     */
+    from?: { segment: number; marked: boolean };
 }
 
 /** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
@@ -642,8 +647,10 @@ export function replay(o: ReplayInput): Turn[] {
     };
     const last = o.segments[o.segments.length - 1];
     const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, kept: last?.kept, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
-    segs.forEach((seg, si) => {
-        const archived = si < segs.length - 1;
+    const first = o.from?.segment ?? 0;
+    segs.forEach((seg, i) => {
+        const si = first + i;
+        const archived = i < segs.length - 1;
         let turn: Turn | undefined;
         const tools = new Map<string, ToolBlock>();
         const start = (prompt: Turn["prompt"], at?: number, index?: number) => {
@@ -654,7 +661,7 @@ export function replay(o: ReplayInput): Turn[] {
         };
         // A turn no prompt started (a reply carrying on after a compaction) still has its place.
         const ensure = (index: number) => turn ?? start(undefined, undefined, index);
-        if (si > 0) {
+        if (si > 0 && !(i === 0 && o.from?.marked)) {
             // Before any prompt of its segment: what a search finds there leads here.
             const t = start(undefined, undefined, -1);
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false, ...(seg.idle ? { idle: true } : {}) });
@@ -689,8 +696,8 @@ export function replay(o: ReplayInput): Turn[] {
         const shown = new Set<Turn>();
         let answerBlock: Extract<Block, { t: "text" }> | undefined;
         // A prompt the next compaction kept is shown once, where it went on (after the summary).
-        const moved = segs[si + 1]?.kept ? seg.messages.length - 1 : -1;
-        const before = si > 0 && seg.kept ? segs[si - 1]!.messages.length - 1 : -1;
+        const moved = segs[i + 1]?.kept ? seg.messages.length - 1 : -1;
+        const before = i > 0 && seg.kept ? segs[i - 1]!.messages.length - 1 : -1;
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
             if (index === moved && m.role === "user") return;

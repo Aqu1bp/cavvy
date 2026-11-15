@@ -261,6 +261,8 @@ export class Session {
     summary?: string;
     /** Its file's segments: one, and one more after each compaction (as readSegments makes them). */
     segments = 1;
+    /** Its last compaction kept the prompt under way (it goes on in the segment after: Segment.kept). */
+    lastCompactKept = false;
     /** USD spent in this session (estimates included). */
     cost = 0;
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
@@ -846,6 +848,7 @@ export class Session {
         this.summary = summary;
         this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
         this.segments++;
+        this.lastCompactKept = kept;
         for (const m of messages) this.push(m);
     }
 
@@ -883,6 +886,7 @@ export class Session {
             parked: this.parked,
             summary: this.summary,
             segments: this.segments,
+            lastCompactKept: this.lastCompactKept,
             model: this.model,
             fastMode: this.savedFastMode,
             title: this.title,
@@ -910,6 +914,7 @@ export class Session {
         this.parked = st.parked;
         this.summary = st.summary;
         this.segments = st.segments;
+        this.lastCompactKept = st.lastCompactKept;
         this.model = st.model;
         this.fastMode = this.savedFastMode = st.fastMode;
         this.title = st.title;
@@ -1004,6 +1009,7 @@ export class Session {
             }
             else if (l.t === "compact") {
                 s.segments++;
+                s.lastCompactKept = l.kept === true;
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
@@ -1136,6 +1142,7 @@ interface SessionState {
     parked: ParkedBackend[];
     summary?: string;
     segments: number;
+    lastCompactKept: boolean;
     model?: string;
     fastMode?: boolean;
     title?: string;
@@ -1154,7 +1161,7 @@ interface SessionState {
     workedAt?: number;
 }
 
-const CHECKPOINT_VERSION = 1;
+const CHECKPOINT_VERSION = 2;
 /**
  * `after`: read this far past a session's checkpoint (or with none), it's written anew. `most`: and kept only if it's
  * at most this much of what it's read in place of. (Tests set them low to checkpoint short sessions.)

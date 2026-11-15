@@ -251,3 +251,38 @@ test("a session that grows long while it's open lets go of its older turns then,
     expect(unset({ turns: (await everything(id)).turns })).toEqual(shown);
     await close(id);
 }, 120_000);
+
+test("a rewind builds only the turns since the last compaction again, and they're what building all of them makes", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-rewind-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "native", seed: 8 });
+    const snap = await open(t.id);
+    await call("session.find", { id: t.id, query: "" });
+    const before = views.get(t.id)!.turns;
+    const last = before.at(-1)!.pos!.index;
+    const plan = await call("session.rewindPlan", { id: t.id, index: last });
+    await call("session.rewind", { id: t.id, index: last, planId: plan.planId, code: false, conversation: true });
+    await until(t.id, (v) => !v.turns.some((x) => x.id === before.at(-1)!.id));
+    // All of them (the reset sent the window its last 100).
+    await open(t.id);
+    await call("session.find", { id: t.id, query: "" });
+    const outline = (turns: Turn[]) => turns.map((x) => [x.prompt?.text, x.status, x.pos, x.archived, x.blocks.map((b) => b.t)]);
+    // Earlier turns are those it had (the same ids): only the last segment's were built again.
+    const after = views.get(t.id)!.turns;
+    expect(after.length).toBe(before.length - 1);
+    const segment = before.at(-1)!.pos!.seg;
+    expect(segment).toBeGreaterThan(0);
+    const firstOfSegment = before.findIndex((x) => x.pos?.seg === segment);
+    expect(after.slice(0, firstOfSegment + 1).map((x) => x.id)).toEqual(before.slice(0, firstOfSegment + 1).map((x) => x.id));
+    expect(snap.turns.length).toBe(before.length);
+    await fillThoughts(t.id);
+    const rewound = outline(views.get(t.id)!.turns);
+    await close(t.id);
+    // Built from its logs, all of it.
+    rmSync(dirname(storeOf(t.file, t.id)), { recursive: true, force: true });
+    rmSync(join(dirname(t.file), "state"), { recursive: true, force: true });
+    await open(t.id);
+    await fillThoughts(t.id);
+    expect(outline(views.get(t.id)!.turns)).toEqual(rewound);
+    await close(t.id);
+}, 60_000);

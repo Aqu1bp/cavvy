@@ -800,6 +800,16 @@ export class Runtime {
         return this.storedAt.has(t) && !t.blocks.length && !this.built.has(t) && !this.latest(t);
     }
 
+    /** The latest turns built: one that was kept as its head comes among them when turns after it go. */
+    private buildLatest() {
+        const all = this.view.turns;
+        for (let i = Math.max(0, all.length - KEEP_BUILT); i < all.length; i++) {
+            const t = all[i]!;
+            const where = this.storedAt.get(t);
+            if (where && !t.blocks.length && !this.built.has(t)) Object.assign(t, this.store!.get(where.at, where.len));
+        }
+    }
+
     /** Among the latest turns, which are always built. */
     private latest(t: Turn): boolean {
         const all = this.view.turns;
@@ -1445,6 +1455,8 @@ export class Runtime {
         // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
         // only read (most ops while a reply streams), so it isn't copied.
         applyOp(this.view, sent || o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
+        // One gone (the list is shorter): one that was kept as its head may be among the latest now.
+        if (o.op === "turn.remove" && this.store) this.buildLatest();
         // A turn gone by beyond the latest: let go of, once put in the store (started once a session has grown long).
         if (o.op === "turn") {
             if (this.store) this.trimBuilt();
@@ -4520,6 +4532,7 @@ export class Runtime {
     private rebuild() {
         // Every step it logged, to build them from (a session opened from its store read only what it runs on).
         this.ui.full();
+        if (this.rebuildSegment()) return;
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
@@ -4541,6 +4554,48 @@ export class Runtime {
         this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t.status !== "running" && omitThinking(t.blocks), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
         // Built anew: a long session's store starts again with them, and keeps all but the latest.
         if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+    }
+
+    /**
+     * Only the current segment's turns built again (a rewind doesn't reach past the last compaction): those before, up
+     * to and with its compaction's turn, kept as they are (and where they are in the store). Rebuilding all of a 30,000-
+     * item session read its whole file and stored every turn again: 320 ms. False when it can't (no compaction, or the
+     * last one kept a prompt that began before it): then all of them are.
+     */
+    private rebuildSegment(): boolean {
+        const seg = this.segment;
+        if (seg === 0 || this.session.lastCompactKept) return false;
+        const at = this.view.turns.findIndex((t) => t.pos?.seg === seg && t.pos.index === -1);
+        if (at < 0) return false;
+        const keep = this.view.turns.slice(0, at + 1);
+        const fresh = replay({ segments: [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: seg, marked: true } });
+        const kept = new Set(keep.map((t) => t.id));
+        // Sub-agents of the kept turns stay as they are; the rest as a rebuild makes them (rebuild).
+        const made = agentsFromTurns(fresh, this.model && modelRef(this.model), this.ui.agents).map((r) => {
+            const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
+            if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
+            return live ? { ...this.agentFull(live), turnId: r.turnId } : r;
+        });
+        for (const a of this.view.agents) {
+            const up = a.parentId ? made.find((x) => x.id === a.parentId && !x.replayed) : undefined;
+            if (up && !made.some((x) => x.id === a.id)) made.push({ ...this.agentFull(a), turnId: up.turnId });
+        }
+        const agents = [...this.view.agents.filter((a) => kept.has(a.turnId) && !made.some((m) => m.id === a.id)), ...made];
+        const turns = [...keep, ...fresh];
+        // The windows get its last turns, as when it opens, each whole (a kept one may be in the store).
+        const from = Math.max(0, turns.length - RESET_TURNS);
+        const shown = turns.slice(from);
+        const sent = agentsFor(agents, shown, !from, (a) => this.agentFull(a));
+        const reset: SessionOp = { op: "reset", turns: shown.map((t) => this.sent(t)), agents: sent.agents, ...(from ? { earlier: from } : {}), ...(sent.more ? { agentsMore: sent.more } : {}) };
+        this.op({ op: "reset", turns, agents }, reset);
+        if (this.store) {
+            // Those it had built that are gone: nothing to keep of them.
+            for (const t of this.built) if (!turns.includes(t)) this.built.delete(t);
+            // Fewer turns after it: one kept as its head may be among the latest now, which are built.
+            this.buildLatest();
+            this.trimBuilt();
+        } else if (turns.length > KEEP_BUILT) this.storeOlder(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        return true;
     }
 
     /**
