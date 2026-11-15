@@ -4,7 +4,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
-import { finishEntrances } from "../../gui/src/lib/entrances";
+import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
 import { DrawnAgain } from "../../gui/src/lib/reveal";
 
@@ -156,7 +156,7 @@ const scope = {
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, DrawnAgain,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
@@ -774,9 +774,17 @@ try {
     // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
     // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
     const ended: string[] = [];
-    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
-    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
-    report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    // The page's animations, asked for once for all of them (lib/entrances.ts): two in turn-12, one in a turn in view.
+    const animation = (name: string, iterations: number, target: unknown) => ({ effect: { target, getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    const twelve = turn("turn-12") as any;
+    twelve.contains ??= (t: unknown) => all(twelve).includes(t as never);
+    const hadDocument = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [animation("fade", 1, twelve), animation("spin", Infinity, twelve), animation("in-view", 1, turn("turn-50"))] };
+    try {
+        report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    } finally {
+        (globalThis as any).document = hadDocument;
+    }
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
     assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
