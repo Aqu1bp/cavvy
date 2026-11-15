@@ -36,6 +36,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
     const [open, setOpen] = [() => contextCardOpen() && pane.focused(), setContextCardOpen];
+    // Another session picked (by a key, say: a click elsewhere already closes it): the card was this one's.
+    createEffect(on(() => app.activeId, () => setOpen(false), { defer: true }));
     const panelId = `composer-usage-${createUniqueId()}`;
     let panel: HTMLDivElement | undefined;
     const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
