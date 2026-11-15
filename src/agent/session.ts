@@ -868,6 +868,16 @@ export class Session {
         return Session.read(file, false);
     }
 
+    /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
+    private loadedLines?: readonly Line[];
+
+    /** The lines this session was just loaded from, once, while that's still the task that loaded it. */
+    takeLoadedLines(): readonly Line[] | undefined {
+        const lines = this.loadedLines;
+        this.loadedLines = undefined;
+        return lines;
+    }
+
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
         const text = readFileSync(file, "utf-8");
@@ -886,6 +896,10 @@ export class Session {
         if (!meta) throw new Error(`Not a session file: ${file}`);
         const s = new Session(meta, { file, persist });
         s.started = true;
+        // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
+        // past it, or a session loaded for anything else would hold every line it ever had.
+        s.loadedLines = lines;
+        queueMicrotask(() => (s.loadedLines = undefined));
         for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
         // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
         if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);

@@ -493,7 +493,7 @@ export class Runtime {
         this.reviewer = ws.settings.reviewModel;
         if (opts.resumed) resetToolState(this.toolState, session.messages);
 
-        const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
+        const segments = opts.resumed ? readSegments(session.path, session) : [{ messages: [] }];
         this.segment = segments.length - 1;
         // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
         if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });

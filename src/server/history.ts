@@ -54,23 +54,37 @@ export interface Segment {
     imported?: { source: string; startedAt?: number; omitted: number };
 }
 
-/** Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. */
-export function readSegments(file: string): Segment[] {
-    const segments: Segment[] = [{ messages: [] }];
+type SegmentLine = { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
+
+/**
+ * Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. `session`: the
+ * session just loaded from it, whose lines are used when it still has them (Session.takeLoadedLines), so the file
+ * isn't read and parsed a second time.
+ */
+export function readSegments(file: string, session?: { takeLoadedLines(): readonly object[] | undefined }): Segment[] {
+    const loaded = session?.takeLoadedLines();
+    if (loaded) return segmentsOf(loaded as readonly SegmentLine[]);
     let text: string;
     try {
         text = readFileSync(file, "utf-8");
     } catch {
-        return segments;
+        return [{ messages: [] }];
     }
+    const lines: SegmentLine[] = [];
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
         try {
-            l = JSON.parse(raw);
+            lines.push(JSON.parse(raw));
         } catch {
-            continue;
+            // a torn line
         }
+    }
+    return segmentsOf(lines);
+}
+
+function segmentsOf(lines: readonly SegmentLine[]): Segment[] {
+    const segments: Segment[] = [{ messages: [] }];
+    for (const l of lines) {
         const cur = segments[segments.length - 1]!;
         if (l.t === "msg" && l.m) cur.messages.push(l.m);
         else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}), messages: [] });
@@ -546,6 +560,14 @@ export function liveNotice(id: string, level: NoticeBlock["level"], message: str
 
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
+    // Asked of every reply: once per provider, not a look at the providers file each time (a third of opening a long
+    // session went there).
+    const backends = new Map<string, boolean>();
+    const isBackend = (provider: string) => {
+        let b = backends.get(provider);
+        if (b === undefined) backends.set(provider, (b = getProvider(provider)?.kind === "agent"));
+        return b;
+    };
     const last = o.segments[o.segments.length - 1];
     const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, kept: last?.kept, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
@@ -654,7 +676,7 @@ export function replay(o: ReplayInput): Turn[] {
                 return;
             }
             const t = ensure(index);
-            const backend = getProvider(m.provider ?? "")?.kind === "agent";
+            const backend = isBackend(m.provider ?? "");
             if (backend && shown.has(t)) return;
             const previous = seg.messages[index - 1];
             const continuing = previous?.role === "user" && previous.meta?.kind === "continuation";
