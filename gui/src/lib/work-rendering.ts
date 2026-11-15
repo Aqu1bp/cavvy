@@ -3,6 +3,7 @@
 // guessed heights in a long running turn move the end while the reader is clicking or scrolling.
 
 import { finishEntrances } from "./entrances";
+import { settlingObserver, type SettlingObserver } from "./settling-observer";
 
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
@@ -30,7 +31,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
     const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
-    let io: IntersectionObserver | undefined;
+    let io: SettlingObserver | undefined;
     let ro: ResizeObserver | undefined;
     // With many turns drawn, only rows in turns near the view are watched or skipped on their own: what they cost each
     // frame (our observers, and the browser's for each skipped box) goes with what's near, not with how much of the
@@ -66,6 +67,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     const start = () => {
         if (io || rows.size < MIN_ROWS) return;
         to.sizes = (entries) => {
+            io?.wake();
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
                 const row = rows.get(el);
@@ -98,7 +100,8 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
             const moved = above.reduce((sum, { el, height }) => sum + el.getBoundingClientRect().height - height, 0);
             if (Math.abs(moved) > 0.5) shift(moved);
         };
-        io = new IntersectionObserver(intersections(to), { root, rootMargin: "100% 0px" });
+        // Let go of while nothing scrolls or changes size (lib/settling-observer.ts); a row changing size wakes it (sizes).
+        io = settlingObserver(intersections(to), { root, rootMargin: "100% 0px" }, [content]);
         ro = new ResizeObserver(sizes(to));
         for (const el of rows.keys()) if (!parked(el)) watch(el);
     };

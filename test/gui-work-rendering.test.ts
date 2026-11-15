@@ -22,6 +22,8 @@ class Box {
     setAttribute(name: string) { this.attributes.add(name); }
     removeAttribute(name: string) { this.attributes.delete(name); }
     hasAttribute(name: string) { return this.attributes.has(name); }
+    addEventListener() {}
+    removeEventListener() {}
     getBoundingClientRect() { const height = this.hasAttribute("data-work-far") ? this.height : this.natural; return { top: this.top, bottom: this.top + height, height }; }
 }
 let io: Observer, ro: Observer, mo: Observer;
@@ -31,6 +33,7 @@ class Observer {
     observe(el: Box) { this.targets.add(el); }
     unobserve(el: Box) { this.targets.delete(el); }
     disconnect() { this.targets.clear(); }
+    takeRecords() { return []; }
     emit(entries: any[]) { this.callback(entries, this); }
 }
 const names = ["IntersectionObserver", "ResizeObserver", "MutationObserver"] as const;

@@ -175,6 +175,12 @@ const scope = {
         // Its callback stays with it, as in WebKit, where an observer with a root outlives disconnect().
         disconnect() { io.targets.clear(); }
     },
+    // The far turns' observer (lib/settling-observer.ts), as a plain one: when it lets go of its targets is its own test's.
+    settlingObserver: (cb: (entries: any[]) => void, options: any) => {
+        io.cb = cb;
+        io.options = options;
+        return { observe: (target: Node) => io.targets.add(target), unobserve: (target: Node) => io.targets.delete(target), disconnect: () => io.targets.clear(), wake() {} };
+    },
     ResizeObserver: class {
         constructor(private cb: () => void) {}
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }

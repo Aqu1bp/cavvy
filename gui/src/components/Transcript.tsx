@@ -14,6 +14,7 @@ import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { finishEntrances } from "../lib/entrances";
+import { settlingObserver, type SettlingObserver } from "../lib/settling-observer";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -504,7 +505,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     // A turn a screen or more from the view is marked far: it skips its layout and paint (transcript.css), at the
     // size it was last drawn at. Each is drawn once before it can be (not far until the observer says so).
-    let far: IntersectionObserver | undefined;
+    let far: SettlingObserver | undefined;
     /** Each turn's element (TurnView gives it), so finding one doesn't search the whole column. */
     const turnEls = new Map<string, HTMLElement>();
     const track = (el: HTMLElement, turnId: string) => {
@@ -542,7 +543,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     wrote();
                 }
             };
-            far = new IntersectionObserver(relay(to), { root: scroller, rootMargin: "100% 0px" });
+            // Let go of while nothing scrolls or changes size (lib/settling-observer.ts): a spinner waiting on a model
+            // would otherwise cost a main-thread frame at each of its steps.
+            far = settlingObserver(relay(to), { root: scroller, rootMargin: "100% 0px" }, [content]);
             for (const el of turnEls.values()) far.observe(el);
             onCleanup(() => {
                 far?.disconnect();
