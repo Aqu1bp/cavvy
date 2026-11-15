@@ -124,7 +124,11 @@ createRoot(() => createEffect(on(() => app.sessionsLoaded, (loaded) => loaded &&
  * What a session's row offers, for one on another machine: sent there. Through this computer's Cavvy, which is
  * connected to every server; straight to it when the session is this computer's.
  */
+// (After the window's own: one of another machine's sessions opened in this window goes over its connection there.)
+const opened = rpc.route;
 rpc.route = (method, params) => {
+    const there = opened?.(method, params);
+    if (there) return there;
     const to = routeOf(method, params, far, listed, machine, gone);
     if (to === "here") return undefined;
     if (to === "refused") return Promise.reject(new RpcError("Open the session to do that.", "unsupported"));

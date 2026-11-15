@@ -8,6 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
+import { linkTo, opened } from "../lib/machine-links";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
@@ -33,6 +34,45 @@ export const serversUi = () => import("../components/Servers");
 /** Why a window on a server isn't connected, in a few words, for the banner that says it's reconnecting. */
 export const [connNote, setConnNote] = createSignal<string>();
 export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversUi()).machineCredentials(stream) : credentials, windowKey);
+
+/**
+ * Sessions of another machine opened in this window (activate), by id: the connection to that machine's Cavvy
+ * (lib/machine-links.ts) that what's asked of each goes over, and what it says of each comes back on.
+ */
+const away = new Map<string, Rpc>();
+rpc.route = (method, params) => {
+    const id = (params as { id?: unknown } | undefined)?.id;
+    const link = typeof id === "string" ? away.get(id) : undefined;
+    return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
+};
+/** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
+const heard = new WeakSet<Rpc>();
+
+/** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
+async function linkFor(name: string | undefined): Promise<Rpc> {
+    // This computer's Cavvy says where a server's is. In a window on a server it's another connection of the window's.
+    const home = machine ? (await import("../lib/machines")).home : undefined;
+    const link = linkTo(name, home ?? rpc, home, (e, from) => {
+        const sessionId = (e as { sessionId?: unknown }).sessionId;
+        if (typeof sessionId === "string" && away.get(sessionId) === from) onEvent(e);
+    });
+    if (!heard.has(link)) {
+        heard.add(link);
+        // This window's own, if it's this computer's connection in a window on a server: heard there by the servers code too.
+        link.onEvent((e) => {
+            const sessionId = (e as { sessionId?: unknown }).sessionId;
+            if (link === home && typeof sessionId === "string" && away.get(sessionId) === link) onEvent(e);
+        });
+        // Dropped and back: its sessions here have what they missed (session.open's since), as the window's own do.
+        link.onState((s) => {
+            const mine = [...handles.values()].filter((h) => away.get(h.id) === link);
+            if (s !== "open") return void mine.forEach((h) => h.setReady(false));
+            void Promise.all(mine.map((h) => reopen(h)));
+        });
+    }
+    await opened(link);
+    return link;
+}
 rpc.retriesCredentials = isDesktop;
 
 // ---------------------------------------------------------------------------
@@ -416,6 +456,12 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     return h;
 }
 
+/** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
+function reopen(h: SessionHandle): Promise<unknown> {
+    return rpc.call("session.open", { ...opening(h.id), ...(h.epoch ? { since: { epoch: h.epoch, seq: h.seq } } : {}) })
+        .then((r) => ("resumed" in r ? caughtUp(h, r) : adopt(r)), (e) => reopenFailed(h.id, e));
+}
+
 /**
  * A session this window had open, back after its connection dropped with only what it missed (SessionResumed): those
  * ops, after any still waiting, on the view as it is; where it was read, the turns it had paged in, all kept.
@@ -784,9 +830,16 @@ export async function forkSession(id: string, at: { index: number; text: string;
 
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
-    // One on another machine: the window goes there, and opens it.
+    // One on another machine: opened here, over a connection to that machine's Cavvy (linkFor), as one of the window's
+    // own is. (The window went there instead, loading again: 0.5-0.8 s each way, its sessions opened afresh each time.)
     const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
-    if (at && at.machine !== machine) return void serversUi().then((m) => m.switchMachine(at.machine, id), reportError);
+    if (id && at && at.machine !== machine && !away.has(id)) {
+        try {
+            away.set(id, await linkFor(at.machine));
+        } catch (e) {
+            return reportError(e);
+        }
+    }
     if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();
@@ -1229,7 +1282,7 @@ export function start() {
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
         batch(() => {
-            if (s !== "open") for (const h of handles.values()) h.setReady(false);
+            if (s !== "open") for (const h of handles.values()) if (!away.has(h.id)) h.setReady(false);
             setApp("conn", s);
         });
         // A screen that won't change by itself (a link that needs the terminal, a server that's gone) shows at once.
@@ -1242,11 +1295,8 @@ export function start() {
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 // After a reconnect, the sessions it had open, all at once, with the lists: each with only what it
                 // missed while the connection was down when the server still has that (a round trip and those bytes),
-                // else from a fresh snapshot.
-                const reopened = Promise.all([...handles.values()].filter((h) => !h.ready()).map((h) =>
-                    rpc.call("session.open", { ...opening(h.id), ...(h.epoch ? { since: { epoch: h.epoch, seq: h.seq } } : {}) })
-                        .then((r) => ("resumed" in r ? caughtUp(h, r) : adopt(r)), (e) => reopenFailed(h.id, e)),
-                ));
+                // else from a fresh snapshot. (Another machine's, opened here, are on a connection of their own.)
+                const reopened = Promise.all([...handles.values()].filter((h) => !h.ready() && !away.has(h.id)).map(reopen));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
