@@ -11,9 +11,14 @@
 // while an approved app has focus. A listen-only event tap tells the person's input from the helper's own (each event
 // it posts carries OURS); an action stops as soon as they move the mouse, click, scroll or type.
 //
+// It never acts on what's never offered (src/desktop/apps.ts, whose list src/desktop/helper.ts compiles in), whatever
+// it's sent: terminals, password managers, Cavvy and the processes it runs in.
+//
 // Commands arrive on stdin, one JSON object per line with an "id"; each is answered on stdout with one JSON line,
-// {"id", ...} or {"id", "error", "code"?}, and every answer carries "human": how many times the person has used the
-// mouse or keyboard since the helper started. {"op":"cancel"} (no id, no answer) stops the action under way.
+// {"id", ...} or {"id", "error", "code"?}, and every answer carries "human" (how many times the person has used the
+// mouse or keyboard since the helper started) and "used" (how many of those were clicks, keys or scrolls aimed at
+// anything but Cavvy). {"op":"cancel","token"} (no id, no answer) stops the actions sent with that token, under way
+// or still to come.
 
 import AppKit
 import ApplicationServices
@@ -72,20 +77,24 @@ struct Refusal: Error {
 /// Marks the events this helper posts, so the tap can tell them from the person's.
 let OURS: Int64 = 0x4361_7679
 let humanLock = NSLock()
+/// Every input of the person's: what stops an action under way.
 var humanCount = 0
-var cancelCount = 0
+/// Their clicks, keys and scrolls aimed at anything but Cavvy and the processes it runs in: what makes what the
+/// agent last read suspect. Moving the mouse, and answering Cavvy's own prompts, don't count.
+var usedCount = 0
+/// Actions Cavvy stopped, by the token their commands carry (a session's turn).
+var cancelled = Set<String>()
+/// Cavvy has gone: whatever is under way stops.
+var closing = false
 
-func humans() -> Int {
+func humans() -> (Int, Int) {
     humanLock.lock()
     defer { humanLock.unlock() }
-    return humanCount
+    return (humanCount, usedCount)
 }
 
-func cancels() -> Int {
-    humanLock.lock()
-    defer { humanLock.unlock() }
-    return cancelCount
-}
+/// Cavvy, and the terminal it may run in: never offered, and the person's input there is Cavvy's business.
+let OWN: Set<pid_t> = Set(ancestors().map { pid_t($0) })
 
 var tap: CFMachPort?
 
@@ -95,12 +104,15 @@ func watch() -> Bool {
     let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .keyDown, .scrollWheel]
     var mask: CGEventMask = 0
     for t in types { mask |= CGEventMask(1) << CGEventMask(t.rawValue) }
-    let made = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask, callback: { _, type, event, _ in
+    // Where events have been given the process they go to.
+    let made = CGEvent.tapCreate(tap: .cgAnnotatedSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask, callback: { _, type, event, _ in
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let t = tap { CGEvent.tapEnable(tap: t, enable: true) }
         } else if event.getIntegerValueField(.eventSourceUserData) != OURS {
+            let target = pid_t(truncatingIfNeeded: event.getIntegerValueField(.eventTargetUnixProcessID))
             humanLock.lock()
             humanCount += 1
+            if type != .mouseMoved && !OWN.contains(target) { usedCount += 1 }
             humanLock.unlock()
         }
         return Unmanaged.passUnretained(event)
@@ -115,13 +127,22 @@ func watch() -> Bool {
     return true
 }
 
-/// Stops an action when the person has used the Mac or Cavvy has stopped it since `since`.
+/// Stops an action when Cavvy has stopped its token (before it started, too) or the person has used the Mac since it
+/// started.
 struct Guard {
-    let human = humans()
-    let cancel = cancels()
+    let token: String?
+    let human: Int
+    init(_ token: String?) {
+        self.token = token
+        human = humans().0
+    }
     func check() throws {
-        if cancels() != cancel { throw Refusal("Stopped.", "cancelled") }
-        if humans() != human { throw Refusal("Stopped: the user used the Mac.", "human") }
+        humanLock.lock()
+        let stop = closing || (token.map { cancelled.contains($0) } ?? false)
+        let now = humanCount
+        humanLock.unlock()
+        if stop { throw Refusal("Stopped.", "cancelled") }
+        if now != human { throw Refusal("Stopped: the user used the Mac.", "human") }
     }
 }
 
@@ -132,9 +153,27 @@ func trusted(prompt: Bool) -> Bool {
     return AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
 }
 
-func needAccessibility() throws {
+/// Acting takes watching too: an action nobody can take over doesn't go.
+func needAccessibility(acting: Bool = false) throws {
     if !AXIsProcessTrusted() { throw Refusal("Accessibility isn't on.", "accessibility") }
-    _ = watch()
+    if !watch() && acting { throw Refusal("Not done: Cavvy Desktop Control can't watch for the user's mouse and keyboard, so it won't act.", "watch") }
+}
+
+// MARK: - Never offered
+
+let NEVER_PATTERNS: [NSRegularExpression] = NEVER_NAME_PATTERNS.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+
+func neverOffered(name: String, bundleId: String?) -> Bool {
+    let id = (bundleId ?? "").lowercased()
+    if id.isEmpty || id.hasPrefix("dev.cavvy") || NEVER_IDS.contains(id) { return true }
+    let range = NSRange(name.startIndex..., in: name)
+    return NEVER_PATTERNS.contains { $0.firstMatch(in: name, range: range) != nil }
+}
+
+/// Not an app, or one never offered, or one Cavvy runs in.
+func neverOffered(_ pid: pid_t) -> Bool {
+    guard let app = NSRunningApplication(processIdentifier: pid), !OWN.contains(pid) else { return true }
+    return neverOffered(name: app.localizedName ?? "", bundleId: app.bundleIdentifier)
 }
 
 // MARK: - Accessibility
@@ -333,9 +372,9 @@ func mouseTypes(_ button: String) -> (CGEventType, CGEventType, CGEventType, CGM
     }
 }
 
-func click(_ x: Double, _ y: Double, button: String, count: Int, holdMs: Int, pids: Set<pid_t>) throws {
+func click(_ x: Double, _ y: Double, button: String, count: Int, holdMs: Int, pids: Set<pid_t>, _ g: Guard) throws {
+    try g.check()
     try clickable(x, y, pids)
-    let g = Guard()
     let p = CGPoint(x: x, y: y)
     let (down, up, _, b) = mouseTypes(button)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: b))
@@ -347,41 +386,49 @@ func click(_ x: Double, _ y: Double, button: String, count: Int, holdMs: Int, pi
         let d = CGEvent(mouseEventSource: source, mouseType: down, mouseCursorPosition: p, mouseButton: b)
         d?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
         post(d)
-        // Stopped or not, the button comes up.
-        defer {
-            let u = CGEvent(mouseEventSource: source, mouseType: up, mouseCursorPosition: p, mouseButton: b)
-            u?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
-            post(u)
-        }
-        try pause(holdMs, g)
+        // Down, it comes up: the click is done, so it isn't stopped halfway.
+        usleep(useconds_t(max(0, min(holdMs, 1000)) * 1000))
+        let u = CGEvent(mouseEventSource: source, mouseType: up, mouseCursorPosition: p, mouseButton: b)
+        u?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
+        post(u)
         if i < count { usleep(40_000) }
     }
 }
 
-func drag(from: CGPoint, to: CGPoint, durationMs: Int, pids: Set<pid_t>) throws {
+func drag(from: CGPoint, to: CGPoint, durationMs: Int, pids: Set<pid_t>, _ g: Guard) throws {
+    try g.check()
     try clickable(Double(from.x), Double(from.y), pids)
     try clickable(Double(to.x), Double(to.y), pids)
-    let g = Guard()
     let (down, up, dragged, b) = mouseTypes("left")
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: from, mouseButton: b))
     try pause(40, g)
     try clickable(Double(from.x), Double(from.y), pids)
     post(CGEvent(mouseEventSource: source, mouseType: down, mouseCursorPosition: from, mouseButton: b))
-    var at = from
-    defer { post(CGEvent(mouseEventSource: source, mouseType: up, mouseCursorPosition: at, mouseButton: b)) }
+    var dropped = false
+    // Stopped or refused: back where it started, so nothing is dropped anywhere else.
+    defer {
+        if !dropped {
+            post(CGEvent(mouseEventSource: source, mouseType: dragged, mouseCursorPosition: from, mouseButton: b))
+            post(CGEvent(mouseEventSource: source, mouseType: up, mouseCursorPosition: from, mouseButton: b))
+        }
+    }
     let steps = max(4, durationMs / 16)
-    for i in 1...steps {
+    for i in 1..<steps {
         let t = Double(i) / Double(steps)
-        at = CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
-        post(CGEvent(mouseEventSource: source, mouseType: dragged, mouseCursorPosition: at, mouseButton: b))
+        post(CGEvent(mouseEventSource: source, mouseType: dragged, mouseCursorPosition: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t), mouseButton: b))
         try pause(max(1, durationMs / steps), g)
     }
+    // Right before the drop: what's there now.
     try clickable(Double(to.x), Double(to.y), pids)
+    try g.check()
+    post(CGEvent(mouseEventSource: source, mouseType: dragged, mouseCursorPosition: to, mouseButton: b))
+    post(CGEvent(mouseEventSource: source, mouseType: up, mouseCursorPosition: to, mouseButton: b))
+    dropped = true
 }
 
-func scroll(_ x: Double, _ y: Double, dx: Int, dy: Int, pids: Set<pid_t>) throws {
+func scroll(_ x: Double, _ y: Double, dx: Int, dy: Int, pids: Set<pid_t>, _ g: Guard) throws {
+    try g.check()
     try clickable(x, y, pids)
-    let g = Guard()
     let p = CGPoint(x: x, y: y)
     // A wheel turns what's under the pointer.
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
@@ -417,7 +464,7 @@ func layoutKeys() -> [String: (CGKeyCode, Bool)] {
                 var length = 0
                 var chars = [UniChar](repeating: 0, count: 4)
                 let mods: UInt32 = shift ? UInt32((shiftKey >> 8) & 0xFF) : 0
-                let r = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), mods, UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, 4, &length, &chars)
+                let r = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), mods, UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, 4, &length, &chars)
                 if r == noErr, length > 0 {
                     let s = String(utf16CodeUnits: chars, count: length)
                     if map[s] == nil { map[s] = (CGKeyCode(code), shift) }
@@ -447,7 +494,31 @@ func flags(_ modifiers: [String]) -> CGEventFlags {
     return f
 }
 
-func press(_ key: String, modifiers: [String], pids: Set<pid_t>) throws {
+/// Shortcuts no app's own: logging out, locking the screen, force quit, pictures of the whole screen.
+func systemShortcut(_ key: String, _ f: CGEventFlags) -> Bool {
+    let k = key.lowercased()
+    let cmd = f.contains(.maskCommand)
+    if cmd && (f.contains(.maskShift) || f.contains(.maskControl)) && k == "q" { return true }
+    if cmd && f.contains(.maskAlternate) && k == "escape" { return true }
+    if cmd && f.contains(.maskShift) && ["3", "4", "5", "6"].contains(k) { return true }
+    return false
+}
+
+/// One of the Apple menu's own shortcuts, in the app that has focus (its menu bar has the Apple menu first).
+func appleMenuShortcut(_ key: String, _ f: CGEventFlags, _ pid: pid_t) -> Bool {
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 1)
+    guard let bar = attribute(app, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID(), let apple = elements(attribute(bar as! AXUIElement, kAXChildrenAttribute)).first, let menu = elements(attribute(apple, kAXChildrenAttribute)).first else { return false }
+    for item in elements(attribute(menu, kAXChildrenAttribute)) {
+        guard let ch = text(attribute(item, kAXMenuItemCmdCharAttribute)), ch.lowercased() == key.lowercased() else { continue }
+        // kAXMenuItemModifier: Shift 1, Option 2, Control 4, no Command 8.
+        let m = Int(text(attribute(item, kAXMenuItemCmdModifiersAttribute)) ?? "0") ?? 0
+        if f.contains(.maskCommand) == (m & 8 == 0) && f.contains(.maskShift) == (m & 1 != 0) && f.contains(.maskAlternate) == (m & 2 != 0) && f.contains(.maskControl) == (m & 4 != 0) { return true }
+    }
+    return false
+}
+
+func press(_ key: String, modifiers: [String], pids: Set<pid_t>, _ g: Guard) throws {
     var code: CGKeyCode
     var extra: CGEventFlags = []
     if let named = NAMED_KEYS[key.lowercased()] {
@@ -455,13 +526,16 @@ func press(_ key: String, modifiers: [String], pids: Set<pid_t>) throws {
         if key.lowercased().hasPrefix("arrow") { extra = [.maskNumericPad, .maskSecondaryFn] }
     } else {
         refreshLayout()
-        guard let (c, shift) = keysOfLayout[key] ?? keysOfLayout[key.lowercased()] else { throw Refusal("There's no key for \"\(key)\" on this keyboard layout.") }
+        guard let (c, shift) = keysOfLayout[key] else { throw Refusal("There's no key for \"\(key)\" on this keyboard layout.") }
         code = c
-        if shift && keysOfLayout[key.lowercased()] == nil { extra.insert(.maskShift) }
+        // A character typed with Shift ("!", "?") takes it.
+        if shift { extra.insert(.maskShift) }
     }
-    let g = Guard()
-    try typeable(pids)
     let f = flags(modifiers).union(extra)
+    if systemShortcut(key, f) || (focusedPid().map { appleMenuShortcut(key, f, $0) } ?? false) { throw Refusal("Not done: that shortcut is the system's, not the app's.", "system") }
+    // Checked before the key goes: once it's down, it's pressed.
+    try g.check()
+    try typeable(pids)
     let d = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
     d?.flags = f
     post(d)
@@ -469,17 +543,21 @@ func press(_ key: String, modifiers: [String], pids: Set<pid_t>) throws {
     let u = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
     u?.flags = f
     post(u)
-    try g.check()
 }
 
 /// Types text as characters (whatever the layout), a key at a time, each only while an approved app has focus.
 /// Returns how many characters went.
-func typeText(_ s: String, gapMs: Int, pids: Set<pid_t>) throws -> Int {
-    let g = Guard()
+func typeText(_ s: String, gapMs: Int, pids: Set<pid_t>, _ g: Guard) throws -> Int {
     var sent = 0
+    // What was typed before a stop is said with it (code "human:12").
+    func stop(_ r: Refusal) -> Refusal { sent > 0 ? Refusal(r.message, r.code + ":\(sent)") : r }
     for ch in s {
-        try g.check()
-        try typeable(pids)
+        do {
+            try g.check()
+            try typeable(pids)
+        } catch let r as Refusal {
+            throw stop(r)
+        }
         if ch == "\n" || ch == "\r\n" || ch == "\t" {
             let code: CGKeyCode = ch == "\t" ? 48 : 36
             post(CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true))
@@ -497,7 +575,7 @@ func typeText(_ s: String, gapMs: Int, pids: Set<pid_t>) throws -> Int {
         do {
             try pause(gapMs, g)
         } catch let r as Refusal {
-            throw Refusal(r.message, r.code + ":\(sent)")
+            throw stop(r)
         }
     }
     return sent
@@ -533,17 +611,24 @@ func ancestors() -> [Int] {
 
 let APP_DIRS = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications", "/System/Library/CoreServices/Applications"]
 
-/// An app by its name, bundle id or path: a running one first, then one installed in the usual folders.
+/// Whether macOS knows the app with this bundle id to be the one at `url`: a copy elsewhere (a folder in a repository)
+/// claiming another app's bundle id isn't it, and is never found.
+func canonical(_ url: URL?, _ id: String?) -> Bool {
+    guard let url, let id, let known = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return false }
+    return known.resolvingSymlinksInPath().standardizedFileURL.path == url.resolvingSymlinksInPath().standardizedFileURL.path
+}
+
+/// An app by its name or bundle id: a running one first, then one installed in the usual folders. Only an app macOS
+/// knows by its bundle id, so the name the person is asked about is the app's that's given.
 func find(_ name: String) -> [String: Any]? {
     let want = name.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: #"\.app/?$"#, with: "", options: [.regularExpression, .caseInsensitive]).lowercased()
-    for app in running() where app.localizedName?.lowercased() == want || app.bundleIdentifier?.lowercased() == want {
+    for app in running() where (app.localizedName?.lowercased() == want || app.bundleIdentifier?.lowercased() == want) && canonical(app.bundleURL, app.bundleIdentifier) {
         var o = appInfo(app)
         o["running"] = true
         return o
     }
     var url: URL?
     if want.contains("."), let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: want) { url = u }
-    if url == nil, name.hasPrefix("/"), name.hasSuffix(".app") || name.hasSuffix(".app/") { url = URL(fileURLWithPath: name) }
     if url == nil {
         outer: for dir in APP_DIRS {
             guard let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
@@ -557,14 +642,18 @@ func find(_ name: String) -> [String: Any]? {
             }
         }
     }
-    guard let u = url, let id = Bundle(url: u)?.bundleIdentifier else { return nil }
+    guard let u = url, let id = Bundle(url: u)?.bundleIdentifier, canonical(u, id) else { return nil }
     let shown = FileManager.default.displayName(atPath: u.path).replacingOccurrences(of: #"\.app$"#, with: "", options: .regularExpression)
     return ["name": shown.isEmpty ? u.deletingPathExtension().lastPathComponent : shown, "bundleId": id, "path": u.path, "running": false]
 }
 
 /// Brings an app to the front, starting it if it isn't running. Returns its pid once it has focus (or after 5 seconds).
 func open(_ bundleId: String) throws -> [String: Any] {
+    let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId)
+    let named = installed.map { FileManager.default.displayName(atPath: $0.path) } ?? ""
+    if neverOffered(name: named, bundleId: bundleId) { throw Refusal("Not done: that app is never offered.", "never") }
     var app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
+    if let a = app, neverOffered(a.processIdentifier) { throw Refusal("Not done: that app is never offered.", "never") }
     if let a = app {
         if a.isHidden { a.unhide() }
         AXUIElementSetAttributeValue(AXUIElementCreateApplication(a.processIdentifier), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
@@ -641,8 +730,9 @@ func screenshot(_ pids: Set<pid_t>) throws -> [String: Any] {
 
 // MARK: - Commands
 
+/// The apps a command may reach, without any that's never offered, whatever it was sent.
 func pidsOf(_ cmd: [String: Any]) -> Set<pid_t> {
-    Set((cmd["pids"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.int32Value })
+    Set((cmd["pids"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.int32Value }.filter { !neverOffered($0) })
 }
 
 func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
@@ -650,6 +740,8 @@ func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
 func handle(_ cmd: [String: Any]) throws -> [String: Any] {
     let op = cmd["op"] as? String ?? ""
     let pids = pidsOf(cmd)
+    // Made as the command is taken up: a cancel that came first stops it.
+    let g = Guard(cmd["token"] as? String)
     switch op {
     case "status":
         let ax = trusted(prompt: cmd["ask"] as? String == "accessibility")
@@ -668,29 +760,32 @@ func handle(_ cmd: [String: Any]) throws -> [String: Any] {
         try needAccessibility()
         let front = focusedPid()
         var o: [String: Any] = ["front": Int(front ?? 0), "windows": windows(pids)]
-        if let pid = num(cmd["pid"]) { o["tree"] = describe(pid_t(pid)) }
+        if let pid = num(cmd["pid"]) {
+            guard pids.contains(pid_t(pid)) else { throw Refusal("Not done: that app isn't one this command may read.", "outside") }
+            o["tree"] = describe(pid_t(pid))
+        }
         return o
     case "front":
         return ["front": Int(focusedPid() ?? 0)]
     case "click":
-        try needAccessibility()
-        try click(num(cmd["x"]) ?? 0, num(cmd["y"]) ?? 0, button: cmd["button"] as? String ?? "left", count: Int(num(cmd["count"]) ?? 1), holdMs: Int(num(cmd["holdMs"]) ?? 50), pids: pids)
+        try needAccessibility(acting: true)
+        try click(num(cmd["x"]) ?? 0, num(cmd["y"]) ?? 0, button: cmd["button"] as? String ?? "left", count: Int(num(cmd["count"]) ?? 1), holdMs: Int(num(cmd["holdMs"]) ?? 50), pids: pids, g)
         return [:]
     case "drag":
-        try needAccessibility()
-        try drag(from: CGPoint(x: num(cmd["x"]) ?? 0, y: num(cmd["y"]) ?? 0), to: CGPoint(x: num(cmd["toX"]) ?? 0, y: num(cmd["toY"]) ?? 0), durationMs: Int(num(cmd["durationMs"]) ?? 300), pids: pids)
+        try needAccessibility(acting: true)
+        try drag(from: CGPoint(x: num(cmd["x"]) ?? 0, y: num(cmd["y"]) ?? 0), to: CGPoint(x: num(cmd["toX"]) ?? 0, y: num(cmd["toY"]) ?? 0), durationMs: Int(num(cmd["durationMs"]) ?? 300), pids: pids, g)
         return [:]
     case "scroll":
-        try needAccessibility()
-        try scroll(num(cmd["x"]) ?? 0, num(cmd["y"]) ?? 0, dx: Int(num(cmd["dx"]) ?? 0), dy: Int(num(cmd["dy"]) ?? 0), pids: pids)
+        try needAccessibility(acting: true)
+        try scroll(num(cmd["x"]) ?? 0, num(cmd["y"]) ?? 0, dx: Int(num(cmd["dx"]) ?? 0), dy: Int(num(cmd["dy"]) ?? 0), pids: pids, g)
         return [:]
     case "press":
-        try needAccessibility()
-        try press(cmd["key"] as? String ?? "", modifiers: cmd["modifiers"] as? [String] ?? [], pids: pids)
+        try needAccessibility(acting: true)
+        try press(cmd["key"] as? String ?? "", modifiers: cmd["modifiers"] as? [String] ?? [], pids: pids, g)
         return [:]
     case "type":
-        try needAccessibility()
-        return ["sent": try typeText(cmd["text"] as? String ?? "", gapMs: Int(num(cmd["gapMs"]) ?? 8), pids: pids)]
+        try needAccessibility(acting: true)
+        return ["sent": try typeText(cmd["text"] as? String ?? "", gapMs: Int(num(cmd["gapMs"]) ?? 8), pids: pids, g)]
     case "screenshot":
         return try screenshot(pids)
     default:
@@ -708,9 +803,12 @@ Thread.detachNewThread {
     while let line = readLine(strippingNewline: true) {
         guard let data = line.data(using: .utf8), let cmd = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
         if cmd["op"] as? String == "cancel" {
-            humanLock.lock()
-            cancelCount += 1
-            humanLock.unlock()
+            if let token = cmd["token"] as? String {
+                humanLock.lock()
+                if cancelled.count > 1000 { cancelled.removeAll() }
+                cancelled.insert(token)
+                humanLock.unlock()
+            }
             continue
         }
         let id = cmd["id"] ?? NSNull()
@@ -723,11 +821,18 @@ Thread.detachNewThread {
             } catch {
                 reply = ["error": "\(error)"]
             }
+            let (human, used) = humans()
             reply["id"] = id
-            reply["human"] = humans()
+            reply["human"] = human
+            reply["used"] = used
             send(reply)
         }
     }
+    // Cavvy has gone: what's under way stops (a held button comes up) before the helper does.
+    humanLock.lock()
+    closing = true
+    humanLock.unlock()
+    ops.sync {}
     exit(0)
 }
 

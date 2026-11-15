@@ -64,6 +64,9 @@ const TERMINAL_NAME = /^(terminal|iterm ?2?|ghostty|warp|wezterm|alacritty|kitty
 const CREDENTIAL_NAME = /^(keychain access|1password( \d+)?|bitwarden|keepassxc|lastpass|dashlane|enpass|nordpass|keeper( password manager)?|proton pass|authy( desktop)?)$|\b(passwords?|keychain)\b/i;
 const CAVVY_NAME = /^\s*cavvy\b/i;
 
+/** The names that say an app is never offered, for the helper to check too (src/desktop/helper.ts compiles them in). */
+export const NEVER_OFFERED_NAME_PATTERNS: readonly RegExp[] = [TERMINAL_NAME, CREDENTIAL_NAME, CAVVY_NAME];
+
 const plain = (name: string) => name.trim().replace(/\.app\/?$/i, "").replace(/^.*\//, "");
 
 /**
@@ -83,8 +86,8 @@ export function neverOffered(app: { name: string; bundleId?: string; own?: boole
     return undefined;
 }
 
-/** What the agent is told when it asks for one of them. */
-export function neverOfferedMessage(name: string, why: NeverReason): string {
-    const what = why === "terminal" ? "a terminal" : why === "credentials" ? "a password manager" : "Cavvy itself";
+/** What the agent is told when it asks for one of them. `own`: Cavvy runs in it (the editor whose terminal runs `cavvy`). */
+export function neverOfferedMessage(name: string, why: NeverReason, own = false): string {
+    const what = own ? "where Cavvy runs" : why === "terminal" ? "a terminal" : why === "credentials" ? "a password manager" : "Cavvy itself";
     return `${plain(name) || name} can't be used: it's ${what}. Terminals, password managers and Cavvy are never offered.`;
 }
