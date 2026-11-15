@@ -88,7 +88,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE", "FAKE_CU_UNKNOWN"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -4700,6 +4700,26 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
         expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings });
+        await headless.run("go");
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+    });
+
+    test("something it asks that Cavvy doesn't recognise fails closed: the person answers it in every mode, and nobody to ask declines it", async () => {
+        process.env.FAKE_CU_UNKNOWN = "1";
+        const settings = { ...on, permissions: { allow: ["DesktopControl", "DesktopControl(request_access)", "mcp__cua_repl"] } };
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings, ask: () => ({ allow: true }) });
+        expect(await bypass.run("go")).toBe("done");
+        // Codex's own question about the js call still goes by the mode; the unknown one goes to the person, with its question.
+        expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
+        expect(bypass.asked[0]!.preview?.summary).toBe("Allow Computer Use to take over the screen");
+        expect(bypass.asked[0]!.decision.appGrant).toBeDefined();
+        expect(answers()).toEqual([
+            { action: "accept", content: {}, _meta: null },
+            { action: "accept", content: {}, _meta: null },
+        ]);
 
         rmSync(LOG, { force: true });
         const headless = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings });

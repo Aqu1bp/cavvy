@@ -32,6 +32,21 @@ describe("computerUseAsk", () => {
         expect(computerUseAsk({ serverName: "cua_repl", mode: "form", message: 'Allow the cua_repl MCP server to run tool "js"?', _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_params: { code: "1", title: "x", app: "com.apple.Terminal" } } })).toBeUndefined();
     });
 
+    test("Codex's own approval of its other tools, by name or by its question, isn't one either", () => {
+        expect(computerUseAsk({ serverName: "cua_repl", mode: "form", message: 'Allow the cua_repl MCP server to run tool "js_reset"?', _meta: { codex_approval_kind: "mcp_tool_call" } })).toBeUndefined();
+        expect(computerUseAsk({ serverName: "cua_repl", mode: "form", message: "x", _meta: { codex_approval_kind: "mcp_tool_call", tool_name: "turn_ended" } })).toBeUndefined();
+    });
+
+    test("anything else from computer use it can't read fails closed, with its question", () => {
+        // From the computer-use connector, naming no app.
+        expect(computerUseAsk(appAsk({ tool_name: "take_over", tool_params: {}, tool_params_display: [] }, { message: "Allow Computer Use to take over the screen?" }))).toEqual({ kind: "unknown", question: "Allow Computer Use to take over the screen?" });
+        // Codex's approval of some other tool of its server, or a form of its own.
+        expect(computerUseAsk({ serverName: "cua_repl", mode: "form", message: 'Allow the cua_repl MCP server to run tool "drive"?', _meta: { codex_approval_kind: "mcp_tool_call", tool_name: "drive" } })).toMatchObject({ kind: "unknown" });
+        expect(computerUseAsk({ serverName: "node_repl", mode: "form", message: "", _meta: null })).toEqual({ kind: "unknown", question: "Codex's computer use asks for approval" });
+        // The connector naming js isn't Codex's own approval.
+        expect(computerUseAsk(appAsk({ tool_name: "js", tool_params: {}, tool_params_display: [] }, { message: "Something new?" }))).toMatchObject({ kind: "unknown" });
+    });
+
     test("another server's elicitation isn't one", () => {
         expect(computerUseAsk({ serverName: "probe", mode: "form", message: "Which color?", _meta: null })).toBeUndefined();
         expect(computerUseAsk({ serverName: "probe", mode: "url", message: "Sign in", url: "https://example.com", _meta: null })).toBeUndefined();

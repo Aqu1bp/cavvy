@@ -83,11 +83,17 @@ export type ComputerUseAsk =
     /** Recording the Mac's audio: never offered (Cavvy doesn't start it with audio). */
     | { kind: "audio" }
     /** A link to open (to set it up): cancelled, as a decline would be kept as a refusal. */
-    | { kind: "url" };
+    | { kind: "url" }
+    /** Anything else it asks that isn't Codex's own approval of a call (a shape not known yet): the person answers, with its question. */
+    | { kind: "unknown"; question: string };
+
+/** Its server's own tools, whose calls Codex itself asks about as it does any MCP tool's. */
+const OWN_TOOLS = new Set(["js", "js_reset", "turn_ended"]);
 
 /**
  * What an elicitation Codex passes on (mcpServer/elicitation/request) asks, if it's from its computer use; undefined
- * for anything else, Codex's own approval of a `js` call included, which goes the way any MCP call's does.
+ * for anything else, and for Codex's own approval of a call to its server's tools (`js`, `js_reset`, `turn_ended`),
+ * which goes the way any MCP call's does. What it doesn't recognise from computer use fails closed: "unknown".
  */
 export function computerUseAsk(p: any): ComputerUseAsk | undefined {
     const server = typeof p?.serverName === "string" ? p.serverName : "";
@@ -96,13 +102,15 @@ export function computerUseAsk(p: any): ComputerUseAsk | undefined {
     if (!fromComputerUse) return undefined;
     if (p?.mode === "url") return { kind: "url" };
     const message = typeof p?.message === "string" ? p.message.trim() : "";
+    const named = typeof meta.tool_name === "string" ? meta.tool_name : message.match(/run tool "([A-Za-z0-9_.-]+)"\?$/)?.[1];
+    if (meta.connector_id !== "computer-use" && meta.codex_approval_kind === "mcp_tool_call" && named !== undefined && OWN_TOOLS.has(named)) return undefined;
     if (meta.tool_name === "start_audio_recording" || /\brecord (?:your |the )?computer audio\b/i.test(message)) return { kind: "audio" };
     const params = record(meta.tool_params) ? meta.tool_params : {};
     const shown = Array.isArray(meta.tool_params_display) ? meta.tool_params_display.find((d: any) => record(d) && d.name === "app" && typeof d.value === "string") : undefined;
     const asked = message.match(APP_QUESTION)?.[1];
     const id = meta.connector_id === "computer-use" && typeof params.app === "string" && params.app.trim() ? params.app.trim() : undefined;
     const name = (shown?.value as string | undefined)?.trim() || asked?.trim() || id;
-    if (!name || (!id && !asked)) return undefined;
+    if (!name || (!id && !asked)) return { kind: "unknown", question: (message || "Codex's computer use asks for approval").slice(0, 200) };
     const persist = (Array.isArray(meta.persist) ? meta.persist : []).filter((x: unknown): x is "session" | "always" => x === "session" || x === "always");
     const callId = typeof meta.tool_call_id === "string" && meta.tool_call_id ? meta.tool_call_id : undefined;
     return { kind: "app", name, ...(id && looksLikeBundleId(id) ? { bundleId: id } : {}), persist, ...(callId ? { callId } : {}) };

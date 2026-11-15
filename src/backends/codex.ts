@@ -2238,6 +2238,15 @@ export class CodexTurn {
         const reply = (action: "accept" | "decline" | "cancel", persist?: "session" | "always") => ({ action, content: action === "accept" ? {} : null, _meta: persist ? { persist } : null });
         if (ask.kind === "url") return reply("cancel");
         if (ask.kind === "audio" || !this.computerUse) return reply("decline");
+        if (ask.kind === "unknown") {
+            // Not a shape Cavvy knows: the person answers its question, in every mode, as for an app (never the mode,
+            // a rule, a hook or a reviewer); a yes is for this once. Nobody to ask: declined.
+            const question = ask.question.replace(/[?.\s]+$/, "");
+            const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: question }, title: question, preview: { summary: question }, agentLabel, ...this.subAsk(from) });
+            const d = this.decision(a, undefined, from);
+            if (d === "cancel") this.interrupt(from);
+            return reply(d === "accept" ? "accept" : "decline");
+        }
         const why = neverOfferedApp(ask);
         if (why) {
             this.steer(`<system-reminder>\n${neverOfferedMessage(ask.name, why)}\n</system-reminder>`, false, from);

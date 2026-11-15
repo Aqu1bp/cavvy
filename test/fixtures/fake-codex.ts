@@ -57,7 +57,8 @@
 //                     computer-use: a js call on the ChatGPT app's cua_repl, which asks (as measured with Codex 0.167
 //                     and ChatGPT 26.1106) Codex's own approval of the call, then the server's approval of an app
 //                     (FAKE_CU_APP bundle id, FAKE_CU_APP_NAME), or (FAKE_CU_URL=1) a link to open; FAKE_CU_TWICE=1
-//                     makes a second call that asks for the same app; each answer is logged as {cuAnswer}
+//                     makes a second call that asks for the same app; FAKE_CU_UNKNOWN=1 asks something of a shape not
+//                     known (no app named) in its place; each answer is logged as {cuAnswer}
 // FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
 // FAKE_ONE_TURN=1     turn/start is refused while a turn of the thread runs ("a turn is already running")
@@ -759,7 +760,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             const call = await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
             log({ cuAnswer: call });
             const asked =
-                process.env.FAKE_CU_URL === "1"
+                process.env.FAKE_CU_UNKNOWN === "1"
+                    ? { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", persist: ["session", "always"], tool_name: "take_over", tool_params: {} }, message: "Allow Computer Use to take over the screen?", requestedSchema: { type: "object", properties: {} } }
+                    : process.env.FAKE_CU_URL === "1"
                     ? { threadId, turnId, serverName: "cua_repl", mode: "url", _meta: null, message: "Finish setting up Computer Use", url: "https://example.com/setup", elicitationId: "e-1" }
                     : { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_call_id: item.id, tool_name: "get_app_state", tool_params: { app }, tool_params_display: [{ name: "app", display_name: "App", value: name }] }, message: `Allow Computer Use to use "${name}"?`, requestedSchema: { type: "object", properties: {} } };
             const r = call?.action === "accept" ? await serverRequest("mcpServer/elicitation/request", asked) : undefined;
