@@ -94,6 +94,20 @@ test("a long session rebuilt (a rewind) keeps all its turns, and sends the windo
     expect(server.view.turns[150]!.status).toBe("done");
 });
 
+test("a session opens with no more of its last turns than fit the budget, and one at least", () => {
+    const { rt, view } = runtime(50);
+    for (const t of view.turns) (t as { blocks: unknown[] }).blocks = [{ t: "text", id: `${t.id}-b`, text: "x".repeat(1000) }];
+    const size = JSON.stringify(view.turns[49]).length;
+    // Five turns' worth: the five latest (the fifth is the one that reaches it).
+    const five = rt.snapshot(100, size * 5);
+    expect(five.turns.map((t) => t.id)).toEqual(["t45", "t46", "t47", "t48", "t49"]);
+    expect(five.earlier).toBe(45);
+    // Less than one: one.
+    expect(rt.snapshot(100, 10).turns.map((t) => t.id)).toEqual(["t49"]);
+    // `last` still caps it.
+    expect(rt.snapshot(3, size * 100).turns).toHaveLength(3);
+});
+
 test("a session opens with the sub-agents of the turns it sends, and any running, whole; the rest as they're listed", () => {
     const { rt, view } = runtime(10);
     const agent = (id: string, turnId: string, status: AgentRun["status"]): AgentRun => ({ id, turnId, status, description: `does ${id}`, agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, prompt: "the instructions", report: "what it found", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"] });

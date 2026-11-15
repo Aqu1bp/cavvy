@@ -2653,7 +2653,7 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
-                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined);
+                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined);
             }
             case "session.turns": {
                 const rt = this.runtimes.get(str(p.id, "id"));

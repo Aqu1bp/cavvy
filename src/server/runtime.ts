@@ -997,11 +997,25 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Sending ops
 
-    /** `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest). */
-    snapshot(last?: number): SessionSnapshot {
+    /**
+     * `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest);
+     * `budget`: and only as many as fit that many bytes, one at least.
+     */
+    snapshot(last?: number, budget?: number): SessionSnapshot {
         this.flush();
         const all = this.view.turns;
-        const from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
+        let from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
+        // No more than fit the budget, back from the latest (what's measured is what's sent: no more than that).
+        if (budget !== undefined) {
+            let size = 0;
+            for (let i = all.length - 1; i > from; i--) {
+                size += JSON.stringify(all[i]).length;
+                if (size >= budget) {
+                    from = i;
+                    break;
+                }
+            }
+        }
         const turns = from ? all.slice(from) : all;
         return { state: structuredClone(this.view.state), turns: structuredClone(turns), agents: agentsFor(this.view.agents, turns, !from), seq: this.batch, ...(from ? { earlier: from } : {}) };
     }

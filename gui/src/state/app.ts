@@ -348,24 +348,25 @@ export interface SessionHandle {
 }
 
 const handles = new Map<string, SessionHandle>();
-/** A session opens with its last this many turns; the rest come as they're asked for (loadEarlier). */
+/**
+ * A session opens with its last this many turns at most, and no more than fit OPEN_BYTES (its first screens: about 10 of
+ * a long Claude Code session's turns, against 100 that were 2.4 MB). The rest of its first page comes after its first
+ * frame (Transcript), and the rest as they're asked for (loadEarlier).
+ */
 export const OPEN_TURNS = 100;
+export const OPEN_BYTES = 256 * 1024;
 /** Each handle's fetch of earlier turns under way: one at a time, so a page is never put in twice. */
 const loadingEarlier = new Map<string, Promise<boolean>>();
 const [handleVersion, setHandleVersion] = createSignal(0);
 const KEEP_OPEN = 8;
 /** Sessions on screen besides the one in view (two side by side, state/split.ts sets it): kept open, as that one is. */
 export const onScreen: { beside: () => readonly string[] } = { beside: () => [] };
-/** How many turns each session this window let go of had, when more than it opens with ("Show earlier"). */
-const closedWith = new Map<string, number>();
-
 /**
- * How many turns to open a session with again (a reconnect, a reload, one let go of and picked again): as many as this
- * window has or had of it, so the turns read with "Show earlier", and the place read in them, are still there.
+ * What a session is opened with, the first time and again (a reconnect, a reload, one let go of and picked again): its
+ * last turns, as fit its first screens. Not every turn the window had of it: after "Show earlier" or Find had them all,
+ * that was the whole session again each time. The place read comes back with them (Transcript: loadEarlierTo).
  */
-function turnsToOpen(id: string): number {
-    return Math.max(OPEN_TURNS, handles.get(id)?.view.turns.length ?? closedWith.get(id) ?? 0);
-}
+const opening = (id: string) => ({ id, last: OPEN_TURNS, budget: OPEN_BYTES });
 
 export function handleFor(id: string | undefined): SessionHandle | undefined {
     handleVersion();
@@ -380,7 +381,6 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
     sessionPresent(id);
-    closedWith.delete(id);
     const existing = handles.get(id);
     if (existing) {
         existing.seq = snap.seq;
@@ -425,10 +425,9 @@ export function onRenew(h: SessionHandle, fn: () => (() => void) | void): () => 
     };
 }
 
-/** No longer open here: how many turns it had is kept for when it's opened again. */
+/** No longer open here. */
 function letGo(h: SessionHandle) {
     handles.delete(h.id);
-    if (h.view.turns.length > OPEN_TURNS) closedWith.set(h.id, h.view.turns.length);
 }
 
 /** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
@@ -497,7 +496,7 @@ async function openNow(id: string): Promise<SessionHandle> {
         // Let go since (the server had it opened again, and that was refused): it's asked for anew.
         if (handles.get(id) === taken) return taken;
     }
-    const snap = await rpc.call("session.open", { id, last: turnsToOpen(id) });
+    const snap = await rpc.call("session.open", opening(id));
     return adopt(snap);
 }
 
@@ -517,7 +516,7 @@ function openAhead() {
     ahead = undefined;
     const id = app.activeId;
     if (!id || handles.has(id)) return;
-    const opened = rpc.call("session.open", { id, last: turnsToOpen(id) }).then(adopt);
+    const opened = rpc.call("session.open", opening(id)).then(adopt);
     // Its failure is restoreActiveSession's to show.
     opened.catch(() => undefined);
     ahead = { id, connection: connectionVersion, opened };
@@ -906,7 +905,6 @@ export function forgetSession(id: string) {
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     composerStorage.delete(id);
-    closedWith.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
     if (handles.delete(id)) setHandleVersion((v) => v + 1);
@@ -975,7 +973,7 @@ function onEvent(ev: ServerEvent) {
             return;
         case "session.reload":
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
-            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId, last: turnsToOpen(ev.sessionId) }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
+            if (handles.has(ev.sessionId)) void rpc.call("session.open", opening(ev.sessionId)).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
@@ -1111,7 +1109,7 @@ export function start() {
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id, last: turnsToOpen(h.id) }).then(adopt, (e) => reopenFailed(h.id, e));
+                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", opening(h.id)).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();

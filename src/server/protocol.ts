@@ -2120,7 +2120,8 @@ export interface Methods {
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     /** `last`: only the last that many turns (the rest are counted in `earlier`); all without it. */
-    "session.open": { params: { id: string; last?: number }; result: SessionSnapshot };
+    /** `last`: no more than this many of its latest turns; `budget`: and no more than fit this many bytes (at least one). */
+    "session.open": { params: { id: string; last?: number; budget?: number }; result: SessionSnapshot };
     /**
      * The turns before `before` (a turn the window has): `count` of them (40 by default), or all back to the one holding
      * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).

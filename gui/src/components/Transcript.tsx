@@ -648,9 +648,23 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // After the frame paints: a frame, then a task.
         const later = () => (growing = requestAnimationFrame(() => setTimeout(grow, 0)));
         if (pending()) later();
+        // Opened with what fits its first screens (OPEN_BYTES): the rest of its page comes once that's painted, put in
+        // above as "Show earlier" puts a page, the end (or the place read) where it was.
+        const topUp = async () => {
+            const want = target - turns().length;
+            if (gone || want <= 0 || !p.handle.view.earlier) return;
+            if (!stick()) reading = capture();
+            const ok = await loadEarlier(p.handle, { count: want });
+            if (!ok || gone) return;
+            // Solid has put them in; before paint, the end (or the place read) where it was.
+            if (stick()) toBottom();
+            else restore();
+        };
+        const topping = requestAnimationFrame(() => setTimeout(() => void topUp(), 0));
         onCleanup(() => {
             gone = true;
             cancelAnimationFrame(growing);
+            cancelAnimationFrame(topping);
         });
     });
     onCleanup(() => {
