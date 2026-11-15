@@ -101,6 +101,13 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
 
 const measured: Record<string, { small: Cost; large: Cost }> = {};
 const within = (small: number, large: number) => large <= small * RATIO + SLACK;
+/**
+ * What the server keeps, measured from its heap after a collection, moves by a megabyte or two from one open to the
+ * next (once -3.8 MB, on an M5): within this of the small session's, the same. The goal is no more than 10 MB above a
+ * short session's (docs/performance-plan.md).
+ */
+const HEAP_SLACK = 2 * 1024 * 1024;
+const keptWithin = (small: number, large: number) => large <= Math.max(small, 0) * RATIO + HEAP_SLACK;
 
 beforeAll(async () => {
     mock = startMockLlm({ delayMs: 1 });
@@ -143,7 +150,7 @@ describe("a session of one of Cavvy's own models", () => {
     // Opened again, its turns come from its store (src/server/turn-store.ts): only the latest are built.
     test("opening it again keeps in the server what's on screen", () => {
         const { small, large } = measured.native!;
-        expect(within(Math.max(small.keptAfterReopen, 1), large.keptAfterReopen)).toBe(true);
+        expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
     });
     // Its log from its checkpoint on (agent/session.ts: what reading it came to, kept as it was read).
     test("opening it again reads what's on screen", () => {
@@ -171,7 +178,7 @@ describe("a Claude Code session", () => {
         const { small, large } = measured.cli!;
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
-        expect(within(Math.max(small.keptAfterReopen, 1), large.keptAfterReopen)).toBe(true);
+        expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
     });
     test("finding in it sends what's found, not every turn", () => {
         const { small, large } = measured.cli!;
