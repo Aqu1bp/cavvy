@@ -14,6 +14,7 @@ import type { GoalRecord } from "./goal";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
+import { eachLine } from "../util/lines";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
 
@@ -880,11 +881,13 @@ export class Session {
 
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
-        const text = readFileSync(file, "utf-8");
         let meta: SessionMeta | undefined;
         const lines: Line[] = [];
-        for (const raw of text.split("\n")) {
-            if (!raw.trim()) continue;
+        let empty = true;
+        // A line at a time (lib eachLine): a session of any size, never all of it as one string.
+        const { endsWithNewline } = eachLine(file, (raw) => {
+            empty = false;
+            if (!raw.trim()) return;
             try {
                 const l = JSON.parse(raw) as Line;
                 if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
@@ -892,7 +895,7 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        }
+        });
         if (!meta) throw new Error(`Not a session file: ${file}`);
         const s = new Session(meta, { file, persist });
         s.started = true;
@@ -908,7 +911,7 @@ export class Session {
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load. (Written through write(), so one from before worked lines
         // keeps its time.)
-        if (persist && text && !text.endsWith("\n")) {
+        if (persist && !empty && !endsWithNewline) {
             try {
                 if (s.workedAt === undefined) appendFileSync(file, "\n" + redactedJson({ t: "worked", at: writtenAt }) + "\n");
                 else appendFileSync(file, "\n");

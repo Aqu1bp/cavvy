@@ -17,6 +17,7 @@ import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, EffortLevel, FileDiff, NoticeBlock, NoticeData, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { addNotice, noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
+import { eachLine } from "../util/lines";
 import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
@@ -64,20 +65,19 @@ type SegmentLine = { t: string; m?: Message; summary?: string; idle?: boolean; k
 export function readSegments(file: string, session?: { takeLoadedLines(): readonly object[] | undefined }): Segment[] {
     const loaded = session?.takeLoadedLines();
     if (loaded) return segmentsOf(loaded as readonly SegmentLine[]);
-    let text: string;
+    const lines: SegmentLine[] = [];
     try {
-        text = readFileSync(file, "utf-8");
+        // A line at a time: a session of any size, never all of it as one string.
+        eachLine(file, (raw) => {
+            if (!raw) return;
+            try {
+                lines.push(JSON.parse(raw));
+            } catch {
+                // a torn line
+            }
+        });
     } catch {
         return [{ messages: [] }];
-    }
-    const lines: SegmentLine[] = [];
-    for (const raw of text.split("\n")) {
-        if (!raw) continue;
-        try {
-            lines.push(JSON.parse(raw));
-        } catch {
-            // a torn line
-        }
     }
     return segmentsOf(lines);
 }
@@ -177,20 +177,20 @@ export class UiLog {
     }
 
     private read() {
-        let text: string;
         try {
-            text = readFileSync(this.file, "utf-8");
+            // A line at a time: a log of any size (one past 2 GiB, read as one string, failed: the session showed none of
+            // its steps).
+            eachLine(this.file, (raw) => {
+                if (!raw) return;
+                try {
+                    this.apply(JSON.parse(raw) as UiRecord);
+                } catch {
+                    // torn line
+                }
+            });
             this.created = true;
         } catch {
-            return;
-        }
-        for (const raw of text.split("\n")) {
-            if (!raw) continue;
-            try {
-                this.apply(JSON.parse(raw) as UiRecord);
-            } catch {
-                // torn line
-            }
+            // None yet.
         }
     }
 
