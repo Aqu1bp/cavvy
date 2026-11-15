@@ -34,7 +34,10 @@ test("the conversation column isn't a query container: its size changing doesn't
 });
 
 test("the column's size steps stand for the queries they replaced, at the same sizes", () => {
-    const used = (attr: string) => new Set(styles.flatMap((f) => [...read(`styles/${f}`).matchAll(new RegExp(`:where\\(\\.main\\[data-${attr}~="(\\d+)"\\]\\)`, "g"))].map((m) => Number(m[1]))));
+    // Each pane of a split carries its own width's steps (components/Panes.tsx): a narrow step is the column's or a pane's.
+    const used = (attr: string) => new Set(styles.flatMap((f) => [...read(`styles/${f}`).matchAll(new RegExp(`:where\\(\\.main\\[data-${attr}~="(\\d+)"\\](?:, \\.stage-pane\\[data-${attr}~="\\1"\\])?\\)`, "g"))].map((m) => Number(m[1]))));
+    const columnOnly = styles.flatMap((f) => [...read(`styles/${f}`).matchAll(/:where\(\.main\[data-narrow~="\d+"\]\)/g)].map((m) => `${f}: ${m[0]}`));
+    expect(columnOnly).toEqual([]);
     expect([...used("narrow")].sort()).toEqual([...COLUMN_NARROW].sort());
     expect([...used("short")].sort()).toEqual([...COLUMN_SHORT].sort());
     // `max-width: 700px` held at 700px and below.
@@ -85,7 +88,8 @@ test("the slide moves the held boxes, not the layout: they're sized with propert
     // Custom properties set on the held boxes would restyle everything under them each time they change.
     const transcript = read("components/Transcript.tsx");
     expect(transcript).toContain('<div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>');
-    expect(transcript).toMatch(/return held && \{ width: `\$\{held\.column\.w\}px`, height: `\$\{held\.column\.h\}px`, top: /);
+    // In a split (state/split.ts) each pane is half the column.
+    expect(transcript).toMatch(/return held && \{ width: `\$\{held\.column\.w \* share\(\)\}px`, height: `\$\{held\.column\.h\}px`, top: /);
     expect(transcript).toContain("box.animate([{ transform: `translate(${x}px, ${y}px)` }, { transform: \"none\" }], { duration: Number(duration), easing })");
     const rules = parseRules(read("styles/transcript.css"));
     expect(rules.find((r) => r.selectors.includes(".transcript-hold.held"))?.decls.get("inset")).toBe("auto");
@@ -110,7 +114,7 @@ test("the conversation is drawn from where its left edge was, not from half the 
     // left edge jumped 19px one way as the side panel opened at 1400px, then slid the other.
     const transcript = read("components/Transcript.tsx");
     expect(transcript).toContain("columnLeft = content!.offsetLeft;");
-    expect(transcript).toContain("drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : (held.from.w - held.to.w) / 2)");
+    expect(transcript).toContain("drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : ((held.from.w - held.to.w) / 2) * share())");
     // A second press part way through: from where the first slide had drawn it, not from where it was headed.
     expect(transcript).toContain('moving?.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(box).transform).m41 : 0;');
 });
@@ -238,7 +242,7 @@ test("the side panel keeps what's in it until it has slid shut", () => {
     // Emptied as it was told to close, a blank panel slid away. And never unmounted and mounted again on the way.
     const app = read("App.tsx");
     expect(app).toContain("const [panelGone, setPanelGone] = createSignal(!prefs.panel);");
-    expect(app).toContain("const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());");
+    expect(app).toContain("const panelKept = () => Boolean((prefs.panel || !panelGone()) && panelFor() && (split() || !agent()) && !openingScreen());");
     expect(app).toContain('moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p))');
     // What it waits for is what shell.css moves a closing panel by: were one renamed there, nothing would be waited for.
     const shell = parseRules(read("styles/shell.css"));

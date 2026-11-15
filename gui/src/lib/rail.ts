@@ -42,10 +42,11 @@ export function groupCounts(entries: readonly SidebarEntry[]): Map<string, numbe
 /**
  * Sessions waiting on you, but the one in front of you (its request card is
  * already there): the latest first. They're pinned at the top of the rail, or
- * in the title bar while the rail is hidden, until they're answered.
+ * in the title bar while the rail is hidden, until they're answered. `beside`: in a
+ * split, the other session on screen (state/split.ts besideInFront), left out too.
  */
-export function needsYou<T extends Pick<SessionSummary, "id" | "status" | "updatedAt">>(sessions: readonly T[], inFront?: string): T[] {
-    return sessions.filter((s) => s.status === "waiting" && s.id !== inFront).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+export function needsYou<T extends Pick<SessionSummary, "id" | "status" | "updatedAt">>(sessions: readonly T[], inFront?: string, beside?: string): T[] {
+    return sessions.filter((s) => s.status === "waiting" && s.id !== inFront && s.id !== beside).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 /**

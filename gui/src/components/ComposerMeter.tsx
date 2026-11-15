@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, on, onClea
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
+import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
 import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
@@ -32,7 +33,9 @@ export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now())
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
 export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
     let btn: HTMLButtonElement | undefined;
-    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
+    // The focused pane's in a split (/context opens it).
+    const pane = usePane();
+    const [open, setOpen] = [() => contextCardOpen() && pane.focused(), setContextCardOpen];
     const panelId = `composer-usage-${createUniqueId()}`;
     let panel: HTMLDivElement | undefined;
     const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);

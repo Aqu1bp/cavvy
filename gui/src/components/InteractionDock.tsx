@@ -19,6 +19,7 @@ import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
 import { Counts, DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
+import { usePane } from "../state/split";
 
 const typing = () => typingIn(document.activeElement as HTMLElement | null);
 
@@ -30,11 +31,14 @@ const SETTLE_MS = 400;
 
 /** Number keys and Esc, while this card is the one showing. */
 function useKeys(handler: (key: string) => boolean) {
+    // Two sessions side by side: the keys answer the focused one's.
+    const pane = usePane();
     onMount(() => {
         const shown = performance.now();
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
-            if (performance.now() - shown < SETTLE_MS) return;
+            // Nor while an edge is dragged (Esc is the drag's then: Panes.tsx).
+            if (performance.now() - shown < SETTLE_MS || !pane.focused() || document.body.classList.contains("resizing")) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
             const card = document.querySelector<HTMLElement>(".itab");
@@ -323,7 +327,8 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                     class="itab-input"
                     ref={(el) => {
                         // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
-                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && el.focus());
+                        const here = usePane().focused;
+                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && here() && el.focus());
                     }}
                     value={other()}
                     placeholder={p.it.options.length ? "Something else…" : "Your answer"}
@@ -386,7 +391,8 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
         return true;
     });
     // Not while typing elsewhere: what was meant for the message box would land in here.
-    onMount(() => mayFocus() && input.focus());
+    // Nor in the other pane of a split: taking focus would move the split's focus to it.
+    onMount(() => mayFocus() && usePane().focused() && input.focus());
     onCleanup(() => {
         if (input) input.value = "";
     });

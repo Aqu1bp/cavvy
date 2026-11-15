@@ -5,21 +5,20 @@ import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
-import { FloatingBrowser } from "./components/FloatingBrowser";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
-import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
+import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
+import { besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
 import { Header, RailButtons } from "./components/Header";
-import { Transcript } from "./components/Transcript";
-import { Composer } from "./components/Composer";
+import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
@@ -74,46 +73,10 @@ function Disconnected() {
     );
 }
 
-/** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
-function SessionView(p: { handle: SessionHandle }) {
-    let dock: HTMLDivElement | undefined;
-    // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
-    const [dockH, setDockH] = createSignal<number>();
-    onMount(() => {
-        // The transcript scrolls under the composer and keeps that much room at its end;
-        // a floating inspector ends above it.
-        const ro = new ResizeObserver(() => {
-            const h = dock?.offsetHeight ?? 0;
-            setDockH(h);
-            setDockHeight(h);
-        });
-        if (dock) ro.observe(dock);
-        onCleanup(() => {
-            ro.disconnect();
-            setDockHeight(0);
-        });
-    });
-    return (
-        <>
-            <Header handle={p.handle} />
-            <div class="stage">
-                <Transcript handle={p.handle} dock={dockH()} />
-                <FloatingBrowser handle={p.handle} />
-                <div class="composer-dock" ref={dock}>
-                    <div class="composer-col">
-                        <ErrorCards place="composer" />
-                        <Composer sessionId={p.handle.id} />
-                    </div>
-                </div>
-            </div>
-        </>
-    );
-}
-
 /** The docked inspector's left edge: drag (or arrow keys) to resize; double-click for the default. */
 function InspectorResizer() {
     const [dragging, setDragging] = createSignal(false);
-    const clamp = (w: number) => clampInspectorWidth(w, shellLayout().sheet.w);
+    const clamp = (w: number) => clampInspectorWidth(w, shellLayout().sheet.w, conversationLeast(Boolean(split())));
     const set = (w: number) => setInspectorWidth(clamp(w));
     /** Ends the drag under way, if any: on release, and when the handle goes away in the middle of one. */
     let stop: (() => void) | undefined;
@@ -223,6 +186,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         terminalPreferred: terminalDrag() ?? prefs.terminalHeight,
         terminalMax: terminalMax(),
         dock: dockHeight(),
+        split: Boolean(split()),
     }));
 
     createEffect(() => setShellLayout(layout()));
@@ -263,8 +227,9 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     }));
 
     // Shrinking the window past the docking point closes a docked inspector (the diff reader fills the sheet instead).
-    createEffect(on(() => layout().inspector.mode, (mode, from) => {
-        if (closesOnShrink(from, mode, prefs.panel, p.review)) setPrefs("panel", false);
+    // Not a second session coming beside the first: the panel you had open stays, floating if it no longer fits.
+    createEffect(on([() => layout().inspector.mode, () => Boolean(split())] as const, ([mode, splitNow], was) => {
+        if (was && was[1] === splitNow && closesOnShrink(was[0], mode, prefs.panel, p.review)) setPrefs("panel", false);
     }));
     // A request arriving closes a floating inspector too short to sit above it.
     let cleared: string | undefined;
@@ -334,22 +299,30 @@ export function App() {
     });
     const stage = () => shown()?.h;
     /** Another session is opening while the last one is held on the stage (shown). */
-    const holding = () => Boolean(stage() && stage() !== active());
+    const holding = () => !split() && Boolean(stage() && stage() !== active());
     /** The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's. */
-    const openingScreen = () => app.opening !== undefined && app.opening.id === app.activeId && !holding();
+    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding();
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
-    // Another session: its own view, not the last one's sub-agent or review.
+    // Another session: its own view, not the last one's sub-agent or review. Between a split's two, each one's own
+    // comes back (state/split.ts); anywhere else, the split ends.
+    // (Not `defer`: a deferred first run doesn't keep the id it saw, and the first change would come from nowhere.)
+    let seen = false;
     createEffect(
         on(
             () => app.activeId,
-            () => {
+            (to, from) => {
+                if (!seen) return void (seen = true);
+                if (focusMoved(from, to)) return;
                 setAgentFocus(undefined);
                 setReview(undefined);
             },
-            { defer: true },
         ),
     );
+    // One of a split's two deleted, here or elsewhere: its pane closes.
+    createEffect(() => prune());
+    // After a reload, the split's other session opens too, once the lists say what's there.
+    createEffect(on(() => app.sessionsLoaded, (loaded) => loaded && restoreSplit()));
 
     // Enter-sends decides what Enter and Mod+Enter are bound to.
     createEffect(() => setEnterSends(prefs.enterSends));
@@ -459,7 +432,10 @@ export function App() {
     // The inspector column shows the diff reader while a review is open, else the session's panel.
     const reviewing = () => Boolean(review() && active() && !settingsTab());
     // Its column stays while a session opens (empty until it comes), rather than closing and opening again.
-    const panelShown = () => Boolean(prefs.panel && (openingScreen() ? !app.opening?.error : stage()) && !agent() && !settingsTab());
+    // In a split it shows the focused session's views, a sub-agent's view in its pane or not.
+    // In a split, the other session's diff reader holds it open and as wide (state/split.ts besideReads).
+    const heldOpen = () => Boolean(split() && besideReads() && !settingsTab());
+    const panelShown = () => Boolean((prefs.panel || heldOpen()) && (split() || (openingScreen() ? !app.opening?.error : stage())) && (split() || !agent()) && !settingsTab());
     const layout = () => shellLayout();
     const drawerOpen = () => layout().railMode === "overlay" && railOpen();
     // The drawer takes focus as it opens, so nothing behind it keeps it.
@@ -472,21 +448,26 @@ export function App() {
     // Closing, the panel keeps what's in it until it has slid away: emptied at once, a blank panel slid shut.
     // `panelGone`: it's closed and has finished closing (so it's still false at the moment it's told to close).
     const [panelGone, setPanelGone] = createSignal(!prefs.panel);
-    createEffect(on(() => prefs.panel, (open) => {
+    // Wanted open: by you, or (in a split) by the other session's diff reader.
+    const panelWanted = () => prefs.panel || heldOpen();
+    createEffect(on(panelWanted, (open) => {
         if (open) return void setPanelGone(false);
         // Its move has begun once this update is in the DOM: its column closing (docked), or the panel itself (floating).
         queueMicrotask(() => {
-            void Promise.allSettled(moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p)).map((a) => a.finished)).then(() => { if (!prefs.panel) setPanelGone(true); });
+            void Promise.allSettled(moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p)).map((a) => a.finished)).then(() => { if (!panelWanted()) setPanelGone(true); });
         });
     }, { defer: true }));
-    const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());
+    const panelKept = () => Boolean((prefs.panel || !panelGone()) && panelFor() && (split() || !agent()) && !openingScreen());
+    /** The session the panel is for: the focused one in a split (empty while it opens), else the one on the stage. */
+    const panelFor = () => (split() ? active() : stage());
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
     // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
     // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
     // The steps of the column's size that its contents' styles read (shell.css .main); none until it's measured.
-    const narrow = createMemo(() => (layout().sheet.w ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
+    // In a split each pane has its own (components/Panes.tsx).
+    const narrow = createMemo(() => (layout().sheet.w && !split() ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
     const short = createMemo(() => (layout().sheet.h ? columnSteps(layout().column.h, COLUMN_SHORT) : undefined));
 
     return (
@@ -559,7 +540,7 @@ export function App() {
                                             </>
                                         }
                                     >
-                                        <Match when={openingScreen() && app.opening}>
+                                        <Match when={!split() && openingScreen() && app.opening}>
                                             {(opening) => <>
                                                 <Header title={(app.sessions.find((s) => s.id === opening().id) ?? app.archived.find((s) => s.id === opening().id))?.title} />
                                                 <div class="session-opening" aria-busy={!opening().error}>
@@ -570,11 +551,12 @@ export function App() {
                                                 </div>
                                             </>}
                                         </Match>
-                                        <Match when={active() && agent()}>
+                                        <Match when={!split() && active() && agent()}>
                                             <AgentView handle={active()!} agent={agent()!} />
                                         </Match>
-                                        <Match when={stage()} keyed>
-                                            {(h) => <SessionView handle={h} />}
+                                        {/* Not keyed: a second session coming or going leaves the first one's pane as it was. */}
+                                        <Match when={split() || stage()}>
+                                            <Panes single={stage()} />
                                         </Match>
                                         <Match when={app.activeId}>
                                             <Header />
@@ -588,7 +570,7 @@ export function App() {
                             </div>
                         </main>
                         <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} inert={holding() || undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
-                            <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
+                            <Show when={panelShown() && !reviewing() && !heldOpen() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
                             </Show>
                             {/* Full screen covers the title bar: with the sidebar hidden, its two buttons stay here (shell.css). */}
@@ -600,7 +582,7 @@ export function App() {
                             <Show
                                 when={reviewKept()}
                                 fallback={
-                                    <Show when={panelKept() && stage()} keyed>
+                                    <Show when={panelKept() && panelFor()} keyed>
                                         {(h) => <RenderBoundary resetKey={() => app.activeId}><RightPanel handle={h} /></RenderBoundary>}
                                     </Show>
                                 }
@@ -617,7 +599,7 @@ export function App() {
                         <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
                     </div>
                 </div>
-                <LayoutKeeper panel={panelShown()} review={reviewing()} />
+                <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
             <CommandPalette />
             <RewindDialog />

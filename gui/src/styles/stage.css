@@ -69,7 +69,7 @@
     pointer-events: auto;
 }
 
-:where(.main[data-narrow~="600"]) {
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) {
     .stage {
         --stage-x: calc(10 * var(--sp));
     }
@@ -82,5 +82,146 @@
 :where(.main[data-short~="560"]) {
     .stage .transcript-col {
         padding-top: calc(var(--bar-h, 52px) + 6 * var(--sp));
+    }
+}
+
+/* ---- Two sessions side by side (components/Panes.tsx, state/split.ts) ----
+   The stage's sessions are panes: one, or two of equal width with a hairline between them. Each pane is what the
+   column was to its session (its title bar, and the stage under it, absolutely placed in it). Equal halves, so each
+   is the width App.tsx gives the column's steps (data-narrow) and Transcript.tsx holds while the panels slide. */
+.panes {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+}
+
+.panes[data-split] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.stage-pane {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    isolation: isolate;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+
+/* The bar between them (Panes.tsx SplitBar), over the left one's edge: a hairline that takes no width from either,
+   in a band wide enough to take a press. The accent while it's pointed at, focused or dragged. */
+.split-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 9px;
+    margin-left: -4px;
+    z-index: 40;
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.split-bar::before,
+.split-bar::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 4px;
+    width: 1px;
+    background: var(--line);
+}
+
+.split-bar::after {
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 150ms;
+}
+
+.split-bar:hover::after,
+.split-bar:focus-visible::after,
+.split-bar.drag::after {
+    opacity: 1;
+}
+
+.split-bar:focus-visible {
+    outline: none;
+}
+
+/* Under a diff reader filling the sheet, which the conversations are hidden behind (shell.css), it would show through. */
+[data-inspmode="fill"][data-insp="on"] .split-bar {
+    visibility: hidden;
+}
+
+/* The pane on the right starts mid-window: the rail's buttons and the lights' room are the left one's. */
+.stage-pane + .stage-pane .header {
+    padding-left: calc(18 * var(--sp));
+}
+
+.stage-pane + .stage-pane .header .bar-rail {
+    display: none;
+}
+
+/* The pane that isn't focused recedes, all of it, so which one the side panel and the keys are for reads at a glance;
+   pointed at, it comes forward a little (a click focuses it). Opacity on the pane alone: nothing inside is restyled. */
+.stage-pane[data-focused="off"] {
+    opacity: 0.45;
+}
+
+.stage-pane[data-focused="off"]:hover {
+    opacity: 0.7;
+}
+
+/* Where a session dragged from the rail would go: over the whole stage, so nothing under it takes the drag. */
+.drop-zone {
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+}
+
+.drop-target {
+    position: absolute;
+    top: calc(8 * var(--sp));
+    bottom: calc(8 * var(--sp));
+    left: calc(8 * var(--sp));
+    width: calc(50% - 12 * var(--sp));
+    display: grid;
+    place-items: center;
+    padding: calc(16 * var(--sp));
+    border-radius: var(--radius-lg);
+    /* Nearly opaque: it reads as the session about to be there, not as a tint over the one that is. */
+    background: color-mix(in srgb, var(--accent) 14%, var(--ctl-strong));
+    box-shadow: inset 0 0 0 1.5px var(--accent-border);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+
+.drop-target.on {
+    opacity: 1;
+}
+
+.drop-title {
+    max-width: 100%;
+    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--radius-2xl);
+    background: var(--ctl-strong);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+    font-weight: 500;
+}
+
+/* A session coming into the split: it fades in, rather than appearing at once. */
+.stage-pane.entering {
+    animation: pane-in var(--dur-panel) var(--ease) both;
+}
+
+@keyframes pane-in {
+    from {
+        opacity: 0;
     }
 }

@@ -412,7 +412,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: Date.now() + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
         reportError: stub, rpc: {}, toast: stub,
-        contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub,
+        contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         now: () => Date.now(), limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",

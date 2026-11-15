@@ -12,6 +12,7 @@ import type { MatchResult } from "../../../src/keybindings/core";
 import { ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
+import { usePane } from "../state/split";
 import { InteractionTab } from "./InteractionDock";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
@@ -58,6 +59,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
     const draftKey = () => p.sessionId ?? "home";
+    // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
+    const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);
     const { text, setText, attachments, setAttachments } = draft;
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
@@ -202,16 +205,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
             resize();
-            if (!settingsTab()) ta?.focus();
+            if (!settingsTab() && pane.focused()) ta?.focus();
         });
     });
     // Not while Settings covers it (App.tsx keeps it mounted there).
-    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && ta?.focus()), { defer: true }));
+    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && pane.focused() && ta?.focus()), { defer: true }));
 
     /** Takes focus on the next frame, as on opening, unless something else is being typed in or a dialog is open. */
     const focusSoon = () => {
         const frame = requestAnimationFrame(() => {
-            if (settingsTab() || window.matchMedia("(max-width: 760px)").matches) return;
+            if (settingsTab() || !pane.focused() || window.matchMedia("(max-width: 760px)").matches) return;
             const active = document.activeElement;
             if (active !== ta && active?.matches("input, textarea, select, [contenteditable='true']")) return;
             if (document.querySelector('[role="dialog"]')) return;
@@ -697,10 +700,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen() && pane.focused()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen() && pane.focused()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;

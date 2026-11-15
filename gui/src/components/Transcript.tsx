@@ -19,6 +19,7 @@ import { CardFoldsProvider } from "./blocks/Activity";
 import { Spinner } from "./ui/bits";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
+import { usePane } from "../state/split";
 
 /** How long new content takes to glide into place at the end, before Settings → Motion scales it. */
 const GLIDE_MS = 240;
@@ -58,12 +59,17 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
 }
 
 function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
+    // In a split (state/split.ts): Find is the focused pane's, a floating inspector is over the rightmost, and each
+    // pane is half the conversation column.
+    const pane = usePane();
+    const finding = () => findOpen() && pane.focused();
+    const share = pane.share;
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     // What a side panel floating over the conversation covers, with its gap to the edge: "Latest" centres in the rest.
     const floatOver = () => {
         const i = shellLayout().inspector;
-        return i.open && i.mode === "float" ? `${i.width + 8}px` : "0px";
+        return i.open && i.mode === "float" && pane.rightmost() ? `${i.width + 8}px` : "0px";
     };
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
@@ -881,7 +887,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
 
     // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
     // reconnect that came with fewer).
-    createEffect(on([findOpen, () => p.handle.view.earlier], ([open, earlier]) => {
+    createEffect(on([finding, () => p.handle.view.earlier], ([open, earlier]) => {
         if (open && earlier) void loadEarlier(p.handle, { all: true });
     }));
 
@@ -929,7 +935,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
         const held = panelHold();
-        return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
+        return held && { width: `${held.column.w * share()}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
     // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
     // following the end any more), it's scrolled by as much, so what's read stays where it is.
@@ -951,7 +957,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // From where the column's left edge was: text is set from the left, so that edge is the line the eye follows.
         // (While the column is centred at its full width at both ends, that's half the difference of the widths. Once
         // it's narrower than that at one end it isn't, and the edge jumped one way before sliding the other.)
-        const x = !held ? 0 : drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : (held.from.w - held.to.w) / 2);
+        const x = !held ? 0 : drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : ((held.from.w - held.to.w) / 2) * share());
         const y = held && atEnd() ? held.from.h - held.to.h : 0;
         if (!slide || !box || (!x && !y)) return;
         const { duration, easing } = slide.effect!.getTiming();
@@ -1018,7 +1024,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 </div>
             </div>
             </div>
-            <Show when={findOpen()}>
+            <Show when={finding()}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>

@@ -22,7 +22,8 @@ test("nothing in the covered session takes focus on its own while Settings is up
     const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
     const composer = await read("Composer.tsx");
     const restore = composer.slice(composer.indexOf("What the server hands back"), composer.indexOf("createEffect(on(focusComposer"));
-    expect(restore).toContain("if (!settingsTab()) ta?.focus();");
+    // Nor in a split's other pane (state/split.ts): focus going there would move the split's focus.
+    expect(restore).toContain("if (!settingsTab() && pane.focused()) ta?.focus();");
     expect(restore).not.toMatch(/^\s*ta\?\.focus\(\);/m);
     expect(composer).toMatch(/const focusSoon = [\s\S]{0,120}if \(settingsTab\(\) \|\|/);
     const dock = await read("InteractionDock.tsx");

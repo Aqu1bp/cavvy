@@ -35,7 +35,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     let settingsTab: string | undefined;
     const Meter = component(source("components/ComposerMeter.tsx"), "ComposerMeter", {
         app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); } },
-        handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen,
+        handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
         reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
