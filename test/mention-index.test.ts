@@ -182,6 +182,53 @@ test("the terminal's index stays its own, a shrinking listing answers every sear
     }
 }, 60_000);
 
+// A search under way as a project's listing shrinks to fewer parts (files deleted, another branch checked out): the
+// part it asked of is let go of, which isn't a worker stopping. It's asked again; the project stays on workers (it was
+// moved to the server's own thread for good, there to hold every session's replies at each keystroke).
+test("a search as the listing shrinks is asked again, and the project stays on its workers", async () => {
+    const { mentionSharding } = await import("../src/ui/mention-shards");
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { join } = await import("path");
+    const { tmpdir } = await import("os");
+    const root = mkdtempSync(join(tmpdir(), "cavvy-mention-shrink-"));
+    const saved = { ...mentionSharding };
+    try {
+        for (let d = 0; d < 10; d++) mkdirSync(join(root, `dir${d}`), { recursive: true });
+        for (let i = 0; i < 600; i++) writeFileSync(join(root, `dir${i % 10}`, `file_${i}.ts`), "x");
+        Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+        Object.assign(mentionSharding, { from: 0, perPart: 4096, most: 2 });
+        const idx = new FileIndex(root);
+        expect(await idx.searchSoon("file_1", 3)).toHaveLength(3);
+        expect((idx as any).shards?.parts).toBe(2);
+        // A search whose part was let go of (failed, the workers going on): asked again, and they're kept.
+        const shards = (idx as any).shards;
+        const search = shards.search.bind(shards);
+        let once = true;
+        shards.search = (q: string, n: number) => (once ? ((once = false), Promise.reject(new Error("That part of the file index was let go of."))) : search(q, n));
+        expect(await idx.searchSoon("file_1", 3)).toHaveLength(3);
+        expect((idx as any).noShards).toBe(false);
+        expect((idx as any).shards).toBe(shards);
+        shards.search = search;
+        // Fewer files: one part's worth. Listed again while searches are asked.
+        for (let i = 100; i < 600; i++) rmSync(join(root, `dir${i % 10}`, `file_${i}.ts`));
+        (idx as any).builtAt = 1;
+        const asked = [idx.searchSoon("file_1", 3)];
+        // Asked all the while it's listed and indexed again.
+        while ((idx as any).building) {
+            asked.push(idx.searchSoon("file_1", 3));
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        const found = await Promise.all(asked);
+        expect(found.every((f) => f.length > 0)).toBe(true);
+        expect((idx as any).noShards).toBe(false);
+        expect((idx as any).shards?.parts).toBe(1);
+        idx.dispose();
+    } finally {
+        Object.assign(mentionSharding, saved);
+        rmSync(root, { recursive: true, force: true });
+    }
+}, 60_000);
+
 // Made from git's listing as it came (on a worker: no string for each path), it's the same index as made from its paths.
 test("made from the listing's bytes, it's what it is made from its paths", async () => {
     const { PathIndex } = await import("../src/ui/path-index");

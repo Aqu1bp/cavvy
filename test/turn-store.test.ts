@@ -157,6 +157,8 @@ for (const kind of ["cli", "native"] as const) {
             const t = writeThread({ cwd, items: 1500, kind, seed: 4 });
             await open(t.id);
             await close(t.id);
+            // Written as the session is let go of, a moment after (synced to the disk first).
+            for (let i = 0; i < 200 && !existsSync(storeOf(t.file, t.id)); i++) await Bun.sleep(10);
             expect(existsSync(storeOf(t.file, t.id))).toBe(true);
             // Written to elsewhere (a terminal) while it was closed: a prompt and its reply.
             const msg = (m: object) => JSON.stringify({ t: "msg", m }) + "\n";
@@ -195,7 +197,7 @@ test("a turn taken after opening from the store is kept, and the session opens a
     await close(t.id);
 }, 60_000);
 
-test("a store not written whole, or of another version, isn't read", () => {
+test("a store not written whole, or of another version, isn't read", async () => {
     const dir = tempDir("cavvy-turn-store-unit-");
     const log = join(dir, "s.jsonl");
     writeFileSync(log, '{"t":"meta"}\n');
@@ -204,7 +206,7 @@ test("a store not written whole, or of another version, isn't read", () => {
     expect(store.get(at.at, at.len)).toMatchObject({ id: "t1", blocks: [{ text: "hello" }] });
     // No index yet (it's written last): nothing.
     expect(TurnStore.of(log, "s", [log]).read()).toBeUndefined();
-    store.writeIndex([{ head: { id: "t1", startedAt: 1, status: "done" } as never, ...at }], [], 1, { state: {}, created: true });
+    await store.writeIndex([{ head: { id: "t1", startedAt: 1, status: "done" } as never, ...at }], [], 1, { state: {}, created: true });
     store.close();
     const read = TurnStore.of(log, "s", [log]).read();
     expect(read?.heads).toHaveLength(1);
@@ -213,7 +215,7 @@ test("a store not written whole, or of another version, isn't read", () => {
     expect(TurnStore.of(log, "s", [log]).read()).toBeUndefined();
 });
 
-test("a store that's mostly old versions of its turns is rewritten without them", () => {
+test("a store that's mostly old versions of its turns is rewritten without them", async () => {
     const dir = tempDir("cavvy-turn-store-compact-");
     const log = join(dir, "s.jsonl");
     writeFileSync(log, '{"t":"meta"}\n');
@@ -221,9 +223,9 @@ test("a store that's mostly old versions of its turns is rewritten without them"
     const turn = (n: number) => ({ id: "t1", startedAt: 1, status: "done", blocks: [{ t: "text", id: "b", text: `${n} `.padEnd(1024 * 1024, "x") }] }) as Turn;
     let at = store.put(turn(0));
     // Few old versions: left as they are.
-    expect(store.compact([at])).toBeUndefined();
+    expect(await store.compact([at])).toBeUndefined();
     for (let n = 1; n <= 12; n++) at = store.put(turn(n));
-    const moved = store.compact([at])!;
+    const moved = (await store.compact([at]))!;
     expect(store.size).toBe(at.len + 1);
     expect(store.get(moved.get(at.at)!, at.len)).toEqual(turn(12));
     store.close();
@@ -405,6 +407,25 @@ test("a session whose store is damaged opens anyway, built from its logs", async
     expect(canon(await everything(t.id))).toEqual(canon(whole));
     await close(t.id);
     // And again: put in the store afresh.
+    expect(canon(await everything(t.id))).toEqual(canon(whole));
+    await close(t.id);
+}, 120_000);
+
+// One of its earlier turns damaged (read only as it's sent: an open sends a session whole here): found as it's sent, the
+// session is let go of and opened again from its logs, at once; its store isn't indexed again over the damage either.
+test("a session whose store has an earlier turn damaged opens whole", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-damaged-early-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 6 });
+    const whole = await everything(t.id);
+    await close(t.id);
+    const data = storeOf(findSessionAnywhere(t.id)!, t.id).replace(/\.json$/, ".jsonl");
+    // Its first turn's line, the session's oldest.
+    const fd = openSync(data, "r+");
+    writeSync(fd, Buffer.alloc(64), 0, 64, 0);
+    closeSync(fd);
+    expect(canon(await everything(t.id))).toEqual(canon(whole));
+    await close(t.id);
     expect(canon(await everything(t.id))).toEqual(canon(whole));
     await close(t.id);
 }, 120_000);

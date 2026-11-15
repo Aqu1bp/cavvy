@@ -893,6 +893,11 @@ export class Runtime {
      * each is, it's here built, as it was. (Meanwhile trimBuilt left them be: it let go of them all at once as a new
      * turn came, the model's notice as a Claude Code session of 100,000 items opened, and held the server 1.1 s.)
      */
+    /** A turn of its store couldn't be read (TurnStore.get): it's built from its logs next time it's opened. */
+    get storeDamaged(): boolean {
+        return Boolean(this.store?.damaged);
+    }
+
     private storeOlderSoon(store: TurnStore) {
         // Another one before it (a rewind's turns put in afresh): its file let go of.
         if (this.store && this.store !== store) this.store.close();
@@ -1101,7 +1106,7 @@ export class Runtime {
     }
 
     /** What's changed put in the store, and its index written with the logs as they are now: as the session is let go of. */
-    private saveTurns() {
+    private async saveTurns() {
         // Not all of them here yet (buildEarlier): none stored, and it's built from its logs next time.
         if (this.earlierBuilt) return;
         const all = this.view.turns;
@@ -1131,9 +1136,9 @@ export class Runtime {
                 return { head: agentHeadOf(a), ...this.agentAt.get(a)! };
             });
             // Mostly versions since replaced: without them.
-            const moved = this.store.compact([...heads, ...agents]);
+            const moved = await this.store.compact([...heads, ...agents]);
             if (moved) for (const x of [...heads, ...agents]) x.at = moved.get(x.at)!;
-            this.store.writeIndex(heads, agents, this.ids, this.ui.lightState());
+            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState());
         } catch {
             // Not kept: it's built from the logs next time, as before there was a store.
             this.store.forget();
@@ -5398,7 +5403,7 @@ export class Runtime {
             this.session.release();
             // Its turns, for the next time it's opened (turn-store.ts): written once nothing more is (letting the
             // session go may note when it last worked).
-            this.saveTurns();
+            await this.saveTurns();
         }
     }
 }

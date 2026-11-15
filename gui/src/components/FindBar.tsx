@@ -84,6 +84,11 @@ export function FindBar(p: {
     }));
     /** What the server found for this query is in (or there's nothing it has that the window doesn't). */
     const answered = () => elsewhere().q === findQuery();
+    /** A jump's turn is one whose matches only the server has (one the window hasn't been sent, or has folded). */
+    const waitsFor = (a: FindAnchor) => {
+        const t = untrack(p.turns).find((x) => x.id === a.turnId);
+        return !t || Boolean(t.folded);
+    };
     const matches = createMemo(() => {
         const q = findQuery();
         edits();
@@ -190,12 +195,13 @@ export function FindBar(p: {
     let counted: string | undefined;
     // A jump while open, on what it was already finding.
     // (A jump's turn is often folded: its matches are the server's, so it waits for them.)
-    createEffect(on(p.anchor, (a) => a && untrack(answered) && takeAnchor(untrack(matches)), { defer: true }));
+    createEffect(on(p.anchor, (a) => a && (!waitsFor(a) || untrack(answered)) && takeAnchor(untrack(matches)), { defer: true }));
     createEffect(
         on(matches, (ms) => {
             const q = untrack(findQuery);
             // A jump waiting for the server's answer for its query: nothing moves until it's in.
-            if (untrack(p.anchor) && !untrack(answered)) return;
+            const a = untrack(p.anchor);
+            if (a && waitsFor(a) && !untrack(answered)) return;
             const again = q === counted;
             counted = q;
             if (takeAnchor(ms)) return;
@@ -230,6 +236,8 @@ export function FindBar(p: {
     const close = () => setFindOpen(false);
     onCleanup(() => {
         clearTimeout(typing);
+        // A jump still waiting for the server's answer goes with the bar: the next one opened isn't taken there.
+        if (untrack(p.anchor)) p.clearAnchor();
         clearTimeout(recount);
         clearPaint();
         setFindReveal(undefined);

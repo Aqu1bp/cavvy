@@ -8,7 +8,7 @@
 // Written as the session is closed: a session opened again with its logs unchanged since opens from it. One whose
 // logs changed (a crash after the store was written, the session written to elsewhere) doesn't: it's built again.
 
-import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { closeSync, existsSync, fstatSync, fsync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import type { UiLight } from "./history";
 import type { AgentRun, Turn } from "./protocol";
@@ -61,6 +61,9 @@ function stamp(file: string): LogStamp {
     }
 }
 
+/** Written through to the disk, on a thread of the runtime's own. */
+const synced = (fd: number) => new Promise<void>((resolve, reject) => fsync(fd, (e) => (e ? reject(e) : resolve())));
+
 /** A sub-agent without its steps, its prompt and its report: what its list shows (AgentRun.partial). */
 export type AgentHead = Omit<AgentRun, "blocks" | "prompt" | "report">;
 export interface StoredAgent {
@@ -86,6 +89,8 @@ export class TurnStore {
     private fd?: number;
     /** Where the store's next turn goes. */
     private end = 0;
+    /** A turn in it couldn't be read: not indexed again (the session is built from its logs next time). */
+    damaged = false;
 
     private constructor(dir: string, id: string, private readonly logs: string[]) {
         this.file = join(dir, `${id}.jsonl`);
@@ -123,12 +128,14 @@ export class TurnStore {
         // Not all there (cut short, a power cut before it was on the disk), or not what was written: thrown, for the
         // caller to build the session from its logs instead (and the index let go of, so the next open does).
         if (readSync(fd, b, 0, len, at) !== len) {
+            this.damaged = true;
             this.forget();
             throw new Error("The turn store is incomplete.");
         }
         try {
             return JSON.parse(b.toString("utf-8")) as T;
         } catch (e) {
+            this.damaged = true;
             this.forget();
             throw e;
         }
@@ -155,7 +162,7 @@ export class TurnStore {
      * replaced) is most of it: where each went, by where it was. Before the index is written: the old index points
      * into the old file, and a store whose index doesn't match its logs isn't read.
      */
-    compact(kept: { at: number; len: number }[]): Map<number, number> | undefined {
+    async compact(kept: { at: number; len: number }[]): Promise<Map<number, number> | undefined> {
         const live = kept.reduce((n, k) => n + k.len + 1, 0);
         if (this.end <= 2 * live + COMPACT_SLACK) return undefined;
         const moved = new Map<number, number>();
@@ -172,10 +179,13 @@ export class TurnStore {
                 moved.set(k.at, end);
                 end += b.length;
             }
-            fsyncSync(out);
-        } finally {
+            await synced(out);
+        } catch (e) {
             closeSync(out);
+            rmSync(tmp, { force: true });
+            throw e;
         }
+        closeSync(out);
         // The index goes first: the store isn't read without one that matches it.
         this.forget();
         renameSync(tmp, this.file);
@@ -195,10 +205,12 @@ export class TurnStore {
      * Writes the index: each turn's head and place (in order), the sub-agents, and the logs as they are now. Written
      * last, and whole (a new file put in place): a store without it, or with one from before, isn't read.
      */
-    writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight) {
+    async writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight) {
+        if (this.damaged) return;
         const index: Index = { v: VERSION, logs: this.logs.map(stamp), ids, turns, agents, ui };
         // On the disk before the index that points into it is (a power cut leaves no index over turns that aren't).
-        if (this.fd !== undefined) fsyncSync(this.fd);
+        // Off the server's thread: 30-44 ms for a 30,000-item session's store, at its close (Linux).
+        if (this.fd !== undefined) await synced(this.fd);
         mkdirSync(dirname(this.indexFile), { recursive: true, mode: 0o700 });
         const tmp = `${this.indexFile}.${process.pid}.tmp`;
         writeFileSync(tmp, JSON.stringify(index), { mode: 0o600 });

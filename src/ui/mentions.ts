@@ -141,15 +141,20 @@ export class FileIndex {
      * The same, for the server: listed in the background, never waiting on git but the first time. One listed more
      * than INDEX_FRESH_MS ago is used as it is, and listed again meanwhile.
      */
-    async searchSoon(query: string, limit = 12): Promise<string[]> {
+    async searchSoon(query: string, limit = 12, again = 0): Promise<string[]> {
         if (!this.builtAt) await this.buildSoon();
         else if (Date.now() - this.builtAt >= INDEX_FRESH_MS && !this.building) void this.buildSoon();
-        if (this.shards) {
+        const shards = this.shards;
+        if (shards) {
             try {
-                return await this.shards.search(query, limit);
+                return await shards.search(query, limit);
             } catch {
+                // Not a worker that stopped: a part let go of as the listing shrank, or the workers handed back to the
+                // index here (buildSoon). Asked again, of what there is now.
+                if ((!shards.broken || this.shards !== shards) && again < 2) return this.searchSoon(query, limit, again + 1);
+                if (this.shards !== shards) return this.find(query, limit);
                 // A worker stopped: indexed here instead, from now on.
-                this.shards.stop();
+                shards.stop();
                 this.shards = undefined;
                 this.noShards = true;
                 this.builtAt = 0;
