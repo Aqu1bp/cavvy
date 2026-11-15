@@ -26,7 +26,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf, assistantText } from "../providers/types";
-import type { Effort, Settings } from "../config/settings";
+import { desktopEnabled, type Effort, type Settings } from "../config/settings";
 import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
@@ -189,6 +189,8 @@ export interface PermissionResponse {
     feedback?: string;
     /** "Yes, and allow this for the session": the request's decision.grant takes effect. */
     grant?: boolean;
+    /** An app asked for with decision.appPersist: allowed for the session, or always. */
+    persist?: "session" | "always";
 }
 
 export interface AgentHost {
@@ -1696,6 +1698,8 @@ export class Agent {
             hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
+            // Codex's own computer use goes with Cavvy's Mac apps setting (src/backends/codex-computer-use.ts).
+            ...(desktopEnabled(s) ? { desktop: true } : {}),
             agents: this.nativeAgents(trusted),
             signal,
             sessionKey: this.session.meta.id,
@@ -3340,7 +3344,8 @@ export class Agent {
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous && decision.appGrant === undefined) return { allow: true };
-        if (this.o.settings().hooks?.PermissionRequest?.length) {
+        // Nor does a PermissionRequest hook: an app on the user's Mac is theirs to give.
+        if (this.o.settings().hooks?.PermissionRequest?.length && decision.appGrant === undefined) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
             if (h?.stop) return { allow: false, message: `Stopped by PermissionRequest hook: ${h.stop}`, stop: true };
@@ -3367,6 +3372,8 @@ export class Agent {
             suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
+            // An app the backend's own computer use asks for: the question says it all, and its choices are the backend's.
+            ...(decision.appGrant !== undefined && req.appPersist ? { appPersist: req.appPersist, reason: undefined } : {}),
         };
         const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
@@ -3380,7 +3387,7 @@ export class Agent {
             // A yes to part of a call isn't one to the next call that looks the same.
             if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
-            return { allow: true, mode: answer.setMode };
+            return { allow: true, mode: answer.setMode, ...(ask.appPersist && answer.persist ? { persist: answer.persist } : {}) };
         }
         const fb = answer.feedback?.trim();
         if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };

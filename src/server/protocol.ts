@@ -476,6 +476,8 @@ export interface PermissionInteraction {
     /** The secrets a command gets in its environment (run_with_secrets), by name. */
     secrets?: string[];
     options: PermissionOption[];
+    /** Each option is an answer of its own (an app an agent CLI's computer use asks for: once, this session, always): all are shown. */
+    everyChoice?: boolean;
 }
 
 export interface QuestionInteraction {

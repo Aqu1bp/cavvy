@@ -72,6 +72,8 @@ export interface Decision {
     remembered?: boolean;
     /** Asks the user for one of their Mac's apps (DesktopControl request_access): in every mode, past rules that allow, hooks and the reviewer. */
     appGrant?: string;
+    /** With appGrant, from an agent CLI's own computer use: what its yes can be kept for besides this once (the prompt offers each). */
+    appPersist?: ("session" | "always")[];
 }
 
 /** What "Yes, and allow this for the session" covers, derived from what triggered the popup. */

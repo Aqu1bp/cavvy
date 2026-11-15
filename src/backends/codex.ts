@@ -29,6 +29,8 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
+import { CODEX_CU_SERVER, appNameFromId, chatgptRuntime, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseTitle, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
+import { neverOfferedMessage } from "../desktop/apps";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
@@ -255,8 +257,12 @@ interface Policy {
     approvalsReviewer: "user" | "auto_review";
 }
 
-/** Cavvy's permission mode as Codex's approval policy and sandbox. */
-export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
+/**
+ * Cavvy's permission mode as Codex's approval policy and sandbox. `computerUse`: Codex may use the Mac's apps, whose
+ * approvals must reach the person: bypass then runs on-request (with full access nothing else asks), as under "never"
+ * Codex answers them itself, with a yes.
+ */
+export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false, computerUse = false): Policy {
     // A read-only agent in auto: the read-only sandbox with network access, and it never asks. Nothing it runs can
     // change files, as the sandbox holds every program it starts (a pager's shell, a Git config's helper), and nothing
     // runs outside it, so there's nothing to approve; gh and the like reach the network from inside. With PreToolUse
@@ -276,6 +282,7 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
         case "bypassPermissions":
             // With PreToolUse hooks Codex can't run itself (an older Codex), it asks about every command so they can see it (and the mode approves what it allows).
             if (preToolUse) return { approvalPolicy: "untrusted", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
+            if (computerUse) return { approvalPolicy: "on-request", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
             return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
         default:
             // Manual and plan: commands other than known read-only ones, and every edit, ask.
@@ -284,8 +291,8 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
 }
 
 /** Modes with the same Codex policy (plan adds instructions on top). */
-function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
-    const p = codexPolicy(m, [], readOnly);
+function codexPolicyKey(m: PermissionMode, readOnly: boolean, computerUse = false): string {
+    const p = codexPolicy(m, [], readOnly, false, computerUse);
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
@@ -596,6 +603,10 @@ const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/st
 
 export class CodexTurn {
     protected rpc!: Rpc;
+    /** Codex may use the Mac's apps in this thread, through the ChatGPT app's computer use (codex-computer-use.ts). */
+    protected computerUse = false;
+    /** The apps its computer use asked for, by bundle id (lower case): their names, for its calls' titles. */
+    protected appNames = new Map<string, string>();
     /** Running the compaction Cavvy asked for. */
     protected compacting = false;
     protected threadId?: string;
@@ -734,7 +745,7 @@ export class CodexTurn {
     /** Whether modes `a` and `b` make different policies (or one of them is plan mode). */
     protected differs(a: PermissionMode, b: PermissionMode): boolean {
         const ro = Boolean(this.t.readOnly);
-        return codexPolicyKey(a, ro) !== codexPolicyKey(b, ro) || (a === "plan") !== (b === "plan");
+        return codexPolicyKey(a, ro, this.computerUse) !== codexPolicyKey(b, ro, this.computerUse) || (a === "plan") !== (b === "plan");
     }
 
     /**
@@ -877,14 +888,15 @@ export class CodexTurn {
             const startMode = this.cliSession.mode();
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
-            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
+            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined, t.desktop && !t.readOnly ? CODEX_CU_SERVER : undefined].filter((n): n is string => Boolean(n)));
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
-            const off = overrides.config;
+            // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
+            const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
             }
-            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
             if (o && overrides.collisions.includes(o.name)) {
                 this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this turn runs without Cavvy delegation to avoid merging server configurations." });
                 o = undefined;
@@ -967,7 +979,7 @@ export class CodexTurn {
                     if (this.goalPausedForMode && !adopt) activate = true;
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.cliSession.mode();
-                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
                     const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
@@ -1695,7 +1707,9 @@ export class CodexTurn {
             case "mcpToolCall": {
                 const name = `mcp__${String(item.server ?? "")}__${String(item.tool ?? "")}`;
                 const input = item.arguments && typeof item.arguments === "object" ? item.arguments : {};
-                open = { name, input, title: `${String(item.server ?? "")} - ${String(item.tool ?? "")} (MCP)`, started: Date.now(), mcp: { server: String(item.server ?? ""), tool: String(item.tool ?? "") } };
+                // Codex's computer use reads as what it does in the Mac's apps, not as a call to its REPL.
+                const title = this.computerUse && isComputerUseServer(item.server) ? computerUseTitle(String(item.tool ?? ""), input) : `${String(item.server ?? "")} - ${String(item.tool ?? "")} (MCP)`;
+                open = { name, input, title, started: Date.now(), mcp: { server: String(item.server ?? ""), tool: String(item.tool ?? "") } };
                 break;
             }
             case "webSearch": {
@@ -1783,7 +1797,17 @@ export class CodexTurn {
                 const refused = this.refusals.has(id) && (failed || Boolean(item.error));
                 const content = refused ? this.takeRefusal(id, "") : item.error?.message ? String(item.error.message) : mcpText(item.result);
                 this.refusals.delete(id);
-                this.endItem(id, open, content, Boolean(item.error) || failed, undefined, false, !refused);
+                const app = this.computerUse && isComputerUseServer(item.server) ? toolSurfaceApp(item.result) : undefined;
+                const appName = app ? (this.appNames.get(app.toLowerCase()) ?? appNameFromId(app)) : undefined;
+                if (appName) open.title = computerUseTitle(String(item.tool ?? ""), open.input, appName);
+                this.endItem(id, open, content, Boolean(item.error) || failed, undefined, Boolean(appName), !refused);
+                // Never offered, it was refused when asked for: one used anyway (a yes Codex kept from elsewhere) stops the turn.
+                const why = app && appName ? neverOfferedApp({ name: appName, bundleId: app }) : undefined;
+                if (why) {
+                    this.sink.emit({ type: "notice", level: "warn", message: `Stopped: Codex used ${appName}, which is never offered.` });
+                    const thread = sub ? [...this.subs].find(([, s]) => s === sub)?.[0] : undefined;
+                    this.interrupt(thread ? { thread, turnId: sub!.turnId } : undefined);
+                }
                 break;
             }
             case "webSearch": {
@@ -1994,6 +2018,8 @@ export class CodexTurn {
      * mode Codex asks only so they see it, and the mode decides as before.
      */
     protected async ask(req: BackendPermission): Promise<PermissionAnswer> {
+        // In bypass with computer use, Codex runs on-request so that app approvals reach the person: what else it asks, the mode decides.
+        if (this.computerUse && (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions") req = { ...req, hooksOnly: true };
         if (!this.hooked("PreToolUse")) return this.cliSession.permission(req);
         // Codex ran them already, before the call: what they said of it goes with the ask.
         if (this.nativeHooks) {
@@ -2031,12 +2057,41 @@ export class CodexTurn {
         }
     }
 
+    /**
+     * Codex's computer use for the thread (setting `computerUse`): on with desktop.enabled and the ChatGPT app,
+     * through Cavvy's own server entry; otherwise off, the person's own Codex config included. A read-only agent
+     * never has it. Thread config to add, if any.
+     */
+    protected computerUseConfig(t: BackendTurn, overrides: { collisions: string[]; effective?: unknown }): ThreadConfig | undefined {
+        this.computerUse = false;
+        const off = () => {
+            const c = computerUseOffConfig(overrides.effective);
+            return Object.keys(c).length ? c : undefined;
+        };
+        // CAVVY_CHATGPT_APP: a ChatGPT app somewhere else (and the tests' stand-in for one).
+        const app = process.env.CAVVY_CHATGPT_APP;
+        if (!t.desktop || t.readOnly || (process.platform !== "darwin" && !app)) return off();
+        if (overrides.collisions.includes(CODEX_CU_SERVER)) {
+            this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_CU_SERVER}; it is disabled, and Codex can't use your Mac's apps here.` });
+            return off();
+        }
+        const runtime = chatgptRuntime(app ? [app] : undefined);
+        if (!runtime) {
+            if (!saidNoChatGpt) this.sink.emit({ type: "notice", level: "info", message: "Codex can use your Mac's apps once the ChatGPT app is installed." });
+            saidNoChatGpt = true;
+            return off();
+        }
+        this.computerUse = true;
+        return computerUseOnConfig(runtime);
+    }
+
     /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
     protected async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string | string[]) {
         try {
-            const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
+            const response: any = await this.rpc.request("config/read", { cwd, includeLayers: true });
+            const r = codexMcpOverrides(response, readOnly, reservedName);
             if (r.missingProvenance) this.sink.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn, plugins included." });
-            return r;
+            return { ...r, effective: response?.config as unknown };
         } catch (e) {
             if (this.aborted) throw e;
             // Errors from the CLI can contain server secrets; never echo them.
@@ -2151,12 +2206,16 @@ export class CodexTurn {
         const server = typeof p.serverName === "string" ? p.serverName : "";
         const message = typeof p.message === "string" ? p.message.trim() : "";
         const meta = p._meta && typeof p._meta === "object" && !Array.isArray(p._meta) ? p._meta : {};
+        const computerUse = computerUseAsk(p);
+        if (computerUse) return this.computerUseAnswer(computerUse, from, agentLabel);
         if (typeof meta.codex_approval_kind === "string") {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
+            // In bypass Codex asks only so its computer use's app approvals reach the person (codexPolicy): the mode decides the rest.
+            const hooksOnly = this.computerUse && (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" ? true : undefined;
             const a = await this.cliSession.permission(
                 call
-                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, ...this.subAsk(from) }
-                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, ...this.subAsk(from) },
+                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, hooksOnly, ...this.subAsk(from) }
+                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, hooksOnly, ...this.subAsk(from) },
             );
             const d = this.decision(a, call?.id, from);
             const asked = call?.id ? this.items.get(call.id) : undefined;
@@ -2174,6 +2233,41 @@ export class CodexTurn {
         }
         const r = await askForm(intro, p.requestedSchema, (qs) => this.cliSession.askQuestions(qs), (message) => this.sink.emit({ type: "notice", level: "warn", message }), server);
         return r.action === "accept" ? reply("accept", r.content ?? {}) : reply("decline");
+    }
+
+    /**
+     * What Codex's computer use asks, answered. An app goes to the person, in every mode: past rules, hooks, auto
+     * mode's reviewer and bypass (DesktopControl request_access is never decided for them), with Codex's choices: once,
+     * for the session, always. One never offered, or any while it's off, is declined without asking; its link to set
+     * it up is cancelled, as a decline would be kept as a refusal.
+     */
+    protected async computerUseAnswer(ask: ComputerUseAsk, from: Origin | undefined, agentLabel: string | undefined): Promise<unknown> {
+        const reply = (action: "accept" | "decline" | "cancel", persist?: "session" | "always") => ({ action, content: action === "accept" ? {} : null, _meta: persist ? { persist } : null });
+        if (ask.kind === "url") return reply("cancel");
+        if (ask.kind === "audio" || !this.computerUse) return reply("decline");
+        const why = neverOfferedApp(ask);
+        if (why) {
+            this.steer(`<system-reminder>\n${neverOfferedMessage(ask.name, why)}\n</system-reminder>`, false, from);
+            return reply("decline");
+        }
+        if (ask.bundleId) this.appNames.set(ask.bundleId.toLowerCase(), ask.name);
+        const key = (ask.bundleId ?? ask.name).toLowerCase();
+        const granted = sessionApps.get(this.t.sessionKey);
+        if (granted?.has(key)) return reply("accept", ask.persist.includes("session") ? "session" : undefined);
+        // Its preview given here: DesktopControl's own would look the app up with Cavvy's helper, which Codex doesn't use.
+        const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: ask.name }, title: `Use ${ask.name}`, preview: { summary: `Use ${ask.name}` }, appPersist: ask.persist, agentLabel, ...this.subAsk(from) });
+        const d = this.decision(a, ask.callId, from);
+        if (d !== "accept") {
+            // Codex goes on after a no to an MCP call (even "cancel"): the turn is stopped here, as the user asked.
+            if (d === "cancel") this.interrupt(from);
+            return reply("decline");
+        }
+        const persist = a.allow ? a.persist : undefined;
+        if (persist) {
+            const apps = sessionApps.get(this.t.sessionKey) ?? new Set<string>();
+            sessionApps.set(this.t.sessionKey, apps.add(key));
+        }
+        return reply("accept", persist && ask.persist.includes(persist) ? persist : undefined);
     }
 
     /** The changes of a file change announced on a thread not known as a sub-agent's yet. */
@@ -2415,6 +2509,13 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
 
 /** Said once: a Codex that doesn't run Cavvy's hooks itself doesn't start to. */
 let saidNoNativeHooks = false;
+/** Said once a process: Codex's computer use needs the ChatGPT app. */
+let saidNoChatGpt = false;
+/**
+ * The Mac apps the person let Codex use for the rest of a Cavvy session ("Allow for this session"), by session: asked
+ * again, Codex gets the same yes. Until Cavvy quits, as the Desktop tools' grants.
+ */
+const sessionApps = new Map<string, Set<string>>();
 
 /** The server Codex's PreToolUse hook calls (thread config, over stdin like the delegation server's token). */
 export function hookServerConfig(r: Registration): Record<string, unknown> {

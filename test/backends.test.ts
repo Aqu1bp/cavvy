@@ -88,7 +88,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -4635,4 +4635,151 @@ describe("Claude Code background tasks: #282 review round 4", () => {
         expect(told).toBe(1);
         expect(reminders.join("\n")).toContain(m.id);
     }, 15_000);
+});
+
+describe("Codex: its own computer use, the ChatGPT app's", () => {
+    // What the fake sends is what Codex 0.167 and ChatGPT 26.1106 were measured to send (fake-codex.ts, computer-use).
+    const threadConfig = () => received().find((m) => m.method === "thread/start" || m.method === "thread/resume")?.params.config ?? {};
+    const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+    const answers = () => logLines().flatMap((l) => (l.cuAnswer !== undefined ? [l.cuAnswer] : []));
+    const appAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "DesktopControl");
+    const on = { desktop: { enabled: true } };
+    let resources = "";
+    beforeEach(() => {
+        const app = join(tempDir("chatgpt-"), "ChatGPT.app");
+        resources = join(app, "Contents", "Resources");
+        for (const f of ["cua_node/bin/node", "cua_node/bin/node_repl", "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs"]) {
+            mkdirSync(join(resources, f, ".."), { recursive: true });
+            writeFileSync(join(resources, f), "");
+        }
+        const plugin = join(resources, "plugins/openai-bundled/plugins/unified-computer-use");
+        mkdirSync(plugin, { recursive: true });
+        writeFileSync(join(plugin, ".mcp.json"), JSON.stringify({ mcpServers: { cua_repl: { command: "node", args: [], enabled: false, enabled_tools: ["js", "js_reset", "turn_ended"], omit_tools_from: ["code_mode", "deferred"], startup_timeout_sec: 120, tools: { js: { output_token_limit: 25000 } } } } }));
+        process.env.CAVVY_CHATGPT_APP = app;
+        process.env.FAKE_SCENARIO = "computer-use";
+    });
+    afterEach(() => {
+        delete process.env.CAVVY_CHATGPT_APP;
+    });
+
+    test.each([
+        ["one app-server for the session", on],
+        ["one app-server a turn", { ...on, agentCli: { liveSessions: false } }],
+    ])("on (%s): the thread gets the ChatGPT app's runtime, the apps never offered denied, and an app is asked about with Codex's choices", async (_, settings) => {
+        const { run, events, asked } = await makeAgent({ provider: "codex", settings, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
+        expect(await run("go")).toBe("done");
+        const server = threadConfig().mcp_servers.cua_repl;
+        expect(server).toMatchObject({
+            command: join(resources, "cua_node/bin/node"),
+            args: [join(resources, "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs")],
+            env: { CUA_REPL_NODE_REPL_PATH: join(resources, "cua_node/bin/node_repl"), CUA_REPL_ENABLED_SURFACES: "computer" },
+            enabled: true,
+            omit_tools_from: ["code_mode", "deferred"],
+            tools: { js: { output_token_limit: 25000 } },
+        });
+        expect(threadConfig().computer_use.macos.bundle_ids).toMatchObject({ "com.apple.Terminal": "deny", "com.1password.1password": "deny", "dev.cavvy.desktop": "deny" });
+        // Codex's own question about the call goes as any MCP call's; the app is asked as one of the Mac's apps.
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cua_repl__js", "DesktopControl"]);
+        const app = appAsks(asked)[0]!;
+        expect(app.input).toEqual({ action: "request_access", app: "TextEdit" });
+        expect(app.decision).toMatchObject({ appGrant: "TextEdit", appPersist: ["session", "always"] });
+        // The question is the app's, without Cavvy's own helper looking it up.
+        expect(app.preview?.summary).toBe("Use TextEdit");
+        expect(answers()).toEqual([
+            { action: "accept", content: {}, _meta: null },
+            { action: "accept", content: {}, _meta: { persist: "session" } },
+        ]);
+        // The call reads as what it does, then in which app.
+        expect(events.find((e) => e.type === "tool_start")).toMatchObject({ title: "Mac apps: Type a note" });
+        expect(toolEnds(events)[0]).toMatchObject({ title: "TextEdit: Type a note" });
+    });
+
+    test("allowed for the session, the app isn't asked about again; allowed once, it is", async () => {
+        process.env.FAKE_CU_TWICE = "1";
+        const session = await makeAgent({ provider: "codex", settings: on, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
+        expect(await session.run("go")).toBe("done");
+        expect(appAsks(session.asked)).toHaveLength(1);
+        expect(answers().filter((a) => a._meta?.persist === "session")).toHaveLength(2);
+
+        rmSync(LOG, { force: true });
+        const once = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await once.run("go")).toBe("done");
+        expect(appAsks(once.asked)).toHaveLength(2);
+        expect(answers().filter((a) => a._meta !== null)).toEqual([]);
+    });
+
+    test("bypass, allow rules and nobody to ask never give an app: bypass runs on-request so the question reaches the person", async () => {
+        const settings = { ...on, permissions: { allow: ["DesktopControl", "DesktopControl(request_access)", "mcp__cua_repl"] } };
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings, ask: () => ({ allow: false }) });
+        expect(await bypass.run("go")).toBe("denied");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "dangerFullAccess" } });
+        // Codex's own question about the call: bypass answers it. The app: the person, who said no.
+        expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings });
+        await headless.run("go");
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+    });
+
+    test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
+        process.env.FAKE_CU_APP = "com.apple.Terminal";
+        process.env.FAKE_CU_APP_NAME = "Terminal";
+        const never = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await never.run("go")).toBe("done");
+        expect(appAsks(never.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "decline", content: null, _meta: null });
+        expect(received().filter((m) => m.method === "turn/steer").map((m) => JSON.stringify(m.params.input)).join("\n")).toContain("Terminal can't be used: it's a terminal.");
+
+        delete process.env.FAKE_CU_APP;
+        delete process.env.FAKE_CU_APP_NAME;
+        process.env.FAKE_CU_URL = "1";
+        rmSync(LOG, { force: true });
+        const url = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await url.run("go")).toBe("done");
+        expect(appAsks(url.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "cancel", content: null, _meta: null });
+    });
+
+    test("off: the person's own Codex computer use is turned off, bypass stays never, and an app it asks for is declined unasked", async () => {
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ "unified-computer-use@openai-bundled": { enabled: true }, "browser@openai-bundled": { enabled: true } });
+        process.env.FAKE_USER_MCP = JSON.stringify({ node_repl: { command: "node_repl" } });
+        const off = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: true }) });
+        await off.run("go");
+        expect(threadConfig().plugins).toEqual({ "unified-computer-use@openai-bundled": { enabled: false } });
+        expect(threadConfig().mcp_servers.node_repl).toEqual({ enabled: false });
+        expect(threadConfig().mcp_servers.cua_repl).toBeUndefined();
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
+        expect(appAsks(off.asked)).toEqual([]);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+    });
+
+    test("a project can't turn it on, and the user's own server of its name keeps it off rather than merged into", async () => {
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "unified-computer-use@openai-bundled": { enabled: true } });
+        const project = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        await project.run("go");
+        expect(threadConfig().plugins).toEqual({ "unified-computer-use@openai-bundled": { enabled: false } });
+        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
+
+        delete process.env.FAKE_PROJECT_PLUGINS;
+        process.env.FAKE_USER_MCP = JSON.stringify({ cua_repl: { url: "https://example.com/mcp" } });
+        rmSync(LOG, { force: true });
+        const mine = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await mine.run("go");
+        expect(threadConfig().mcp_servers.cua_repl).toEqual({ enabled: false });
+        expect(notices(mine.events).join("\n")).toContain("Codex already has a server named cua_repl");
+    });
+
+    test("without the ChatGPT app it stays off, said once", async () => {
+        process.env.CAVVY_CHATGPT_APP = join(tempDir("no-chatgpt-"), "ChatGPT.app");
+        const first = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await first.run("go");
+        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
+        expect(notices(first.events)).toContain("info: Codex can use your Mac's apps once the ChatGPT app is installed.");
+        const second = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await second.run("go");
+        expect(notices(second.events).join("\n")).not.toContain("ChatGPT app");
+    });
 });
