@@ -6,7 +6,7 @@ import { activate, app, earlierArriving, forgetEarlier, loadEarlier, loadEarlier
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
@@ -99,6 +99,14 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         ? { shown: target, trimmed: 0 }
         : firstWindow(lazyHeights(p.handle.view.turns), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
     const [shown, setShown] = createSignal(first.shown);
+    /** How many turns go in, counted from the end: the first page, then a page more each "Show earlier", put in a few at a time (grow). */
+    const [goal, setGoal] = createSignal(target);
+    /** A page going in a few turns at a time ("Show earlier"): those of it in so far, staged (stage, below). */
+    let staged: HTMLElement[] | undefined;
+    /** Rows of turns just put in, taken by lib/work-rendering.ts at once (before they're laid out): see its settle. */
+    let settleRows: (() => void) | undefined;
+    /** How many turns were shown before the page: those before them in the list are the page's. */
+    let stagedAfter = 0;
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
@@ -150,9 +158,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
     /** Turns above the page here, not those still going in at first (grow, in onMount). */
-    const hiddenHere = () => Math.max(0, turns().length - Math.max(shown(), target));
+    const hiddenHere = () => Math.max(0, turns().length - Math.max(shown(), goal()));
     /** Turns above the page, for "Show earlier": those here, and those the session opened without (loadEarlier). */
-    const hidden = () => hiddenHere() + (p.handle.view.earlier ?? 0);
+    /** While a page goes in (staged, below), "Show earlier" stays as it was: gone or changed before the page is shown, what's below it would move up by its height. */
+    const [buttonHeld, setButtonHeld] = createSignal<number>();
+    const hidden = () => buttonHeld() ?? hiddenHere() + (p.handle.view.earlier ?? 0);
     const [loadingEarlier, setLoadingEarlier] = createSignal(false);
 
     /**
@@ -469,7 +479,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // Where things are, not where a running glide draws them (the reader may have scrolled away from it).
         const top = scroller.getBoundingClientRect().top;
         // The first turn reaching into the view: they're in order, so a few are measured, not all of them.
-        const els = visible().flatMap((t) => turnEls.get(t.id) ?? []);
+        // Not one of a page still going in (staged): it isn't laid out, so it's nowhere.
+        const all = visible().flatMap((t) => turnEls.get(t.id) ?? []);
+        const els = staged ? all.filter((el) => !el.hasAttribute(STAGED)) : all;
         const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
         // A block anchor also survives replacing the live head with a work-log toggle.
@@ -486,6 +498,45 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             partOffset: part ? part.getBoundingClientRect().top - shiftOf(part) - top : undefined,
             ...(row && row !== part ? { row: [...part!.querySelectorAll<HTMLElement>("[data-work-row]")].indexOf(row), rowOffset: row.getBoundingClientRect().top - shiftOf(row) - top } : {}),
         };
+    };
+    /**
+     * The place read, taken again after it was put back: the same, unless something moved it more than the browser's
+     * rounding of our own write (a whole pixel). Taken afresh each time, it moved by that rounding at each step of a
+     * page going in a few turns at a time (1-2 px over ten).
+     */
+    const recapture = () => {
+        const now = capture();
+        const was = reading;
+        const near = (a?: number, b?: number) => a === b || (a !== undefined && b !== undefined && Math.abs(a - b) < 1);
+        reading = was && now && now.turnId === was.turnId && now.part === was.part && now.row === was.row && near(now.offset, was.offset) && near(now.partOffset, was.partOffset) && near(now.rowOffset, was.rowOffset) ? was : now;
+    };
+    /**
+     * A page going in ("Show earlier") a few turns at a time: those in already are built but not laid out (staged:
+     * transcript.css) until it's all in, then shown at once and the place read put back once. Laid out as they went in,
+     * each step moved the place read by the browser's rounding (a pixel either way); all at once, the click's frame
+     * built and laid out the whole page (58-104 ms, headless, a long session).
+     */
+    const stage = () => {
+        if (!staged) return;
+        const page = visible().slice(0, Math.max(0, visible().length - stagedAfter));
+        for (const t of page) {
+            const el = turnEls.get(t.id);
+            if (el && !el.hasAttribute(STAGED)) {
+                el.setAttribute(STAGED, "");
+                staged.push(el);
+            }
+        }
+    };
+    /** The page shown, whole, where it goes: what's read stays put (restore). */
+    const unstage = () => {
+        if (!staged) return;
+        // Not skipped: each is drawn once before it can be (what it's skipped at is the size it was drawn at).
+        for (const el of staged) {
+            el.removeAttribute(STAGED);
+            el.removeAttribute(FAR);
+        }
+        staged = undefined;
+        setButtonHeld(undefined);
     };
     const restore = () => {
         if (!scroller || !content || !reading) return;
@@ -558,12 +609,14 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"), or once
         // a turn runs here (they cost on each frame, and a turn is what draws frames). Not as a session opens.
         let ran = false;
-        onCleanup(observeWorkRendering(scroller, content, (moved) => {
+        const work = observeWorkRendering(scroller, content, (moved) => {
             if (stick() || smoothScroll) return;
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE, id));
+        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE, id);
+        settleRows = work.settle;
+        onCleanup(work);
         const ro = new ResizeObserver(() => {
             // Laid out just now, so this reads nothing new: where the column starts, for a slide that begins from here.
             columnLeft = content!.offsetLeft;
@@ -630,7 +683,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // above, between frames. Followed at the end, the end stays in view; read further up, the place read stays put.
         let growing = 0;
         let gone = false;
-        const pending = () => trimmed() > 0 || shown() < target;
+        const pending = () => trimmed() > 0 || shown() < goal();
         const grow = () => {
             growing = 0;
             if (gone || !pending()) return;
@@ -638,11 +691,16 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // place read is put back before it's read again, or the reader would be held where that pushed them.
             if (!stick()) {
                 restore();
-                reading = capture();
+                recapture();
             }
             // Below the place read first, then above it.
             if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
-            else setShown((n) => (n >= target ? n : Math.min(target, n + MORE_TURNS)));
+            else setShown((n) => (n >= goal() ? n : Math.min(goal(), n + MORE_TURNS)));
+            // Shown before, their rows skip their layout at the sizes they had (not laid out first, here).
+            settleRows?.();
+            // A page going in: staged till it's all in, then shown at once.
+            if (shown() >= goal()) unstage();
+            else stage();
             // Solid has inserted them; before paint, the end (or the place read) where it was.
             if (stick()) toBottom();
             else restore();
@@ -697,7 +755,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         letGo = setTimeout(() => {
             const keep = Math.max(target, PAGE);
             if (!stick() || p.handle.view.state.busy || loadingEarlier() || turns().length <= keep) return;
+            unstage();
             setShown((n) => Math.min(n, keep));
+            setGoal((g) => Math.max(target, Math.min(g, keep)));
             forgetEarlier(p.handle, keep);
             toBottom();
         }, LET_GO_MS);
@@ -718,9 +778,21 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = capture();
         smoothScroll = false;
         setStick(false);
-        setShown((n) => Math.max(n, target) + PAGE);
-        // Solid has inserted the page synchronously; compensate before paint.
+        // A page more: the first few now, the rest a few a frame (grow), each above the place read, which stays put.
+        // All at once, the click's frame laid a page of 40 turns out (58-104 ms, headless, a long session).
+        const to = Math.max(shown(), goal()) + PAGE;
+        if (!staged) {
+            staged = [];
+            stagedAfter = shown();
+            setButtonHeld(hidden());
+        }
+        setGoal(to);
+        setShown((n) => Math.min(to, Math.max(n, target) + MORE_TURNS));
+        // Solid has inserted those synchronously: staged before they're laid out (nothing on screen moves).
+        settleRows?.();
+        stage();
         restore();
+        growMore?.();
         // The next page fetched now, above what's drawn (nothing on screen moves): the next "Show earlier" has it.
         if (hiddenHere() < PAGE && p.handle.view.earlier && !loadingEarlier()) void loadEarlier(p.handle, { count: PAGE });
     };
@@ -845,8 +917,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // that moved is the reader going somewhere else. One that didn't is our own write's, a frame later: what's above
         // may have grown since (an image getting its size), so the place read is put back before it's read again.
         if (!stick()) {
-            if (!moved) restore();
-            reading = capture();
+            if (!moved) {
+                restore();
+                recapture();
+            } else reading = capture();
             // Read up toward the top of what's here: the next page is fetched now, above what's drawn, so "Show
             // earlier" has it when it's reached. Only for a reader who goes up there: nothing more is fetched otherwise.
             if (top < scroller.clientHeight * 1.5 && hiddenHere() < PAGE && p.handle.view.earlier && !loadingEarlier()) void loadEarlier(p.handle, { count: PAGE });
@@ -934,6 +1008,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         const i = turns().findIndex((t) => t.id === turnId);
         if (i < 0) return;
         reading = undefined; // Explicit navigation owns the next position.
+        unstage();
         const need = turns().length - i;
         // Far above what's drawn (a find a thousand turns up): a page around it, and the turns below it go in a few at
         // a time after, as when opened there. Drawn all at once down to it, they were a frame of hundreds of turns.
@@ -978,6 +1053,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (!now.anchor) return;
         reading = now.anchor;
         const need = turns().length - turns().findIndex((t) => t.id === now.anchor!.turnId);
+        unstage();
         setTrimmed(0);
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         restore();
@@ -1093,7 +1169,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                         )}
                     </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()}>
+                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier() || buttonHeld() !== undefined}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>

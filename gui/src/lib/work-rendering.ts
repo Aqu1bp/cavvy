@@ -45,7 +45,7 @@ const turnOf = (el: HTMLElement) => el.closest<HTMLElement>("[data-turn]")?.data
  * the next time it's shown.
  */
 export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true, session?: string) {
-    if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
+    if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return Object.assign(() => {}, { settle: () => {} });
     const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -146,9 +146,12 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         ro = new ResizeObserver(sizes(to));
         for (const el of rows.keys()) if (!parked(el)) watch(el);
     };
+    /** Rows added since they were last looked at (mutations). */
+    const fresh: HTMLElement[] = [];
     const add = (el: HTMLElement) => {
         if (rows.has(el) || !el.matches(ROW) || el.parentElement?.closest(ROW)) return;
         rows.set(el, { near: true, intrinsic: el.style.containIntrinsicBlockSize });
+        fresh.push(el);
         el.setAttribute(TRACKED, "");
         if (!parked(el)) watch(el);
     };
@@ -194,6 +197,10 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         }
         start();
         sync();
+        // Rows of a turn put in since it opened (a few at a time after its first screens, a page of earlier ones): those
+        // of a turn shown before, as many as then, skipped at their sizes too.
+        if (io && fresh.length) skipKnown(fresh.splice(0), 0);
+        fresh.length = 0;
     };
     /** Rows of the turns already far let go of, or taken back, as `parkFar` changes (turns going in or out). */
     const sync = () => {
@@ -204,31 +211,32 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
             for (const el of turn.querySelectorAll<HTMLElement>(`[${TRACKED}]`)) if (rows.has(el)) (want ? park : wake)(el);
         }
     };
-    collect(content);
     // Shown before: its rows skipped at the sizes they were, before anything's laid out (those in view are drawn
     // anyway, and taken as near as soon as they're seen).
     const sizesWere = session !== undefined ? remembered.get(session) : undefined;
-    if (sizesWere && rows.size >= MIN_ROWS) {
-        // Only a turn with as many rows as it had then: one that changed meanwhile (it went on, its work folded) would
-        // have each row after the change take another's size.
+    /**
+     * Of `els`, the rows of turns shown before with as many rows as then (one that changed meanwhile, as it went on or
+     * its work folded, would have each row after the change take another's size), skipped at the sizes they had,
+     * but for the last `tail` pixels of them.
+     */
+    const skipKnown = (els: HTMLElement[], tail: number) => {
+        if (!sizesWere) return;
         const count = new Map<string, number>();
+        const turns = new Set(els.map(turnOf));
         for (const el of rows.keys()) {
             const turn = turnOf(el);
-            if (turn !== undefined) count.set(turn, (count.get(turn) ?? 0) + 1);
+            if (turn !== undefined && turns.has(turn)) count.set(turn, (count.get(turn) ?? 0) + 1);
         }
         const nth = new Map<string, number>();
         const known: [HTMLElement, NonNullable<ReturnType<typeof rows.get>>, number][] = [];
         for (const [el, row] of rows) {
             const turn = turnOf(el);
-            if (turn === undefined || sizesWere.get(`${turn}#`) !== count.get(turn)) continue;
+            if (turn === undefined || !turns.has(turn) || sizesWere.get(`${turn}#`) !== count.get(turn)) continue;
             const i = nth.get(turn) ?? 0;
             nth.set(turn, i + 1);
             const h = sizesWere.get(`${turn}:${i}`);
-            if (h !== undefined && h > 0) known.push([el, row, h]);
+            if (h !== undefined && h > 0 && !el.hasAttribute(FAR)) known.push([el, row, h]);
         }
-        // Not the last two screens of them: shown again at its end, those are in sight, drawn in its first frame as
-        // they were (its entrances ended there: Transcript).
-        let tail = typeof window === "undefined" ? 0 : 2 * window.innerHeight;
         while (known.length && tail > 0) tail -= known.pop()![2];
         for (const [el, row, h] of known) {
             row.height = h;
@@ -238,12 +246,25 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
             el.setAttribute(TRACKED, "sized");
             el.setAttribute(FAR, "");
         }
-    }
+    };
+    collect(content);
+    // Not the last two screens of them: shown again at its end, those are in sight, drawn in its first frame as they
+    // were (its entrances ended there: Transcript).
+    if (rows.size >= MIN_ROWS) skipKnown([...rows.keys()], typeof window === "undefined" ? 0 : 2 * window.innerHeight);
+    fresh.length = 0;
     start();
     sync();
     const mo = new MutationObserver(mutations(to));
     mo.observe(content, { childList: true, subtree: true, attributes: true, attributeFilter: [TURN_FAR] });
-    return () => {
+    /**
+     * What was put in since, taken now rather than when the observer would say: called by the caller that put it in,
+     * before it lays the page out (to keep the place read), so rows of turns shown before aren't laid out first.
+     */
+    const settle = () => {
+        const records = mo.takeRecords();
+        if (records.length) to.mutations?.(records, mo);
+    };
+    const dispose = () => {
         io?.disconnect();
         ro?.disconnect();
         mo.disconnect();
@@ -268,4 +289,5 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         }
         for (const el of rows.keys()) remove(el);
     };
+    return Object.assign(dispose, { settle });
 }
