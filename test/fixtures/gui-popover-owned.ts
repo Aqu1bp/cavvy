@@ -37,6 +37,9 @@ try {
     setPicked(true);
     for (let i = 0; i < 20; i++) for (const f of listeners.get("pointerdown") ?? []) f({ target: {} });
     for (const f of listeners.get("keydown") ?? []) f({ key: "Escape", stopPropagation() {} });
+    // It did listen on the page, and a click outside it closed it.
+    assert.ok((listeners.get("pointerdown") ?? []).length > 0, "listens for clicks on the page");
+    assert.equal(picked(), false, "a click outside it closes it");
     assert.deepEqual(unowned, [], "open read from the page's listeners makes nothing that's never let go of");
     disposeAll();
 } catch (e) {

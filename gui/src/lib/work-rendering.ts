@@ -190,10 +190,17 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     // anyway, and taken as near as soon as they're seen).
     const sizesWere = session !== undefined ? remembered.get(session) : undefined;
     if (sizesWere && rows.size >= MIN_ROWS) {
+        // Only a turn with as many rows as it had then: one that changed meanwhile (it went on, its work folded) would
+        // have each row after the change take another's size.
+        const count = new Map<string, number>();
+        for (const el of rows.keys()) {
+            const turn = turnOf(el);
+            if (turn !== undefined) count.set(turn, (count.get(turn) ?? 0) + 1);
+        }
         const nth = new Map<string, number>();
         for (const [el, row] of rows) {
             const turn = turnOf(el);
-            if (turn === undefined) continue;
+            if (turn === undefined || sizesWere.get(`${turn}#`) !== count.get(turn)) continue;
             const i = nth.get(turn) ?? 0;
             nth.set(turn, i + 1);
             const h = sizesWere.get(`${turn}:${i}`);
@@ -226,6 +233,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                 const h = rows.get(el)!.height;
                 if (h !== undefined && h > 0) sizes.set(`${turn}:${i}`, h);
             }
+            for (const [turn, n] of nth) sizes.set(`${turn}#`, n);
             remembered.delete(session);
             if (sizes.size) remembered.set(session, sizes);
             while (remembered.size > REMEMBERED) remembered.delete(remembered.keys().next().value!);
