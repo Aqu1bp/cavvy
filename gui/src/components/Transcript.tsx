@@ -103,6 +103,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const [goal, setGoal] = createSignal(target);
     /** A page going in a few turns at a time ("Show earlier"): those of it in so far, staged (stage, below). */
     let staged: HTMLElement[] | undefined;
+    /** Rows of turns just put in, taken by lib/work-rendering.ts at once (before they're laid out): see its settle. */
+    let settleRows: (() => void) | undefined;
     /** How many turns were shown before the page: those before them in the list are the page's. */
     let stagedAfter = 0;
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
@@ -607,12 +609,14 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"), or once
         // a turn runs here (they cost on each frame, and a turn is what draws frames). Not as a session opens.
         let ran = false;
-        onCleanup(observeWorkRendering(scroller, content, (moved) => {
+        const work = observeWorkRendering(scroller, content, (moved) => {
             if (stick() || smoothScroll) return;
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE, id));
+        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE, id);
+        settleRows = work.settle;
+        onCleanup(work);
         const ro = new ResizeObserver(() => {
             // Laid out just now, so this reads nothing new: where the column starts, for a slide that begins from here.
             columnLeft = content!.offsetLeft;
@@ -692,6 +696,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // Below the place read first, then above it.
             if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
             else setShown((n) => (n >= goal() ? n : Math.min(goal(), n + MORE_TURNS)));
+            // Shown before, their rows skip their layout at the sizes they had (not laid out first, here).
+            settleRows?.();
             // A page going in: staged till it's all in, then shown at once.
             if (shown() >= goal()) unstage();
             else stage();
@@ -783,6 +789,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         setGoal(to);
         setShown((n) => Math.min(to, Math.max(n, target) + MORE_TURNS));
         // Solid has inserted those synchronously: staged before they're laid out (nothing on screen moves).
+        settleRows?.();
         stage();
         restore();
         growMore?.();

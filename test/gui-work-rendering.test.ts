@@ -265,3 +265,37 @@ test("a session's rows shown again are skipped at once at the sizes they were; a
     expect(grown.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
     grown.dispose();
 });
+
+// A session opens with its last turns, and the rest go in a few at a time after (Transcript's grow, a page of earlier
+// turns): those rows are skipped at the sizes they had too, as they go in (settle, called before they're laid out),
+// not laid out first and skipped after.
+test("rows of a turn put in after it opened, shown before as they are, are skipped at their sizes as they go in", () => {
+    const mount = (session: string, withEarlier: boolean) => {
+        (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
+        (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
+        (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
+        const root = new Box(); root.top = 0;
+        const content = new Box(); root.append(content);
+        const turn = (id: string, count: number) => {
+            const t = new Box(); t.setAttribute("data-turn"); t.dataset.turn = id;
+            const rows = Array.from({ length: count }, () => new Box(true)); rows.forEach((row) => t.append(row));
+            return { t, rows };
+        };
+        const earlier = turn("t1", 80), last = turn("t2", 5);
+        if (withEarlier) content.append(earlier.t);
+        content.append(last.t);
+        const view = observeWorkRendering(root as any, content as any, () => {}, () => true, session);
+        return { view, content, earlier, last };
+    };
+    const first = mount("s3", true);
+    [...first.earlier.rows, ...first.last.rows].forEach((row, i) => ro.emit([{ target: row, contentRect: { height: 30 + i } }]));
+    first.view();
+    // Opened again with its last turn only; the earlier one goes in after.
+    const again = mount("s3", false);
+    again.content.children.unshift(again.earlier.t); again.earlier.t.parentElement = again.content;
+    (mo as any).takeRecords = () => [{ type: "childList", addedNodes: [again.earlier.t], removedNodes: [] }];
+    again.view.settle();
+    expect(again.earlier.rows.every((row) => row.hasAttribute("data-work-far") && row.hasAttribute("data-work-again"))).toBe(true);
+    expect(again.earlier.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.earlier.rows.map((_, i) => `auto ${30 + i}px`));
+    again.view();
+});
