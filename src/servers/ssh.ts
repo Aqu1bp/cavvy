@@ -109,9 +109,13 @@ export function sshCommandArgv(e: ServerEntry, command: string, o: { tty?: boole
     return [sshBin(), ...baseOptions(e), o.tty ? "-t" : "-T", "--", e.destination, command];
 }
 
-/** argv for a tunnel and nothing else: this machine's `local` port to the server's own `remote`. */
+/**
+ * argv for a tunnel and nothing else: this machine's `local` port to the server's own `remote`. Compressed: a reply
+ * streams to the window in a message every 24 ms, most of it the same each time (which session, turn and block), and
+ * as one compressed stream that came to 1.5 bytes a character of a reply where it was 11.8.
+ */
 export function sshTunnelArgv(e: ServerEntry, local: number, remote: number): string[] {
-    return [sshBin(), ...baseOptions(e, { forwardings: true }), "-N", "-T", "-L", `127.0.0.1:${local}:127.0.0.1:${remote}`, "--", e.destination];
+    return [sshBin(), ...baseOptions(e, { forwardings: true }), "-o", "Compression=yes", "-N", "-T", "-L", `127.0.0.1:${local}:127.0.0.1:${remote}`, "--", e.destination];
 }
 
 const lines = (text: string) =>
