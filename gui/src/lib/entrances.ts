@@ -5,6 +5,20 @@
 
 /** Ends the one-time animations in `el` (and under it), as they'd end anyway. */
 export function finishEntrances(el: Element) {
-    if (typeof (el as HTMLElement).getAnimations !== "function") return;
-    for (const a of el.getAnimations({ subtree: true })) if (a.effect?.getComputedTiming().iterations !== Infinity) a.finish();
+    finishEntrancesIn([el]);
+}
+
+/**
+ * The same for each of `els`, at once. Asking for animations brings the page's style up to date first: asked for
+ * each turn in turn, with each one's attribute changed between (it's let go of as it goes far), that was the page's
+ * style worked out again for every one of them (a jump from the top of a long session to its end: 40 times, most of
+ * the jump's frame). Asked once, before any of them changes, and only of what's running.
+ */
+export function finishEntrancesIn(els: readonly Element[]) {
+    if (!els.length || typeof document === "undefined" || typeof document.getAnimations !== "function") return;
+    for (const a of document.getAnimations()) {
+        if (a.effect?.getComputedTiming().iterations === Infinity) continue;
+        const target = (a.effect as KeyframeEffect | null)?.target;
+        if (target && els.some((el) => el.contains(target))) a.finish();
+    }
 }

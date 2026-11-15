@@ -13,7 +13,7 @@ import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../l
 import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
-import { finishEntrances } from "../lib/entrances";
+import { finishEntrances, finishEntrancesIn } from "../lib/entrances";
 import { settlingObserver, type SettlingObserver } from "../lib/settling-observer";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -534,11 +534,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     const box = e.target.getBoundingClientRect();
                     return { el: e.target, was: box.bottom <= top ? box.height : undefined };
                 });
-                for (const e of entries) {
-                    // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
-                    if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
-                    e.target.toggleAttribute(FAR, !e.isIntersecting);
-                }
+                // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+                // All of them before any is marked, so the page's style is worked out once, not once a turn.
+                finishEntrancesIn(entries.filter((e) => !e.isIntersecting && !e.target.hasAttribute(FAR)).map((e) => e.target));
+                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
                 if (stick() || smoothScroll) return;
                 let moved = 0;
                 for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;

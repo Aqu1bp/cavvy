@@ -204,14 +204,24 @@ test("rows of far turns are let go of only while parkFar says so (many turns dra
 
 test("a row skipped from here ends what it was still bringing in; what goes on for good goes on", () => {
     const f = fixture(); const row = f.rows[0]!;
-    const fade = { finished: false, effect: { getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
-    const spin = { finished: false, effect: { getComputedTiming: () => ({ iterations: Infinity }) }, finish() { this.finished = true; } };
-    (row as any).getAnimations = () => [fade, spin];
-    f.near(row, false);
-    f.measure(row, 40);
+    // The page's animations, asked for once (lib/entrances.ts): one in this row, one in another, one that goes on.
+    const other = f.rows[1] ?? {};
+    const anim = (target: unknown, iterations: number) => ({ finished: false, effect: { target, getComputedTiming: () => ({ iterations }) }, finish() { this.finished = true; } });
+    const fade = anim(row, 1);
+    const spin = anim(row, Infinity);
+    const elsewhere = anim(other, 1);
+    const had = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [fade, spin, elsewhere] };
+    try {
+        f.near(row, false);
+        f.measure(row, 40);
+    } finally {
+        (globalThis as any).document = had;
+    }
     expect(row.hasAttribute("data-work-far")).toBe(true);
     // Left part way in a skipped box, an entrance would never end: the page would pay for it on every frame.
     expect(fade.finished).toBe(true);
     expect(spin.finished).toBe(false);
+    expect(elsewhere.finished).toBe(false);
     f.dispose();
 });
