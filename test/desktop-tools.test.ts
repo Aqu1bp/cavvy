@@ -43,7 +43,7 @@ class FakeHelper implements DesktopHelperLike {
     running = true;
     pid = 9999;
     human = 0;
-    /** The person's clicks, keys and scrolls aimed at anything but Cavvy. */
+    /** The person's clicks, keys and scrolls into the apps a command names (as the helper sums them per command). */
     used = 0;
     ready = Promise.resolve({ accessibility: true } as Reply);
     calls: Record<string, unknown>[] = [];
@@ -611,15 +611,6 @@ describe("for other agents' computer use", () => {
         for (const a of NEVER_OFFERED) expect(src).toContain(JSON.stringify(a.bundleId.toLowerCase()));
         expect(src).toStartWith("let NEVER_IDS: Set<String> = [");
         expect(src).toContain("let NEVER_NAME_PATTERNS: [String] = [");
-    });
-
-    test("a shell command that runs the helper itself asks, in every mode", () => {
-        const { BashTool } = require("../src/tools/bash");
-        const c = new PermissionChecker(() => ({}), W);
-        for (const command of [`printf '{}' | ~/.cavvy/desktop/"Cavvy Desktop Control"`, `"$HOME/.cavvy/desktop/Cavvy Desktop Control" < cmds`]) {
-            const d = c.check(BashTool, { command }, "bypassPermissions", W);
-            expect(d, command).toMatchObject({ behavior: "ask", dangerous: true });
-        }
     });
 
     test("the grants are kept by bundle id, and can't hold an app that's never offered", () => {

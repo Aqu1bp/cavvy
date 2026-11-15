@@ -16,8 +16,8 @@
 //
 // Commands arrive on stdin, one JSON object per line with an "id"; each is answered on stdout with one JSON line,
 // {"id", ...} or {"id", "error", "code"?}, and every answer carries "human" (how many times the person has used the
-// mouse or keyboard since the helper started) and "used" (how many of those were clicks, keys or scrolls aimed at
-// anything but Cavvy). {"op":"cancel","token"} (no id, no answer) stops the actions sent with that token, under way
+// mouse or keyboard since the helper started) and "used" (how many of those were clicks, keys or scrolls into the apps
+// the command names). {"op":"cancel","token"} (no id, no answer) stops the actions sent with that token, under way
 // or still to come.
 
 import AppKit
@@ -110,21 +110,28 @@ let OURS: Int64 = 0x4361_7679
 let humanLock = NSLock()
 /// Every input of the person's: what stops an action under way.
 var humanCount = 0
-/// Their clicks, keys and scrolls aimed at anything but Cavvy and the processes it runs in: what makes what the
-/// agent last read suspect. Moving the mouse, and answering Cavvy's own prompts, don't count.
-var usedCount = 0
+/// Their clicks, keys and scrolls, by the app they went to: what makes what the agent last read of an app suspect.
+/// Moving the mouse doesn't count, and nor does anything aimed at another app (Cavvy, wherever it runs).
+var usedBy: [pid_t: Int] = [:]
 /// Actions Cavvy stopped, by the token their commands carry (a session's turn).
 var cancelled = Set<String>()
 /// Cavvy has gone: whatever is under way stops.
 var closing = false
 
-func humans() -> (Int, Int) {
+func humans() -> Int {
     humanLock.lock()
     defer { humanLock.unlock() }
-    return (humanCount, usedCount)
+    return humanCount
 }
 
-/// Cavvy, and the terminal it may run in: never offered, and the person's input there is Cavvy's business.
+/// The person's clicks, keys and scrolls into these apps since the helper started.
+func used(_ pids: Set<pid_t>) -> Int {
+    humanLock.lock()
+    defer { humanLock.unlock() }
+    return pids.reduce(0) { $0 + (usedBy[$1] ?? 0) }
+}
+
+/// Cavvy, and the terminal it may run in: never offered.
 let OWN: Set<pid_t> = Set(ancestors().map { pid_t($0) })
 
 var tap: CFMachPort?
@@ -143,7 +150,7 @@ func watch() -> Bool {
             let target = pid_t(truncatingIfNeeded: event.getIntegerValueField(.eventTargetUnixProcessID))
             humanLock.lock()
             humanCount += 1
-            if type != .mouseMoved && !OWN.contains(target) { usedCount += 1 }
+            if type != .mouseMoved { usedBy[target, default: 0] += 1 }
             humanLock.unlock()
         }
         return Unmanaged.passUnretained(event)
@@ -165,7 +172,7 @@ struct Guard {
     let human: Int
     init(_ token: String?) {
         self.token = token
-        human = humans().0
+        human = humans()
     }
     func check() throws {
         humanLock.lock()
@@ -296,7 +303,7 @@ func describe(_ pid: pid_t) -> [String: Any] {
     if let name = NSRunningApplication(processIdentifier: pid)?.localizedName { root["title"] = name }
     var kids: [[String: Any]] = []
     if let bar = attribute(app, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID(), let n = node(bar as! AXUIElement, 1, menus: true) { kids.append(n) }
-    for w in elements(attribute(app, kAXWindowsAttribute)) { if let n = node(w, 1, menus: false) { kids.append(n) } }
+    for w in elements(attribute(app, kAXWindowsAttribute)) where !cavvyPage(text(attribute(w, kAXTitleAttribute))) { if let n = node(w, 1, menus: false) { kids.append(n) } }
     root["children"] = kids
     root["truncated"] = count >= NODES_MAX
     return root
@@ -327,6 +334,19 @@ func windows(_ pids: Set<pid_t>) -> [[String: Any]] {
     }
 }
 
+/// Cavvy's own page in a browser (`cavvy gui`): its title is "Cavvy", or ends " · Cavvy". It's where the person
+/// watches and stops the agent: never read, clicked or typed into, whichever browser shows it.
+func cavvyPage(_ title: String?) -> Bool {
+    guard let t = title?.trimmingCharacters(in: .whitespaces) else { return false }
+    return t == "Cavvy" || t.hasSuffix(" · Cavvy") || t.hasPrefix("Cavvy - ") || t.contains(" · Cavvy - ")
+}
+
+/// The window an element is in, by its title.
+func windowTitle(of e: AXUIElement) -> String? {
+    guard let w = attribute(e, kAXWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
+    return text(attribute(w as! AXUIElement, kAXTitleAttribute))
+}
+
 /// The open and save panels of a sandboxed app (TextEdit's) are another process's windows, inside that app's tree.
 let PANEL_SERVICES: Set<String> = ["com.apple.appkit.xpc.openAndSavePanelService"]
 
@@ -342,6 +362,7 @@ func clickable(_ x: Double, _ y: Double, _ pids: Set<pid_t>) throws {
     var pid: pid_t = 0
     AXUIElementGetPid(e, &pid)
     guard pids.contains(pid) else { throw Refusal("Not done: \(Int(x)),\(Int(y)) isn't on an app you may use.", "outside") }
+    if cavvyPage(windowTitle(of: e)) { throw Refusal("Not done: that's Cavvy's own page.", "outside") }
     // The Apple menu (shut down, log out, System Settings) is in every app's menu bar.
     var el: AXUIElement? = e
     var inMenu = false
@@ -365,8 +386,23 @@ func clickable(_ x: Double, _ y: Double, _ pids: Set<pid_t>) throws {
     if !inside { throw Refusal("Not done: \(Int(x)),\(Int(y)) isn't on a window of an app you may use.", "outside") }
 }
 
-func typeable(_ pids: Set<pid_t>) throws {
+/// The focused app's menu bar items, the Apple menu first.
+func menuBarItems(_ app: AXUIElement) -> [AXUIElement] {
+    guard let bar = attribute(app, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return [] }
+    return elements(attribute(bar as! AXUIElement, kAXChildrenAttribute))
+}
+
+/// Whether keys may go now: an app you may use has focus, the Apple menu isn't open (keys would choose in it), and
+/// the focused window isn't Cavvy's own page. Returns whether one of the app's menus is open.
+@discardableResult
+func typeable(_ pids: Set<pid_t>) throws -> Bool {
     guard let pid = focusedPid(), pids.contains(pid) else { throw Refusal("Not done: an app you may use isn't in front, so keys would go elsewhere.", "front") }
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 1)
+    let items = menuBarItems(app)
+    if let apple = items.first, flag(attribute(apple, kAXSelectedAttribute)) { throw Refusal("Not done: the Apple menu is open, and it isn't an app's.", "outside") }
+    if let w = attribute(app, kAXFocusedWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID(), cavvyPage(text(attribute(w as! AXUIElement, kAXTitleAttribute))) { throw Refusal("Not done: that's Cavvy's own page.", "outside") }
+    return items.contains { flag(attribute($0, kAXSelectedAttribute)) }
 }
 
 /// A screen's frame in global points from the top left of the main display, as CGEvents and accessibility have them.
@@ -525,23 +561,30 @@ func flags(_ modifiers: [String]) -> CGEventFlags {
     return f
 }
 
-/// Shortcuts no app's own: logging out, locking the screen, force quit, pictures of the whole screen.
-func systemShortcut(_ key: String, _ f: CGEventFlags) -> Bool {
-    let k = key.lowercased()
+/// The key that types this character on the current layout, without Shift.
+func plainKey(_ ch: String) -> CGKeyCode? {
+    guard let (c, shift) = keysOfLayout[ch], !shift else { return nil }
+    return c
+}
+
+/// Shortcuts no app's own, by the key and modifiers that go out: logging out, locking the screen, force quit,
+/// pictures of the whole screen, and moving to the menu bar (Control-F2), whence keys could reach the Apple menu.
+func systemShortcut(_ code: CGKeyCode, _ f: CGEventFlags) -> Bool {
     let cmd = f.contains(.maskCommand)
-    if cmd && (f.contains(.maskShift) || f.contains(.maskControl)) && k == "q" { return true }
-    if cmd && f.contains(.maskAlternate) && k == "escape" { return true }
-    if cmd && f.contains(.maskShift) && ["3", "4", "5", "6"].contains(k) { return true }
+    if cmd && (f.contains(.maskShift) || f.contains(.maskControl)) && code == plainKey("q") { return true }
+    if cmd && f.contains(.maskAlternate) && code == 53 { return true }
+    if cmd && f.contains(.maskShift) && ["3", "4", "5", "6"].compactMap(plainKey).contains(code) { return true }
+    if f.contains(.maskControl) && code == 120 { return true }
     return false
 }
 
-/// One of the Apple menu's own shortcuts, in the app that has focus (its menu bar has the Apple menu first).
-func appleMenuShortcut(_ key: String, _ f: CGEventFlags, _ pid: pid_t) -> Bool {
+/// One of the Apple menu's own shortcuts, by key and modifiers, in the app that has focus.
+func appleMenuShortcut(_ code: CGKeyCode, _ f: CGEventFlags, _ pid: pid_t) -> Bool {
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 1)
-    guard let bar = attribute(app, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID(), let apple = elements(attribute(bar as! AXUIElement, kAXChildrenAttribute)).first, let menu = elements(attribute(apple, kAXChildrenAttribute)).first else { return false }
+    guard let apple = menuBarItems(app).first, let menu = elements(attribute(apple, kAXChildrenAttribute)).first else { return false }
     for item in elements(attribute(menu, kAXChildrenAttribute)) {
-        guard let ch = text(attribute(item, kAXMenuItemCmdCharAttribute)), ch.lowercased() == key.lowercased() else { continue }
+        guard let ch = text(attribute(item, kAXMenuItemCmdCharAttribute)), let c = keysOfLayout[ch.lowercased()]?.0 ?? keysOfLayout[ch]?.0, c == code else { continue }
         // kAXMenuItemModifier: Shift 1, Option 2, Control 4, no Command 8.
         let m = Int(text(attribute(item, kAXMenuItemCmdModifiersAttribute)) ?? "0") ?? 0
         if f.contains(.maskCommand) == (m & 8 == 0) && f.contains(.maskShift) == (m & 1 != 0) && f.contains(.maskAlternate) == (m & 2 != 0) && f.contains(.maskControl) == (m & 4 != 0) { return true }
@@ -563,10 +606,11 @@ func press(_ key: String, modifiers: [String], pids: Set<pid_t>, _ g: Guard) thr
         if shift { extra.insert(.maskShift) }
     }
     let f = flags(modifiers).union(extra)
-    if systemShortcut(key, f) || (focusedPid().map { appleMenuShortcut(key, f, $0) } ?? false) { throw Refusal("Not done: that shortcut is the system's, not the app's.", "system") }
+    if systemShortcut(code, f) || (focusedPid().map { appleMenuShortcut(code, f, $0) } ?? false) { throw Refusal("Not done: that shortcut is the system's, not the app's.", "system") }
     // Checked before the key goes: once it's down, it's pressed.
     try g.check()
-    try typeable(pids)
+    // Left and right move between open menus, round to the Apple menu: a menu is clicked instead.
+    if try typeable(pids), code == 123 || code == 124 { throw Refusal("Not done: with a menu open, moving between menus could reach the Apple menu. Click the menu instead.", "outside") }
     let d = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
     d?.flags = f
     post(d)
@@ -728,7 +772,7 @@ func screenshot(_ pids: Set<pid_t>) throws -> [String: Any] {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             let wins = content.windows.filter { w in
                 guard let owner = w.owningApplication else { return false }
-                return pids.contains(owner.processID) && w.isOnScreen && w.windowLayer >= 0 && w.windowLayer < 1000 && w.frame.width > 1 && w.frame.height > 1
+                return pids.contains(owner.processID) && !cavvyPage(w.title) && w.isOnScreen && w.windowLayer >= 0 && w.windowLayer < 1000 && w.frame.width > 1 && w.frame.height > 1
             }
             guard !wins.isEmpty else { throw Refusal("No window of an app you may use is on the screen.", "nowindow") }
             func area(_ d: SCDisplay) -> CGFloat { wins.reduce(0) { a, w in let r = w.frame.intersection(d.frame); return a + (r.isNull ? 0 : r.width * r.height) } }
@@ -852,10 +896,9 @@ Thread.detachNewThread {
             } catch {
                 reply = ["error": "\(error)"]
             }
-            let (human, used) = humans()
             reply["id"] = id
-            reply["human"] = human
-            reply["used"] = used
+            reply["human"] = humans()
+            reply["used"] = used(pidsOf(cmd))
             send(reply)
         }
     }

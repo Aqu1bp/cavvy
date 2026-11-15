@@ -124,8 +124,6 @@ export interface DesktopHelperLike {
     readonly pid: number;
     /** How many times the person has used the mouse or keyboard since it started (as last heard). */
     readonly human: number;
-    /** How many of those were clicks, keys or scrolls aimed at anything but Cavvy (as last heard). */
-    readonly used: number;
     readonly ready: Promise<Reply>;
     call(command: Record<string, unknown>, timeoutMs?: number): Promise<Reply>;
     /** Stops the actions sent with this token, under way or still to come. */
@@ -150,7 +148,6 @@ export class DesktopHelper implements DesktopHelperLike {
     private exited = false;
     private exits: (() => void)[] = [];
     human = 0;
-    used = 0;
     readonly ready: Promise<Reply>;
 
     private constructor(private child: ChildProcessByStdio<Writable, Readable, Readable>) {
@@ -172,7 +169,6 @@ export class DesktopHelper implements DesktopHelperLike {
                     continue;
                 }
                 if (typeof msg.human === "number") this.human = Math.max(this.human, msg.human);
-                if (typeof msg.used === "number") this.used = Math.max(this.used, msg.used);
                 if (msg.event === "ready") readyResolve(msg);
                 else if (typeof msg.id === "number") this.settle(msg.id, msg);
             }
