@@ -1,6 +1,6 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createRenderEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
-import { endWriting, highlight, highlightMore, newWriting } from "../../lib/highlight";
+import { createEffect, createRenderEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { endWriting, highlight, highlighted, highlightMore, newWriting } from "../../lib/highlight";
 import { growing, trailBlock } from "../../lib/stream-dom";
 import { CopyButton } from "../ui/bits";
 
@@ -15,7 +15,14 @@ export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean;
 
 function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean; bare?: boolean; maxHeight?: number }) {
     /** The highlighted start of the code (all of it once it's finished): the source it covers and its HTML; `lines`: a box for each line. */
-    const [lit, setLit] = createSignal<{ code: string; lang?: string; html: string; lines?: boolean }>();
+    // Highlighted before (shown again: its session switched back to): colored from its first frame.
+    type Lit = { code: string; lang?: string; html: string; lines?: boolean };
+    const [lit, setLit] = createSignal<Lit | undefined>(untrack((): Lit | undefined => {
+        if (p.streaming || !p.lang) return undefined;
+        const line = p.code.endsWith("\n");
+        const html = highlighted(line ? p.code.slice(0, -1) : p.code, p.lang);
+        return html === undefined ? undefined : { code: p.code, lang: p.lang, html: line ? html + "\n" : html };
+    }));
     const [failure, setFailure] = createSignal<unknown>();
     createEffect(() => { if (failure()) throw failure(); });
     // Written while the reply streams: it comes out in the reply's ink trail (lib/stream-dom.ts).
@@ -100,6 +107,8 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
                 if (streaming) return schedule();
                 clearTimeout(timer);
                 timer = undefined;
+                const now = lit();
+                if (now && !now.lines && now.code === code && now.lang === lang) return;
                 run(code, lang);
             },
         ),
