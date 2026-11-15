@@ -12,6 +12,15 @@
     padding: calc(20 * var(--sp));
 }
 
+.server-dialog:focus {
+    outline: none;
+}
+
+.server-print {
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
 .server-dialog h2 {
     font-size: 1.05rem;
 }
@@ -44,14 +53,6 @@
     color: var(--fg-2);
 }
 
-.server-key {
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border: 0.5px solid var(--line);
-    border-radius: calc(8 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
-}
-
 .server-problem {
     display: flex;
     flex-direction: column;
@@ -74,62 +75,34 @@
     display: contents;
 }
 
-/* Over a window that had been on its server, when getting back needs the user. */
-.server-over {
-    position: fixed;
-    inset: 0;
-    z-index: 900;
-    background: var(--sheet);
-}
-
-.server-cover .server-actions {
-    justify-content: center;
-}
-
-.server-cover .server-key,
-.server-cover .server-problem {
-    max-width: calc(520 * var(--sp));
-}
-
-/* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
+/* One mark in the sidebar's foot for the servers that can't be reached as they are (components/OtherMachines.tsx). */
 .sidebar .others {
+    display: flex;
     flex: none;
-    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
 }
 
 .sidebar .others:empty {
     display: none;
 }
 
-.others .om-h {
-    display: flex;
-    align-items: baseline;
-    gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border: 0;
-    border-radius: calc(6 * var(--sp));
-    background: none;
-    color: var(--rail-fg-2);
-    font: inherit;
-    font-size: 0.786rem;
-    font-weight: 600;
-    text-align: left;
-    cursor: pointer;
+.hb.om-mark {
+    position: relative;
+    color: var(--warn);
 }
 
-.others .om-h:hover {
-    color: var(--rail-fg);
-}
-
-.others .om-n {
-    flex: none;
-    font-weight: 400;
-}
-
-.others .om-h:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+.om-count {
+    position: absolute;
+    right: calc(1 * var(--sp));
+    bottom: calc(2 * var(--sp));
+    min-width: calc(13 * var(--sp));
+    padding: 0 calc(3 * var(--sp));
+    border-radius: calc(7 * var(--sp));
+    background: var(--warn);
+    color: var(--sheet);
+    font-size: 0.643rem;
+    font-weight: 700;
+    line-height: calc(13 * var(--sp));
+    text-align: center;
 }
 
 /* The server a set-aside or archived session is on, after its title (the sidebar's rows: components/Sidebar.tsx). */

@@ -2,17 +2,18 @@
 // window shows while it reaches a server. The work is this computer's own Cavvy's (src/servers/manager.ts); here are
 // the questions and the words. Loaded when first needed (state/servers.ts), not with the window.
 
-import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
+import { createEffect, createResource, createRoot, createSignal, createUniqueId, For, Match, on, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
 import { Check, ChevronDown, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
-import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
+import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked, type MachineIssue } from "../lib/machines";
 import { machine, os } from "../lib/platform";
-import { app, reportError, rpc, setApp, toast } from "../state/app";
+import { activate, app, createSession, reportError, requestTrust, rpc, setApp, toast } from "../state/app";
+import { RpcError } from "../lib/rpc";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
-import { watchOthers } from "./OtherMachines";
+import { machineNote, watchOthers } from "./OtherMachines";
 import "../lib/lent";
 import "../styles/servers.css";
 
@@ -59,6 +60,7 @@ export function openMachines(anchor: HTMLElement, align: "start" | "end" = "star
  */
 export function connected() {
     if (machine) setMachineIssue(undefined);
+    else takeHandoff();
     watchOthers(HERE);
 }
 
@@ -80,32 +82,8 @@ export function mountWhere(el: HTMLElement): () => void {
 }
 
 /** Shows, in `el`, what a window on a server shows until it's connected (MachineCover). */
-export function mountCover(el: HTMLElement, reconnect: () => void) {
-    render(() => <MachineCover reconnect={reconnect} />, el);
-}
-
-/**
- * A window that was on its server and has lost it keeps what it shows, under the window's own "Reconnecting…" (which
- * says why it can't be reached: lib/machines.ts). Only when getting back needs the user (the server's key is new, it
- * runs another version, Cavvy there was stopped) does this take the window over, with the question.
- */
-const needsUser = () => {
-    const issue = machineIssue()?.kind;
-    return app.hello !== undefined && app.conn !== "open" && (issue === "unknown-host" || issue === "other-version" || issue === "stopped");
-};
-if (machine) {
-    const host = document.createElement("div");
-    document.body.append(host);
-    render(
-        () => (
-            <Show when={needsUser()}>
-                <div class="splash server-over" role="alertdialog" aria-label={`Not connected to ${machine}`}>
-                    <MachineCover reconnect={() => rpc.reconnectNow()} />
-                </div>
-            </Show>
-        ),
-        host,
-    );
+export function mountCover(el: HTMLElement) {
+    render(() => <MachineCover />, el);
 }
 
 /** What this computer is called in the list of machines. */
@@ -116,18 +94,24 @@ const servers = () => homeRpc(rpc);
 function Problem(p: { problem: ServerProblem }) {
     return (
         <div class="server-problem">
-            <p>{p.problem.message}</p>
+            <Show when={p.problem.message}>
+                <p>{p.problem.message}</p>
+            </Show>
             <Show when={p.problem.detail}>{(d) => <p class="muted small">{d()}</p>}</Show>
             <Show when={p.problem.fix}>{(f) => <p class="mono small">{f()}</p>}</Show>
         </div>
     );
 }
 
+/** Asking to trust a server's key: why it's asked, and the key, quietly, for whoever checks it. */
 function HostKey(p: { unknown: UnknownHost }) {
     return (
-        <div class="server-key">
-            <For each={p.unknown.fingerprints}>{(f) => <div class="mono small">{f}</div>}</For>
-        </div>
+        <>
+            <p class="muted">{HERE} hasn't connected to it before.</p>
+            <div class="server-print mono small muted">
+                <For each={p.unknown.fingerprints}>{(f) => <div>{f}</div>}</For>
+            </div>
+        </>
     );
 }
 
@@ -180,10 +164,10 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
             <For each={list() ?? []}>
                 {(s) => (
                     <div class="server-row">
-                        <button role="menuitemradio" aria-checked={machine === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), machine !== s.name && switchMachine(s.name))}>
+                        <button role="menuitemradio" aria-checked={machine === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), machine !== s.name && goTo(s.name))}>
                             <span class="grow">{s.name}</span>
-                            <Show when={s.cost}>
-                                <span class="server-cost">{s.cost}</span>
+                            <Show when={machineNote(s.name)} fallback={<Show when={s.cost}><span class="server-cost">{s.cost}</span></Show>}>
+                                {(note) => <span class="server-cost tone-warn">{note()}</span>}
                             </Show>
                             <Show when={machine === s.name}>
                                 <Check size={14} />
@@ -330,7 +314,7 @@ function AddServerDialog() {
                     <Match when={step().at === "trust" && (step() as Extract<AddStep, { at: "trust" }>)}>
                         {(s) => (
                             <>
-                                <h2 id={titleId}>Trust {s().unknown.host}?</h2>
+                                <h2 id={titleId}>Trust {name().trim()}?</h2>
                                 <HostKey unknown={s().unknown} />
                                 <div class="server-actions">
                                     <button class="btn secondary" onClick={() => setStep({ at: "form" })}>
@@ -377,7 +361,14 @@ function AddServerDialog() {
                                     <button class="btn secondary" onClick={close}>
                                         Close
                                     </button>
-                                    <button class="btn primary" onClick={() => switchMachine(s().name)}>
+                                    <button
+                                        class="btn primary"
+                                        onClick={() => {
+                                            const to = s().name;
+                                            close();
+                                            goTo(to);
+                                        }}
+                                    >
                                         Open {s().name}
                                     </button>
                                 </div>
@@ -406,156 +397,384 @@ function AddServerDialog() {
     );
 }
 
-/** What the window shows instead of its sessions while it isn't on its server yet, or has lost it. */
-function MachineCover(p: { reconnect: () => void }) {
-    const [updating, setUpdating] = createSignal<string>();
-    /** Updating would stop work there: what's working, while the user is asked. */
-    const [busy, setBusy] = createSignal<string>();
-    const retry = () => {
-        userAsked();
-        setMachineIssue({ kind: "connecting" });
-        p.reconnect();
-    };
-    const update = async (force = false) => {
-        if (!machine) return;
-        setUpdating(`Updating ${machine}…`);
-        try {
-            const r = await servers().call("servers.update", { name: machine, force });
-            setUpdating(undefined);
-            if (r.status === "updated") retry();
-            else if (r.status === "busy") setBusy(r.working ? `${r.working} ${r.working === 1 ? "session is" : "sessions are"} working there.` : `${r.waiting} ${r.waiting === 1 ? "session is" : "sessions are"} waiting for you there.`);
-            else if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
-            // Still the same question, with why it didn't work: the window's connection waits on the answer to it.
-            else setMachineIssue({ kind: "other-version", problem: r.problem });
-        } catch (e) {
-            setUpdating(undefined);
-            setMachineIssue({ kind: "other-version", problem: { message: (e as Error).message } });
-        }
-    };
-    // Made anew wherever it's shown: one element can't be in two of the states below.
-    const Back = () => (
-        <button class="btn secondary" onClick={() => switchMachine(undefined)}>
-            {HERE}
-        </button>
-    );
-    // More than "Connecting…": something to read or answer. (The desktop app keeps the last machine's view up until
-    // then: desktop-electron/src/preload.ts ASKS.)
-    const asks = () => {
+/**
+ * What a window on a server shows until it's first connected there: "Connecting…", and what setting Cavvy up there
+ * is at. Anything else (it can't be reached, a question) goes back to this computer, where it's asked over what the
+ * user was looking at (handBack).
+ */
+function MachineCover() {
+    const asks = () => machineIssue()?.kind === "connecting" && (machineIssue() as Extract<MachineIssue, { kind: "connecting" }>).percent !== undefined;
+    createEffect(() => {
         const i = machineIssue();
-        return Boolean(updating() || busy()) || (i !== undefined && (i.kind !== "connecting" || i.percent !== undefined));
-    };
+        if (machine && app.hello === undefined && i && i.kind !== "connecting") handBack(machine, i);
+    });
     return (
         <div class="server-cover" classList={{ "server-asks": asks() }}>
-            <Switch
-                fallback={
-                    <>
-                        <Logo size={44} />
-                        <Spinner size={18} />
-                        <div class="muted">{updating() ?? `Connecting to ${machine}…`}</div>
-                        <Back />
-                    </>
-                }
-            >
-                <Match when={updating()}>
-                    <Logo size={44} />
-                    <Spinner size={18} />
-                    <div class="muted">{updating()}</div>
-                </Match>
-                <Match when={busy()}>
-                    <Server size={36} />
-                    <h2>Stop work on {machine} to update?</h2>
-                    <p class="muted">{busy()}</p>
-                    <div class="server-actions">
-                        <button class="btn secondary" onClick={() => setBusy(undefined)}>
-                            Cancel
-                        </button>
-                        <button
-                            class="btn danger"
-                            onClick={() => {
-                                setBusy(undefined);
-                                void update(true);
-                            }}
-                        >
-                            Stop and update
-                        </button>
-                    </div>
-                </Match>
-                <Match when={machineIssue()?.kind === "connecting" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "connecting" }>)}>
-                    {(i) => (
-                        <>
-                            <Logo size={44} />
-                            <Spinner size={18} />
-                            <div class="muted">
-                                {i().text ?? `Connecting to ${machine}…`}
-                                <Show when={i().percent !== undefined}> {i().percent}%</Show>
-                            </div>
-                            <Back />
-                        </>
-                    )}
-                </Match>
-                <Match when={machineIssue()?.kind === "unknown-host" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "unknown-host" }>)}>
-                    {(i) => (
-                        <>
-                            <Server size={36} />
-                            <h2>Trust {i().unknown.host}?</h2>
-                            <HostKey unknown={i().unknown} />
-                            <div class="server-actions">
-                                <Back />
-                                <button
-                                    class="btn primary"
-                                    onClick={() => {
-                                        trustMachine(i().unknown.fingerprints);
-                                        retry();
-                                    }}
-                                >
-                                    Trust
-                                </button>
-                            </div>
-                        </>
-                    )}
-                </Match>
-                <Match when={machineIssue()?.kind === "other-version" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "other-version" }>)}>
-                    {(i) => (
-                        <>
-                            <Server size={36} />
-                            <h2>{machine} runs another version of Cavvy</h2>
-                            <Show when={i().problem}>{(p) => <Problem problem={p()} />}</Show>
-                            <div class="server-actions">
-                                <Back />
-                                <button class="btn primary" onClick={() => void update()}>
-                                    Update {machine}
-                                </button>
-                            </div>
-                        </>
-                    )}
-                </Match>
-                <Match when={machineIssue()?.kind === "stopped"}>
-                    <Server size={36} />
-                    <h2>Start Cavvy on {machine}?</h2>
-                    <p class="muted">It was stopped there.</p>
-                    <div class="server-actions">
-                        <Back />
-                        <button class="btn primary" onClick={retry}>
-                            Start
-                        </button>
-                    </div>
-                </Match>
-                <Match when={machineIssue()?.kind === "failed" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "failed" }>)}>
-                    {(i) => (
-                        <>
-                            <Server size={36} class="tone-warn" />
-                            <h2>Can't connect to {machine}</h2>
-                            <Problem problem={i().problem} />
-                            <div class="server-actions">
-                                <Back />
-                                <button class="btn primary" onClick={retry}>
-                                    Try again
-                                </button>
-                            </div>
-                        </>
-                    )}
-                </Match>
-            </Switch>
+            <Logo size={44} />
+            <Spinner size={18} />
+            <div class="muted">
+                {(machineIssue() as Extract<MachineIssue, { kind: "connecting" }> | undefined)?.text ?? `Connecting to ${machine}…`}
+                <Show when={asks()}> {(machineIssue() as Extract<MachineIssue, { kind: "connecting" }>).percent}%</Show>
+            </div>
+            <button class="btn secondary" onClick={() => switchMachine(undefined)}>
+                {HERE}
+            </button>
         </div>
+    );
+}
+
+/** What a window carries to this computer when it goes back there with something to show (sessionStorage). */
+const HANDOFF_KEY = "cavvy.handoff";
+interface Handoff {
+    /** A server that couldn't be reached, or asks something: shown over this computer's view. */
+    reach?: { name: string; session?: string; folder?: string; issue: MachineIssue };
+    /** What to ask an agent here, in a new session. */
+    ask?: string;
+}
+
+/** Back to this computer, with what it's to show or do there. */
+function handOff(h: Handoff) {
+    try {
+        sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(h));
+    } catch {
+        // Nothing carried: the user is on this computer still.
+    }
+    switchMachine(undefined);
+}
+
+/** A window that never got onto its server: back where the user was, asked or told there. Once: the window then reloads. */
+let handedBack = false;
+function handBack(name: string, issue: MachineIssue) {
+    if (handedBack) return;
+    handedBack = true;
+    let to: { session?: string; folder?: string } = {};
+    try {
+        const nav = JSON.parse(sessionStorage.getItem("cavvy.navigation") ?? "null") as { activeId?: string; homeCwd?: string } | null;
+        to = { session: nav?.activeId, folder: nav?.homeCwd };
+    } catch {
+        // Opened on the new-session screen there.
+    }
+    handOff({ reach: { name, ...to, issue } });
+}
+
+/** What a window on this computer was handed when it came back (handOff): taken once. */
+function takeHandoff() {
+    if (machine) return;
+    let h: Handoff | undefined;
+    try {
+        h = JSON.parse(sessionStorage.getItem(HANDOFF_KEY) ?? "null") ?? undefined;
+        sessionStorage.removeItem(HANDOFF_KEY);
+    } catch {
+        return;
+    }
+    if (h?.reach) openReach(h.reach, h.reach.issue);
+    if (h?.ask) {
+        const text = h.ask;
+        // Sent once this computer's projects are known: the session starts in the one that's open.
+        createRoot((done) =>
+            createEffect(() => {
+                if (!app.sessionsLoaded) return;
+                done();
+                void askAgent(text);
+            }),
+        );
+    }
+}
+
+/** Going to a server, or one of its sessions: the window stays where it is until the server answers. */
+interface Reach {
+    name: string;
+    session?: string;
+    folder?: string;
+    issue: MachineIssue;
+    /** Shown: it's taking a while, or there's something to say. A quick connection shows nothing. */
+    shown: boolean;
+    /** Being updated there. */
+    updating?: boolean;
+    /** Updating would stop work there: what's working, while the user is asked. */
+    busy?: string;
+}
+const [reach, setReach] = createSignal<Reach>();
+/** Each attempt's number: only the latest one's answer counts (one that was cancelled or replaced says nothing). */
+let attempt = 0;
+/** How long a connection may take before the dialog says it's connecting. */
+const QUIET_MS = 400;
+
+/**
+ * Puts the window on another machine, or on one of its sessions (or a new session in `folder` there). A server is
+ * connected to first, from here: the window moves only once it's there, and anything else is said over what the user
+ * was looking at.
+ */
+export function goTo(name: string | undefined, session?: string, folder?: string) {
+    if (!name) return switchMachine(undefined, session, folder);
+    void connectTo({ name, session, folder });
+}
+
+async function connectTo(to: Pick<Reach, "name" | "session" | "folder">, trust?: string[]) {
+    mountReach();
+    const mine = ++attempt;
+    // Asked again from the dialog, what it says stays until the answer, or until it's taking a while: a quick
+    // answer would otherwise flash "Connecting…" (or close the dialog and open it again).
+    const was = reach();
+    if (!was?.shown) setReach({ ...to, issue: { kind: "connecting" }, shown: false });
+    const slow = setTimeout(() => attempt === mine && setReach((r) => r && { ...r, issue: r.issue.kind === "connecting" ? r.issue : { kind: "connecting" }, shown: true }), QUIET_MS);
+    try {
+        // The window that's on the server (it lost it) asks again by its own connection, which waits on this answer.
+        if (to.name === machine) {
+            if (trust) trustMachine(trust);
+            userAsked();
+            setMachineIssue({ kind: "connecting" });
+            rpc.reconnectNow();
+            setReach(undefined);
+            return;
+        }
+        const r = await servers().call("servers.connect", { name: to.name, ahead: true, ...(trust ? { trust } : {}) });
+        if (attempt !== mine) return;
+        if (r.status === "connected") {
+            setReach(undefined);
+            switchMachine(to.name, to.session, to.folder);
+            return;
+        }
+        setReach({ ...to, shown: true, issue: r.status === "failed" ? { kind: "failed", problem: r.problem } : r.status === "unknown-host" ? { kind: "unknown-host", unknown: r.unknown } : { kind: r.status } });
+    } catch (e) {
+        if (attempt === mine) setReach({ ...to, shown: true, issue: { kind: "failed", problem: { message: (e as Error).message } } });
+    } finally {
+        clearTimeout(slow);
+    }
+}
+
+/** Says what reaching `to` needs, without trying it again. */
+function openReach(to: Pick<Reach, "name" | "session" | "folder">, issue: MachineIssue) {
+    mountReach();
+    attempt++;
+    setReach({ name: to.name, session: to.session, folder: to.folder, issue, shown: true });
+}
+
+function cancelReach() {
+    attempt++;
+    setReach(undefined);
+}
+
+// Below what it uses: run as the module loads.
+/**
+ * A window that was on its server and has lost it keeps what it shows, under the window's own "Reconnecting…" (which
+ * says why it can't be reached: lib/machines.ts). Only when getting back needs the user (the server's key is new, it
+ * runs another version, Cavvy there was stopped) is it asked, in a dialog over what the window shows.
+ */
+const needsUser = () => {
+    const issue = machineIssue()?.kind;
+    return app.hello !== undefined && app.conn !== "open" && (issue === "unknown-host" || issue === "other-version" || issue === "stopped");
+};
+if (machine)
+    createRoot(() =>
+        createEffect(
+            on(needsUser, (needs) => {
+                if (needs) openReach({ name: machine! }, machineIssue()!);
+                else if (reach()?.name === machine) setReach(undefined);
+            }),
+        ),
+    );
+
+let reachMounted = false;
+function mountReach() {
+    if (reachMounted) return;
+    reachMounted = true;
+    const host = document.createElement("div");
+    document.body.append(host);
+    render(() => <ReachDialog />, host);
+}
+
+/** On this computer: "this Mac", for a sentence. */
+const here = HERE === "This Mac" ? "this Mac" : "this computer";
+
+/** In a new session on this computer: an agent there has the provider's CLI and the user's ssh setup. */
+async function askAgent(text: string): Promise<void> {
+    if (machine) return handOff({ ask: text });
+    // The folder doesn't matter to the task: the open project, the last one, else the home folder.
+    const cwd = app.homeCwd ?? app.projects[0]?.path ?? app.hello?.homeDir;
+    if (!cwd) return;
+    try {
+        const h = await createSession(cwd, app.homeMode);
+        await rpc.call("session.send", { id: h.id, text });
+        await activate(h.id);
+    } catch (e) {
+        // Its configuration needs the user's word first: asked, then sent, so the ask is never lost.
+        if (e instanceof RpcError && e.code === "needs_trust") return requestTrust(cwd, () => void askAgent(text).catch(reportError));
+        throw e;
+    }
+}
+
+/** What the agent is told: which server, what was seen, and to ask before changing anything. */
+async function agentAsk(name: string, problem: ServerProblem): Promise<string> {
+    const s = await servers()
+        .call("servers.list", {})
+        .then((r) => r.servers.find((x) => x.name === name))
+        .catch(() => undefined);
+    // The way Cavvy connects, word for word, so the agent needn't look for where the server is defined.
+    const ssh = s ? ["ssh", ...(s.port ? ["-p", String(s.port)] : []), ...(s.identityFile ? ["-i", s.identityFile] : []), s.destination].join(" ") : undefined;
+    return [
+        `I can't connect to my server ${name} from ${here}.${ssh ? ` Cavvy connects to it with: ${ssh}` : ""}`,
+        `Cavvy says: ${[problem.message, problem.hint].filter(Boolean).join(" ")}`,
+        ...(problem.detail ? [`ssh says: ${problem.detail.replace(/^ssh: /, "")}`] : []),
+        ...(s?.provider ? [`It's on ${s.provider}.`] : []),
+        "",
+        `Find out why, with ${here}'s ssh and the provider's command-line tools, and fix it. Ask me before you change anything.`,
+    ].join("\n");
+}
+
+/** Reaching a server, over whatever the window shows: connecting, what it asks, or why it can't be reached. */
+function ReachDialog() {
+    const titleId = createUniqueId();
+    const r = () => reach();
+    const lost = () => r()?.name === machine;
+    // What it's doing, as this computer's Cavvy says it.
+    servers().onEvent((e) => {
+        const now = r();
+        if (e.type === "servers.progress" && now && e.name === now.name && now.issue.kind === "connecting") setReach({ ...now, shown: true, issue: { kind: "connecting", text: e.text, percent: e.percent } });
+    });
+    const again = (trust?: string[]) => {
+        const now = r();
+        if (now) void connectTo(now, trust);
+    };
+    const update = async (force = false) => {
+        const now = r();
+        if (!now) return;
+        setReach({ ...now, updating: true, busy: undefined });
+        try {
+            const u = await servers().call("servers.update", { name: now.name, force });
+            if (reach()?.name !== now.name) return;
+            if (u.status === "updated") return again();
+            if (u.status === "busy") return setReach({ ...now, updating: false, busy: u.working ? `${u.working} ${u.working === 1 ? "session is" : "sessions are"} working there.` : `${u.waiting} ${u.waiting === 1 ? "session is" : "sessions are"} waiting for you there.` });
+            setReach({ ...now, updating: false, issue: u.status === "unknown-host" ? { kind: "unknown-host", unknown: u.unknown } : { kind: "other-version", problem: u.problem } });
+        } catch (e) {
+            if (reach()?.name === now.name) setReach({ ...now, updating: false, issue: { kind: "other-version", problem: { message: (e as Error).message } } });
+        }
+    };
+    const fix = async (problem: ServerProblem) => {
+        const now = r();
+        if (!now) return;
+        const text = await agentAsk(now.name, problem);
+        cancelReach();
+        await askAgent(text).catch(reportError);
+    };
+    // A window that lost its server can't put the question away: it goes back to this computer, or answers it.
+    const close = () => !lost() && cancelReach();
+    // A window that lost its server has nothing to show without it: Cancel takes it back to this computer.
+    const Leave = () => (
+        <button class="btn secondary" onClick={() => (lost() ? switchMachine(undefined) : cancelReach())}>
+            Cancel
+        </button>
+    );
+    const issue = <K extends MachineIssue["kind"]>(kind: K) => (r()?.issue.kind === kind ? (r()!.issue as Extract<MachineIssue, { kind: K }>) : undefined);
+    const title = (text: string) => text.replace(/\.$/, "");
+    return (
+        <Dialog open={Boolean(r()?.shown)} onClose={close} bare labelledBy={titleId} width={440}>
+            {/* Focused itself, not a button: it can open while the user is typing, and Enter mustn't answer it. */}
+            <div class="server-dialog" tabindex="-1" autofocus>
+                <Switch>
+                    <Match when={r()?.updating}>
+                        <h2 id={titleId}>Updating {r()!.name}…</h2>
+                        <div class="server-working">
+                            <Spinner size={16} />
+                        </div>
+                    </Match>
+                    <Match when={r()?.busy}>
+                        {(busy) => (
+                            <>
+                                <h2 id={titleId}>Stop work on {r()!.name} to update?</h2>
+                                <p class="muted">{busy()}</p>
+                                <div class="server-actions">
+                                    <button class="btn secondary" onClick={() => setReach((now) => now && { ...now, busy: undefined })}>
+                                        Cancel
+                                    </button>
+                                    <button class="btn danger" onClick={() => void update(true)}>
+                                        Stop and update
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </Match>
+                    <Match when={issue("connecting")}>
+                        {(i) => (
+                            <>
+                                <h2 id={titleId}>Connecting to {r()!.name}…</h2>
+                                <div class="server-working">
+                                    <Spinner size={16} />
+                                    <Show when={i().text}>
+                                        <span>
+                                            {i().text}
+                                            <Show when={i().percent !== undefined}> {i().percent}%</Show>
+                                        </span>
+                                    </Show>
+                                </div>
+                                <div class="server-actions">
+                                    <Leave />
+                                </div>
+                            </>
+                        )}
+                    </Match>
+                    <Match when={issue("unknown-host")}>
+                        {(i) => (
+                            <>
+                                <h2 id={titleId}>Trust {r()!.name}?</h2>
+                                <HostKey unknown={i().unknown} />
+                                <div class="server-actions">
+                                    <Leave />
+                                    <button class="btn primary" onClick={() => again(i().unknown.fingerprints)}>
+                                        Trust
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </Match>
+                    <Match when={issue("other-version")}>
+                        {(i) => (
+                            <>
+                                <h2 id={titleId}>Update Cavvy on {r()!.name}?</h2>
+                                <p class="muted">It runs another version.</p>
+                                <Show when={i().problem}>{(p) => <Problem problem={p()} />}</Show>
+                                <div class="server-actions">
+                                    <Leave />
+                                    <button class="btn primary" onClick={() => void update()}>
+                                        Update
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </Match>
+                    <Match when={issue("stopped")}>
+                        <h2 id={titleId}>Start Cavvy on {r()!.name}?</h2>
+                        <p class="muted">It was stopped there.</p>
+                        <div class="server-actions">
+                            <Leave />
+                            <button class="btn primary" onClick={() => again()}>
+                                Start
+                            </button>
+                        </div>
+                    </Match>
+                    <Match when={issue("failed")}>
+                        {(i) => (
+                            <>
+                                <h2 id={titleId}>{title(i().problem.message)}</h2>
+                                <Show when={i().problem.hint} fallback={<Problem problem={{ ...i().problem, message: "" }} />}>
+                                    {(hint) => <p class="muted">{hint()}</p>}
+                                </Show>
+                                <div class="server-actions">
+                                    <Leave />
+                                    <button class="btn" classList={{ secondary: !i().problem.offline, primary: i().problem.offline }} onClick={() => again()}>
+                                        Try again
+                                    </button>
+                                    <Show when={!i().problem.offline}>
+                                        <button class="btn primary" onClick={() => void fix(i().problem)}>
+                                            Fix with an agent
+                                        </button>
+                                    </Show>
+                                </div>
+                            </>
+                        )}
+                    </Match>
+                </Switch>
+            </div>
+        </Dialog>
     );
 }

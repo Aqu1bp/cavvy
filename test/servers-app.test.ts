@@ -19,6 +19,8 @@ const { startServer } = await import("../src/server/server");
 const { setUpServer } = await import("../src/servers/install");
 const { remoteStatus, revokeOverSsh, stopRemote } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
+// Whatever network the machine running these has: a server that doesn't answer is told from one that's offline.
+(await import("../src/servers/ssh")).network.online = () => true;
 import type { BuildSource } from "../src/servers/build";
 import type { ServerEntry } from "../src/servers/store";
 
@@ -124,7 +126,7 @@ describe("servers, from a window", () => {
 
     test("one that can't be reached is said in plain words, with ssh's own line", async () => {
         fake.fail("timeout");
-        expect(await here.call("servers.connect", { name: "box" })).toEqual({ status: "failed", problem: { message: "Can't reach box.example.", detail: "ssh: connect to host box.example port 22: Operation timed out" } });
+        expect(await here.call("servers.connect", { name: "box" })).toEqual({ status: "failed", problem: { message: "box isn't answering.", hint: "It may be off, or its firewall may block this network.", detail: "ssh: connect to host box.example port 22: Operation timed out" } });
         expect(await here.call("servers.connect", { name: "nope" })).toMatchObject({ status: "failed", problem: { message: expect.stringContaining("No server named nope") } });
     });
 
@@ -188,7 +190,7 @@ describe("servers, from a window", () => {
         expect(fake.dropTunnel()).toBe(true);
         await until("the connection to be lost", () => here.events.some((e) => e.type === "servers.link" && e.state === "reconnecting"));
         // Still out of reach: the window is told why, and the connection that's coming back is left to it.
-        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual({ status: "failed", problem: { message: "Can't reach box.example.", detail: "ssh: connect to host box.example port 22: Operation timed out" } });
+        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual({ status: "failed", problem: { message: "box isn't answering.", hint: "It may be off, or its firewall may block this network.", detail: "ssh: connect to host box.example port 22: Operation timed out" } });
         fake.fail();
         // Asking again makes it try now, not when its own wait is over.
         expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual(there);

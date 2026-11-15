@@ -193,7 +193,7 @@ export const ServerKeyTool: Tool<KeyInput> = {
             content: [
                 `The user approved: ${i.name} at ${i.provider.trim()} for ${i.price.trim()}. Create exactly that now; anything else needs asking again.`,
                 `Its start-up script is ${made.userDataFile}. Pass that file as the machine's user data (aws: --user-data file://${made.userDataFile}; gcloud: --metadata-from-file user-data=${made.userDataFile}; az: --custom-data ${made.userDataFile}; hcloud: --user-data-from-file ${made.userDataFile}; doctl: --user-data-file ${made.userDataFile}). Don't read or print it.`,
-                "It installs Cavvy's key for the image's own login user (the one with uid 1000, like ubuntu, admin or ec2-user; root where there's none), so create no key pair and set no password. Leave SSH (port 22) reachable from the user's address.",
+                "It installs Cavvy's key for the image's own login user (the one with uid 1000, like ubuntu, admin or ec2-user; root where there's none), so create no key pair and set no password. Leave SSH (port 22) open to any address, not only the user's current one: theirs changes, and a firewall held to it locks them out. The script turns password sign-in off, so only Cavvy's key gets in. Open no other port.",
                 `Once the machine has an address, call ServerAdd with name "${i.name}", address "<that user>@<its address>", its provider, where and cost, and teardown: the provider CLI's commands that delete everything you created for it.`,
             ].join("\n"),
             display: { summary: `Approved: ${i.price.trim()}` },

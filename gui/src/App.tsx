@@ -42,7 +42,7 @@ import { Logo, Spinner } from "./components/ui/bits";
 
 function Disconnected() {
     // On a server, what's being reached is that server, through this computer's own Cavvy.
-    if (machine) return <div class="splash" ref={(el) => void serversUi().then((m) => m.mountCover(el, () => rpc.reconnectNow()), reportError)} />;
+    if (machine) return <div class="splash" ref={(el) => void serversUi().then((m) => m.mountCover(el), reportError)} />;
     return (
         <div class="splash">
             <Switch

@@ -1785,6 +1785,11 @@ export interface ServerSummary {
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
     rented?: boolean;
+    /** Who it's rented from and where, as recorded when an agent created it: "AWS Lightsail, Mumbai". */
+    provider?: string;
+    /** How it's reached, beyond its destination: a port other than ssh's own, a key file. */
+    port?: number;
+    identityFile?: string;
 }
 
 /**
@@ -1803,6 +1808,10 @@ export interface MachineOverview {
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
 export interface ServerProblem {
     message: string;
+    /** What the user can make of it, in a sentence. */
+    hint?: string;
+    /** This machine has no network: nothing about the server to look at. */
+    offline?: boolean;
     detail?: string;
     fix?: string;
 }
@@ -2021,7 +2030,7 @@ export interface Methods {
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
     /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
-    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean; /** Asked before the window goes there: the window isn't on it yet. */ ahead?: boolean }; result: ConnectResult };
     "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };

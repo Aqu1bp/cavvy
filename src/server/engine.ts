@@ -3069,7 +3069,8 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
-                client.machine = name;
+                // Asked before a window goes there, it's still on the machine it's on.
+                if (p.ahead !== true) client.machine = name;
                 return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
             }
             case "servers.update": {
