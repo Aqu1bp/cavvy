@@ -601,9 +601,11 @@
     color: var(--fg-2);
 }
 
-/* The work, fading out before it folds into "Worked for" (and what was said on the way, with it). */
+/* The work, fading out before it folds into "Worked for" (and what was said on the way, a compaction, a wake, with it). */
 .worklog.leaving,
-.reply > .md.leaving {
+.reply > .md.leaving,
+.reply > .compacted.leaving,
+.reply > .nt.leaving {
     animation: fade-out 200ms ease-out both;
 }
 
@@ -633,6 +635,8 @@
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     height: calc(30 * var(--sp));
+    /* Room for the hover's rounded edge, without setting the words in from the rows above: they share a left edge. */
+    margin-left: calc(-2 * var(--sp));
     padding-left: calc(2 * var(--sp));
     overflow: hidden;
 }
@@ -919,6 +923,11 @@
 
 .nt.goal-met .ic {
     color: var(--ok);
+}
+
+/* A wake that joined the turn: the bell of one that starts a turn (.wake-row). */
+.nt.wake .ic {
+    color: var(--accent);
 }
 
 .nt .tx {

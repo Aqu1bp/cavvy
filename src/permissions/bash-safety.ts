@@ -2038,7 +2038,7 @@ const SENSITIVE = ([
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.(cavvy|harness)\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/(accounts|server)(?=$|[/\s'";|&)])/, "Cavvy credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/(accounts|server-keys|server)(?=$|[/\s'";|&)])/, "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
@@ -2053,7 +2053,7 @@ function credentialStore(cavvyHome: string): { files: string[]; folders: string[
     const homes = [cavvyHome, ...homeAliases(cavvyHome)];
     return {
         files: [...homes.flatMap((h) => [join(h, "credentials.json"), join(h, "providers.json")]), ...accountCredentialFiles()],
-        folders: [...homes.flatMap((h) => [join(h, "accounts"), join(h, "server")]), ...accountFolders()],
+        folders: [...homes.flatMap((h) => [join(h, "accounts"), join(h, "server"), join(h, "server-keys")]), ...accountFolders()],
     };
 }
 

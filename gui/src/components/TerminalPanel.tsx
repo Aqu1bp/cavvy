@@ -26,6 +26,8 @@ interface Tab extends SavedTab { attach?: boolean; closing?: boolean }
 const MAX_TABS = 12;
 /** Setup tickets by tab, taken by the tab's first shell: kept off the tab so nothing that keeps tabs keeps one. */
 const setupTickets = new Map<string, string>();
+/** A sign-in card's command for a tab's first shell to type (the server has the text), kept off the tab like a ticket. */
+const signInTabs = new Map<string, { session: string; interaction: string }>();
 
 /**
  * Mounted while hidden: each tab keeps its emulator and shell across chat navigation. The tabs are kept
@@ -118,6 +120,19 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setSettingsTab(undefined);
         setTerminalOpen(true);
     };
+    // A sign-in card's "Open in terminal": a tab in the session's folder with the command typed in, not run.
+    const signIn = (session: string, interaction: string) => {
+        if (!restored() || !p.cwd || app.conn !== "open" || full()) return toast("Close a terminal, then try again", "warn"), false;
+        const id = crypto.randomUUID();
+        signInTabs.set(id, { session, interaction });
+        terminalAsked();
+        setTabs((all) => [...all, { id, cwd: p.cwd!, number: next++, terminal: id }]);
+        setSelected(id);
+        setTerminalOpen(true);
+        return true;
+    };
+    terminalActions.signIn = signIn;
+    onCleanup(() => { if (terminalActions.signIn === signIn) delete terminalActions.signIn; });
     terminalActions.loginAccount = loginAccount;
     onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
     terminalActions.runScript = runScript;
@@ -362,7 +377,10 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
             if (run) await rpc.call("scripts.run", { ...shell, script: run.id, ...(ticket ? { setup: ticket } : {}) });
-            else await rpc.call("terminal.open", { ...shell, login: p.tab.login });
+            // A sign-in card's command, for this tab's first shell only.
+            const signIn = run ? undefined : signInTabs.get(p.tab.id);
+            signInTabs.delete(p.tab.id);
+            if (!run) await rpc.call("terminal.open", { ...shell, login: p.tab.login, ...(signIn ? { signIn } : {}) });
             opened = true;
             attach = true;
             const typed = early.take();
@@ -380,7 +398,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             }
             if (typed && app.conn === "open") send(typed);
             // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
-            if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
+            if ((run || signIn) && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
             fitNow();
             takeKeys();
         } catch (e) {

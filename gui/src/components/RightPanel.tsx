@@ -120,7 +120,7 @@ const openChanges = (c: FolderChanges, path?: string, token?: string) => openRev
 /** Pull requests the agent watches: it's woken when checks fail or someone comments. A click opens the pull request. */
 function Watches(p: { handle: SessionHandle }) {
     // Monitors are commands of their own (time left, from the shell list).
-    const watches = () => (p.handle.view.state.watches ?? []).filter((w) => w.kind !== "monitor");
+    const watches = () => (p.handle.view.state.watches ?? []).filter((w) => w.kind !== "monitor" && w.kind !== "sign-in");
     const tone = (detail?: string) => (/failing|conflicts|can't reach/.test(detail ?? "") ? "tone-err" : /passed/.test(detail ?? "") ? "tone-ok" : "");
     return (
         <Show when={watches().length}>
@@ -218,7 +218,7 @@ function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
 /** The Commands tab: background shells and monitors, then watched pull requests, then the session's own. */
 function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     const st = () => p.handle.view.state;
-    const any = () => p.rows.length || (st().watches ?? []).some((w) => w.kind !== "monitor") || (st().secrets ?? []).length || st().mcp.some(needsAttention);
+    const any = () => p.rows.length || (st().watches ?? []).some((w) => w.kind !== "monitor" && w.kind !== "sign-in") || (st().secrets ?? []).length || st().mcp.some(needsAttention);
     return (
         <Show
             when={any()}

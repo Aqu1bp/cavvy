@@ -5,7 +5,7 @@
 // that), here is how it's drawn.
 
 import { createEffect, createMemo, createSignal, For, Index, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertCircle, AlertTriangle, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, ExternalLink, Goal, Hourglass, Info } from "lucide-solid";
+import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, ExternalLink, Goal, Hourglass, Info } from "lucide-solid";
 import { stoppedTasksTip, switchMeaning, switchWord, type AccountInfo, type NoticeBlock, type SessionState, type StoppedTask } from "@shared/protocol";
 import { codeRuns, COMPACTED_LABEL, errorParts, isLatestLimitCard, noticeKind, untilLabel, waitingResume, warnParts } from "../../lib/notices";
 import { limitAlternatives, until } from "../../lib/limits";
@@ -47,7 +47,7 @@ function onFound(id: () => string, open: () => void) {
 const GOAL_MARK = /^([◎✓✗]) /;
 
 /** Info: one quiet line, the CLI's logo its icon. Cut short, it opens on click (or when find lands in it). */
-function InfoLine(p: { block: NoticeBlock }) {
+function InfoLine(p: { block: NoticeBlock; leaving?: boolean }) {
     let tx: HTMLSpanElement | undefined;
     const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
     // Without a closing list of terminal commands ("(/tasks shows them, …)"): here the side panel has them.
@@ -59,7 +59,7 @@ function InfoLine(p: { block: NoticeBlock }) {
     const toggle = () => long() && setOpen(!open());
     return (
         <div
-            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""}`}
+            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.leaving ? "leaving" : ""}`}
             data-find={p.block.id}
             role={long() ? "button" : "note"}
             tabIndex={long() ? 0 : undefined}
@@ -72,7 +72,7 @@ function InfoLine(p: { block: NoticeBlock }) {
             }}
         >
             <span class={`ic ${p.block.source ? "logo" : ""}`} title={p.block.source ? cliName(p.block.source) : undefined}>
-                <Show when={p.block.source} fallback={<GoalOrInfo mark={mark()} />}>
+                <Show when={p.block.source} fallback={p.block.wake ? <BellRing size={13} aria-hidden="true" /> : <GoalOrInfo mark={mark()} />}>
                     {(s) => <ProviderIcon id={s()} size={14} />}
                 </Show>
             </span>
@@ -388,9 +388,9 @@ function StoppedLine(p: { provider: string; tasks: StoppedTask[]; under?: boolea
 }
 
 /** A CLI compacted its context: a rule across the column with its label, as Cavvy's own compaction (no summary to show). */
-function CompactedLine(p: { block: NoticeBlock }) {
+function CompactedLine(p: { block: NoticeBlock; leaving?: boolean }) {
     return (
-        <div class="compacted" data-find={p.block.id}>
+        <div class={`compacted ${p.leaving ? "leaving" : ""}`} data-find={p.block.id}>
             <div class="compacted-rule" title={p.block.text}>
                 <span />
                 <span class="imported-label">{COMPACTED_LABEL}</span>
@@ -401,10 +401,11 @@ function CompactedLine(p: { block: NoticeBlock }) {
 }
 
 /** A notice block, drawn as what it is (lib/notices.ts noticeKind). */
-export function Notice(p: { block: NoticeBlock; state?: SessionState }) {
+/** `leaving`: a compaction or a wake, fading out with the work it folds away with (TurnView). */
+export function Notice(p: { block: NoticeBlock; state?: SessionState; leaving?: boolean }) {
     const kind = () => noticeKind(p.block);
     return (
-        <Switch fallback={<InfoLine block={p.block} />}>
+        <Switch fallback={<InfoLine block={p.block} leaving={p.leaving} />}>
             <Match when={kind() === "switch"}>
                 <SwitchLine block={p.block} />
             </Match>
@@ -414,7 +415,7 @@ export function Notice(p: { block: NoticeBlock; state?: SessionState }) {
                 </div>
             </Match>
             <Match when={kind() === "compacted"}>
-                <CompactedLine block={p.block} />
+                <CompactedLine block={p.block} leaving={p.leaving} />
             </Match>
             <Match when={kind() === "error"}>
                 <ErrorCard block={p.block} state={p.state} />

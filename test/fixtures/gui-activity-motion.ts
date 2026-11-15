@@ -7,6 +7,7 @@ import { boundary } from "../helpers/render-boundary";
 import * as format from "../../gui/src/lib/format";
 import * as toolWords from "../../gui/src/lib/tool-words";
 import * as liveLine from "../../gui/src/lib/live-line";
+import * as runSummary from "../../gui/src/lib/run-summary";
 import * as notices from "../../gui/src/lib/notices";
 import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
@@ -41,7 +42,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
+        ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
@@ -141,6 +142,33 @@ test("a turn left running with no live line draws its calls under way as rows, t
         for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "a", field: "progress", text: `line ${i}\n` });
         h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
         expect(row(h.root, "a")).toBe(first);
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+test("a run opened for a call under way with no live line closes when the reader closes it, and its line says the call still runs", () => {
+    // A turn a steered message ended: a call that's done and one that runs on, with no live line to say so.
+    const h = setup([tool("a", "ok"), tool("b")], false, [], undefined, false);
+    try {
+        const line = () => all(h.root).find((n) => n.tag === "button" && has(n, "run-h"))!;
+        const find = (id: string) => all(h.root).find((n) => n.props["data-find"] === id && has(n, "tool"));
+        const running = () => all(line()).some((n) => has(n, "run-live"));
+        // Opened by itself, as the running call's row is the only thing that says it runs.
+        expect(line().props["aria-expanded"]).toBe(true);
+        expect(find("b")).toBeDefined();
+        // The reader closes it: it closes, and its line says something still runs in it.
+        line().props.onClick();
+        expect(line().props["aria-expanded"]).toBe(false);
+        expect(find("b")).toBeUndefined();
+        expect(running()).toBe(true);
+        // More output, and the call ending, don't open it again.
+        h.op({ op: "append", blockId: "b", field: "progress", text: "more\n" });
+        expect(line().props["aria-expanded"]).toBe(false);
+        h.op({ op: "block.patch", blockId: "b", patch: { status: "ok", durationMs: 2000 } });
+        expect(line().props["aria-expanded"]).toBe(false);
+        expect(running()).toBe(false);
+        line().props.onClick();
+        expect(find("b")).toBeDefined();
         expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });

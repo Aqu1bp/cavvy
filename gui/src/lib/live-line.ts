@@ -27,6 +27,8 @@ export interface LiveLineState {
     jobSince?: number;
     /** When this state began (ms), when it's known; else the line counts from when it first showed it. */
     since?: number;
+    /** A running call that may say what it's at: when it does, that is the line (stepOf). */
+    steps?: ToolBlock;
     /** A running command's call: the line opens to it on a click, the block its row opens to (LiveLine.tsx). */
     opens?: ToolBlock;
     /** The call it's about, for find. */
@@ -59,6 +61,10 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
             return { label: "Waiting for plan review" };
         case "secret":
             return { label: "Waiting for a secret", detail: i.name };
+        case "signin":
+            return { label: "Waiting for you to sign in", detail: i.name };
+        case "confirm":
+            return { label: "Waiting for your OK", detail: i.title };
         default: {
             // A command by what it's for, else its first step (the card has all of it); no command or file: what the card
             // asks, in its words (never the call as code, "BrowserAct(click e4)").
@@ -93,6 +99,19 @@ function latestLine(text: string): string | undefined {
     return undefined;
 }
 
+/** Calls whose argument is words, not code: a question, a search, the tools looked for. */
+const WORDS = new Set(["AskUserQuestion", "WebSearch", "web_search", "ToolSearch"]);
+
+/**
+ * The step a running call last said it's at ("Waiting for box to start", "Installing Codex"): its last line, without
+ * the dots of something under way. Where there is one it is the line, and nothing beside it: one line, one thing
+ * going on (LiveLine.tsx reads it, for the one call the line is about).
+ */
+export function stepOf(t: ToolBlock | undefined): string | undefined {
+    const last = t?.progress?.trimEnd().split("\n").pop()?.replace(/\x1b\[[0-9;]*m/g, "").replace(/(?:…|\.\.\.)$/, "").trim();
+    return last ? (last.length > 80 ? `${last.slice(0, 79)}…` : last) : undefined;
+}
+
 function toolState(t: ToolBlock): LiveLineState {
     const { verb, arg } = toolLabel(t);
     const description = commandDescription(t);
@@ -113,8 +132,9 @@ function toolState(t: ToolBlock): LiveLineState {
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
         return { ...base, label, detail: liveCommand(t), mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
-    // A search's query is words, not code.
-    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion" && t.name !== "WebSearch", title: arg };
+    // A search's query is words, not code. A call that may say what it's at (a server being set up) is handed over
+    // for that: its steps aren't read here, where reading them would have every one redo this over the whole turn.
+    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && !WORDS.has(t.name), steps: t.status === "running" && t.name !== "Task" && t.name !== "Agent" && !t.agent ? t : undefined, title: arg };
 }
 
 /**
@@ -190,7 +210,7 @@ export function workedLabel(startedAt?: number, endedAt?: number): string | unde
 }
 
 /** A turn's rows as TurnView lays them out: a run of steps (Activity's groupBlocks), or a block of its own. */
-type Row = { kind: "activity"; card?: string } | { kind: "block"; block: { t: string; text?: string } };
+type Row = { kind: "activity"; card?: string } | { kind: "block"; block: { t: string; text?: string; compacted?: boolean; wake?: boolean } };
 
 export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; interim: boolean };
 
@@ -198,24 +218,30 @@ export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; int
  * Work (tool runs, thinking) vs what's said: the reply, notices. What the model said on its way (`interim`) folds
  * away with the work once the turn is done. The reply is what it said after its last step; when it ended on a
  * step (a background wait, a stop), it's the last thing it said, so that never folds away. Notices (errors) never do.
+ * What happened to the work while it ran (a compaction, Cavvy's or the CLI's; a wake that joined the turn) folds with
+ * it, in its place: when a step or the reply came after it. One after the reply, or in a turn without steps (a
+ * /compact of its own), stays where it happened.
  */
 export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
     // A plan's card isn't work: it stays in its turn when the work folds away.
     const isWork = (it: Row) => (it.kind === "activity" ? it.card !== "plan" : it.block.t === "thinking");
     const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
+    const duringWork = (it: Row) => it.kind === "block" && (it.block.t === "compact" || (it.block.t === "notice" && (it.block.compacted === true || it.block.wake === true)));
     // Something said: a blank block (a CLI's stray newlines) isn't a reply.
     const said = (it: Row) => isText(it) && Boolean((it as { block: { text?: string } }).block.text?.trim());
     const lastWork = items.findLastIndex(isWork);
     const lastText = items.findLastIndex(said);
     // Where the reply starts: after the last step, or at the last thing said when nothing was after it.
     const reply = lastText > lastWork ? lastWork : lastText;
+    // A step or the reply after it: what happened before them happened while it worked.
+    const workEnds = Math.max(lastWork, lastText);
     const out: Seg<R>[] = [];
     items.forEach((it, i) => {
         if (isWork(it)) {
             const prev = out[out.length - 1];
             if (prev?.kind === "work") prev.items.push(it);
             else out.push({ kind: "work", items: [it] });
-        } else out.push({ kind: "item", item: it, interim: i < reply && isText(it) });
+        } else out.push({ kind: "item", item: it, interim: (i < reply && isText(it)) || (lastWork >= 0 && i < workEnds && duringWork(it)) });
     });
     return out;
 }

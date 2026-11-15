@@ -521,6 +521,8 @@ async function remove(args: string[]): Promise<number> {
         signedOut = false;
     }
     out(`Removed ${e.name}.${signedOut ? "" : ` It couldn't be reached to sign this machine out.`}`);
+    // Forgetting it doesn't give it back to its provider.
+    if (e.cloud) out(`It's a rented machine (${[e.cloud.provider, e.cloud.cost].filter(Boolean).join(", ")}) and still runs.${e.cloud.teardown?.length ? ` To delete it: ${e.cloud.teardown.map((c) => c.join(" ")).join(" && ")}` : ""}`);
     out(`To put it back: ${APP_NAME} servers add ${e.name} ${e.destination}${e.port ? ` --port ${e.port}` : ""}${e.identityFile ? ` --identity ${shQuote(e.identityFile)}` : ""}`);
     return 0;
 }
@@ -531,7 +533,8 @@ export async function serversCommand(args: string[]): Promise<number> {
         if (sub === undefined || sub === "list" || sub === "ls") {
             const all = listServers();
             if (!all.length) out(`No servers yet. Add one: ${APP_NAME} servers add <name> <user@host>`);
-            for (const s of all) out(`${s.name}\t${s.destination}${s.port ? `:${s.port}` : ""}`);
+            // A rented machine says what it costs: it does until it's deleted.
+            for (const s of all) out(`${s.name}\t${s.destination}${s.port ? `:${s.port}` : ""}${s.cloud?.cost ? `\t${s.cloud.cost}` : ""}`);
             return 0;
         }
         if (sub === "add") return await add(args.slice(1));

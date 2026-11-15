@@ -147,6 +147,9 @@ test("a session file from before structured notices reads its plain ones as line
 
 test("a notice's data is read back only when it's well formed", () => {
     expect(noticeData({ source: "codex", title: "", link: "javascript:alert(1)" })).toEqual({ source: "codex" });
+    // What it is, read back: a CLI's compaction, a wake that joined a turn.
+    expect(noticeData({ compacted: true, wake: true })).toEqual({ compacted: true, wake: true });
+    expect(noticeData({ compacted: "yes", wake: 1 } as any)).toEqual({});
     expect(noticeData({ account: { provider: "codex", cli: "Codex", name: "X", how: "sideways" } as any })).toEqual({});
     expect(noticeData({ account: { provider: "codex", cli: "Codex", name: "X", how: "native", stopped: [{ label: "a", command: 3 }, null, { label: "" }] } as any })).toEqual({ account: { provider: "codex", cli: "Codex", name: "X", how: "native", stopped: [{ label: "a" }] } });
     expect(noticeData({ limit: { provider: "codex", accountId: "second", name: "Second", window: "5-hour", resetsAt: 5, credits: "yes" } as any })).toEqual({ limit: { provider: "codex", accountId: "second", name: "Second", window: "5-hour", resetsAt: 5 } });
@@ -182,6 +185,7 @@ test("a CLI's warning keeps its first line as the title, and the docs link it en
     // A live notice's text is the data's, redacted; the message stays the terminal's.
     expect(liveNotice("n1", "info", "Codex: hello", { source: "codex", text: "hello" })).toEqual({ t: "notice", id: "n1", level: "info", text: "hello", source: "codex" });
     expect(liveNotice("n2", "warn", "plain")).toEqual({ t: "notice", id: "n2", level: "warn", text: "plain" });
+    expect(liveNotice("n3", "info", "↻ PR #3: checks failed", { wake: true, text: "PR #3: checks failed" })).toEqual({ t: "notice", id: "n3", level: "info", text: "PR #3: checks failed", wake: true });
 });
 
 test("a limit says whose, which window and until when; a turn it stopped says the window too", () => {

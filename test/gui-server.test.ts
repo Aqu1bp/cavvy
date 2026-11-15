@@ -3096,6 +3096,20 @@ describe("reopening a Claude Code session", () => {
         }
     }, 45_000);
 
+    test("Claude Code compacting partway through a turn: its rule comes back in its place when the session is reopened", async () => {
+        try {
+            const { c, id } = await claudeCodeSession("compact-midway", "default");
+            const kinds = (t: Turn) => t.blocks.map((b) => (b.t === "notice" && b.compacted ? "compacted" : b.t));
+            const live = c.view(id).turns.find((t) => t.prompt)!;
+            expect(kinds(live)).toEqual(["text", "tool", "compacted", "tool", "text"]);
+            const snap = await reopened(id);
+            expect(kinds(snap.turns.find((t) => t.prompt)!)).toEqual(["text", "tool", "compacted", "tool", "text"]);
+            c.close();
+        } finally {
+            await cleanup();
+        }
+    }, 30_000);
+
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
             // Its later prompts (the compaction's, the next one's) run the agent scenario.

@@ -14,7 +14,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untra
 import { ChevronRight, Hand } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
-import { dwellLeft, urgent, type LiveLineState } from "../lib/live-line";
+import { dwellLeft, stepOf, urgent, type LiveLineState } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import { LiveCommandBody, useCardFolds } from "./blocks/Activity";
 
@@ -149,7 +149,7 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
                 >
                     {/* What the line says, for a screen reader: only the current state, not the one rolling away. A command's
                         line is a button, named by it: what it's for and the command. */}
-                    <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : showing()?.label}</span>
+                    <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : (stepOf(showing()?.steps) ?? showing()?.label)}</span>
                     {/* No spinner: the light sweeping the label says it's working. The hand when it waits on the user. */}
                     <Show when={showing()?.kind === "wait"}>
                         <span class="lic" aria-hidden="true">
@@ -177,6 +177,10 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
 
 function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => boolean; onGone: () => void }) {
     const s = () => p.layer.state();
+    // The step a long call says it's at is the line, and nothing beside it. Read here, for this one call: its steps
+    // arrive often, and nothing about the rest of the turn hangs on them.
+    const at = createMemo(() => stepOf(s().steps));
+    const label = () => at() ?? s().label;
     let el: HTMLDivElement | undefined;
     /** Its time, from a second on: a state that's over sooner never says "0s". */
     const time = () => {
@@ -214,13 +218,13 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
                 the words hold still and only the light moves (transforms, on the stream clock's steps). */}
             <Show when={s().kind !== "wait"} fallback={<span class="lbl">{s().label}</span>}>
                 <span class="lbl shim">
-                    {s().label}
+                    {label()}
                     <span class="shim-win">
-                        <span class="shim-hi">{s().label}</span>
+                        <span class="shim-hi">{label()}</span>
                     </span>
                 </span>
             </Show>
-            <Show when={s().detail}>
+            <Show when={!at() && s().detail}>
                 {/* Find counts a running call's argument (find.ts): it's here while the call runs. */}
                 <span class={`det ${s().mono ? "mono" : ""}`} data-find={!p.layer.leaving() && s().toolId ? s().toolId : undefined}>
                     {s().detail}

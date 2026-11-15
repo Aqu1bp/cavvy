@@ -80,6 +80,13 @@ describe("CLI account folder protections", () => {
         expect(sandboxPolicy([workspace], { cavvyHome: isolated.home }).unreadable).toContain(later);
     });
 
+    test.skipIf(!sandboxKind())("a protected folder inside another still lets sandboxed commands start", () => {
+        const policy = { writable: [workspace], readOnly: [], unreadable: [outside, folder], gitDirs: [] };
+        const run = (script: string) => Bun.spawnSync(sandboxArgv({ kind: sandboxKind()!, policy }, "/bin/sh", script), { cwd: workspace, env: { PATH: "/usr/bin:/bin" } });
+        expect(run("true").exitCode).toBe(0);
+        expect(run(`cat '${folder}/auth.json'`).exitCode).not.toBe(0);
+    });
+
     test.skipIf(!sandboxKind())("sandboxed commands cannot read or write either account location", () => {
         const kind = sandboxKind()!;
         const policy = sandboxPolicy([workspace, outside], { cavvyHome: isolated.home });

@@ -5,7 +5,9 @@ export function sessionStatus(s: SessionSummary, now: number): { text: string; t
     if (s.status === "waiting") {
         const text = s.waitingKind === "permission" ? "Needs approval"
             : s.waitingKind === "plan" ? "Plan to review"
-            : s.waitingKind === "question" || s.waitingKind === "secret" ? "Has a question" : "Needs you";
+            : s.waitingKind === "question" || s.waitingKind === "secret" ? "Has a question"
+            : s.waitingKind === "signin" ? "Needs a sign-in"
+            : s.waitingKind === "confirm" ? "Needs your OK" : "Needs you";
         return { text, tone: "warn" };
     }
     if (s.status === "running") {

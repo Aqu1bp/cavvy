@@ -167,6 +167,55 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* ---- Sign-ins put off with Later: a strip of its own above the box, a card's surface at a row's height ---- */
+
+.si-later {
+    display: flex;
+    flex-direction: column;
+    padding: calc(3 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    animation: ask-rise 460ms var(--spring);
+}
+
+.si-later-row {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    min-height: calc(32 * var(--sp));
+    padding: 0 calc(3 * var(--sp)) 0 calc(12 * var(--sp));
+}
+
+.si-later-row + .si-later-row {
+    border-top: 1px solid var(--line);
+}
+
+.si-later-icon {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.si-later-what {
+    flex: 1;
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+/* What's the matter with it, and where: quieter than its name. */
+.si-later-why {
+    margin-left: calc(8 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 400;
+    color: var(--fg-3);
+}
+
+.si-later .hb.sm {
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+}
+
 /* ---- Stashed prompts: a tab on the box's top edge, which opens into their list ----
    In the card's own fill and standing on its edge, so it reads as part of the box: closed,
    a small tab at its far end; open, a tray along it, a row for each prompt. */
@@ -1712,6 +1761,13 @@ button.att-card:hover {
     color: var(--fg);
     background: var(--press);
     transition: transform 160ms var(--ease), background 140ms, opacity 140ms, color 140ms;
+}
+
+/* A button in a row of its own (a sign-in in a list, one put off above the message box). */
+.pbtn.sm {
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    font-size: 0.893rem;
 }
 
 .pbtn:has(> kbd) {

@@ -194,9 +194,9 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const allAccounts = [...new Set(accountProtectedPaths().map(canonical))];
     const accounts = allAccounts.filter((a) => !isWithin(a, cavvy));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
-    // The secrets and accounts/ (registered or not) can't even be listed; the rest of the
+    // The secrets, accounts/ (registered or not) and server-keys/ can't even be listed; the rest of the
     // home can, but not read: settings and session logs may hold secrets too.
-    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
+    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts", "server-keys"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
     const globalConfig = [opencodeConfigDir(home), ...antigravityConfigDirs(home)].flatMap(bothForms);
@@ -372,14 +372,19 @@ export function bwrapArgs(p: SandboxPolicy): string[] {
     // replaced; a `.git` pointer file is bound read-only.
     for (const g of gits) if (existsSync(g)) args.push(statSync(g).isDirectory() ? "--bind" : "--ro-bind", g, g);
     for (const r of [...p.readOnly, ...cliInWorktrees(p), ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
-    // bwrap can't hide contents and keep names, so those folders are hidden whole.
+    // bwrap can't hide contents and keep names, so those folders are hidden whole: an empty folder over each, read-only
+    // as Seatbelt has them (a write there fails, not lands in a throwaway folder and seems to work).
+    // Nothing goes beneath one after: it's hidden already, and a read-only folder has no room to mount it on.
     const hidden = p.contentsUnreadable ?? [];
-    for (const u of [...hidden, ...p.unreadable.filter((u) => !hidden.some((h) => isWithin(u, h)))]) {
-        if (!existsSync(u)) continue;
-        if (statSync(u).isDirectory()) args.push("--tmpfs", u);
-        else args.push("--ro-bind", "/dev/null", u);
+    const masked: string[] = [];
+    for (const u of [...hidden, ...p.unreadable]) {
+        if (!existsSync(u) || masked.some((m) => isWithin(u, m))) continue;
+        if (statSync(u).isDirectory()) {
+            args.push("--tmpfs", u, "--remount-ro", u);
+            masked.push(u);
+        } else args.push("--ro-bind", "/dev/null", u);
     }
-    for (const d of hostSocketDirs()) args.push("--tmpfs", d);
+    for (const d of hostSocketDirs()) if (!masked.some((m) => isWithin(d, m))) args.push("--tmpfs", d);
     return args;
 }
 

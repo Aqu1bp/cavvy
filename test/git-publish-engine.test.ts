@@ -70,7 +70,9 @@ test("engine unauthenticated PR request cannot push; missing upstream remote is 
         process.env.FAKE_PUBLISH_MODE = "unauthenticated";
         const info = await engine.handle(client, "session.gitPublishInfo", { id });
         expect(info.gh).toBe(false);
-        await expect(engine.handle(client, "session.gitPublish", { id, action: "pr", fingerprint: info.fingerprint, base: "main", title: "Title" })).rejects.toThrow("not authenticated");
+        // Signed out, not missing: the window offers the sign-in.
+        expect(info.ghSignedOut).toBe(true);
+        await expect(engine.handle(client, "session.gitPublish", { id, action: "pr", fingerprint: info.fingerprint, base: "main", title: "Title" })).rejects.toMatchObject({ message: "GitHub isn't signed in.", code: "sign_in" });
         expect(calls(state, ".git-calls").filter((args) => args.includes("push"))).toHaveLength(0);
         git(cwd, "remote", "remove", "origin");
         await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toThrow("unambiguous");

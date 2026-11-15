@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { isMod, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus } from "lucide-solid";
+import { isMod, machine, mod } from "../lib/platform";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
@@ -14,6 +14,7 @@ import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { usePane } from "../state/split";
 import { InteractionTab } from "./InteractionDock";
+import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
@@ -22,6 +23,7 @@ import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
 import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
+import { putOffSignIn, signInCardFor, signInMark, signInPressed } from "../lib/card-keys";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
@@ -693,6 +695,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         });
     }));
     const interactions = () => st()?.interactions ?? [];
+    /** A sign-in's card is up for this put-off row: the row isn't shown beside its own card. */
+    const signInCardUp = (watchId: string) => interactions().some((i) => i.kind === "signin" && signInCardFor(watchId, i));
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
@@ -825,6 +829,45 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             </Show>
             <Show when={draft.stashes().length}>
                 <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
+            </Show>
+            {/* Sign-ins put off with Later: a strip of its own above the box, until each is signed in or dismissed. Not the one whose card is up. */}
+            <Show when={p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) : undefined}>
+                {(items) => (
+                    <Show when={items().length}>
+                        <div class="si-later card-surface" role="status">
+                            <For each={items()}>
+                                {(w) => {
+                                    // A session on a server doesn't know what this machine calls it: the window does.
+                                    const what = putOffSignIn(w.label, machine);
+                                    return (
+                                        <div class="si-later-row" title={w.label}>
+                                            {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
+                                            <Show when={signInMark(w.id)} fallback={<KeyRound size={14} class="si-later-icon" />}>
+                                                {(mark) => <ProviderIcon id={mark()} size={15} class="si-later-icon" />}
+                                            </Show>
+                                            <span class="si-later-what truncate">
+                                                {what.name}
+                                                <span class="si-later-why">
+                                                    Not signed in
+                                                    <Show when={what.on}>
+                                                        {" on "}
+                                                        <span class="mono">{what.on}</span>
+                                                    </Show>
+                                                </span>
+                                            </span>
+                                            <button class="pbtn sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
+                                                Sign in
+                                            </button>
+                                            <button class="hb sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                                <X size={14} />
+                                            </button>
+                                        </div>
+                                    );
+                                }}
+                            </For>
+                        </div>
+                    </Show>
+                )}
             </Show>
             <div class="composer-box card-surface" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>

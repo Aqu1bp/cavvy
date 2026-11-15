@@ -87,7 +87,12 @@ export interface SetupRun { ticket: string; label: string; command: string }
 export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
-export const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void } = {};
+export const terminalActions: {
+    loginAccount?: (provider: string, accountId: string, name: string) => void;
+    runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void;
+    /** A new tab with a sign-in card's command typed in, for the user to run. False when no tab could open. */
+    signIn?: (sessionId: string, interactionId: string) => boolean;
+} = {};
 
 /**
  * The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. Opening it
