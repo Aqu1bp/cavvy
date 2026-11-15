@@ -824,6 +824,42 @@ describe("speed", () => {
     }, 60_000);
 });
 
+describe("a session file that grows", () => {
+    const budgetMs = 60_000;
+    const strip = (r: { hits: SessionSearchResult[] }) => r.hits.map(({ snippet, seg, index, role, title }) => ({ snippet, seg, index, role, title }));
+    test("is read again only from where its last read ended, and finds what's the same as a whole read would", async () => {
+        clearSearchCache();
+        const filler = "a long answer about the build ".repeat(400);
+        const s = write([prompt("growing session opens"), ...Array.from({ length: 200 }, (_, i) => reply(`${filler} ${i}`))]);
+        const include = (id: string) => id === s.id;
+        expect((await searchSessions("growing session", { include, budgetMs })).hits).toHaveLength(1);
+        // Grown since: with a budget far below the whole file, the new lines are read and nothing else.
+        appendFileSync(s.file, [prompt("zebra crossing two"), reply("zebra answer")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        const grown = await searchSessions("zebra", { include, budgetMs, budgetBytes: 4096 });
+        expect(grown.partial).toBe(false);
+        expect(grown.hits.map((h) => h.role)).toEqual(["user", "assistant"]);
+        // A rewind, a withdrawal and a compaction later: what's found is what a read of the whole file finds.
+        appendFileSync(s.file, [prompt("zebra three"), { t: "rewind", count: 202 }, prompt("zebra four"), reply("after"), { t: "withdraw", index: 202 }, { t: "compact", summary: "so far" }, prompt("zebra five")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        const resumed = await searchSessions("zebra", { include, budgetMs, budgetBytes: 4096 });
+        expect(resumed.partial).toBe(false);
+        clearSearchCache();
+        const whole = await searchSessions("zebra", { include, budgetMs });
+        expect(strip(resumed)).toEqual(strip(whole));
+        expect(whole.hits.length).toBeGreaterThan(1);
+    });
+
+    test("written over rather than grown, it's read whole again", async () => {
+        clearSearchCache();
+        const s = write([prompt("first version says kestrel"), reply("ok")]);
+        const include = (id: string) => id === s.id;
+        expect((await searchSessions("kestrel", { include, budgetMs })).hits).toHaveLength(1);
+        // Same path, longer, different from the start: nothing of the old reading is kept.
+        writeFileSync(s.file, [{ t: "meta", id: s.id, cwd: s.cwd, createdAt: 0, version: "1" }, prompt("second version says osprey, and it is longer than the first one was"), reply("ok")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        expect((await searchSessions("kestrel", { include, budgetMs })).hits).toHaveLength(0);
+        expect((await searchSessions("osprey", { include, budgetMs })).hits).toHaveLength(1);
+    });
+});
+
 describe("listing a big project folder", () => {
     test("yields and checks for a newer search every so many files, and a budget spent listing is partial", async () => {
         const cwd = join(tempDir("cavvy-search-big-"), "big");

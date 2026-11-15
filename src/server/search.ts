@@ -21,6 +21,8 @@ const MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** A message's text beyond this isn't searched. */
 const MAX_TEXT = 256 * 1024;
 const MSG_PREFIX = '{"t":"msg"';
+/** How much of a file before where its reading ended is kept, to tell later that it's only grown since. */
+const TAIL_BYTES = 256;
 const WANTED = /^\{"t":"(msg|meta|title|compact|rewind|withdraw)"/;
 
 /** Hits from one session, at most (a session that says the word often doesn't fill the list). */
@@ -64,6 +66,12 @@ interface Doc {
     starts: { seg: number; index: number }[];
     /** All it keeps, in characters (see SEARCH_LIMITS.cacheChars). */
     chars: number;
+    /**
+     * Where its reading ended, for the next read of the file once it's grown (a session being written to grows all
+     * the time, and searching while ten stream read each of them whole on every keystroke): from there, if what's
+     * just before is still what was read. None when the file didn't end with a whole line.
+     */
+    resume?: { at: number; ino: number; tail: string; seg: number; count: number; first?: string; titleLine?: string };
 }
 
 interface TurnTimes {
@@ -165,7 +173,7 @@ class WholeJson {
  * MAX_LINE_BYTES, with whether it was still whole JSON). Other lines are
  * skipped as they're read. False when the search stopped halfway.
  */
-async function scanLines(file: string, want: (prefix: string) => boolean, fn: (prefix: string, line: string | undefined, whole: boolean) => void, ctl: Control): Promise<boolean> {
+async function scanLines(file: string, want: (prefix: string) => boolean, fn: (prefix: string, line: string | undefined, whole: boolean) => void, ctl: Control, from = 0, ended?: { at: number; torn: boolean }): Promise<boolean> {
     const fd = openSync(file, "r");
     try {
         const chunk = Buffer.alloc(CHUNK_BYTES);
@@ -189,7 +197,9 @@ async function scanLines(file: string, want: (prefix: string) => boolean, fn: (p
             over = undefined;
         };
         let chunks = 0;
-        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
+        // Where the last line read to its newline ends: a later read of the file, grown since, goes on from there.
+        let lineEnd = from;
+        for (let pos = from, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
             ctl.bytes += n;
             if (++chunks % 8 === 0 && !(await ctl.tick())) return false;
             const c = chunk.subarray(0, n);
@@ -210,10 +220,13 @@ async function scanLines(file: string, want: (prefix: string) => boolean, fn: (p
                 if (nl < 0) break;
                 emit();
                 start = nl + 1;
+                lineEnd = pos + start;
             }
         }
         // A last line without its newline still counts if it's whole, as readSegments has it.
-        if (len || over) emit();
+        const torn = Boolean(len || over);
+        if (torn) emit();
+        if (ended) Object.assign(ended, { at: lineEnd, torn });
         return true;
     } finally {
         closeSync(fd);
@@ -269,11 +282,15 @@ function messageText(m: Message, clean = (text: string) => text): { role: "user"
 }
 
 /** A session file as search sees it: its messages' text, placed the way replay places them (compactions, rewinds). */
-async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control): Promise<Doc | undefined> {
-    const doc: Doc = { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
-    let seg = 0;
-    let count = 0;
-    let first: string | undefined;
+async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control, ino = 0, had?: Doc): Promise<Doc | undefined> {
+    const from = had && had.redaction === redactionVersion() && had.resume && had.resume.ino === ino && size >= had.resume.at && tailAt(file, had.resume.at) === had.resume.tail ? had.resume : undefined;
+    const doc: Doc = from && had
+        ? { size, mtimeMs, redaction: had.redaction, cwd: had.cwd, title: from.titleLine, entries: [...had.entries], starts: [...had.starts], chars: 0 }
+        : { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
+    let seg = from?.seg ?? 0;
+    let count = from?.count ?? 0;
+    let first: string | undefined = from?.first;
+    const ended = { at: 0, torn: false };
     const done = await scanLines(
         file,
         (prefix) => WANTED.test(prefix),
@@ -331,11 +348,27 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
             }
         },
         ctl,
+        from?.at ?? 0,
+        ended,
     );
     if (!done) return undefined;
+    if (!ended.torn && ino) doc.resume = { at: ended.at, ino, tail: tailAt(file, ended.at), seg, count, first, titleLine: doc.title };
     if (!doc.title) doc.title = first ?? doc.entries.find((e) => e.role === "user")?.text;
     doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0);
     return doc;
+}
+
+/** What's just before `at` in the file (what a read that ended there last saw), to tell it's the same file grown. */
+function tailAt(file: string, at: number): string {
+    const n = Math.min(TAIL_BYTES, at);
+    if (!n) return "";
+    const fd = openSync(file, "r");
+    try {
+        const b = Buffer.alloc(n);
+        return b.subarray(0, readSync(fd, b, 0, n, at - n)).toString("latin1");
+    } finally {
+        closeSync(fd);
+    }
 }
 
 function remember(file: string, doc: Doc) {
@@ -465,9 +498,9 @@ export interface SearchOptions {
 }
 
 /** Every session file, newest first; undefined when the search stopped while listing them. */
-async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; size: number; mtimeMs: number }[] | undefined> {
+async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; size: number; mtimeMs: number; ino: number }[] | undefined> {
     const root = paths.projectsDir();
-    const out: { id: string; file: string; size: number; mtimeMs: number }[] = [];
+    const out: { id: string; file: string; size: number; mtimeMs: number; ino: number }[] = [];
     let dirs: string[];
     try {
         dirs = readdirSync(root);
@@ -492,7 +525,7 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
             const file = join(dir, f);
             try {
                 const st = plainStat(file);
-                if (st?.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs });
+                if (st?.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino });
             } catch {
                 // vanished or unreadable
             }
@@ -518,7 +551,7 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
         if (had && had.size === f.size && had.mtimeMs === f.mtimeMs && had.redaction === redaction) continue;
         let doc: Doc | undefined;
         try {
-            doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
+            doc = await readDoc(f.file, f.size, f.mtimeMs, ctl, f.ino, docs.get(f.file));
         } catch {
             continue; // vanished or unreadable
         }
@@ -549,7 +582,7 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
         let doc = docs.get(f.file);
         if (!doc || doc.size !== f.size || doc.mtimeMs !== f.mtimeMs || doc.redaction !== redactionVersion()) {
             try {
-                doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
+                doc = await readDoc(f.file, f.size, f.mtimeMs, ctl, f.ino, docs.get(f.file));
             } catch {
                 continue; // vanished or unreadable
             }
