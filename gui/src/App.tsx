@@ -300,8 +300,12 @@ export function App() {
     const stage = () => shown()?.h;
     /** Another session is opening while the last one is held on the stage (shown). */
     const holding = () => !split() && Boolean(stage() && stage() !== active());
-    /** The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's. */
-    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding();
+    /**
+     * The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's.
+     * Not once it's here and "Opening session…" never showed: that's only to be kept up its least time (state/app.ts),
+     * and in between the stage would be let go of and made again (the session left with it, not kept: Panes.tsx).
+     */
+    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding() && (app.opening.visible || !active());
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
     // Another session: its own view, not the last one's sub-agent or review. Between a split's two, each one's own

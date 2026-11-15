@@ -42,12 +42,14 @@ const source = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "
 // Every component App renders, except Solid's control flow and the boundary under test, is a stub.
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
 const widgets = [...new Set([...source.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
+/** How many times the stage's panes were made: made again, what they held (the session left, kept) is gone. */
+let panesMade = 0;
 const App = component(source.slice(source.indexOf("export function App")), "App", {
     ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true, panel: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
     railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, onMount() {},
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
-    ...noSplit, Panes: singlePane(),
+    ...noSplit, Panes: (p: { single?: unknown }) => { panesMade++; return singlePane()(p); },
 });
 const root = node("root");
 const dispose = renderer.render(App, root);
@@ -95,9 +97,11 @@ try {
     assert.equal(all(root).find((n) => n.tag === "SessionView"), before, "the last session stays on the stage while the next opens");
     assert.ok(!text(root).includes("Opening session"));
     assert.ok(inert(), "held, it can't be typed into or clicked");
+    const made = panesMade;
     requests.find((r) => r.id === "held")!.answer();
     await held;
     assert.notEqual(all(root).find((n) => n.tag === "SessionView"), before, "the session that came takes its place");
+    assert.equal(panesMade, made, "the stage isn't let go of and made again as it comes (Opening session… never showed)");
     assert.ok(!inert());
     await activate("b");
 
