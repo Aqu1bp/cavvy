@@ -79,9 +79,11 @@ Under a new session's composer, the machine it will run on (**This Mac ▾**) li
 
 The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, pin, settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server. Archiving a session that works in a worktree from another machine's window keeps the worktree and says so; a window on its own machine asks whether to remove it.
 
-A new session starts on the machine named first in the strip under its composer (**This Mac**, or a server's name): pick another there. The model you had picked goes with you, with its effort and fast mode, when the other machine has that model and can run it that way (they become its defaults, as a pick made there would); otherwise that machine's own show. The permission mode is always the machine's own. While a session on a server is open, the folders, models and settings the window shows are that server's.
+A new session starts on the machine named first in the strip under its composer (**This Mac**, or a server's name): pick another there. The model you had picked goes with you, with its effort and fast mode, when the other machine has that model and can run it that way (they become its defaults, as a pick made there would); otherwise that machine's own show. The permission mode is always the machine's own. Starting a session on a server takes the window to that server: while it's there, the folders, models and settings the window shows are that server's.
 
-- Search (⌘K) finds text only in the sessions of the machine the open session is on.
+A click on a server's session in the sidebar opens it in the window you're in, which stays where it is: going back and forth is as quick as between this machine's own sessions. That session's model menu lists the server's models, and @ finds the server's files. Resting the pointer on its row connects to the server ahead of the click.
+
+- Search (⌘K) finds text only in the sessions of the machine the window is on.
 - Recently deleted lists that machine's too.
 - A server that can't be reached, was stopped, or needs your word says so at the foot of the sidebar; its sessions stay listed, none shown as working.
 
@@ -89,7 +91,7 @@ To list a server's sessions this machine stays connected to it, as a window on i
 
 What a window on a server doesn't have: the desktop app's own browser pane and the Finder (choosing a folder uses Cavvy's own list of the server's folders; Reveal isn't offered). The Browser tool there needs a Chrome on the server.
 
-If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself).
+If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself). The same goes for a server's session opened in a window on another machine: it shows `Reconnecting…` while its server can't be reached, and comes back by itself; one that needs your word first takes the window to that server, where it asks. Opening one while its server can't be reached says why, and a click tries again.
 
 Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
 

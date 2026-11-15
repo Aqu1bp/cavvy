@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, rpcFor, toast, wasDeleted } from "../state/app";
+import { app, connFor, handleFor, reportError, rpc, rpcFor, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -410,7 +410,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [flipped, setFlipped] = createSignal(false);
     const shown = () => followUp(flipped());
     const submit = async (opposite = false) => {
-        if (app.conn !== "open") return toast("Not sent: not connected");
+        if (connFor(p.sessionId) !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
@@ -666,7 +666,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
      * that sends this way and the one that sends the other; with nothing written, the key that stops it.
      */
     const sendHint = (): [string, string][] | undefined => {
-        if (runPicks() || app.conn !== "open") return undefined;
+        if (runPicks() || connFor(p.sessionId) !== "open") return undefined;
         if (canStop(st()) && !hasContent()) {
             const k = shortcut("app:interrupt");
             return [[k === "Esc" ? "esc" : k ?? "", busy() ? "Stop" : "Pause the goal"]];
@@ -986,10 +986,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         fallback={
                             <button
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
-                                disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
+                                disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
-                                aria-description={app.conn !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
+                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                aria-description={connFor(p.sessionId) !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>

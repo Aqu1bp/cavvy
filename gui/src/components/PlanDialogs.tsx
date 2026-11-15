@@ -10,7 +10,7 @@ import { IMPLEMENT_MODES, type ImplementMode, type ImplementPlanResult, type Pla
 import { RpcError } from "../lib/rpc";
 import { basename, tildify } from "../lib/format";
 import { canReveal, copyText, revealPath } from "../lib/platform";
-import { activate, app, rpc, toast } from "../state/app";
+import { activate, app, rpc, sameMachine, toast } from "../state/app";
 import { chooseFolder } from "../state/actions";
 import { planDialog, setPlanDialog } from "../state/ui";
 import { errorOf, type FormError } from "./WorktreeDialogs";
@@ -231,6 +231,8 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                 setMade(r);
                 return;
             }
+            // Made where the plan's session is: on another machine, if that's where it was opened from.
+            sameMachine(p.sessionId, r.sessionId);
             p.setBusy(false);
             p.onClose();
             toast(`Implementing the plan on ${r.branch}`, "success");

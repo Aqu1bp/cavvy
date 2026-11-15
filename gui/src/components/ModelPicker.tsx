@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, handleFor, modelsFor, noModel, refreshModels, toast } from "../state/app";
+import { app, handleFor, modelsFor, noModel, refreshModels, refreshModelsFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -276,7 +276,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 const provider = currentProvider();
                 setFilter(provider && groups().some((g) => g.provider === provider) ? provider : favorites().length || !groups().length ? FAVORITES : groups()[0]!.provider);
                 setSel(Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
-                if (!app.models.length) void refreshModels();
+                // None yet (their first asking failed, say): asked for again, from the session's machine.
+                if (!models().length) void refreshModelsFor(p.sessionId);
                 requestAnimationFrame(() => {
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
@@ -384,7 +385,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
-        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModels(true) } };
+        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModelsFor(p.sessionId, true) } };
         return { text: "No models." };
     };
 
@@ -602,7 +603,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
+                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
                             <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
                                 <Spinner size={13} />
                             </Show>

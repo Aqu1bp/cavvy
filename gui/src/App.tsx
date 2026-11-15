@@ -2,7 +2,7 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connFor, connNote, handleFor, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -261,10 +261,11 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
 function Reconnecting() {
     return (
         <>
-            <Show when={app.conn !== "open"}>
+            {/* The window's own connection, or the one the session on screen is shown over (another machine's). */}
+            <Show when={app.conn !== "open" || connFor(app.activeId) !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> {connNote() ?? "Not connected"} · Reconnecting…
-                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>
+                    <Spinner size={12} /> {(app.conn !== "open" && connNote()) || "Not connected"} · Reconnecting…
+                    <button class="link-btn" onClick={() => (app.conn !== "open" ? rpc : rpcFor(app.activeId)).reconnectNow()}>
                         Reconnect now
                     </button>
                 </div>

@@ -2064,8 +2064,12 @@ export interface Methods {
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
-    /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
-    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
+    /**
+     * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.
+     * `link`: for a connection of the window's own to that server, for one of its sessions opened in this window: the
+     * window isn't on that server, so it's still told of that server's other sessions from here.
+     */
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean; link?: boolean }; result: ConnectResult };
     "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };

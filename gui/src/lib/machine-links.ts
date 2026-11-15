@@ -6,28 +6,64 @@
 
 import { Rpc, type Credentials } from "./rpc";
 import { windowKey } from "./platform";
+import type { ConnectResult } from "@shared/protocol";
+
+/** Why a machine's Cavvy couldn't be reached: what servers.connect said, when it didn't sign the window in. */
+export type LinkProblem = { status: Exclude<ConnectResult["status"], "connected">; message: string };
 
 /** A machine's name, or "" for this computer (a session of its, in a window on a server). */
 const links = new Map<string, Rpc>();
+/** The last time each couldn't be reached, until it is again. */
+const problems = new WeakMap<Rpc, LinkProblem>();
+
+/** Opening a session over a link failed: why, and what servers.connect said if it was that. */
+export class LinkError extends Error {
+    constructor(message: string, readonly problem?: LinkProblem) {
+        super(message);
+    }
+}
+
+function problemOf(name: string, r: Exclude<ConnectResult, { status: "connected" }>): LinkProblem {
+    switch (r.status) {
+        case "failed": return { status: r.status, message: `Couldn't reach ${name}: ${r.problem.message}` };
+        case "unknown-host": return { status: r.status, message: `${name}'s host key isn't trusted yet.` };
+        case "other-version": return { status: r.status, message: `${name} runs another version of Cavvy.` };
+        case "stopped": return { status: r.status, message: `Cavvy is stopped on ${name}.` };
+    }
+}
 
 /**
  * The connection to `name`'s Cavvy (undefined: this computer's), made the first time it's asked for. `via`: this
  * computer's Cavvy, which gives the address and the sign-in; `own`: the connection to this computer's Cavvy, when the
  * window is on a server (that one is used for this computer's sessions as it is). `heard`: what it says, as it says it.
+ *
+ * It's asked for as a connection trying again by itself (`retry`) each time, a click included: a server stopped or
+ * disconnected on purpose stays so (lib/machines.ts asks the user before starting it), and one that can't be reached
+ * is tried again, as the window's own connection is, until it can.
  */
 export function linkTo(name: string | undefined, via: Rpc, own: Rpc | undefined, heard: (e: Parameters<Parameters<Rpc["onEvent"]>[0]>[0], link: Rpc) => void): Rpc {
     if (name === undefined && own) return own;
     const key = name ?? "";
     let link = links.get(key);
     if (link) return link;
+    /** A sign-in was given and hasn't opened anything yet: the next one asked for is a new one (a restart there, an expiry). */
+    let unproven = false;
     const credentials = async (): Promise<Credentials | undefined> => {
         if (name === undefined) return undefined;
-        const r = await via.call("servers.connect", { name });
-        if (r.status !== "connected") throw new Error(r.status === "failed" ? r.problem.message : `${name}: ${r.status}`);
+        const r = await via.call("servers.connect", { name, link: true, retry: true, ...(unproven ? { renew: true } : {}) });
+        if (r.status !== "connected") {
+            const problem = problemOf(name, r);
+            problems.set(made, problem);
+            throw new LinkError(problem.message, problem);
+        }
+        problems.delete(made);
+        unproven = true;
         return { url: r.url, token: r.token };
     };
     link = new Rpc(credentials, windowKey);
     const made = link;
+    made.retriesCredentials = true;
+    made.onState((s) => { if (s === "open") unproven = false; });
     made.onEvent((e) => heard(e, made));
     links.set(key, made);
     void made.connect();
@@ -39,17 +75,35 @@ export function linkOf(name: string | undefined): Rpc | undefined {
     return links.get(name ?? "");
 }
 
-/** Once it's open (now, when it is). */
+/** Every connection made to another machine. */
+export function allLinks(): Rpc[] {
+    return [...links.values()];
+}
+
+/** Let go of the connection to that machine (nothing of it is open here, and it couldn't be reached). */
+export function dropLink(name: string | undefined) {
+    const link = links.get(name ?? "");
+    if (!link) return;
+    links.delete(name ?? "");
+    link.close();
+}
+
+/**
+ * Once it's open (now, when it is). Waiting to try again (it couldn't be reached), it's tried now: the user asked.
+ * Rejected as soon as that try fails, with why, rather than after every try it makes by itself.
+ */
 export function opened(link: Rpc): Promise<void> {
     if (link.state === "open") return Promise.resolve();
+    if (link.idle) link.reconnectNow();
     return new Promise((resolve, reject) => {
         const off = link.onState((s) => {
             if (s === "open") {
                 off();
                 resolve();
-            } else if (s === "unauthorized" || s === "unavailable") {
+            } else if (s !== "connecting") {
                 off();
-                reject(new Error("Couldn't reach that machine's Cavvy."));
+                const problem = problems.get(link);
+                reject(new LinkError(problem?.message ?? "Couldn't reach that machine's Cavvy.", problem));
             }
         });
     });

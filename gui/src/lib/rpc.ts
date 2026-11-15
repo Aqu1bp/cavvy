@@ -183,6 +183,11 @@ export class Rpc {
         this.retryTimer = setTimeout(() => void this.connect(), delay);
     }
 
+    /** Nothing under way: not asking for its sign-in, no socket open or opening (waiting to try again, say). */
+    get idle(): boolean {
+        return !this.closed && !this.connecting && !this.ws;
+    }
+
     /** Retry the connection, never a request: a lost reply may still have taken effect. */
     reconnectNow() {
         // A browser login code is single-use; let its credential exchange finish.
