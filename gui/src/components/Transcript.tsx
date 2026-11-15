@@ -6,7 +6,7 @@ import { activate, app, earlierArriving, forgetEarlier, loadEarlier, loadEarlier
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
+import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
@@ -40,6 +40,16 @@ const SETTLE_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 const FOLD_WAIT_MS = 200;
 /** How long the reader is back at the end, with nothing coming, before what's above its first page is let go of. */
 const LET_GO_MS = 5000;
+/**
+ * Each turn's height as it went far (the observer's own measure, nothing laid out for it), by session, a few kept: shown
+ * again (switched back to), a turn put in after its first screens (a few a frame) goes in skipped at it, rather than laid
+ * out whole at each step (a session of 65 long turns: ten steps of 11-40 ms each, headless, after its first frame). Only
+ * one as it was then: as many blocks, the same status, its work open or not alike.
+ */
+const turnHeights = new Map<string, Map<string, number>>();
+const TURN_HEIGHTS_KEPT = 8;
+/** What a turn put in again went in skipped with is let go of this long after it first comes near (as work-rendering's rows). */
+const AGAIN_MS = 2000;
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -579,8 +589,28 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let far: SettlingObserver | undefined;
     /** Each turn's element (TurnView gives it), so finding one doesn't search the whole column. */
     const turnEls = new Map<string, HTMLElement>();
+    const heights = (() => {
+        const was = turnHeights.get(id) ?? new Map<string, number>();
+        turnHeights.delete(id);
+        turnHeights.set(id, was);
+        while (turnHeights.size > TURN_HEIGHTS_KEPT) turnHeights.delete(turnHeights.keys().next().value!);
+        return was;
+    })();
+    const byId = createMemo(() => new Map(visible().map((t) => [t.id, t])));
+    const heightKey = (turnId: string) => {
+        const t = byId().get(turnId);
+        return t && `${turnId}:${t.status}:${t.blocks?.length ?? 0}:${openWork.has(turnId) ? 1 : 0}`;
+    };
     const track = (el: HTMLElement, turnId: string) => {
         turnEls.set(turnId, el);
+        // Put in after the first frame (a few a frame, not a page of "Show earlier": that's staged) and drawn before as
+        // it is: skipped at the height it had, what it brings in already over (transcript.css), till it comes near.
+        const h = !settling && !staged ? untrack(() => heights.get(heightKey(turnId) ?? "")) : undefined;
+        if (h) {
+            el.style.containIntrinsicBlockSize = `auto ${h}px`;
+            el.setAttribute(FAR, "");
+            el.setAttribute(AGAIN, "");
+        }
         far?.observe(el);
         onCleanup(() => {
             if (turnEls.get(turnId) === el) turnEls.delete(turnId);
@@ -604,6 +634,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
                 // All of them before any is marked, so the page's style is worked out once, not once a turn.
                 finishEntrancesIn(entries.filter((e) => !e.isIntersecting && !e.target.hasAttribute(FAR)).map((e) => e.target));
+                // Each one going far: its height, for the next time this session is shown (turnHeights).
+                for (const e of entries) {
+                    if (e.isIntersecting || e.target.hasAttribute(FAR) || !(e.boundingClientRect?.height > 0)) continue;
+                    const key = heightKey((e.target as HTMLElement).dataset.turn ?? "");
+                    if (key) heights.set(key, e.boundingClientRect!.height);
+                }
+                // Put in again skipped: what it brought in is let go of a while after it comes near (AGAIN_MS).
+                const again = entries.filter((e) => e.isIntersecting && e.target.hasAttribute(AGAIN)).map((e) => e.target);
+                if (again.length) setTimeout(() => { for (const el of again) el.removeAttribute(AGAIN); }, AGAIN_MS);
                 for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
                 if (stick() || smoothScroll) return;
                 let moved = 0;
