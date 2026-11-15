@@ -874,7 +874,8 @@ export type SessionOp =
     | { op: "block.patch"; turnId: string; blockId: string; patch: Partial<Block>; parent?: string }
     | { op: "block.remove"; turnId: string; blockId: string }
     | { op: "append"; turnId: string; blockId: string; field: "text" | "progress" | "output"; text: string }
-    | { op: "reset"; turns: Turn[]; agents?: AgentRun[] }
+    /** `earlier`: turns before these that weren't sent (session.turns has them), as a long session opens. */
+    | { op: "reset"; turns: Turn[]; agents?: AgentRun[]; earlier?: number }
     /** A sub-agent started (or replaced, with the same id). */
     | { op: "agent"; agent: AgentRun }
     | { op: "agent.patch"; id: string; patch: Partial<Omit<AgentRun, "id" | "blocks">> }

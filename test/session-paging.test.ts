@@ -65,6 +65,35 @@ test("an op for a turn the window hasn't been sent changes nothing; the page sen
     expect(windowView.earlier).toBe(0);
 });
 
+test("a reset that says how many turns came before it leaves those to be asked for", () => {
+    const server = runtime(150);
+    const windowView = { ...structuredClone(server.rt.snapshot(100)) };
+    // A rewind of a long session sends the windows its last turns, as an open does, and how many came before.
+    applyOp(windowView, { op: "reset", turns: structuredClone(server.view.turns.slice(50)), earlier: 50 });
+    expect(windowView.turns).toHaveLength(100);
+    expect(windowView.earlier).toBe(50);
+    const page = server.rt.turnsBefore(windowView.turns[0]!.id, { all: true })!;
+    expect(page).toMatchObject({ earlier: 0 });
+    expect(page.turns).toHaveLength(50);
+});
+
+test("a long session rebuilt (a rewind) keeps all its turns, and sends the windows its last 100", () => {
+    const server = runtime(250);
+    const sent: SessionOp[] = [];
+    const rt = server.rt as unknown as { op(o: SessionOp, sent?: SessionOp): void; outbox: SessionOp[]; noteStep(): void; flushTimer?: unknown; engine: unknown };
+    Object.assign(rt, { outbox: sent, noteStep() {}, flushTimer: 1, engine: { sessionShown: () => true } });
+    const turns = structuredClone(server.view.turns);
+    const from = turns.length - 100;
+    rt.op({ op: "reset", turns }, structuredClone({ op: "reset", turns: turns.slice(from), earlier: from }));
+    expect(server.view.turns).toHaveLength(250);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ op: "reset", earlier: 150 });
+    expect((sent[0] as Extract<SessionOp, { op: "reset" }>).turns).toHaveLength(100);
+    // What's sent isn't the view's: a window changing it changes nothing here.
+    (sent[0] as Extract<SessionOp, { op: "reset" }>).turns[0]!.status = "aborted";
+    expect(server.view.turns[150]!.status).toBe("done");
+});
+
 test("a finished step list written before the turns a window has is stale", () => {
     const done = [{ content: "a", status: "completed" }] as never;
     const turns = [{ blocks: [] }, { blocks: [] }];

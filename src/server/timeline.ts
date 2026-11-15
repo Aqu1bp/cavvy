@@ -141,7 +141,7 @@ export function applyOp(view: SessionView, op: SessionOp): void {
         }
         case "reset":
             view.turns = op.turns;
-            if (view.earlier) view.earlier = 0;
+            if (view.earlier || op.earlier) view.earlier = op.earlier ?? 0;
             if (op.agents) view.agents = op.agents;
             return;
         case "agent": {

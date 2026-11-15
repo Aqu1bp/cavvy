@@ -133,6 +133,8 @@ import { MAX_RESTART_RESUMES } from "./working";
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
+/** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
+const RESET_TURNS = 100;
 /** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
 const FLUSH_MS = 24;
 /**
@@ -1011,12 +1013,13 @@ export class Runtime {
         return { turns: structuredClone(all.slice(from, at)), earlier: from, seq: this.batch };
     }
 
-    private op(o: SessionOp) {
+    /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */
+    private op(o: SessionOp, sent?: SessionOp) {
         // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
         // only read (most ops while a reply streams), so it isn't copied.
-        applyOp(this.view, o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
+        applyOp(this.view, sent || o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
         this.noteStep(o);
-        this.outbox.push(o);
+        this.outbox.push(sent ?? o);
         // Out by when the soonest of what's waiting needs to be: text can wait a little, anything else hardly.
         const delay = o.op === "append" || o.op === "agent.append" ? (this.engine.sessionShown(this.id) ? APPEND_FLUSH_MS : HIDDEN_FLUSH_MS) : FLUSH_MS;
         const due = performance.now() + delay;
@@ -4090,7 +4093,10 @@ export class Runtime {
             const up = a.parentId ? agents.find((x) => x.id === a.parentId && !x.replayed) : undefined;
             if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...a, turnId: up.turnId });
         }
-        this.op({ op: "reset", turns, agents });
+        // The windows get its last turns, and how many came before (session.turns has them), as when it opens: a long
+        // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
+        const from = Math.max(0, turns.length - RESET_TURNS);
+        this.op({ op: "reset", turns, agents }, from ? structuredClone({ op: "reset", turns: turns.slice(from), agents, earlier: from }) : undefined);
     }
 
     /**
