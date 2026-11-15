@@ -78,21 +78,73 @@ export function merged(scored: Scored[], limit: number): string[] {
     return [...at.values()].sort((a, b) => b.s - a.s || a.k - b.k).slice(0, limit).map((x) => x.p);
 }
 
+const NL = 10;
+const NON_ASCII = /[^\x00-\x7f]/;
+
+/** fuzzyScore's second way (scoreIn: each character in order), of `q`'s character codes in `t` from `from` to `end`. */
+function inOrder(q: Uint8Array, t: Uint8Array, from: number, end: number): number {
+    let ti = from;
+    let score = 0;
+    let last = -2;
+    for (let j = 0; j < q.length; j++) {
+        const c = q[j]!;
+        let found = -1;
+        for (let k = ti; k < end; k++) {
+            if (t[k] === c) {
+                found = k;
+                break;
+            }
+        }
+        if (found < 0) return -1;
+        score += found - from === last + 1 ? 5 : 1;
+        last = found - from;
+        ti = found + 1;
+    }
+    return score;
+}
+
+/** Where `q` is first in `t` from `from`, wholly before `end`: -1 if it isn't (a name is short: looked through here). */
+function indexIn(q: Uint8Array, t: Uint8Array, from: number, end: number): number {
+    const c = q[0]!;
+    for (let k = from, last = end - q.length; k <= last; k++) {
+        if (t[k] !== c) continue;
+        let j = 1;
+        while (j < q.length && t[k + j] === q[j]) j++;
+        if (j === q.length) return k;
+    }
+    return -1;
+}
+
 export class PathIndex {
-    /** Folders (with their "/"), then files: as they're offered, in this order on a tie. */
-    private paths: string[] = [];
-    private lower: string[] = [];
-    /** Where each path's last part starts, and its end (a folder's "/" isn't part of it). */
+    /**
+     * Each path lower-cased, a line each, as bytes: found in by the engine's own search, with no string to reach for
+     * each path (at a million files that was most of a keystroke). A path with a character beyond ASCII (lower-cased,
+     * its length can change) has an empty line here, and is in `wide` instead.
+     */
+    private lower = Buffer.alloc(0);
+    /** The same as written: what's offered. */
+    private written = Buffer.alloc(0);
+    /** Where each path's line starts (and, at n, where the last ends). */
+    private start = new Uint32Array(1);
+    /** Where each path's last part starts in it, and ends (a folder's "/" isn't part of it). */
     private baseFrom = new Uint32Array(0);
     private baseEnd = new Uint32Array(0);
     private masks = new Uint32Array(0);
-    /** The most each path can score (by its length alone): one that can't beat the best found yet isn't scored. */
+    /** The most each path can score (by its length alone): one that can't beat the best found yet isn't looked in. */
     private most = new Float64Array(0);
+    /** Each path's length. */
+    private len = new Uint32Array(0);
+    /** Those beyond ASCII, by their place: as written, and lower-cased. */
+    private wide = new Map<number, { p: string; l: string }>();
     /** Each path's place among all of a project's paths, when this has a part of them (take's `first`). */
     private keys?: Float64Array;
 
     get size(): number {
-        return this.paths.length;
+        return this.len.length;
+    }
+
+    private path(i: number): string {
+        return this.wide.get(i)?.p ?? this.written.toString("latin1", this.start[i]!, this.start[i]! + this.len[i]!);
     }
 
     /**
@@ -115,8 +167,10 @@ export class PathIndex {
         const dirs = new Set<string>();
         const dirKeys: number[] = [];
         const fresh: string[] = [];
+        let bytes = 0;
         for (let k = 0; k < files.length; k++) {
             const f = files[k]!;
+            bytes += f.length + 1;
             for (let end = f.lastIndexOf("/"); end > 0; end = f.lastIndexOf("/", end - 1)) {
                 const d = f.slice(0, end + 1);
                 if (dirs.has(d)) break;
@@ -125,6 +179,7 @@ export class PathIndex {
             for (let j = fresh.length - 1; j >= 0; j--) {
                 const d = fresh[j]!;
                 dirs.add(d);
+                bytes += d.length + 1;
                 if (keyed) {
                     let depth = 0;
                     for (let c = d.indexOf("/"); c >= 0; c = d.indexOf("/", c + 1)) depth++;
@@ -136,28 +191,46 @@ export class PathIndex {
             if (waiting) await waiting;
         }
         const paths = [...dirs, ...files];
+        dirs.clear();
         const n = paths.length;
-        const lower = new Array<string>(n);
+        const lower = Buffer.allocUnsafe(bytes);
+        const written = Buffer.allocUnsafe(bytes);
+        const start = new Uint32Array(n + 1);
         const baseFrom = new Uint32Array(n);
         const baseEnd = new Uint32Array(n);
         const masks = new Uint32Array(n);
         const most = new Float64Array(n);
+        const len = new Uint32Array(n);
+        const wide = new Map<number, { p: string; l: string }>();
         const keys = keyed ? new Float64Array(n) : undefined;
+        let at = 0;
         for (let i = 0; i < n; i++) {
             const p = paths[i]!;
             const l = p.toLowerCase();
-            lower[i] = l === p ? p : l;
+            start[i] = at;
+            len[i] = p.length;
             const end = p.endsWith("/") ? p.length - 1 : p.length;
             baseEnd[i] = end;
             baseFrom[i] = p.lastIndexOf("/", end - 1) + 1;
             masks[i] = charMask(l);
-            // Found at the start of its name, at a word's start (scoreIn), less what its length costs (find).
+            // Found at the start of its name, at a word's start (scoreIn), less what its length costs (top).
             most[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
+            if (NON_ASCII.test(p)) {
+                wide.set(i, { p, l });
+            } else {
+                written.write(p, at, "latin1");
+                lower.write(l, at, "latin1");
+                at += p.length;
+            }
+            lower[at] = NL;
+            written[at] = NL;
+            at++;
             if (keys) keys[i] = i < dirKeys.length ? dirKeys[i]! : FOLDERS_END + first + (i - dirKeys.length);
             const waiting = pause(i);
             if (waiting) await waiting;
         }
-        Object.assign(this, { paths, lower, baseFrom, baseEnd, masks, most, keys });
+        start[n] = at;
+        Object.assign(this, { lower: lower.subarray(0, at), written: written.subarray(0, at), start, baseFrom, baseEnd, masks, most, len, wide, keys });
     }
 
     /** The paths that best match `query`, best first. */
@@ -165,29 +238,88 @@ export class PathIndex {
         return this.top(query, limit).map((x) => x.p);
     }
 
-    /** The same, each with its score and its place on a tie (merged puts several parts' together). */
+    /**
+     * The same, each with its score and its place on a tie (merged puts several parts' together): as fuzzyScore scores
+     * each path and its last part (by 50 more), less a twentieth of its length, best first, the earlier on a tie.
+     */
     top(query: string, limit: number): Scored[] {
         const q = query.replace(/^\.\//, "").toLowerCase();
-        const need = charMask(q);
-        // The best `limit`, best first; a later one only above an equal one if better (as a stable sort leaves them).
+        const n = this.len.length;
         const best: { i: number; s: number }[] = [];
-        for (let i = 0; i < this.paths.length; i++) {
-            // Can't beat the last of the best, whatever it scores: not scored.
-            if (best.length === limit && this.most[i]! <= best[limit - 1]!.s) continue;
-            if ((this.masks[i]! & need) !== need) continue;
-            const t = this.lower[i]!;
-            // Its name first (by 50), if it's there: a path it isn't in at all isn't offered (it was, at 49, above
-            // ones it was in with letters between).
-            const base = scoreIn(q, t, this.baseFrom[i]!, this.baseEnd[i]!);
-            const s = Math.max(scoreIn(q, t, 0, t.length), base >= 0 ? base + 50 : -1);
-            if (s <= 0) continue;
-            const score = s - this.paths[i]!.length * 0.05;
-            if (best.length === limit && score <= best[limit - 1]!.s) continue;
+        const worst = () => (best.length === limit ? best[limit - 1]!.s : -Infinity);
+        const consider = (i: number, score: number) => {
+            if (best.length === limit && score <= best[limit - 1]!.s && !(score === best[limit - 1]!.s && i < best[limit - 1]!.i)) return;
             let at = best.length;
-            while (at > 0 && best[at - 1]!.s < score) at--;
+            while (at > 0 && (best[at - 1]!.s < score || (best[at - 1]!.s === score && best[at - 1]!.i > i))) at--;
             best.splice(at, 0, { i, s: score });
             if (best.length > limit) best.pop();
+        };
+        // In a path's string (one beyond ASCII), as before.
+        const scoreWide = (i: number, w: { l: string }) => {
+            const base = scoreIn(q, w.l, this.baseFrom[i]!, this.baseEnd[i]!);
+            const s = Math.max(scoreIn(q, w.l, 0, w.l.length), base >= 0 ? base + 50 : -1);
+            if (s > 0) consider(i, s - this.len[i]! * 0.05);
+        };
+        if (!q) {
+            // Every path scores 1, its name 1 + 50: the shortest first.
+            for (let i = 0; i < n; i++) if (best.length < limit || 51 - this.len[i]! * 0.05 >= worst()) consider(i, 51 - this.len[i]! * 0.05);
+        } else if (NON_ASCII.test(q)) {
+            // Only in a path beyond ASCII.
+            for (const [i, w] of this.wide) scoreWide(i, w);
+        } else {
+            const lower = this.lower;
+            const ql = q.length;
+            const qb = Buffer.from(q, "latin1");
+            const need = charMask(q);
+            // Where it's in a path: each path's first, found by the engine's search from the next path that could be
+            // among the best (without looking in those that can't, by their length, or haven't its characters), on to
+            // where it is (none spans two paths: no line break in it).
+            for (let i = 0; i < n; i++) {
+                if (best.length === limit) {
+                    const w = best[limit - 1]!.s;
+                    while (i < n && (this.most[i]! < w || (this.masks[i]! & need) !== need)) i++;
+                } else {
+                    while (i < n && (this.masks[i]! & need) !== need) i++;
+                }
+                if (i >= n) break;
+                const h = lower.indexOf(qb, this.start[i]!);
+                if (h < 0) break;
+                while (this.start[i + 1]! <= h) i++;
+                if (best.length === limit && this.most[i]! < best[limit - 1]!.s) continue;
+                const from = this.start[i]!;
+                const length = this.len[i]!;
+                const idx = h - from;
+                const full = 1000 - idx - length * 0.01 + (idx === 0 || isBoundary(lower[h - 1]!) ? 200 : 0);
+                // Its name: where it's first at or after where the name starts, if that's in the name; else in order.
+                const bFrom = from + this.baseFrom[i]!;
+                const bEnd = from + this.baseEnd[i]!;
+                const hb = h >= bFrom ? h : indexIn(qb, lower, bFrom, bEnd);
+                const bLen = bEnd - bFrom;
+                let base = -1;
+                if (hb >= 0 && hb + ql <= bEnd) base = 1000 - (hb - bFrom) - bLen * 0.01 + (hb === bFrom || isBoundary(lower[hb - 1]!) ? 200 : 0);
+                else if (full < 5 * ql + 50) base = inOrder(qb, lower, bFrom, bEnd);
+                consider(i, Math.max(full, base >= 0 ? base + 50 : -1) - length * 0.05);
+            }
+            for (const [i, w] of this.wide) scoreWide(i, w);
+            // Where it's only in order (fuzzyScore's second way): at most 5 a character and 50 for the name, so only
+            // looked for while that could still be among the best.
+            const most = 5 * (ql - 1) + 1 + 50;
+            if (worst() < most) {
+                // The next place it's in a path, as the paths are gone through: those it's in were scored above.
+                let next = lower.indexOf(qb, 0);
+                for (let i = 0; i < n; i++) {
+                    if (this.wide.has(i) || (this.masks[i]! & need) !== need) continue;
+                    const length = this.len[i]!;
+                    if (most - length * 0.05 < worst()) continue;
+                    const from = this.start[i]!;
+                    if (next >= 0 && next < from) next = lower.indexOf(qb, from);
+                    if (next >= from && next < from + length) continue;
+                    const base = inOrder(qb, lower, from + this.baseFrom[i]!, from + this.baseEnd[i]!);
+                    const s = Math.max(inOrder(qb, lower, from, from + length), base >= 0 ? base + 50 : -1);
+                    if (s > 0) consider(i, s - length * 0.05);
+                }
+            }
         }
-        return best.map((b) => ({ p: this.paths[b.i]!, s: b.s, k: this.keys ? this.keys[b.i]! : b.i }));
+        return best.map((b) => ({ p: this.path(b.i), s: b.s, k: this.keys ? this.keys[b.i]! : b.i }));
     }
 }

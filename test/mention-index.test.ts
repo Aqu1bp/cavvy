@@ -19,6 +19,9 @@ function reference(dirs: string[], files: string[], query: string, limit: number
     return scored.slice(0, limit).map((x) => x.p);
 }
 
+/** Its paths, in its order. */
+const pathsOf = (idx: FileIndex): string[] => Array.from({ length: (idx as any).index.size }, (_, i) => (idx as any).index.path(i));
+
 function index(files: string[]) {
     const idx = new FileIndex("/nonexistent");
     void (idx as any).take(files);
@@ -37,13 +40,14 @@ test("it offers what scoring every path did, in the same order, typed on or aske
     });
     const dirs = [...new Set(files.flatMap((f) => f.split("/").slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join("/") + "/")))];
     const idx = index(files);
-    expect((idx as any).index.paths.slice(0, dirs.length).sort()).toEqual([...dirs].sort());
+    expect(pathsOf(idx).slice(0, dirs.length).sort()).toEqual([...dirs].sort());
     const queries = ["s", "sr", "src", "src/", "src/c", "src/co", "srv", "Serv", "server", "mai", "main.", "main.t", "./ind", "ap", "app.c", "a_", "x-", "ün", "café", "zzz", "comp ts", "/", "md", "ME", "e", "", "2", "29", "copy"];
     for (const limit of [12, 8, 1]) {
         for (const q of queries) {
             // Asked afresh, and typed one letter at a time (each a search, as the composer asks).
             const fresh = index(files);
-            const want = reference(dirs.filter((d) => (fresh as any).index.paths.includes(d)).sort((a, b) => (fresh as any).index.paths.indexOf(a) - (fresh as any).index.paths.indexOf(b)), files, q, limit);
+            const order = new Map(pathsOf(fresh).map((p, i) => [p, i]));
+            const want = reference(dirs.filter((d) => order.has(d)).sort((a, b) => order.get(a)! - order.get(b)!), files, q, limit);
             expect([q, limit, fresh.search(q, limit)]).toEqual([q, limit, want]);
             for (let k = 1; k <= q.length; k++) idx.search(q.slice(0, k), limit);
             expect([q, limit, "typed", idx.search(q, limit)]).toEqual([q, limit, "typed", want]);
