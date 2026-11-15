@@ -17,6 +17,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     const notices: string[] = [];
     const pending = Promise.withResolvers<AccountInfo[]>();
     const [open, setOpen] = solid.createSignal(false);
+    const [activeId, setActiveId] = solid.createSignal("session");
     const [catalog, setCatalog] = solid.createSignal(options.singleAccount ? accounts.filter(a => a.id === options.current) : accounts);
     const [state, setState] = solid.createSignal<any>({ model: { provider: "cli", providerName: "CLI", contextWindow: options.unknown ? undefined : 200_000 }, contextTokens: 50_000, tokensIn: 1000, tokensOut: 200, cost: 1.25, busy: false, accounts: { cli: options.current ?? "default" } });
     const [limits, setLimits] = solid.createSignal<any>(options.plan === undefined && !options.reached ? {} : {
@@ -34,7 +35,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     const Ring = component(source("components/ui/bits.tsx"), "Ring", {});
     let settingsTab: string | undefined;
     const Meter = component(source("components/ComposerMeter.tsx"), "ComposerMeter", {
-        app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); } },
+        app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); }, get activeId() { return activeId(); } },
         handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
@@ -56,7 +57,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     const tone = () => /\btone-(\w+)/.exec(trigger().props.class)?.[1];
     /** How far the card's bar is filled. */
     const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("cx-bar"))?.props.style.width;
-    return { root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, tone, filled, wire, doc, dispose, settingsTab: () => settingsTab };
+    return { setActiveId, root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, tone, filled, wire, doc, dispose, settingsTab: () => settingsTab };
 }
 
 test("API context-only control, compaction, spend, busy state, and usage navigation", () => {
@@ -220,6 +221,16 @@ test("a click or ArrowDown opens it, not hover or focus; another click, Escape o
     } finally { m.dispose(); }
 });
 
+
+test("another session picked (by a key, which clicks nothing outside it) closes the card", () => {
+    const m = mount();
+    try {
+        m.show();
+        expect(m.open()).toBe(true);
+        m.setActiveId("another");
+        expect(m.open()).toBe(false);
+    } finally { m.dispose(); }
+});
 
 test("aggregate limit resets survive windows without resets, without duplicating window resets", () => {
     const m = mount();
