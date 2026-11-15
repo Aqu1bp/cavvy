@@ -270,34 +270,54 @@ export class MarkdownRenderer {
                 // Freeze only across a blank line after a closed, stable block.
                 // Adjacent blocks can change classification as markers arrive
                 // (e.g. '> b\n--'), and lists/quotes can absorb lazy continuations.
-                // A reference definition can change earlier inline tokens, so
-                // text that may hold one ("]:", wherever it sits: quotes and
-                // lists hold them too) takes the full lexer. Normalized source
-                // (e.g. CRLF) and replacements also use the full lexer.
+                // A reference definition can change earlier inline tokens, so a
+                // reply that has one (what's frozen had, or the tail just lexed
+                // has) takes the full lexer: by what the lexer found, not by
+                // "]:" in the text, which code has all the time ("[key: string]:",
+                // "dict[str, int]:") and which made every later update lex the
+                // whole reply. Normalized source (e.g. CRLF) and replacements also
+                // use the full lexer.
                 // While streaming, only the tail is settled: frozen blocks are
-                // closed, and settle() only changes the end of what it's given.
-                const append = previous && previous.streaming === streaming && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("]:");
-                relexedFrom = append ? previous.tailIndex : 0;
-                const from = append ? previous.tailStart : 0;
-                const source = streaming ? settle(text.slice(from)) : text.slice(from);
-                const tail = md.lexer(source);
-                tokens = append ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
-                const view = text.slice(0, from) + source;
-                const raw = tokens.map((t) => t.raw).join("");
-                let tailIndex = 0;
-                let tailStart = raw === view ? 0 : -1;
-                let offset = 0;
-                let stable = false;
+                // closed, and settle() only changes the end of what it's given,
+                // so the last render (no longer streaming) keeps them too.
+                const append = previous && (previous.streaming === streaming || previous.streaming) && previous.tailStart >= 0 && !hasLinks(previous.tokens) && text.startsWith(previous.text);
+                let from = append ? previous.tailStart : 0;
+                let source = streaming ? settle(text.slice(from)) : text.slice(from);
+                let tail = (streaming && openFence(source)) || md.lexer(source);
+                if (append && hasLinks(tail)) {
+                    from = 0;
+                    source = streaming ? settle(text) : text;
+                    tail = md.lexer(source);
+                }
+                const appended = append && from > 0;
+                relexedFrom = appended ? previous.tailIndex : 0;
+                tokens = appended ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
+                // What's frozen was checked when it was lexed: only the tail is looked at again.
+                const at = (k: number) => (k < from ? text[k] : source[k - from]);
+                let tailIndex = appended ? previous.tailIndex : 0;
+                let tailStart = tail.map((t) => t.raw).join("") === source ? from : -1;
+                let offset = from;
+                // A freeze comes after a stable block, so the tail starts after one.
+                let stable = appended;
                 // Leave at least the final non-space block mutable, even if it
                 // currently ends in a blank line. Indented code, lists, quotes
-                // and HTML remain mutable until a later stable block closes.
+                // and tables are closed by a blank line and then a line that
+                // starts with text (it can't be indented into them, or be lazily
+                // continued, and the same list's marker would have joined it):
+                // what's written after can't reach back past it. HTML remains
+                // mutable until a later stable block closes.
+                let closable = false;
                 let last = tokens.length - 1;
                 while (last > 0 && tokens[last]?.type === "space") last--;
-                for (let i = 0; tailStart >= 0 && i < last; i++) {
+                for (let i = tailIndex; tailStart >= 0 && i < last; i++) {
                     const t = tokens[i]!;
                     offset += t.raw.length;
-                    if (t.type !== "space") stable = t.type === "paragraph" || t.type === "heading" || t.type === "hr" || (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented");
-                    if (stable && raw.slice(offset - 2, offset) === "\n\n") {
+                    if (t.type !== "space") {
+                        stable = t.type === "paragraph" || t.type === "heading" || t.type === "hr" || (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented");
+                        closable = t.type === "list" || t.type === "blockquote" || t.type === "table" || t.type === "code";
+                    }
+                    const next = at(offset);
+                    if ((stable || (closable && next !== undefined && next !== " " && next !== "\t" && next !== "\n" && next !== "\r")) && at(offset - 2) === "\n" && at(offset - 1) === "\n") {
                         tailIndex = i + 1;
                         tailStart = offset;
                     }
@@ -363,6 +383,35 @@ export class MarkdownRenderer {
         this.html = next;
         return out;
     }
+}
+
+/** The lexer found a link reference definition in what these tokens came from. */
+function hasLinks(tokens: { links?: unknown }): boolean {
+    for (const _ in (tokens.links ?? {}) as object) return true;
+    return false;
+}
+
+const OPEN_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
+const ANY_PUNCTUATION = /\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g;
+
+/**
+ * A streaming tail that's a code fence still open (no closing line yet), as the lexer would read it, without lexing it:
+ * all the rest is the code. A long one was lexed whole again with every update. Undefined for anything else, which
+ * the lexer reads.
+ */
+export function openFence(source: string): (Token[] & { links: Record<string, never> }) | undefined {
+    const m = OPEN_FENCE.exec(source);
+    if (!m) return undefined;
+    const fence = m[1]!;
+    const info = m[2]!;
+    if (fence[0] === "`" && info.includes("`")) return undefined;
+    const rest = source.slice(m[0].length);
+    // A closing line anywhere (a fence, then more fence characters and spaces): the lexer decides what follows.
+    const close = new RegExp(`^ {0,3}${fence}[~\`]* *$`, "m");
+    if (close.test(rest)) return undefined;
+    const lang = info ? info.trim().replace(ANY_PUNCTUATION, "$1") : info;
+    const text = rest.endsWith("\n") ? rest.slice(0, -1) : rest;
+    return Object.assign([{ type: "code", raw: source, lang, text } as Tokens.Code as Token], { links: {} });
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,56 @@ test("long Markdown lexes only the growing block on append, with safe full-parse
     expect(chars).toBeLessThan(30_000);
 });
 
+test("code that reads like a link definition, an open code block, and the end of the reply aren't lexed whole again", () => {
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    const stream = (text: string) => {
+        const r = new MarkdownRenderer();
+        chars = 0;
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        r.segments(text, false);
+        return chars / text.length;
+    };
+    try {
+        const prose = Array.from({ length: 60 }, (_, i) => `Paragraph ${i} says what it does and why, in a sentence or two.\n\n`).join("");
+        // "]:" is in code all the time; it used to make every later update lex the whole reply.
+        expect(stream("```ts\ninterface Bag {\n    [key: string]: number;\n}\n```\n\n" + prose)).toBeLessThan(5);
+        expect(stream("```py\ndef f(x) -> dict[str, int]:\n    pass\n```\n\n" + prose)).toBeLessThan(5);
+        // A long code block, written a few characters at a time.
+        const code = "Here it is.\n\n```ts\n" + Array.from({ length: 300 }, (_, i) => `    const part${i} = input.slice(${i}).trim();\n`).join("") + "```\n\nDone.";
+        expect(stream(code)).toBeLessThan(2);
+        // A list, a quote and a table are closed by the text that starts after them.
+        const blocks = Array.from({ length: 20 }, (_, i) => `- item ${i}\n- another\n\n> quoted ${i}\n\n| a | b |\n| --- | --- |\n| ${i} | x |\n\nText ${i}.\n\n`).join("");
+        expect(stream(blocks)).toBeLessThan(6);
+    } finally {
+        Marked.prototype.lexer = lexer;
+    }
+});
+
+test("incremental Markdown agrees with a fresh parse on replies made of every kind of block", () => {
+    const pieces = [
+        "Para one.", "Para with *em* and `code`.", "# H1", "Setext\n===", "Setext two\n---", "---",
+        "- a\n- b", "- a\n\n- b", "1. one\n2. two", "- a\n  continued", "- a\n\n  indented para", "- a\n    - deep\n- b",
+        "> quote", "> q\nlazy", "> q\n>\n> more", "| a | b |\n| --- | --- |\n| 1 | 2 |",
+        "    indented code", "```\nfence\n```", "```ts\nconst x: { [k: string]: number } = {};\n```", "~~~py\ndef f(x) -> dict[str, int]:\n    pass\n~~~", "```  ts  \nx\n```",
+        "<div>\nhtml\n</div>", "<!-- c\n\nstill -->", "[ref]: https://example.com", "See [ref] and [x][ref].",
+        "Text\n- list right after", "Text\n> quote right after", "  two-space para", "\tTabbed", "-", "1.", "#", ">",
+    ];
+    let seed = 1;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    for (let n = 0; n < 250; n++) {
+        const parts = Array.from({ length: 3 + Math.floor(rand() * 7) }, () => pieces[Math.floor(rand() * pieces.length)]!);
+        const sample = parts.map((p, i) => p + (i < parts.length - 1 ? ["\n\n", "\n", "\n\n\n"][Math.floor(rand() * 3)] : "")).join("");
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+});
+
 /** What a reader would see of the non-code blocks: text with the tags taken out. */
 const prose = (r: MarkdownRenderer, text: string) => r.segments(text, true).filter((s) => s.kind === "html").map((s) => (s as { html: string }).html.replace(/<code>[^<]*<\/code>/g, "").replace(/<[^>]+>/g, "")).join("\n");
 
