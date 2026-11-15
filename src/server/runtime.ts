@@ -130,7 +130,7 @@ import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
-import { findBefore } from "./find";
+import { findBefore, type FindCache } from "./find";
 import { cardOf } from "../../gui/src/lib/cards";
 import { agentHeadOf, headOf, TurnStore, type TurnHead } from "./turn-store";
 
@@ -264,6 +264,11 @@ export function listedAgent(a: AgentRun): AgentRun {
  * (Tests set it to 0: a turn at a time.)
  */
 export const turnStoring = { sliceMs: 8 };
+/**
+ * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
+ * (a slice at a time, 2.4 s for that session on an M5) when Find is used after. (Tests set it low.)
+ */
+export const findKeeping = { ms: 2 * 60_000 };
 
 /**
  * A long session keeps its latest this many turns built (beyond them, each only as its head: turn-store.ts): the one
@@ -511,6 +516,9 @@ export class Runtime {
     private agentChanged = new WeakSet<AgentRun>();
     /** Find calls so far (find): an earlier one still working stops. */
     private finding = 0;
+    /** What Find searches in each turn, worked out (find.ts), while it's being used: let go of findKeeping.ms after. */
+    private findCache: FindCache = new WeakMap();
+    private findForget?: ReturnType<typeof setTimeout>;
     /** Notices shown and not kept (notice()): building the turns again leaves them out, and so does the store. */
     private liveOnly = new Set<string>();
     /** Compactions so far: the transcript segment new prompts belong to. */
@@ -1462,7 +1470,12 @@ export class Runtime {
             whole: (t) => this.whole(t),
             stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
             stale: () => asked !== this.finding || this.closed,
+            cache: this.findCache,
         });
+        // Kept for the next query; let go of once Find hasn't been used for a while (a long session's text, all of it).
+        clearTimeout(this.findForget);
+        this.findForget = setTimeout(() => (this.findCache = new WeakMap()), findKeeping.ms);
+        this.findForget.unref?.();
         return found ?? [];
     }
 
@@ -5129,6 +5142,7 @@ export class Runtime {
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.shellTimer) clearInterval(this.shellTimer);
+        clearTimeout(this.findForget);
         this.flush();
         // What's still going (a turn being interrupted, sub-agents delegated past their turn) as far as it got.
         // How it ends is written too, if that's before the session is let go of.

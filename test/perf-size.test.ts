@@ -17,6 +17,9 @@ const { writeThread } = await import("../scripts/perf-thread");
 // The window's own numbers, not copies: a change to them is measured here too. Opened as a window opens one with
 // work shown folded (the default: gui/src/state/app.ts opening).
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
+const { findKeeping } = await import("../src/server/runtime");
+// What Find searches, let go of soon after it was used (as it is a while after: runtime.ts findKeeping).
+findKeeping.ms = 300;
 
 const SMALL = 3_000;
 const LARGE = 30_000;
@@ -49,7 +52,7 @@ const heap = () => {
     return heapStats().heapSize;
 };
 
-interface Cost { openSent: number; findSent: number; rewindSent?: number; readOnOpen?: number; keptAfterOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
+interface Cost { openSent: number; findSent: number; rewindSent?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
 
 async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const cwd = join(tempDir(`cavvy-perf-size-${kind}-`), "project");
@@ -67,6 +70,14 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     // Find, in the turns the window doesn't have (session.find): a query found once, whatever the session's size.
     const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
     expect(find.msg.result.matches).toHaveLength(1);
+    // Kept while it's open: once its turns are in its store (a slice at a time after it opened) and Find has let go.
+    let keptOpen = heap() - before;
+    for (let i = 0; i < 40; i++) {
+        await Bun.sleep(100);
+        const now = heap() - before;
+        if (Math.abs(now - keptOpen) < 64 * 1024 && i > 4) break;
+        keptOpen = now;
+    }
     let rewindSent: number | undefined;
     if (kind === "native") {
         // Back to before the last prompt.
@@ -94,7 +105,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         reopen.kept = Math.min(reopen.kept, kept2);
     }
     return {
-        openSent: open.bytes, findSent: find.bytes, rewindSent, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept,
+        openSent: open.bytes, findSent: find.bytes, rewindSent, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
         readOnReopen: reopen!.read, keptAfterReopen: reopen!.kept, openMs, reopenMs: reopen!.ms,
     };
 }
@@ -147,6 +158,12 @@ describe("a session of one of Cavvy's own models", () => {
         const { small, large } = measured.native!;
         expect(within(small.rewindSent!, large.rewindSent!)).toBe(true);
     });
+    // Open, its turns beyond the latest in its store (put there a slice at a time after it opens), and what Find
+    // searches let go of a while after it's used (runtime.ts findKeeping: 30 MB for 100,000 items).
+    test("open, the server keeps what's on screen", () => {
+        const { small, large } = measured.native!;
+        expect(keptWithin(small.keptOpen, large.keptOpen)).toBe(true);
+    });
     // Opened again, its turns come from its store (src/server/turn-store.ts): only the latest are built.
     test("opening it again keeps in the server what's on screen", () => {
         const { small, large } = measured.native!;
@@ -180,6 +197,11 @@ describe("a Claude Code session", () => {
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
         expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
+    });
+    // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
+    test("open, the server keeps what's on screen", () => {
+        const { small, large } = measured.cli!;
+        expect(keptWithin(small.keptOpen, large.keptOpen)).toBe(true);
     });
     test("finding in it sends what's found, not every turn", () => {
         const { small, large } = measured.cli!;

@@ -14,9 +14,11 @@ setEntityDecoder(decodeHTML);
 
 /**
  * Each turn's parts as Find searches them, kept with what they were worked out from: a long session has thousands of
- * replies, each rendered to be searched, and that's done again only for a turn that's changed since.
+ * replies, each rendered to be searched, and that's done again only for a turn that's changed since. (A session's own:
+ * it lets go of them once Find isn't used for a while, 30 MB for 100,000 items.)
  */
-const searched = new WeakMap<Turn, { stamp: string; parts: { part: string; folded: string }[] }>();
+export type FindCache = WeakMap<Turn, { stamp: string; parts: { part: string; folded: string }[] }>;
+const searched: FindCache = new WeakMap();
 
 /** What a turn's parts depend on, cheaply: a turn that changed (a block added, text streamed in, a status) differs. */
 function stampOf(t: Turn): string {
@@ -30,12 +32,12 @@ function stampOf(t: Turn): string {
     return s;
 }
 
-function partsOf(t: Turn, whole: (t: Turn) => Turn = (x) => x, stamped?: (t: Turn) => string | undefined) {
+function partsOf(t: Turn, whole: (t: Turn) => Turn = (x) => x, stamped?: (t: Turn) => string | undefined, cache = searched) {
     const stamp = stamped?.(t) ?? stampOf(t);
-    const had = searched.get(t);
+    const had = cache.get(t);
     if (had?.stamp === stamp) return had.parts;
     const parts = foldedParts(whole(t));
-    searched.set(t, { stamp, parts });
+    cache.set(t, { stamp, parts });
     return parts;
 }
 
@@ -54,10 +56,10 @@ const SLICE_MS = 8;
 export async function findBefore(
     turns: readonly Turn[],
     query: string,
-    o: { before?: string; also?: ReadonlySet<string>; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean } = {},
+    o: { before?: string; also?: ReadonlySet<string>; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean; cache?: FindCache } = {},
 ): Promise<SessionFindMatch[] | undefined> {
     // `whole`: a turn kept as its head, whole (the session's store has its blocks); `stamped`: what it is, for it.
-    const parts = (t: Turn) => partsOf(t, o.whole, o.stamped);
+    const parts = (t: Turn) => partsOf(t, o.whole, o.stamped, o.cache);
     const end = o.before === undefined ? turns.length : turns.findIndex((t) => t.id === o.before);
     if (end < 0) return [];
     // As they are now: turns that come in meanwhile are the window's to count. And `also`, after them (those a window
