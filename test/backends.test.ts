@@ -4763,6 +4763,15 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(answers().at(-1)).toMatchObject({ action: "decline" });
     });
 
+    test.if(process.platform === "darwin")("without Codex's config layers, it's off with the warning about them, not a how-to", async () => {
+        process.env.FAKE_NO_CONFIG_LAYERS = "1";
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(notices(events).join("\n")).toContain("did not identify its config layers");
+        expect(notices(events).join("\n")).not.toContain("ChatGPT app");
+    });
+
     test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
         process.env.FAKE_CU_APP = "com.apple.Terminal";
         process.env.FAKE_CU_APP_NAME = "Terminal";

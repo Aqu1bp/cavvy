@@ -2062,7 +2062,7 @@ export class CodexTurn {
      * it up in Codex's home (the apps never offered denied); otherwise off, the person's own Codex config included. A
      * read-only agent never has it. Thread config to add, if any.
      */
-    protected computerUseConfig(t: BackendTurn, overrides: { config?: ThreadConfig; effective?: unknown }): ThreadConfig | undefined {
+    protected computerUseConfig(t: BackendTurn, overrides: { config?: ThreadConfig; effective?: unknown; missingProvenance?: boolean }): ThreadConfig | undefined {
         this.computerUse = false;
         const off = () => {
             const c = computerUseOffConfig(overrides.effective);
@@ -2070,7 +2070,8 @@ export class CodexTurn {
         };
         if (!t.desktop || t.readOnly) return off();
         if (!computerUseSetUp(overrides.effective, overrides.config)) {
-            if (process.platform === "darwin" && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
+            // Without provenance every plugin is off, set up or not: the warning about it says enough.
+            if (process.platform === "darwin" && !overrides.missingProvenance && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
             notSetUpSaid.add(t.sessionKey);
             return off();
         }
