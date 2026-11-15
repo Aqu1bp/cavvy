@@ -31,6 +31,9 @@ test("restore loads enough full pages to retain an older anchor after background
     expect(restoredShown(ids, saved("missing"))).toBe(40);
     expect(restoredShown([], saved())).toBe(40);
     expect(restoredShown(ids, { ...saved(), bottom: true })).toBe(40);
+    // Left while a page asked for was still going in ("Show earlier"): it comes with it, no more than there are.
+    expect(restoredShown(ids, { ...saved("115"), shown: 80 })).toBe(80);
+    expect(restoredShown(ids, { ...saved("115"), shown: 400 })).toBe(125);
 });
 
 test("a reopened session shows its last page, or the pages down to where it was read, not every page it once showed", () => {
