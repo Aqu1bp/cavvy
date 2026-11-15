@@ -202,16 +202,16 @@ test("a stream that comes in bursts runs as far behind as they're apart, a stead
 
 test("what just came out is drawn lighter by its age, then plain", () => {
     // A tier a step of the stream clock (50ms), the boundaries between steps.
-    expect(TRAIL_MS).toEqual([25, 75, 125, 175]);
-    expect([0, 24, 25, 50, 74, 75, 100, 125, 150, 175, 500].map(trailTier)).toEqual([0, 0, 1, 1, 1, 2, 2, 3, 3, -1, -1]);
+    expect(TRAIL_MS).toEqual([25, 75, 125, 175, 225, 275, 325]);
+    expect([0, 24, 25, 50, 75, 100, 150, 200, 250, 300, 325, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, 3, 4, 5, 6, -1, -1]);
 });
 
 test("streamed text has no animation: the trail is static opacity, none with Reduce motion", () => {
     const css = readFileSync(new URL("../gui/src/styles/markdown.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/md-fresh/);
     expect(css).not.toMatch(/code\.fresh/);
-    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf(".md-caret,"));
-    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.4], ["2", 0.62], ["3", 0.8], ["4", 0.93]]);
+    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf("}\n}\n", css.indexOf("@media (prefers-reduced-motion: no-preference)")) + 4);
+    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.12], ["2", 0.28], ["3", 0.45], ["4", 0.61], ["5", 0.75], ["6", 0.87], ["7", 0.95]]);
     expect(trail).not.toMatch(/animation|transition/);
     // Outside that media query nothing draws the tiers.
     expect(css.replace(trail, "")).not.toMatch(/md-t\d/);

@@ -7,7 +7,7 @@
 // end of a list of children are marked `md-fresh`.
 //
 // What has just come out is drawn lighter for a moment, an ink trail: each
-// mark gets a tier by its age (md-t1 to md-t4, a static opacity in
+// mark gets a tier by its age (md-t1 to md-t7, a static opacity in
 // markdown.css), worked out again on each step of the stream clock while any
 // mark is in the trail (lib/stream-clock.ts: the step text comes out on, so
 // nothing is drawn between them). Without new text, the words still go on
@@ -19,15 +19,17 @@
 import { onStep } from "./stream-clock";
 
 const FRESH = "md-fresh";
+/** A block first painted while the reply streams, for good: its lines wrap as they came (markdown.css). */
+const WRITTEN = "md-written";
 /** The trail's tiers by a mark's age (ms), between the clock's steps: younger than the first, tier 1, and so on; older than the last, plain. */
-export const TRAIL_MS = [25, 75, 125, 175] as const;
-const TIERS = ["md-t1", "md-t2", "md-t3", "md-t4"] as const;
+export const TRAIL_MS = [25, 75, 125, 175, 225, 275, 325] as const;
+const TIERS = ["md-t1", "md-t2", "md-t3", "md-t4", "md-t5", "md-t6", "md-t7"] as const;
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
 const KEPT = new Set(["src", "tabindex", "data-loading"]);
 
 const painted = new WeakMap<Element, string>();
 
-/** The trail's tier (0 to 3) for a mark this many ms old, or -1 once it's past the trail. */
+/** The trail's tier (0 to 6) for a mark this many ms old, or -1 once it's past the trail. */
 export function trailTier(age: number): number {
     return TRAIL_MS.findIndex((t) => age < t);
 }
@@ -102,7 +104,10 @@ export function paint(el: HTMLElement, html: string, live: boolean) {
         if (live && before !== undefined) morph(el, html);
         else {
             el.innerHTML = html;
-            if (live) mark(el);
+            if (live) {
+                el.classList.add(WRITTEN);
+                mark(el);
+            }
         }
         painted.set(el, html);
     }

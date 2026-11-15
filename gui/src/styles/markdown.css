@@ -311,23 +311,36 @@
     margin-left: -1.25em;
 }
 
-/* While the reply streams, what has just come out is drawn lighter for a moment: an ink trail. lib/stream-dom.ts
-   gives each new piece a tier by its age on the steps text comes out on, so nothing animates and nothing is drawn
-   between them. Opacity, not a colour: links, code and emphasis keep their own. */
+/* While the reply streams, what has just come out is drawn faint and inks in over about 350ms: an ink trail.
+   lib/stream-dom.ts gives each new piece a tier by its age on the steps text comes out on, so nothing animates and
+   nothing is drawn between them (an animation here would give each piece a layer of its own, and the glass over the
+   conversation would be drawn again for it). Opacity, not a colour: links, code and emphasis keep their own. */
 @media (prefers-reduced-motion: no-preference) {
     .md .md-t1 {
-        opacity: 0.4;
+        opacity: 0.12;
     }
 
     .md .md-t2 {
-        opacity: 0.62;
+        opacity: 0.28;
     }
 
     .md .md-t3 {
-        opacity: 0.8;
+        opacity: 0.45;
     }
 
     .md .md-t4 {
-        opacity: 0.93;
+        opacity: 0.61;
+    }
+
+    .md .md-t5 {
+        opacity: 0.75;
+    }
+
+    .md .md-t6 {
+        opacity: 0.87;
+    }
+
+    .md .md-t7 {
+        opacity: 0.95;
     }
 }
