@@ -247,9 +247,17 @@ test("a session's rows shown again are skipped at once at the sizes they were; a
     const again = shown("s1");
     expect(again.rows.every((row) => row.hasAttribute("data-work-far"))).toBe(true);
     expect(again.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.rows.map((_, i) => `auto ${40 + i}px`));
-    // One in view comes near as it's seen: drawn as it is.
-    io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    // One coming near is drawn, and what it brings in (a step rising in) came in long ago: ended, not played again.
+    const fade = { finished: false, effect: { target: again.rows[79], getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
+    const had = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [fade] };
+    try {
+        io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    } finally {
+        (globalThis as any).document = had;
+    }
     expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
+    expect(fade.finished).toBe(true);
     again.dispose();
     const other = shown("s2");
     expect(other.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
