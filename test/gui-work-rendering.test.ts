@@ -247,18 +247,15 @@ test("a session's rows shown again are skipped at once at the sizes they were; a
     const again = shown("s1");
     expect(again.rows.every((row) => row.hasAttribute("data-work-far"))).toBe(true);
     expect(again.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.rows.map((_, i) => `auto ${40 + i}px`));
-    // One coming near is drawn, and what it brings in (a step rising in) came in long ago: ended, not played again.
-    const fade = { finished: false, effect: { target: again.rows[79], getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
-    const had = (globalThis as any).document;
-    (globalThis as any).document = { getAnimations: () => [fade] };
-    try {
-        io.emit([{ target: again.rows[79], isIntersecting: true }]);
-    } finally {
-        (globalThis as any).document = had;
-    }
+    // What they bring in (a step rising in) came in long ago: marked so it starts already over (transcript.css), in
+    // the first frame each is drawn, wherever that is (one in view is drawn before the observer says it's near).
+    expect(again.rows.every((row) => row.hasAttribute("data-work-again"))).toBe(true);
+    io.emit([{ target: again.rows[79], isIntersecting: true }]);
     expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
-    expect(fade.finished).toBe(true);
+    // Still marked: let go of, the animations would go back to where their own delay puts them, part way or not begun.
+    expect(again.rows[79]!.hasAttribute("data-work-again")).toBe(true);
     again.dispose();
+    expect(again.rows.some((row) => row.hasAttribute("data-work-again"))).toBe(false);
     const other = shown("s2");
     expect(other.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
     other.dispose();
