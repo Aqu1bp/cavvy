@@ -26,8 +26,8 @@ import { Segmented } from "./ui/bits";
 import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
-import { browserUnseen, loadBrowserState } from "../state/browser";
-import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
+import { browserUnseen, loadBrowserState, setBrowserShown } from "../state/browser";
+import { loadSimulatorState, setSimulatorShown, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
 /** The folder the session works in: its actions, from the header's button (the path on hover). */
 function WorkspaceButton(p: { handle: SessionHandle }) {
@@ -414,14 +414,14 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
-                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} />}>
+                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} shown={setBrowserShown} />}>
                                 <BrowserPane handle={p.handle} />
                             </Show>
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>
                         <div class="pane">
-                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} />}>
+                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} shown={setSimulatorShown} />}>
                                 <SimulatorPane handle={p.handle} />
                             </Show>
                         </div>
@@ -437,8 +437,12 @@ export function RightPanel(p: { handle: SessionHandle }) {
  * The Browser or Simulator of another machine's session opened in this window: what it shows is that machine's (its
  * pictures come over the window's connection there), so it's seen in a window on that machine.
  */
-function OnItsMachine(p: { id: string }) {
+function OnItsMachine(p: { id: string; shown: (id: string, on: boolean) => void }) {
     const name = () => awayMachine(p.id) || "this computer";
+    // On screen, as the pane would be: what the agent opened there is seen (its tab's dot goes).
+    const id = p.id;
+    p.shown(id, true);
+    onCleanup(() => p.shown(id, false));
     return (
         <div class="panel-empty">
             <p>This session runs on {name()}.</p>

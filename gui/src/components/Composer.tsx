@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, connFor, handleFor, reportError, rpc, rpcFor, toast, wasDeleted } from "../state/app";
+import { app, awayMachine, connFor, handleFor, reportError, rpc, rpcFor, serversUi, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -190,7 +190,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     }));
     // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
-        if (provider && provider !== was) setModelPickerOpen(true);
+        if (!provider || provider === was) return;
+        // Another machine's session opened here: its accounts are that machine's, picked in a window there.
+        const away = awayMachine(p.sessionId);
+        if (away !== undefined) return toast(`Pick its account on ${away || "this computer"}`, "warn", { label: "Go there", run: () => void serversUi().then((m) => m.switchMachine(away || undefined, p.sessionId), reportError) });
+        setModelPickerOpen(true);
     }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {

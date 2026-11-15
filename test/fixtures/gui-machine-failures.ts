@@ -10,12 +10,24 @@ let reloads = 0;
 const store = new Map<string, string>();
 // Loaded again while box's session was on screen: what the window kept of where it was.
 if (mode === "reload") store.set("cavvy.navigation", JSON.stringify({ activeId: "b1", homeCwd: "/srv/app", on: "box" }));
+// A window on box, on a Mac that lends box's sessions its simulators: one of this computer's sessions opened in it.
+if (mode === "lent") {
+    store.set("cavvy.machine", "box");
+    // A window on a server loads the servers screen (components/Servers.tsx), which a script can't (Solid's JSX): a
+    // stand-in that does nothing.
+    Bun.plugin({
+        name: "servers-screen",
+        setup(build) {
+            build.onLoad({ filter: /components\/Servers\.tsx$/ }, () => ({ contents: "export const connected = () => {}; export const switchMachine = () => {}; export const machineCredentials = async () => undefined;", loader: "ts" }));
+        },
+    });
+}
 Object.assign(globalThis, {
     requestAnimationFrame: (f: (t: number) => void) => setTimeout(() => f(performance.now()), 0),
     cancelAnimationFrame: (t: ReturnType<typeof setTimeout>) => clearTimeout(t),
     sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) },
     location: { reload: () => void reloads++, hash: "", href: "http://test/", search: "" },
-    window: Object.assign(new EventTarget(), { cavvyDesktop: new Proxy({ reloadHeld: () => void reloads++ } as Record<string, unknown>, { get: (t, k) => (typeof k === "string" && k in t ? t[k] : () => undefined) }) }),
+    window: Object.assign(new EventTarget(), { cavvyDesktop: new Proxy({ reloadHeld: () => void reloads++, sidecarInfo: async () => ({ port: 1, token: "local-token" }) } as Record<string, unknown>, { get: (t, k) => (typeof k === "string" && k in t ? t[k] : () => undefined) }) }),
     document: Object.assign(new EventTarget(), { hidden: false, visibilityState: "visible", documentElement: { dataset: {}, style: { setProperty() {} } }, querySelector: () => null }),
 });
 
@@ -58,6 +70,12 @@ class ServerSocket extends Socket {
             if (!onBox && params.id !== "l1") return fail("No such session", "not_found");
             reply(snapshot(params.id));
         } else if (method === "session.fork") reply(snapshot("f1"));
+        // Box has no simulators, and only its own sessions; this computer (a Mac) has one.
+        else if (method === "simulator.state") {
+            if (onBox) return params.id.startsWith("b") ? reply({ status: "unavailable", devices: [] }) : fail("That session isn't open", "not_open");
+            reply({ status: "stopped", devices: [{ udid: "u", name: "iPhone" }] });
+        } else if (method === "offers.session") reply({ offered: true, asks: [] });
+        else if (method === "offers.asking") reply([]);
         else if (method === "models.list") reply([]);
         else if (method === "settings.get") reply({});
         else reply(null);
@@ -76,11 +94,34 @@ const until = async (what: string, ok: () => boolean, ms = 5000) => {
 const fromBox = (event: unknown) => boxSockets().filter((s) => s.readyState === 1).forEach((s) => s.message({ event }));
 
 const { start, rpc, app, activate, handleFor, upsertSession, warmFor, connFor, forkSession, toasts, problemFor } = await import("../../gui/src/state/app");
+const { sessionReadReady } = await import("../../gui/src/state/changes");
 const connects = () => calls.filter((c) => c.method === "servers.connect");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 const listBox = () => upsertSession(summary("b1", { machine: "box" }) as never);
 
 try {
+    if (mode === "lent") {
+        Object.assign(rpc, { credentials: async () => ({ url: "ws://box.test/ws", token: "box-token" }) });
+        const { Rpc } = await import("../../gui/src/lib/rpc");
+        await import("../../gui/src/lib/lent");
+        const { sim, loadSimulatorState } = await import("../../gui/src/state/simulator");
+        const lentTo = (id: string) => !(sim.stream(() => id) instanceof Rpc);
+        start();
+        await settle();
+        await activate("b1");
+        await settle();
+        assert.ok(lentTo("b1"), "box's session borrows this computer's simulator");
+        // This computer's session, opened in the window on box, with the side panel open (its simulator looked at).
+        upsertSession(summary("l1") as never);
+        await activate("l1");
+        await settle();
+        await loadSimulatorState("l1").catch(() => undefined);
+        await activate("b1");
+        await settle();
+        // What this computer said of its own session isn't taken for box having simulators.
+        assert.ok(lentTo("b1"), "box's session still borrows this computer's simulator");
+        process.exit(0);
+    }
     if (mode === "reload") {
         start();
         // Box's rows come later than the window's own (the servers code lists them): it's opened from box all the same.
@@ -125,6 +166,7 @@ try {
     assert.notEqual(connFor("b1"), "open", "box's session shows its own connection down");
     assert.equal(connFor("l1"), "open");
     assert.equal(handleFor("b1")!.ready(), false);
+    assert.equal(sessionReadReady(handleFor("b1")!), false, "its Changes wait for its connection");
     await until("a try to reconnect", () => calls.filter((c) => c.method === "servers.connect").length > asked.length + 1);
     assert.match(problemFor("b1")?.message ?? "", /Couldn't reach box/, "the banner says why");
     reach = "ok";
@@ -135,6 +177,24 @@ try {
     for (const s of boxSockets()) if (s.readyState === 1) s.close();
     await until("box's session back after a refused sign-in", () => handleFor("b1")!.ready() && connFor("b1") === "open", 15_000);
     assert.ok(connects().some((c) => c.params.renew === true), "a new sign-in asked for after one opened nothing");
+
+    // This computer's connection down, box's up: box's session's Changes go on.
+    for (const s of Socket.instances as ServerSocket[]) if (!s.url.includes("box") && s.readyState === 1) s.close();
+    await settle();
+    assert.notEqual(app.conn, "open");
+    assert.equal(sessionReadReady(handleFor("b1")!), true, "its Changes follow its own connection");
+    rpc.reconnectNow();
+    await until("this computer's connection back", () => app.conn === "open");
+    await settle();
+
+    // Its browser's state is box's: asked of box, and what box says of it is heard where the window's own is.
+    const heardHere: string[] = [];
+    rpc.onEvent((e) => { if (e.type === "browser.state") heardHere.push(e.sessionId); });
+    fromBox({ type: "browser.state", sessionId: "b1", state: { tabs: [] } });
+    await settle();
+    assert.deepEqual(heardHere, ["b1"]);
+    await rpc.call("browser.state", { id: "b1" } as never);
+    assert.equal(calls.filter((c) => c.method === "browser.state").at(-1)!.on, "box");
 
     // Box says what isn't its to say: a row for this computer, one of this computer's gone, a toast, a notification
     // this computer's Cavvy says itself. None of it lands. What's of its session does.

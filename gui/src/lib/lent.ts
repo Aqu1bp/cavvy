@@ -14,7 +14,7 @@ import { home } from "./machines";
 import { machine } from "./platform";
 import type { Rpc } from "./rpc";
 import { far } from "../state/actions";
-import { app, others, rpc, upsertSession } from "../state/app";
+import { app, awayMachine, others, rpc, upsertSession } from "../state/app";
 import { adoptSimulatorState, loadSimulatorState, sim } from "../state/simulator";
 
 /** What this computer has for each session of this window's server, by the session's id there. */
@@ -42,6 +42,9 @@ function ask(h: Rpc, session: string, open = false): Promise<LentSession> {
 /** Where the session's simulator stands: the server's own if it has any, else this computer's for that session. */
 async function state(h: Rpc, session: string): Promise<SimulatorState> {
     const own = await rpc.call("simulator.state", { id: session });
+    // Another machine's session opened in this window (this computer's, say): its own machine answered. Nothing to lend
+    // it, and what that machine has says nothing of the server this window is on.
+    if (awayMachine(session) !== undefined) return own;
     if (own.status !== "unavailable") {
         ownSimulators = true;
         return own;

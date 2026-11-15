@@ -16,3 +16,7 @@ test("another machine's session: reached after failing, a drop with a failed rec
 test("loaded again with another machine's session on screen, it opens from there", async () => {
     expect(await run("reload")).toEqual({ code: 0, stdout: "", stderr: "" });
 }, 60_000);
+
+test("a window on a server, one of this computer's sessions opened in it: the server's sessions still borrow this computer's simulator", async () => {
+    expect(await run("lent")).toEqual({ code: 0, stdout: "", stderr: "" });
+}, 60_000);

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, handleFor, reportError, rpc, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
@@ -45,7 +45,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const provider = () => state()?.model?.provider ?? p.provider;
     const providerInfo = () => app.providers.find((x) => x.id === provider());
     const accountId = () => state()?.accounts?.[provider() ?? ""] ?? providerInfo()?.agentCli?.defaultAccount ?? "default";
-    const limits = () => app.limits[planLimitKey(provider() ?? "", accountId())];
+    // This computer's plan limits: none shown for another machine's session opened here (its machine has its own).
+    const limits = () => (awayMachine(p.sessionId) !== undefined ? undefined : app.limits[planLimitKey(provider() ?? "", accountId())]);
     const meter = createMemo(() => meterOf(limits(), now()));
     const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
     const alternatives = () => limitAlternatives(accounts(), accountId());

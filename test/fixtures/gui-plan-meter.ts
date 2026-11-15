@@ -10,7 +10,7 @@ import { cost, tokens } from "../../gui/src/lib/format";
 const source = (path: string) => readFileSync(new URL(`../../gui/src/${path}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 const accounts: AccountInfo[] = ["default", "work"].map((id) => ({ id, name: id === "default" ? "Default" : "Work", folder: `/fake/${id}`, managed: id !== "default", signedIn: true }));
 const timestamp = Date.now();
-function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean; credits?: boolean } = {}) {
+function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean; credits?: boolean; away?: string } = {}) {
     const root = node("root");
     const calls: any[] = [];
     const errors: unknown[] = [];
@@ -38,7 +38,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
-        reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
+        awayMachine: () => options.away, reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
         document: doc, Popover, Ring, Gauge: () => null, Shrink: () => null, renderer: domRenderer, sp: (n: number) => n,
     });
     const dispose = renderer.render(() => Meter({ sessionId: options.home ? undefined : "session", provider: "cli" }), root);
@@ -177,6 +177,15 @@ test("reached on credits (#434): says so, and switching away doesn't claim the t
         expect(text(hard.root)).toContain("Limit reached");
         expect(text(hard.root)).not.toContain("using credits");
     } finally { hard.dispose(); }
+});
+
+test("another machine's session opened here: this computer's plan limits and accounts aren't its", () => {
+    const m = mount({ reached: true, away: "box" });
+    try {
+        m.show();
+        expect(text(m.root)).not.toContain("Limit reached");
+        expect(m.calls).toEqual([]);
+    } finally { m.dispose(); }
 });
 
 test("Home uses default account; session uses its own account", () => {
