@@ -50,6 +50,12 @@ const turnHeights = new Map<string, Map<string, number>>();
 const TURN_HEIGHTS_KEPT = 8;
 /** What a turn put in again went in skipped with is let go of this long after it first comes near (as work-rendering's rows). */
 const AGAIN_MS = 2000;
+/** An element's padding and border, above and below it (px). */
+function outside(el: Element): number {
+    if (typeof getComputedStyle !== "function") return 0;
+    const s = getComputedStyle(el);
+    return (parseFloat(s.paddingTop) || 0) + (parseFloat(s.paddingBottom) || 0) + (parseFloat(s.borderTopWidth) || 0) + (parseFloat(s.borderBottomWidth) || 0);
+}
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -634,11 +640,12 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
                 // All of them before any is marked, so the page's style is worked out once, not once a turn.
                 finishEntrancesIn(entries.filter((e) => !e.isIntersecting && !e.target.hasAttribute(FAR)).map((e) => e.target));
-                // Each one going far: its height, for the next time this session is shown (turnHeights).
+                // Each one going far: its height, for the next time this session is shown (turnHeights). Its content's:
+                // that's what a skipped turn's size stands for, its padding drawn around it all the same.
                 for (const e of entries) {
                     if (e.isIntersecting || e.target.hasAttribute(FAR) || !(e.boundingClientRect?.height > 0)) continue;
                     const key = heightKey((e.target as HTMLElement).dataset.turn ?? "");
-                    if (key) heights.set(key, e.boundingClientRect!.height);
+                    if (key) heights.set(key, e.boundingClientRect!.height - outside(e.target));
                 }
                 // Put in again skipped: what it brought in is let go of a while after it comes near (AGAIN_MS).
                 const again = entries.filter((e) => e.isIntersecting && e.target.hasAttribute(AGAIN)).map((e) => e.target);
