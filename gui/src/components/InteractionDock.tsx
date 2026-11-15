@@ -46,7 +46,8 @@ export function useKeys(handler: (key: string) => boolean) {
             if (performance.now() - shown < SETTLE_MS || !pane.focused() || document.body.classList.contains("resizing")) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
-            const card = document.querySelector<HTMLElement>(".itab");
+            // The one shown: not one kept out of sight (Panes.tsx), which can come first.
+            const card = document.querySelector<HTMLElement>(".itab:not([data-parked] *)");
             if (card?.closest("[data-covered]") || card?.checkVisibility?.({ checkVisibilityCSS: true, visibilityProperty: true }) === false) return;
             if (handler(e.key)) {
                 e.preventDefault();

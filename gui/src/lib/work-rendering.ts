@@ -8,8 +8,13 @@ import { settlingObserver, type SettlingObserver } from "./settling-observer";
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
 const FAR = "data-work-far";
-/** Put in again at a remembered size (shown before): what it brings in (a step rising in) came in long ago, so it starts already over (transcript.css). */
+/**
+ * Put in again at a remembered size (shown before): what it brings in (a step rising in) came in long ago, so it starts
+ * already over (transcript.css). Taken off a while after the row is first drawn, when what it brought in would be over
+ * anyway: what plays later (an output opened) plays as it would.
+ */
 const AGAIN = "data-work-again";
+const AGAIN_MS = 2000;
 /** A turn a screen or more from the view (Transcript.tsx): its rows skip their layout with it, so they aren't watched. */
 const TURN_FAR = "data-far";
 const MIN_ROWS = 80;
@@ -43,6 +48,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
     const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
+    const timers = new Set<ReturnType<typeof setTimeout>>();
     let io: SettlingObserver | undefined;
     let ro: ResizeObserver | undefined;
     // With many turns drawn, only rows in turns near the view are watched or skipped on their own: what they cost each
@@ -118,9 +124,19 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                 if (!row.near) going.push(el);
             }
             skip(going);
+            const drawn: HTMLElement[] = [];
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
-                if (rows.get(el)?.near) el.removeAttribute(FAR);
+                if (!rows.get(el)?.near) continue;
+                el.removeAttribute(FAR);
+                if (el.hasAttribute(AGAIN)) drawn.push(el);
+            }
+            if (drawn.length) {
+                const t = setTimeout(() => {
+                    timers.delete(t);
+                    for (const el of drawn) el.removeAttribute(AGAIN);
+                }, AGAIN_MS);
+                timers.add(t);
             }
             const moved = above.reduce((sum, { el, height }) => sum + el.getBoundingClientRect().height - height, 0);
             if (Math.abs(moved) > 0.5) shift(moved);
@@ -232,6 +248,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         ro?.disconnect();
         mo.disconnect();
         to.intersections = to.sizes = to.mutations = undefined;
+        for (const t of timers) clearTimeout(t);
         // Its rows' sizes, for the next time it's shown (in their order in each turn, as they're found then).
         if (session !== undefined) {
             const sizes = new Map<string, number>();

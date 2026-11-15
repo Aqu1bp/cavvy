@@ -23,7 +23,7 @@ export function terminalAsked(): void {
 
 /** A card the user can see now: not one under Settings, or behind a terminal that covers the conversation. */
 function cardShowing(): boolean {
-    const card = document.querySelector<HTMLElement>(".itab");
+    const card = document.querySelector<HTMLElement>(".itab:not([data-parked] *)");
     return Boolean(card) && !card!.closest("[data-covered]") && card!.checkVisibility?.({ checkVisibilityCSS: true, visibilityProperty: true }) !== false;
 }
 

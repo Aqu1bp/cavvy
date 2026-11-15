@@ -109,6 +109,14 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number; par
         wasFocused = focused();
         if (!wasFocused) focusPane(p.id);
     };
+    let section: HTMLElement | undefined;
+    // Kept out of sight with the keyboard in it (a switch by key while typing): let go of now, or the browser keeps it
+    // there a frame or more, and what's shown wouldn't take it (Composer: focusSoon) and what's typed would be lost.
+    createEffect(() => {
+        if (!p.parked) return;
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && section?.contains(active)) active.blur();
+    });
     const ctx = { id: p.id, focused, parked: () => p.parked, split: inSplit, rightmost: () => p.last, share: () => p.share, wasFocused: () => wasFocused };
     // In a split each pane has the steps of its own width (shell.css, lib/layout.ts); alone, the column's are on .main.
     const narrow = createMemo(() => (inSplit() && shellLayout().sheet.w ? columnSteps(shellLayout().column.w * p.share, PANE_NARROW) : undefined));
@@ -128,7 +136,10 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number; par
                 data-bar={bar()}
                 data-parked={p.parked ? "" : undefined}
                 aria-label={inSplit() ? titleOf(p.id) : undefined}
-                ref={(el) => el.addEventListener("pointerdown", take, true)}
+                ref={(el) => {
+                    section = el;
+                    el.addEventListener("pointerdown", take, true);
+                }}
                 onFocusIn={() => {
                     if (!focused()) take();
                 }}

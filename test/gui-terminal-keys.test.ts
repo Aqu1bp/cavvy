@@ -28,7 +28,7 @@ const page: { activeElement: unknown; card: boolean; seen: boolean; querySelecto
     activeElement: null,
     card: false,
     seen: true,
-    querySelector: (s) => (s === ".itab" && page.card ? { closest: () => null, checkVisibility: () => page.seen } : null),
+    querySelector: (s) => (s === ".itab:not([data-parked] *)" && page.card ? { closest: () => null, checkVisibility: () => page.seen } : null),
 };
 /** The terminal focuses itself where the rule lets it, as components/TerminalPanel.tsx does. */
 const comesIntoView = (el: ReturnType<typeof screen>) => {
