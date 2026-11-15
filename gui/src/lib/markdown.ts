@@ -235,10 +235,37 @@ md.use({
  */
 export type Segment = { kind: "html"; key: string; html: string; answers?: [string, string | null | undefined][] } | { kind: "code"; key: string; lang: string; code: string; open: boolean };
 
+type Rendered = { lexed: NonNullable<MarkdownRenderer["lexed"]>; html: Map<string, Segment>; references: string };
+/**
+ * Finished replies rendered lately, by their text, the last used last: one shown again (a session switched back to, a
+ * page of turns read again) starts from what it was, not lexed and rendered anew (a 60 KB reply: 12 ms of a switch's
+ * 67, measured). Its blocks are still looked at again where what's known about their paths changed.
+ */
+const done = { linked: new Map<string, Rendered>(), plain: new Map<string, Rendered>() };
+let doneChars = 0;
+/** About what's kept, in characters of the replies (their tokens and HTML are about as much again, each). */
+const DONE_CHARS = 2_000_000;
+
+/** Kept for its views that look paths up (`linked`: those that are files become links), or for those that don't. */
+function keep(kept: Map<string, Rendered>, text: string, r: Rendered) {
+    if (kept.delete(text)) kept.set(text, r);
+    else if (text.length <= DONE_CHARS / 4) {
+        kept.set(text, r);
+        doneChars += text.length;
+    }
+    for (const map of [done.plain, done.linked]) {
+        for (const [t] of map) {
+            if (doneChars <= DONE_CHARS) return;
+            map.delete(t);
+            doneChars -= t.length;
+        }
+    }
+}
+
 /** Renders one reply; keeps finished blocks between calls. */
 export class MarkdownRenderer {
     private html = new Map<string, Segment>();
-    private lexed?: { text: string; streaming: boolean; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
+    lexed?: { text: string; streaming: boolean; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
     private references = "";
     /** Paths in the last render that `lookup` didn't know. */
     pending = new Set<string>();
@@ -262,6 +289,14 @@ export class MarkdownRenderer {
         this.paths = new Set();
         let tokens: Token[] & { links?: unknown };
         let relexedFrom = Infinity;
+        // A finished reply rendered before, by another of its views: from there.
+        const kept = lookup ? done.linked : done.plain;
+        const was = !streaming && !this.lexed ? kept.get(text) : undefined;
+        if (was) {
+            this.lexed = was.lexed;
+            this.html = new Map(was.html);
+            this.references = was.references;
+        }
         try {
             // Rendered again with the same text when answers arrive: lex it once.
             const previous = this.lexed;
@@ -381,6 +416,7 @@ export class MarkdownRenderer {
             out.push(seg);
         });
         this.html = next;
+        if (!streaming && this.lexed?.text === text) keep(kept, text, { lexed: this.lexed, html: next, references: this.references });
         return out;
     }
 }
