@@ -542,6 +542,12 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
         batch(() => h.set(produce((v) => {
             v.turns.unshift(...page.turns);
             v.earlier = page.earlier;
+            // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial).
+            for (const a of page.agents ?? []) {
+                const i = v.agents.findIndex((x) => x.id === a.id);
+                if (i >= 0) v.agents[i] = a;
+                else v.agents.push(a);
+            }
         })));
         return true;
     });
@@ -549,6 +555,38 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
     loadingEarlier.set(h.id, settled);
     void settled.finally(() => { if (loadingEarlier.get(h.id) === settled) loadingEarlier.delete(h.id); });
     return settled;
+}
+
+/** Whole before its view opens (a sub-agent of a turn the window doesn't have): the view's first frame is all of it. */
+export function agentReady(agentId: string): Promise<void> {
+    for (const h of handles.values()) {
+        const a = h.view.agents.find((x) => x.id === agentId);
+        if (a) return a.partial ? loadAgent(h, agentId) : Promise.resolve();
+    }
+    return Promise.resolve();
+}
+
+/** Each sub-agent's fetch under way (loadAgent): one at a time. */
+const loadingAgent = new Map<string, Promise<void>>();
+
+/**
+ * A sub-agent whole, for one the window has only what its list shows of (AgentRun.partial: its turn wasn't sent): its
+ * steps, instructions and report, put in its place. Nothing when it's whole already or the server no longer has it.
+ */
+export function loadAgent(h: SessionHandle, agentId: string): Promise<void> {
+    const key = `${h.id}:${agentId}`;
+    const going = loadingAgent.get(key);
+    if (going) return going;
+    const run = rpc.call("session.agent", { id: h.id, agentId }).then((a) => {
+        if (!a) return;
+        h.set(produce((v) => {
+            const i = v.agents.findIndex((x) => x.id === agentId);
+            // Whole by now (its turn came, or it ran again): that's the latest.
+            if (i >= 0 && v.agents[i]!.partial) v.agents[i] = a;
+        }));
+    }, () => undefined).finally(() => loadingAgent.delete(key));
+    loadingAgent.set(key, run);
+    return run;
 }
 
 /**

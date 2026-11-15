@@ -129,8 +129,9 @@ describe("a session of one of Cavvy's own models", () => {
 });
 
 describe("a Claude Code session", () => {
-    // Opening it sends every sub-agent the session ever ran: only those of the turns it sends, and any still running.
-    test.failing("opening it sends its last turns and their sub-agents, whatever came before", () => {
+    // Every sub-agent still goes, as its list shows it (about 220 bytes each: AgentRun.partial); whole, only those of
+    // the turns it sends and any still running.
+    test("opening it sends its last turns and their sub-agents, whatever came before", () => {
         const { small, large } = measured.cli!;
         expect(within(small.openSent, large.openSent)).toBe(true);
     });

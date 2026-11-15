@@ -133,6 +133,22 @@ import { MAX_RESTART_RESUMES } from "./working";
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
+/**
+ * What a window is sent of a session's sub-agents with `turns`, the turns it's sent: those of these turns, and any still
+ * running, whole; the others as the list of them shows them (AgentRun.partial), their steps, instructions and report
+ * left to come with their turns or on their own. A long Claude Code session opened with every sub-agent it ever ran:
+ * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
+ */
+export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean): AgentRun[] {
+    if (all) return structuredClone(agents as AgentRun[]);
+    const ids = new Set(turns.map((t) => t.id));
+    return agents.map((a) => {
+        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") return structuredClone(a);
+        const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
+        return { ...structuredClone(listed), blocks: [], partial: true as const };
+    });
+}
+
 /** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
 const RESET_TURNS = 100;
 /** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
@@ -986,7 +1002,14 @@ export class Runtime {
         this.flush();
         const all = this.view.turns;
         const from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
-        return { state: structuredClone(this.view.state), turns: structuredClone(from ? all.slice(from) : all), agents: structuredClone(this.view.agents), seq: this.batch, ...(from ? { earlier: from } : {}) };
+        const turns = from ? all.slice(from) : all;
+        return { state: structuredClone(this.view.state), turns: structuredClone(turns), agents: agentsFor(this.view.agents, turns, !from), seq: this.batch, ...(from ? { earlier: from } : {}) };
+    }
+
+    /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
+    agentWhole(agentId: string): AgentRun | null {
+        const a = this.view.agents.find((x) => x.id === agentId);
+        return a ? structuredClone(a) : null;
     }
 
     /**
@@ -1010,7 +1033,10 @@ export class Runtime {
             }
             if (holder >= 0) from = Math.min(from, holder);
         }
-        return { turns: structuredClone(all.slice(from, at)), earlier: from, seq: this.batch };
+        const turns = all.slice(from, at);
+        const ids = new Set(turns.map((t) => t.id));
+        const agents = this.view.agents.filter((a) => ids.has(a.turnId));
+        return { turns: structuredClone(turns), earlier: from, seq: this.batch, ...(agents.length ? { agents: structuredClone(agents) } : {}) };
     }
 
     /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */
@@ -4096,7 +4122,7 @@ export class Runtime {
         // The windows get its last turns, and how many came before (session.turns has them), as when it opens: a long
         // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
         const from = Math.max(0, turns.length - RESET_TURNS);
-        this.op({ op: "reset", turns, agents }, from ? structuredClone({ op: "reset", turns: turns.slice(from), agents, earlier: from }) : undefined);
+        this.op({ op: "reset", turns, agents }, from ? { op: "reset", turns: structuredClone(turns.slice(from)), agents: agentsFor(agents, turns.slice(from), false), earlier: from } : undefined);
     }
 
     /**

@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -157,7 +157,7 @@ export async function fork(id: string, at?: { index: number; text: string; turn:
 
 /** Show a sub-agent's own view, or (with none) the session's lineage in the panel. */
 export function openAgents(agentId?: string) {
-    if (agentId) return setAgentFocus(agentId);
+    if (agentId) return void agentReady(agentId).then(() => setAgentFocus(agentId));
     setAgentFocus(undefined);
     setPrefs("panel", true);
 }

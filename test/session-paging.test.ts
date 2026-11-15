@@ -2,7 +2,7 @@
 // (session.turns): pages before a turn it has, back to a message, or all, as the server's view has them now.
 import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
-import type { SessionOp, SessionState, Turn } from "../src/server/protocol";
+import type { AgentRun, SessionOp, SessionState, Turn } from "../src/server/protocol";
 
 const iso = isolate();
 const { Runtime } = await import("../src/server/runtime");
@@ -92,6 +92,31 @@ test("a long session rebuilt (a rewind) keeps all its turns, and sends the windo
     // What's sent isn't the view's: a window changing it changes nothing here.
     (sent[0] as Extract<SessionOp, { op: "reset" }>).turns[0]!.status = "aborted";
     expect(server.view.turns[150]!.status).toBe("done");
+});
+
+test("a session opens with the sub-agents of the turns it sends, and any running, whole; the rest as they're listed", () => {
+    const { rt, view } = runtime(10);
+    const agent = (id: string, turnId: string, status: AgentRun["status"]): AgentRun => ({ id, turnId, status, description: `does ${id}`, agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, prompt: "the instructions", report: "what it found", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"] });
+    (view as { agents: AgentRun[] }).agents = [agent("old", "t1", "done"), agent("busy", "t2", "running"), agent("new", "t8", "done")];
+    const some = rt.snapshot(3);
+    const byId = Object.fromEntries(some.agents.map((a) => [a.id, a]));
+    // Of a turn it sends, or still running: whole.
+    expect(byId.new).toMatchObject({ blocks: [{ id: "new-b" }], prompt: "the instructions", report: "what it found" });
+    expect(byId.new!.partial).toBeUndefined();
+    expect(byId.busy).toMatchObject({ blocks: [{ id: "busy-b" }], prompt: "the instructions" });
+    // Of a turn it doesn't send: what the list shows of it, and no more.
+    expect(byId.old).toEqual({ id: "old", turnId: "t1", status: "done", description: "does old", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, blocks: [], partial: true });
+    // Every turn sent: every sub-agent whole.
+    expect(rt.snapshot().agents.every((a) => !a.partial && a.blocks.length === 1)).toBe(true);
+    // Its turn's page brings it whole, and so does asking for it.
+    const page = rt.turnsBefore("t7", { count: 10 })!;
+    expect(page.agents?.map((a) => a.id).sort()).toEqual(["busy", "old"]);
+    expect(page.agents?.find((a) => a.id === "old")).toMatchObject({ prompt: "the instructions", blocks: [{ id: "old-b" }] });
+    expect(rt.agentWhole("old")).toMatchObject({ report: "what it found" });
+    expect(rt.agentWhole("gone")).toBeNull();
+    // Copies: what the window does with them doesn't touch the server's.
+    byId.new!.blocks.length = 0;
+    expect(view.agents[2]!.blocks).toHaveLength(1);
 });
 
 test("a finished step list written before the turns a window has is stale", () => {

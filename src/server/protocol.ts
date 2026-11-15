@@ -214,6 +214,11 @@ export interface AgentRun {
     turnAfter?: string;
     /** From before the session was reopened: nothing of it runs. Only its call and result are known, unless a backend's turn ran it (then its steps are kept too). */
     replayed?: boolean;
+    /**
+     * Only what the list of sub-agents shows of it: its steps, its instructions and its report come with its turn
+     * (session.turns), or on their own (session.agent). A session sends all of them only for the turns it sends.
+     */
+    partial?: true;
 }
 
 export interface NoticeBlock extends NoticeData {
@@ -861,6 +866,8 @@ export interface SessionTurnsPage {
     /** Turns before these, still not sent. */
     earlier: number;
     seq: number;
+    /** The sub-agents of these turns, whole (the window had only what its list shows of them: AgentRun.partial). */
+    agents?: AgentRun[];
 }
 
 /** A change to a session's timeline or state. Applied identically on both sides (applyOp). */
@@ -2119,6 +2126,8 @@ export interface Methods {
      * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).
      */
     "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
+    /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
+    "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };

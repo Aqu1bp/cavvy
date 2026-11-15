@@ -2664,6 +2664,11 @@ export class Engine {
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
             }
+            case "session.agent": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.agentWhole(str(p.agentId, "agentId"));
+            }
             case "cliSessions.list":
                 return this.cliSessionsList(str(p.cwd, "cwd"));
             case "cliSessions.import": {
