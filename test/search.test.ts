@@ -575,6 +575,27 @@ describe("searching session files", () => {
         expect((await searchSessions("kilo marker", { limit: 5 })).hits).toHaveLength(5);
     });
 
+    test("typing on, a search looks only where the query so far was found, and finds what a search from scratch would", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-typing-"), "proj");
+        for (const text of ["an apple a day", "apricot jam", "a grape", "pineapple chunks", "map of the app"]) write([prompt(text), reply("ok")], { cwd });
+        const ids = (r: { hits: { id: string; seg: number; index: number }[] }) => r.hits.map((h) => `${h.id}@${h.seg}:${h.index}`);
+        // Each keystroke a search, as the palette asks.
+        const typed: string[][] = [];
+        for (const q of ["ap", "app", "appl", "apple", "applex"]) typed.push(ids(await searchSessions(q)));
+        const fresh: string[][] = [];
+        for (const q of ["ap", "app", "appl", "apple", "applex"]) {
+            clearSearchCache();
+            fresh.push(ids(await searchSessions(q)));
+        }
+        expect(typed).toEqual(fresh);
+        expect(typed[3]).toHaveLength(2);
+        // A session written between keystrokes is looked in too (the files aren't as they were).
+        await searchSessions("appl");
+        const later = write([prompt("apple pie"), reply("ok")], { cwd });
+        expect((await searchSessions("apple")).hits.map((h) => h.id)).toContain(later.id);
+    });
+
     test("a session changed since it was read is read again", async () => {
         const s = write([prompt("lima first words"), reply("ok")]);
         expect((await searchSessions("lima later words")).hits).toHaveLength(0);

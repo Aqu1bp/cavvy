@@ -87,6 +87,8 @@ let cachedChars = 0;
 let cachedTimes = 0;
 
 export function clearSearchCache() {
+    listing = undefined;
+    lastScan = undefined;
     docs.clear();
     times.clear();
     cachedChars = 0;
@@ -498,7 +500,22 @@ export interface SearchOptions {
 }
 
 /** Every session file, newest first; undefined when the search stopped while listing them. */
-async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; size: number; mtimeMs: number; ino: number }[] | undefined> {
+type Listed = { id: string; file: string; size: number; mtimeMs: number; ino: number };
+
+/** The session files as last listed: the same list again while none has changed (lastScan holds to it). */
+let listing: Listed[] | undefined;
+
+/** The session files, newest first. The list from before when every one is as it was then. */
+async function sessionFiles(ctl: Control): Promise<Listed[] | undefined> {
+    const files = await listSessionFiles(ctl);
+    if (!files) return undefined;
+    const was = listing;
+    if (was && was.length === files.length && files.every((f, i) => f.file === was[i]!.file && f.size === was[i]!.size && f.mtimeMs === was[i]!.mtimeMs && f.ino === was[i]!.ino)) return was;
+    listing = files;
+    return files;
+}
+
+async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
     const root = paths.projectsDir();
     const out: { id: string; file: string; size: number; mtimeMs: number; ino: number }[] = [];
     let dirs: string[];
@@ -567,6 +584,13 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
  * first, at most PER_SESSION from one session. Stops early, with what it has
  * (`partial`), when the budget runs out; with nothing (`stale`) when replaced.
  */
+/**
+ * The last search that went through every session (none stopped it, nor its limit): what it was, in which listing
+ * (the same while no file has changed: sessionFiles), and the sessions it was found in. A query that has it in it can
+ * only be in those (typing on: each keystroke a search, and each went through all of them again).
+ */
+let lastScan: { fq: string; files: Listed[]; redaction: number; found: Set<string> } | undefined;
+
 export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
     const fq = foldCase(query);
@@ -575,8 +599,18 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
     const ctl = new Control(outdated, o.budgetMs ?? SEARCH_LIMITS.budgetMs, o.budgetBytes ?? SEARCH_LIMITS.budgetBytes);
     const hits: SearchHit[] = [];
     if (!fq) return { hits, partial: false, stale: false };
-    for (const f of (await sessionFiles(ctl)) ?? []) {
-        if (hits.length >= limit) break;
+    const files = (await sessionFiles(ctl)) ?? [];
+    // Typed on from a query whose search went through every session: only those it was found in can have this one.
+    const narrowed = !o.include && lastScan?.files === files && lastScan.redaction === redaction && fq.includes(lastScan.fq) ? lastScan.found : undefined;
+    // Each session it's found in, while it's gone through all of them (a search stopped at `limit` hasn't).
+    const found = new Set<string>();
+    let whole = true;
+    for (const f of files) {
+        if (hits.length >= limit) {
+            whole = false;
+            break;
+        }
+        if (narrowed && !narrowed.has(f.file)) continue;
         if (o.include && !o.include(f.id)) continue;
         if (!(await ctl.tick())) break;
         let doc = docs.get(f.file);
@@ -590,16 +624,17 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
             remember(f.file, doc);
         }
         if (!doc.cwd) continue;
-        const found: { e: Entry; at: number }[] = [];
+        const inDoc: { e: Entry; at: number }[] = [];
         for (const e of doc.entries) {
             const at = e.folded.indexOf(fq);
             if (at < 0) continue;
-            found.push({ e, at });
-            if (found.length >= PER_SESSION) break;
+            inDoc.push({ e, at });
+            if (inDoc.length >= PER_SESSION) break;
         }
-        if (!found.length) continue;
+        if (!inDoc.length) continue;
+        found.add(f.file);
         const turns = await turnTimes(f.file, f.id, ctl);
-        for (const { e, at } of found) {
+        for (const { e, at } of inDoc) {
             if (hits.length >= limit) break;
             // The turn it's in: the last start at or before it (not one a rewind took away), and
             // when that started: the latest record for its place, as UiLog has it (a rewind reuses places).
@@ -625,5 +660,6 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
     // Registration can happen at any yield, even after an earlier hit was built.
     // Never return snippets assembled under the old secret registry.
     const stale = ctl.stopped === "stale" || outdated();
+    if (whole && !ctl.stopped && !stale && !o.include) lastScan = { fq, files, redaction, found };
     return { hits: stale ? [] : hits, partial: stale || Boolean(ctl.stopped), stale };
 }
