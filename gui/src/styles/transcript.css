@@ -604,6 +604,10 @@
     padding-right: 0;
     background: none;
     font-size: 0.929rem;
+}
+
+/* Come in as the turn it ends finishes, not each time a finished one is built. */
+.acts-h.worked.arrived {
     animation: fade 220ms var(--ease);
 }
 
