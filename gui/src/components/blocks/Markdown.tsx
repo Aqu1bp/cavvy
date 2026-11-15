@@ -1,7 +1,7 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
 import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
-import { createBlocks, DrawnAgain } from "../../lib/reveal";
+import { createReveal, DrawnAgain } from "../../lib/reveal";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -93,10 +93,10 @@ function HtmlBlock(p: { html: string; live: boolean }) {
 
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
-    // While it streams, it comes out a block at a time (see lib/reveal.ts).
-    const again = useContext(DrawnAgain)();
-    const text = createBlocks(() => p.text, () => Boolean(p.streaming) && !again);
-    const live = () => Boolean(p.streaming);
+    // While it streams, the text comes out at an even pace (see lib/reveal.ts),
+    // and it reads as streaming until the last of it has.
+    const [text, behind] = createReveal(() => p.text, () => Boolean(p.streaming), useContext(DrawnAgain)());
+    const live = () => Boolean(p.streaming) || behind();
     let root: HTMLDivElement | undefined;
     const images = createMemo(() => {
         if (!p.sessionId) return undefined;

@@ -5,7 +5,8 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { component, node, renderer, text, type Node } from "../helpers/gui-render";
 import * as liveLine from "../../gui/src/lib/live-line";
 import * as format from "../../gui/src/lib/format";
-import { BLOCK_WAIT_MS, createBlocks, revealing } from "../../gui/src/lib/reveal";
+import { createReveal, LAG_MS, revealing } from "../../gui/src/lib/reveal";
+import { STEP_MS } from "../../gui/src/lib/stream-clock";
 import { growing } from "../../gui/src/lib/stream-dom";
 import { withinBudget } from "../helpers/perf-budget";
 
@@ -35,45 +36,56 @@ const flush = () => {
     due.forEach((fn) => fn(clock));
 };
 
-test("a streaming reply comes out a block at a time, one that takes long a line at a time, and all of it once it's done", () => {
+test("a block that starts while the reply streams comes out from its start, at one pace, all of it within the lag", () => {
     fakeTimers();
-    const run = (ms: number) => { const start = clock; while (clock - start < ms) flush(); };
     solid.createRoot((dispose) => {
-        const [value, setValue] = solid.createSignal("A fast model sends a whole paragraph at once.\n\nThe next one is still");
+        const [value, setValue] = solid.createSignal("A fast model sends a whole paragraph at once, ");
         const [streaming, setStreaming] = solid.createSignal(true);
-        const shown = createBlocks(value, streaming);
-        // The finished block, whole; not the one still being written.
-        expect(shown()).toBe("A fast model sends a whole paragraph at once.\n\n");
+        const [shown, behind] = createReveal(value, streaming);
+        // Not the chunk that arrived with it, whole: its first words at once, then word by word.
+        expect(shown().length).toBeGreaterThan(0);
+        expect(shown().length).toBeLessThan(value().length);
+        expect(behind()).toBe(true);
         expect(revealing()).toBe(true);
-        setValue(value() + " being written");
-        expect(shown()).toBe("A fast model sends a whole paragraph at once.\n\n");
-        setValue(value() + ".\n\n- one\n- two\n- thr");
-        expect(shown()).toBe("A fast model sends a whole paragraph at once.\n\nThe next one is still being written.\n\n");
-        // A long one (a list being written): as far as its last whole line once it's taken a while, then line by line.
-        run(BLOCK_WAIT_MS - 100);
-        expect(shown().endsWith("written.\n\n")).toBe(true);
-        run(200);
-        expect(shown().endsWith("- two\n")).toBe(true);
-        setValue(value() + "ee\n- fo");
-        expect(shown().endsWith("- three\n")).toBe(true);
-        // The next block waits again, and code comes out a line at a time from its start.
-        setValue(value() + "ur\n\nAnother paragraph");
-        expect(shown().endsWith("- four\n\n")).toBe(true);
-        setValue(value() + ".\n\n```ts\nconst a = 1;\nconst b");
-        expect(shown().endsWith("```ts\nconst a = 1;\n")).toBe(true);
-        // Done: all of it at once.
-        setValue(value() + " = 2;");
-        setStreaming(false);
+        // A burst of 600 characters on top: it's all out LAG_MS after it came, at one speed (not fast, then a crawl).
+        setValue(value() + "word ".repeat(120));
+        const steps: number[] = [];
+        let last = 0;
+        const start = clock;
+        while (behind() && clock - start < 2000) {
+            flush();
+            steps.push(shown().length - last);
+            last = shown().length;
+        }
         expect(shown()).toBe(value());
+        expect(clock - start).toBeLessThanOrEqual(LAG_MS + STEP_MS);
+        // A frame with no step due lets nothing out.
+        const body = steps.filter((n) => n > 0).slice(1, -1);
+        expect(Math.max(...body) - Math.min(...body)).toBeLessThanOrEqual(12);
         expect(revealing()).toBe(false);
+        // More, then the stream ends mid-burst: what's left still comes out, within the lag of when it arrived.
+        setValue(value() + "and the last few words of the reply.");
+        flush();
+        setStreaming(false);
+        const end = clock;
+        while (behind() && clock - end < 2000) flush();
+        expect(shown()).toBe(value());
+        expect(clock - end).toBeLessThanOrEqual(LAG_MS);
         dispose();
     });
     globalThis.setTimeout = realTimers.set;
     globalThis.clearTimeout = realTimers.clear;
-    // Not streaming (or drawn again: Markdown passes it as not streaming): as it is.
+    // Drawn again mid-reply with much already there (a session switched back to): shown at once, not replayed.
     solid.createRoot((dispose) => {
-        const shown = createBlocks(() => "Done.\n\nAll of it", () => false);
-        expect(shown()).toBe("Done.\n\nAll of it");
+        const long = "x ".repeat(1000);
+        const [shown] = createReveal(() => long, () => true);
+        expect(shown()).toBe(long);
+        dispose();
+    });
+    // Not streaming: as it is.
+    solid.createRoot((dispose) => {
+        const [shown, behind] = createReveal(() => "Done.", () => false);
+        expect([shown(), behind()]).toEqual(["Done.", false]);
         dispose();
     });
 });
@@ -100,27 +112,27 @@ function liveLineView() {
 
 const tool = (id: string, label: string): liveLine.LiveLineState => ({ key: `tool:${id}:running`, kind: "tool", label, detail: `src/${id}.ts`, toolId: id });
 
-test("the page says words are flowing while a reply streams, and not a moment after it's done", () => {
+test("the page says words are flowing while they come out, through a gap between chunks, and not once they've stopped", () => {
     fakeTimers();
     const marks = new Set<string>();
     (document as any).documentElement = { setAttribute: (name: string) => marks.add(name), removeAttribute: (name: string) => marks.delete(name) };
     const run = (ms: number) => { const start = clock; while (clock - start < ms) flush(); };
-    run(500); // What the last test left is over.
+    run(500); // What the last test let out is over.
     solid.createRoot((dispose) => {
         const [value, setValue] = solid.createSignal("Some words, ");
-        const [streaming, setStreaming] = solid.createSignal(true);
-        createBlocks(value, streaming);
+        const [, behind] = createReveal(value, () => true);
         expect(marks.has("data-flowing")).toBe(true);
-        setValue(value() + "and more.\n\n");
-        run(1000);
+        run(200);
+        expect(behind()).toBe(false);
         expect(marks.has("data-flowing")).toBe(true);
-        setStreaming(false);
-        // A moment's grace (a gap between chunks isn't a stop), then not.
+        setValue(value() + "and some more of them, ");
+        run(200);
+        expect(behind()).toBe(false);
         expect(marks.has("data-flowing")).toBe(true);
-        run(500);
+        run(400);
         expect(marks.has("data-flowing")).toBe(false);
-        // Streaming again marks it again.
-        setStreaming(true);
+        // A new start after a wait marks it again.
+        setValue(value() + "then the rest.");
         expect(marks.has("data-flowing")).toBe(true);
         dispose();
         run(500);
