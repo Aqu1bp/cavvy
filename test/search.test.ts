@@ -85,6 +85,36 @@ describe("searching session files", () => {
         expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
     });
 
+    // Each session's runs of three characters (search.ts gramsOf) let a search skip those that can't have it: never one
+    // that does, in any case or script.
+    test("what a session says is found, whatever the case or script; what none says isn't", async () => {
+        clearSearchCache();
+        let seed = 11;
+        const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+        const alphabet = "abcdefghijKLMNOPQRstuvwxyz éüßÇ日本語ẞ-_.:/";
+        const word = (n: number) => Array.from({ length: n }, () => alphabet[Math.floor(rnd() * alphabet.length)]).join("");
+        const cwd = join(tempDir("cavvy-search-grams-"), "proj");
+        const said: { id: string; text: string }[] = [];
+        for (let i = 0; i < 25; i++) {
+            const texts = [word(20 + Math.floor(rnd() * 200)), word(5 + Math.floor(rnd() * 50))];
+            const s = write([prompt(texts[0]!), reply(texts[1]!)], { cwd, age: 50 + i });
+            said.push(...texts.map((text) => ({ id: s.id, text })));
+        }
+        for (let k = 0; k < 60; k++) {
+            const { id, text } = said[Math.floor(rnd() * said.length)]!;
+            const len = 3 + Math.floor(rnd() * 6);
+            if (text.length < len) continue;
+            const at = Math.floor(rnd() * (text.length - len));
+            const q = text.slice(at, at + len);
+            if (!q.trim()) continue;
+            // Case flipped where it keeps its length (ß's upper case is two letters, which isn't the same text).
+            const flipped = rnd() < 0.5 ? q.replace(/[a-z]/g, (c) => c.toUpperCase()) : q.replace(/[A-Z]/g, (c) => c.toLowerCase());
+            const hits = (await searchSessions(flipped, { limit: 200 })).hits.map((h) => h.id);
+            expect(hits).toContain(id);
+        }
+        expect((await searchSessions("qqqzzzxxx", { limit: 200 })).hits).toEqual([]);
+    });
+
     test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
         const cwd = tempDir("cavvy-search-import-");
         const title = `Imported ${source} conversation`;

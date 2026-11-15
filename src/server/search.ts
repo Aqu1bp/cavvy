@@ -40,6 +40,49 @@ export const SEARCH_LIMITS = {
     cacheTurnTimes: 200_000,
 };
 
+/**
+ * A session's runs of three characters, each a bit in a set about four times as many bits as its text has characters
+ * (a run that hashes to an unset bit isn't in it; one that's set may be). A search for something with a run none of
+ * its messages has skips it without looking through them: with 10,000 sessions, one for a word found nowhere read 20
+ * million characters, every one of them, at the first keystroke that had it.
+ */
+const GRAM_BITS_PER_CHAR = 4;
+const GRAM_MIN_BITS = 1 << 9;
+const GRAM_MAX_BITS = 1 << 20;
+const gram = (a: number, b: number, c: number) => (Math.imul(a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca77) ^ Math.imul(c, 0xc2b2ae3d)) >>> 0;
+function gramsOf(entries: readonly Entry[]): Uint32Array {
+    const chars = entries.reduce((n, e) => n + e.folded.length, 0);
+    let bits = GRAM_MIN_BITS;
+    while (bits < chars * GRAM_BITS_PER_CHAR && bits < GRAM_MAX_BITS) bits <<= 1;
+    const set = new Uint32Array(bits >>> 5);
+    const mask = bits - 1;
+    for (const e of entries) {
+        const t = e.folded;
+        for (let i = 0; i + 2 < t.length; i++) {
+            const h = gram(t.charCodeAt(i), t.charCodeAt(i + 1), t.charCodeAt(i + 2)) & mask;
+            set[h >>> 5]! |= 1 << (h & 31);
+        }
+    }
+    return set;
+}
+/** The query's runs of three characters (none under three characters: then every session is looked through). */
+function gramsOfQuery(fq: string): number[] {
+    const out: number[] = [];
+    for (let i = 0; i + 2 < fq.length; i++) out.push(gram(fq.charCodeAt(i), fq.charCodeAt(i + 1), fq.charCodeAt(i + 2)));
+    return out;
+}
+/** Whether `doc` may have all of them (false: it can't). */
+function mayHave(doc: Doc, wanted: readonly number[]): boolean {
+    const set = doc.grams;
+    if (!set || !wanted.length) return true;
+    const mask = set.length * 32 - 1;
+    for (const w of wanted) {
+        const h = w & mask;
+        if (!(set[h >>> 5]! & (1 << (h & 31)))) return false;
+    }
+    return true;
+}
+
 /** Rough cost, in characters, of what's kept besides the text itself. */
 const ENTRY_COST = 64;
 const START_COST = 32;
@@ -66,6 +109,8 @@ interface Doc {
     starts: { seg: number; index: number }[];
     /** All it keeps, in characters (see SEARCH_LIMITS.cacheChars). */
     chars: number;
+    /** Which runs of three characters its messages have (gramsOf): a search for something it can't have skips it. */
+    grams?: Uint32Array;
     /**
      * Where its reading ended, for the next read of the file once it's grown (a session being written to grows all
      * the time, and searching while ten stream read each of them whole on every keystroke): from there, if what's
@@ -119,6 +164,17 @@ class Control {
         private readonly budgetMs: number,
         private readonly budgetBytes: number,
     ) {}
+
+    /**
+     * As tick, without a wait when it's not yet time to let others run: a boolean then, else tick's promise. Searching
+     * thousands of sessions already read, a wait at each was a third of a search for a word found nowhere.
+     */
+    check(): boolean | Promise<boolean> {
+        if (Date.now() - this.lastYield > 8) return this.tick();
+        if (this.stale()) this.stopped = "stale";
+        else if (Date.now() - this.start > this.budgetMs || this.bytes > this.budgetBytes) this.stopped = "budget";
+        return !this.stopped;
+    }
 
     /** Lets other requests run now and then; false once this search should stop. */
     async tick(): Promise<boolean> {
@@ -356,7 +412,8 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
     if (!done) return undefined;
     if (!ended.torn && ino) doc.resume = { at: ended.at, ino, tail: tailAt(file, ended.at), seg, count, first, titleLine: doc.title };
     if (!doc.title) doc.title = first ?? doc.entries.find((e) => e.role === "user")?.text;
-    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0);
+    doc.grams = gramsOf(doc.entries);
+    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0) + doc.grams.length * 2;
     return doc;
 }
 
@@ -645,6 +702,7 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
     const narrowed = !o.include && lastScan?.files === files && lastScan.redaction === redaction && fq.includes(lastScan.fq) ? lastScan.found : undefined;
     // Each session it's found in, while it's gone through all of them (a search stopped at `limit` hasn't).
     const found = new Set<string>();
+    const wanted = gramsOfQuery(fq);
     let whole = true;
     for (const f of files) {
         if (hits.length >= limit) {
@@ -653,7 +711,8 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
         }
         if (narrowed && !narrowed.has(f.file)) continue;
         if (o.include && !o.include(f.id)) continue;
-        if (!(await ctl.tick())) break;
+        const go = ctl.check();
+        if (!(go === true || (go !== false && (await go)))) break;
         let doc = docs.get(f.file);
         if (!doc || doc.size !== f.size || doc.mtimeMs !== f.mtimeMs || doc.redaction !== redactionVersion()) {
             try {
@@ -665,6 +724,7 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
             remember(f.file, doc);
         }
         if (!doc.cwd) continue;
+        if (!mayHave(doc, wanted)) continue;
         const inDoc: { e: Entry; at: number }[] = [];
         for (const e of doc.entries) {
             const at = e.folded.indexOf(fq);
