@@ -56,6 +56,7 @@ import type { ImagePart, PdfPart } from "../providers/types";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedDesktopTool } from "../tools/desktop-tools";
+import { HELPER_GUARD_ID, helperGuard, withHelperGuard } from "./claude-helper-guard";
 import { servedSessionTool } from "../tools/session-tools";
 import {
     DECLINED,
@@ -1960,6 +1961,11 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
+        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode (claude-helper-guard.ts).
+        return withHelperGuard(this.userHooks().hooks);
+    }
+
+    private userHooks(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
         const hooksCfg = this.cfg.hooks;
         if (!hooksCfg || !this.host.hookHandler) return {};
         const hooks: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> = {};
@@ -1980,6 +1986,10 @@ export class ClaudeConnection implements CliConnection {
         const req = m.request ?? {};
         const reply = (response: Record<string, unknown>) => this.proc.send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
         if (req.subtype === "hook_callback") {
+            if (req.callback_id === HELPER_GUARD_ID) {
+                const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+                return reply(await helperGuard(input, (c) => this.host.permission({ ...c, title: titleFor(c.toolName, c.input) })).catch(() => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "The permission check failed." } })));
+            }
             const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
             const handler = this.host.hookHandler;
             if (!cb || !handler) return reply({});

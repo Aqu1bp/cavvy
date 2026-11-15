@@ -66,6 +66,7 @@ import type { AgentCliStatus } from "./index";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedDesktopTool } from "../tools/desktop-tools";
+import { HELPER_GUARD_ID, helperGuard, withHelperGuard } from "./claude-helper-guard";
 import { servedSessionTool } from "../tools/session-tools";
 import { SESSION_VAR } from "../util/session-processes";
 
@@ -2001,6 +2002,11 @@ class ClaudeTurn {
      * their answers, calling back (hook_callback) for each.
      */
     private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
+        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode (claude-helper-guard.ts).
+        return withHelperGuard(this.userHooks().hooks);
+    }
+
+    private userHooks(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
         if (!this.t.hooks || !this.cliSession.hookHandler) return {};
         const hooks: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> = {};
         let n = 0;
@@ -2018,6 +2024,10 @@ class ClaudeTurn {
     }
 
     private async hookCallback(req: Record<string, any>): Promise<Record<string, unknown>> {
+        if (req.callback_id === HELPER_GUARD_ID) {
+            const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+            return helperGuard(input, (c) => this.cliSession.permission({ ...c, title: titleFor(c.toolName, c.input) }));
+        }
         const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
         if (!cb || !this.cliSession.hookHandler) return {};
         const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
