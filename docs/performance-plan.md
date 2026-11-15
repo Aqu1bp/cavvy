@@ -52,6 +52,7 @@ A session's files are append-only logs: its transcript (`~/.cavvy/projects/<proj
 - A rewind builds again only the turns since the last compaction (it can't reach past one); those before stay as they are.
 - Back at the end of a session for 5 s after reading far up, with nothing coming, the window draws its first page again and keeps only those turns; scrolling up brings the rest back as "Show earlier" does.
 - A remote window's SSH tunnel is compressed: a reply's messages are mostly the same few ids each time.
+- A window back after its connection dropped asks for all the sessions it had open at once, with the lists, each with what it had: a session that still has every message sent since (it keeps the last 64 KB of them) sends only those, and the window carries on where it was. Otherwise, or after the server started again, it's sent the session's last turns, as when it's opened (up to 64 KB each, one after another before).
 - A transcript read more than 1 MB past its last checkpoint gets a new one (`state/<session>.json`): what reading it came to, and how far it read. Next time only what's after is read, if the file still ends there as it did. Kept only when it's under half what it replaces, so a session never compacted gets none.
 
 Not yet:

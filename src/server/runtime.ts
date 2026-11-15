@@ -110,6 +110,7 @@ import type {
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
+    SessionResumed,
     SessionTurnsPage,
     SessionState,
     WorkingIn,
@@ -278,6 +279,11 @@ const KEEP_BUILT = 20;
 /** And this many more changed since (a late tool result, a sub-agent finishing in an earlier turn). */
 const EXTRA_BUILT = 50;
 
+/**
+ * How much of what was last sent each session keeps for a window whose connection dropped (Runtime.resume), about: past
+ * this, a snapshot is as small (a window opens with 64 KB of turns: gui/src/state/app.ts OPEN_BYTES).
+ */
+const RESUME_BYTES = 64 * 1024;
 /** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
 const RESET_TURNS = 100;
 /** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
@@ -451,6 +457,11 @@ export class Runtime {
 
     private view: SessionView;
     private batch = 0;
+    /** This runtime's own, so a window's numbers (batch) are known to be its: a session read in again starts over. */
+    readonly epoch = crypto.randomUUID().slice(0, 8);
+    /** The latest batches sent, up to RESUME_BYTES of them (about), for a window that missed them (resume). */
+    private sentLately: { seq: number; ops: SessionOp[]; bytes: number }[] = [];
+    private sentLatelyBytes = 0;
     private outbox: SessionOp[] = [];
     private flushTimer?: ReturnType<typeof setTimeout>;
     /** When the waiting ops go out (performance.now()): the soonest any of them needs to. */
@@ -1436,6 +1447,20 @@ export class Runtime {
      * `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest);
      * `budget`: and only as many as fit that many bytes, one at least.
      */
+    /**
+     * What a window that had this session open up to `seq` (from this runtime: `epoch`) missed since, if it's all still
+     * here: the ops after it, and where they come to. Undefined when it isn't (too much, a session read in again):
+     * it's sent a snapshot then.
+     */
+    resume(epoch: string, seq: number): SessionResumed | undefined {
+        this.flush();
+        if (epoch !== this.epoch || !Number.isInteger(seq) || seq < 0 || seq > this.batch) return undefined;
+        if (seq === this.batch) return { resumed: true, seq, ops: [] };
+        const at = this.sentLately.findIndex((b) => b.seq === seq + 1);
+        if (at < 0) return undefined;
+        return { resumed: true, seq: this.batch, ops: this.sentLately.slice(at).flatMap((b) => b.ops) };
+    }
+
     snapshot(last?: number, budget?: number, fold = false): SessionSnapshot {
         this.flush();
         const all = this.view.turns;
@@ -1456,7 +1481,7 @@ export class Runtime {
         sent.reverse();
         const turns = from ? all.slice(from) : all;
         const { agents, more } = agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a), foldedIds(sent));
-        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
+        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, epoch: this.epoch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
     }
 
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
@@ -1614,6 +1639,12 @@ export class Runtime {
         this.outbox = [];
         this.batch++;
         this.engine.sendOps(this.id, this.batch, ops);
+        // Kept a while for a window whose connection dropped (resume): text by its length, without writing it out.
+        let bytes = 0;
+        for (const o of ops) bytes += o.op === "append" || o.op === "agent.append" ? o.text.length + 80 : JSON.stringify(o).length;
+        this.sentLately.push({ seq: this.batch, ops, bytes });
+        this.sentLatelyBytes += bytes;
+        while (this.sentLatelyBytes > RESUME_BYTES && this.sentLately.length) this.sentLatelyBytes -= this.sentLately.shift()!.bytes;
     }
 
     private setStatus(status: SessionState["status"]) {

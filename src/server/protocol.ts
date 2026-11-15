@@ -864,10 +864,22 @@ export interface SessionSnapshot {
     turns: Turn[];
     agents: AgentRun[];
     seq: number;
+    /** Whose `seq` it is: the session as the server has it read in now (session.open's `since`). */
+    epoch?: string;
     /** Turns before these that weren't sent (session.open's `last`): session.turns has them. */
     earlier?: number;
     /** Sub-agents not sent (finished, of those turns): session.agentList has them. */
     agentsMore?: AgentsMore;
+}
+
+/**
+ * What a window that had the session open missed while its connection was down (session.open's `since`): the ops
+ * after its `seq`, in order, and the `seq` they come to. In place of a snapshot when they're all still to be had.
+ */
+export interface SessionResumed {
+    resumed: true;
+    seq: number;
+    ops: SessionOp[];
 }
 
 /** How many of its sub-agents a window hasn't been sent, and how many of those failed (its Finished fold counts them). */
@@ -2145,7 +2157,8 @@ export interface Methods {
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     /** `last`: only the last that many turns (the rest are counted in `earlier`); all without it. */
     /** `last`: no more than this many of its latest turns; `budget`: and no more than fit this many bytes (at least one). */
-    "session.open": { params: { id: string; last?: number; budget?: number; fold?: boolean }; result: SessionSnapshot };
+    /** `since`: what the window had (its snapshot's epoch, the last seq it applied): what it missed, if it can be had. */
+    "session.open": { params: { id: string; last?: number; budget?: number; fold?: boolean; since?: { epoch: string; seq: number } }; result: SessionSnapshot | SessionResumed };
     /** A turn whole: one sent folded (Turn.folded), as its work is shown. Null when it's gone (a rewind). */
     "session.turn": { params: { id: string; turnId: string }; result: { turn: Turn; agents: AgentRun[] } | null };
     /**

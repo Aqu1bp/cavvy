@@ -2654,6 +2654,10 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
+                // Open in this window before its connection dropped: only what it missed, when that's all still here.
+                const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
+                const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
+                if (resumed) return resumed;
                 return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined, p.fold === true);
             }
             case "session.turns": {

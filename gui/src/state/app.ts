@@ -5,7 +5,7 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
@@ -338,6 +338,8 @@ export interface SessionHandle {
     view: SessionView;
     set: SetStoreFunction<SessionView>;
     seq: number;
+    /** Whose `seq` it is (SessionSnapshot.epoch): a reconnect asks for what it missed since, from it. */
+    epoch?: string;
     queue: SessionOp[];
     scheduled: boolean;
     draft: () => Draft | undefined;
@@ -371,6 +373,8 @@ export const onScreen: { beside: () => readonly string[] } = { beside: () => [] 
  * only an opened row shows comes as the work is shown: loadTurn), unless work is shown expanded.
  */
 const opening = (id: string) => ({ id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: !prefs.expandActivity });
+/** Opened afresh: its snapshot (asked without `since`, that's what comes). */
+const openFresh = (id: string) => rpc.call("session.open", opening(id)) as Promise<SessionSnapshot>;
 
 export function handleFor(id: string | undefined): SessionHandle | undefined {
     handleVersion();
@@ -388,6 +392,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     const existing = handles.get(id);
     if (existing) {
         existing.seq = snap.seq;
+        existing.epoch = snap.epoch;
         existing.queue = [];
         const after = [...(renewing.get(id) ?? [])].map((fn) => fn());
         batch(() => {
@@ -403,11 +408,28 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
         const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])], after: prev.after || d.after } : d));
-        return { id, ready, setReady, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
+        return { id, ready, setReady, view, set, seq: snap.seq, epoch: snap.epoch, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
     trim();
     setHandleVersion((v) => v + 1);
+    return h;
+}
+
+/**
+ * A session this window had open, back after its connection dropped with only what it missed (SessionResumed): those
+ * ops, after any still waiting, on the view as it is; where it was read, the turns it had paged in, all kept.
+ */
+function caughtUp(h: SessionHandle, r: SessionResumed): SessionHandle {
+    const after = [...(renewing.get(h.id) ?? [])].map((fn) => fn());
+    h.queue.push(...r.ops);
+    h.seq = r.seq;
+    flush(h);
+    // Ops missed may have created files.
+    if (mayCreateFiles(r.ops)) paths.forgetMissing(h.id);
+    sessionPresent(h.id);
+    h.setReady(true);
+    for (const fn of after) fn?.();
     return h;
 }
 
@@ -500,8 +522,7 @@ async function openNow(id: string): Promise<SessionHandle> {
         // Let go since (the server had it opened again, and that was refused): it's asked for anew.
         if (handles.get(id) === taken) return taken;
     }
-    const snap = await rpc.call("session.open", opening(id));
-    return adopt(snap);
+    return adopt(await openFresh(id));
 }
 
 /**
@@ -520,7 +541,7 @@ function openAhead() {
     ahead = undefined;
     const id = app.activeId;
     if (!id || handles.has(id)) return;
-    const opened = rpc.call("session.open", opening(id)).then(adopt);
+    const opened = openFresh(id).then(adopt);
     // Its failure is restoreActiveSession's to show.
     opened.catch(() => undefined);
     ahead = { id, connection: connectionVersion, opened };
@@ -1100,7 +1121,7 @@ function onEvent(ev: ServerEvent) {
             return;
         case "session.reload":
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
-            if (handles.has(ev.sessionId)) void rpc.call("session.open", opening(ev.sessionId)).then(adopt, (e) => reopenFailed(ev.sessionId, e));
+            if (handles.has(ev.sessionId)) void openFresh(ev.sessionId).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
@@ -1219,6 +1240,13 @@ export function start() {
                 // To a server's Cavvy this window is a page like any other: what the desktop app lends its own Cavvy
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
+                // After a reconnect, the sessions it had open, all at once, with the lists: each with only what it
+                // missed while the connection was down when the server still has that (a round trip and those bytes),
+                // else from a fresh snapshot.
+                const reopened = Promise.all([...handles.values()].filter((h) => !h.ready()).map((h) =>
+                    rpc.call("session.open", { ...opening(h.id), ...(h.epoch ? { since: { epoch: h.epoch, seq: h.seq } } : {}) })
+                        .then((r) => ("resumed" in r ? caughtUp(h, r) : adopt(r)), (e) => reopenFailed(h.id, e)),
+                ));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
@@ -1235,8 +1263,7 @@ export function start() {
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
-                // After a reconnect, the open sessions start over from fresh snapshots.
-                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", opening(h.id)).then(adopt, (e) => reopenFailed(h.id, e));
+                await reopened;
                 await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
