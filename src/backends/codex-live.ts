@@ -1495,6 +1495,8 @@ export class CodexLiveAdapter implements AgentCliAdapter {
             appendSystemPrompt: cfg.appendSystemPrompt ?? null,
             additionalDirectories: cfg.additionalDirectories,
             hooks,
+            // Codex's computer use, on or off with the Mac apps setting (and bypass's policy with it).
+            desktop: Boolean(cfg.desktop),
         };
         return { bin, args, cwd: cfg.cwd, env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env, thread, account: accountKey(cfg) }) };
     }

@@ -4727,6 +4727,25 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
     });
 
+    test("Mac apps turned off or on mid-session reach a live Codex session at its next message", async () => {
+        const settings: any = { ...on };
+        const { run, asked } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
+        expect(await run("one")).toBe("done");
+        expect(appAsks(asked)).toHaveLength(1);
+        settings.desktop = { enabled: false };
+        rmSync(LOG, { force: true });
+        await run("two");
+        // A new app-server resumes the thread with its computer use off: the app is declined, nobody asked.
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+        settings.desktop = { enabled: true };
+        rmSync(LOG, { force: true });
+        await run("three");
+        expect(threadConfig().computer_use).toBeDefined();
+        expect(appAsks(asked)).toHaveLength(2);
+    });
+
     test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
         process.env.FAKE_CU_APP = "com.apple.Terminal";
         process.env.FAKE_CU_APP_NAME = "Terminal";
