@@ -26,6 +26,7 @@ import { composerStorage } from "../lib/drafts";
 import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
+import { waitedOn } from "../lib/waited-on";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
@@ -491,6 +492,12 @@ function schedule(h: SessionHandle) {
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
     if (document.visibilityState === "visible") onStep(() => flush(h));
     else setTimeout(() => flush(h), 200);
+}
+
+/** At the next frame, with whatever came before it (in order). */
+function flushSoon(h: SessionHandle) {
+    if (document.visibilityState !== "visible") return schedule(h);
+    requestAnimationFrame(() => flush(h));
 }
 
 /** The server closed the session (archived with its worktree): this window no longer has it open. */
@@ -1112,7 +1119,8 @@ function onEvent(ev: ServerEvent) {
             if (!h || ev.seq <= h.seq) return;
             h.seq = ev.seq;
             h.queue.push(...ev.ops);
-            schedule(h);
+            if (waitedOn(ev.ops)) flushSoon(h);
+            else schedule(h);
             // A file named before it existed becomes a link once it may (an edit landed, or the turn ended).
             if (mayCreateFiles(ev.ops)) paths.forgetMissing(ev.sessionId);
             return;
