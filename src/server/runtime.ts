@@ -259,8 +259,11 @@ export function listedAgent(a: AgentRun): AgentRun {
     return { ...structuredClone(listed), blocks: [], partial: true as const };
 }
 
-/** How long putting turns in the store (storeOlderSoon) works before it lets the server get on with the rest. */
-const SLICE_MS = 8;
+/**
+ * `sliceMs`: how long putting turns in the store (storeOlderSoon) works before it lets the server get on with the rest.
+ * (Tests set it to 0: a turn at a time.)
+ */
+export const turnStoring = { sliceMs: 8 };
 
 /**
  * A long session keeps its latest this many turns built (beyond them, each only as its head: turn-store.ts): the one
@@ -494,6 +497,14 @@ export class Runtime {
     private built = new Set<Turn>();
     /** Turns changed since they were last put in the store. */
     private changed = new WeakSet<Turn>();
+    /**
+     * Turns before this one (beyond the latest) have been let go of or are in `built`: trimBuilt looks only from here
+     * on, at those that left the latest since.
+     */
+    private trimmedTo = 0;
+    /** storeOlderSoon is putting the turns in the store (the latest call's, by number): meanwhile trimBuilt leaves them to it. */
+    private storing = false;
+    private storingRun = 0;
     /** The same for sub-agents: where each is whole in the store, those kept here as their head, those changed since. */
     private agentAt = new WeakMap<AgentRun, { at: number; len: number }>();
     private agentHeads = new WeakSet<AgentRun>();
@@ -683,6 +694,8 @@ export class Runtime {
             this.view = { state: this.initialState(), turns, agents };
             // The latest, built: what a window is sent, and what the session goes on from. (Sub-agents, when they change.)
             for (const t of turns.slice(-KEEP_BUILT)) Object.assign(t, store!.get(this.storedAt.get(t)!.at, this.storedAt.get(t)!.len));
+            // The rest are heads already.
+            this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
         } else {
             const turns = opts.resumed ? replay({ segments: segments ?? readSegments(session.path), current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
             this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
@@ -783,45 +796,56 @@ export class Runtime {
     // The turn store (turn-store.ts): a long session's turns beyond its latest are there, each kept here as its head
     // (blocks: none), and built again when asked for.
 
-    /** Its turns beyond the latest put in `store` and let go of here (as they were just built: all of them). */
-    private storeOlder(store: TurnStore) {
-        this.store = store;
-        store.clear();
-        this.storedAt = new WeakMap();
-        this.agentAt = new WeakMap();
-        this.agentHeads = new WeakSet();
-        this.built.clear();
-        this.trimBuilt();
-        // Its steps were to build them: they're built (and stored) now.
-        this.ui.lighten();
-    }
-
     /**
-     * As storeOlder, but its turns let go of a slice of SLICE_MS at a time from the next task on, so what's built now is
-     * sent first and nothing else waits for it. Until each is, it's here built, as it was.
+     * Its turns beyond the latest (as they were just built: all of them) put in `store` and let go of here, a slice of
+     * turnStoring.sliceMs at a time from the next task on, so what's built now is sent first and nothing else waits for it. Until
+     * each is, it's here built, as it was. (Meanwhile trimBuilt left them be: it let go of them all at once as a new
+     * turn came, the model's notice as a Claude Code session of 100,000 items opened, and held the server 1.1 s.)
      */
     private storeOlderSoon(store: TurnStore) {
         this.store = store;
+        this.storing = true;
+        const run = ++this.storingRun;
         store.clear();
         this.storedAt = new WeakMap();
         this.agentAt = new WeakMap();
         this.agentHeads = new WeakSet();
         this.built.clear();
-        const turns = this.view.turns;
+        this.trimmedTo = 0;
         setTimeout(async () => {
             let since = performance.now();
+            // Let go of meanwhile (closed), or put in a store again (a rewind): it's done, or for whoever did that.
+            const gone = () => this.closed || this.store !== store || this.storingRun !== run;
+            const pause = async () => {
+                if (performance.now() - since <= turnStoring.sliceMs) return;
+                await new Promise((r) => setImmediate(r));
+                since = performance.now();
+            };
+            let turns = this.view.turns;
             for (let i = 0; ; i++) {
-                // Let go of meanwhile (closed), or built anew (a rewind): it's done, or for whoever did that.
-                if (this.closed || this.store !== store || this.view.turns !== turns) return;
+                if (gone()) return;
                 const all = this.view.turns;
-                if (i >= all.length - KEEP_BUILT) break;
+                // Other turns (a rewind's): from the first again (those let go of already are passed over).
+                if (all !== turns) {
+                    turns = all;
+                    i = 0;
+                }
+                if (i >= all.length - KEEP_BUILT) {
+                    this.trimmedTo = Math.max(0, i);
+                    break;
+                }
                 const t = all[i]!;
                 if (!this.built.has(t) && !(!t.blocks.length && this.storedAt.has(t))) this.letGo(t);
-                if (performance.now() - since > SLICE_MS) {
-                    await new Promise((r) => setImmediate(r));
-                    since = performance.now();
-                }
+                await pause();
             }
+            // The sub-agents of all but the latest turns, as trimBuilt lets go of them.
+            for (let i = 0; i < this.view.agents.length; i++) {
+                if (gone()) return;
+                const a = this.view.agents[i]!;
+                if (!this.agentKept(a)) this.letGoAgent(a);
+                await pause();
+            }
+            this.storing = false;
             this.trimBuilt();
             // Its steps were to build them: they're built (and stored) now.
             this.ui.lighten();
@@ -932,13 +956,17 @@ export class Runtime {
 
     /** No more built than the latest KEEP_BUILT and the most recent EXTRA_BUILT asked for: the rest put in the store (when changed) and let go of. */
     private trimBuilt() {
-        if (!this.store) return;
+        // Being put there a slice at a time (storeOlderSoon): left to it.
+        if (!this.store || this.storing) return;
         const all = this.view.turns;
-        for (let i = 0; i < all.length - KEEP_BUILT; i++) {
+        // Only those that left the latest since the last time: the rest were looked at then (every turn of a long
+        // session looked at again for each new one).
+        for (let i = Math.min(this.trimmedTo, Math.max(0, all.length - KEEP_BUILT)); i < all.length - KEEP_BUILT; i++) {
             const t = all[i]!;
             if (this.built.has(t) || (!t.blocks.length && this.storedAt.has(t))) continue;
             this.letGo(t);
         }
+        this.trimmedTo = Math.max(0, all.length - KEEP_BUILT);
         for (const t of this.built) {
             if (this.built.size <= EXTRA_BUILT) break;
             if (this.latest(t)) this.built.delete(t);
@@ -948,6 +976,14 @@ export class Runtime {
         const recent = new Set<string>();
         for (let i = Math.max(0, all.length - KEEP_BUILT); i < all.length; i++) recent.add(all[i]!.id);
         for (const a of this.view.agents) if (!recent.has(a.turnId) && a.status !== "running" && a.status !== "waiting") this.letGoAgent(a);
+    }
+
+    /** Kept whole by trimBuilt: of one of the latest turns, or still working. */
+    private agentKept(a: AgentRun): boolean {
+        if (a.status === "running" || a.status === "waiting") return true;
+        const all = this.view.turns;
+        for (let i = all.length - 1; i >= Math.max(0, all.length - KEEP_BUILT); i--) if (all[i]!.id === a.turnId) return true;
+        return false;
     }
 
     /** As it's kept: without what was only shown (liveOnly), as it would be built again. */
@@ -1489,11 +1525,15 @@ export class Runtime {
         // only read (most ops while a reply streams), so it isn't copied.
         applyOp(this.view, sent || o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
         // One gone (the list is shorter): one that was kept as its head may be among the latest now.
-        if (o.op === "turn.remove" && this.store) this.buildLatest();
+        if (o.op === "turn.remove" && this.store) {
+            this.buildLatest();
+            // The turns after it are a place earlier: the one that was where trimBuilt looks from may be before it now.
+            this.trimmedTo = Math.max(0, this.trimmedTo - 1);
+        }
         // A turn gone by beyond the latest: let go of, once put in the store (started once a session has grown long).
         if (o.op === "turn") {
             if (this.store) this.trimBuilt();
-            else if (this.view.turns.length > KEEP_BUILT + EXTRA_BUILT) this.storeOlder(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+            else if (this.view.turns.length > KEEP_BUILT + EXTRA_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
         }
         this.noteStep(o);
         this.outbox.push(sent ?? o);
@@ -4586,7 +4626,7 @@ export class Runtime {
         const sent = from ? agentsFor(agents, turns.slice(from), false) : undefined;
         this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t.status !== "running" && omitThinking(t.blocks), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
         // Built anew: a long session's store starts again with them, and keeps all but the latest.
-        if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        if (this.store || turns.length > KEEP_BUILT) this.storeOlderSoon(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
     }
 
     /**
@@ -4626,8 +4666,10 @@ export class Runtime {
             for (const t of this.built) if (!turns.includes(t)) this.built.delete(t);
             // Fewer turns after it: one kept as its head may be among the latest now, which are built.
             this.buildLatest();
+            // Those after the kept ones are new: looked at from there.
+            this.trimmedTo = Math.min(this.trimmedTo, keep.length);
             this.trimBuilt();
-        } else if (turns.length > KEEP_BUILT) this.storeOlder(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        } else if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
         return true;
     }
 

@@ -14,6 +14,7 @@ const { applyOp } = await import("../src/server/timeline");
 const { writeThread } = await import("../scripts/perf-thread");
 const { TurnStore } = await import("../src/server/turn-store");
 const { findSessionAnywhere } = await import("../src/agent/session");
+const { turnStoring } = await import("../src/server/runtime");
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 let mock: ReturnType<typeof startMockLlm>;
@@ -227,6 +228,51 @@ test("a store that's mostly old versions of its turns is rewritten without them"
     expect(store.get(moved.get(at.at)!, at.len)).toEqual(turn(12));
     store.close();
 });
+
+// Opened the first time, its turns are put in its store a slice at a time after the window is sent them. A new turn
+// meanwhile (a notice: Claude Code isn't installed here) left the rest to that: it put them all there at once, and
+// held the server 1.1 s for a session of 100,000 items.
+test("a long session opened the first time puts its turns in its store a slice at a time, a new turn meanwhile too", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-slices-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "cli", seed: 9 });
+    // How many go in the store in each task (a slice of no time: a turn, or a sub-agent, at a time).
+    const put = TurnStore.prototype.put;
+    let inTask = 0;
+    let most = 0;
+    let all = 0;
+    TurnStore.prototype.put = function (this: InstanceType<typeof TurnStore>, ...args: Parameters<typeof put>) {
+        inTask++;
+        all++;
+        most = Math.max(most, inTask);
+        return put.apply(this, args);
+    };
+    let ticking = true;
+    const tick = () => {
+        inTask = 0;
+        if (ticking) setImmediate(tick);
+    };
+    const slice = turnStoring.sliceMs;
+    turnStoring.sliceMs = 0;
+    try {
+        tick();
+        const snap = await open(t.id, { last: 10 });
+        expect(snap.earlier).toBeGreaterThan(50);
+        // Done: nothing more put for a while.
+        for (let last = -1; last !== all; ) {
+            last = all;
+            await Bun.sleep(200);
+        }
+        expect(all).toBeGreaterThan(50);
+        // A turn (or a sub-agent), and one more a change in the same task put there.
+        expect(most).toBeLessThanOrEqual(2);
+    } finally {
+        ticking = false;
+        turnStoring.sliceMs = slice;
+        TurnStore.prototype.put = put;
+    }
+    await close(t.id);
+}, 60_000);
 
 test("a session that grows long while it's open lets go of its older turns then, and opens again as it was", async () => {
     const cwd = join(tempDir("cavvy-turn-store-grows-"), "project");
