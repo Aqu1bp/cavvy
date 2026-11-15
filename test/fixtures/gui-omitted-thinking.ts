@@ -109,7 +109,8 @@ try {
         button.props.onPointerEnter();
         await settle();
         assert.deepEqual(calls("session.block").map((a) => a.params), [{ id: "s", turnId: "t1", blockId: "th" }]);
-        assert.deepEqual(block(), { t: "thinking", id: "th", text: "the reasons, at length", durationMs: 4000 });
+        // A plain copy: the store's proxy isn't deep-equal to an object on every Bun (1.3.14).
+        assert.deepEqual({ ...block() }, { t: "thinking", id: "th", text: "the reasons, at length", durationMs: 4000 });
         // Opened: its text, and nothing more asked for.
         button.props.onClick();
         await settle();
