@@ -89,22 +89,25 @@ export function readSegments(file: string, session?: { takeLoadedLines(): readon
  */
 function lazySegment(): Segment & { lines: SegmentLine[] } {
     let messages: Message[] | undefined;
+    /** Lines not read into its messages yet: those since it was last read included (a rewind reads it, then more come). */
+    let pending: SegmentLine[] = [];
     const seg = {
-        lines: [] as SegmentLine[],
         get messages(): Message[] {
-            if (!messages) {
-                messages = [];
+            messages ??= [];
+            if (pending.length) {
                 // A line whose message isn't to be had (torn) isn't one.
-                for (const l of seg.lines) if (l.m) messages.push(l.m);
-                seg.lines = [];
+                for (const l of pending) if (l.m) messages.push(l.m);
+                pending = [];
             }
             return messages;
         },
         set messages(m: Message[]) {
             messages = m;
-            seg.lines = [];
+            pending = [];
         },
-    };
+    } as Segment & { lines: SegmentLine[] };
+    // Not one of its fields: a segment read from lines is the same as one built whole (compared, serialized).
+    Object.defineProperty(seg, "lines", { get: () => pending, enumerable: false });
     return seg;
 }
 
