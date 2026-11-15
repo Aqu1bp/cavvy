@@ -165,12 +165,13 @@
     visibility: hidden;
 }
 
-/* The pane on the right starts mid-window: the rail's buttons and the lights' room are the left one's. */
-.stage-pane + .stage-pane .header {
+/* The pane on the right starts mid-window: the rail's buttons and the lights' room are the left one's. In a split only:
+   alone, the one shown can come after the one kept out of sight (Panes.tsx). */
+.panes[data-split] > .stage-pane + .stage-pane .header {
     padding-left: calc(18 * var(--sp));
 }
 
-.stage-pane + .stage-pane .header .bar-rail {
+.panes[data-split] > .stage-pane + .stage-pane .header .bar-rail {
     display: none;
 }
 
@@ -241,6 +242,9 @@
     display: none;
 }
 
+/* Under the one shown, which covers it whole: put in after it, its box would be over it and take the pointer. (Not
+   pointer-events: inherited, it would have everything in it styled again each time.) */
 .panes > .stage-pane[data-parked] > .stage {
     content-visibility: hidden;
+    z-index: -1;
 }

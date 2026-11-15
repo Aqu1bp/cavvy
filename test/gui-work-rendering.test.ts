@@ -252,7 +252,8 @@ test("a session's rows shown again are skipped at once at the sizes they were; a
     expect(again.rows.every((row) => row.hasAttribute("data-work-again"))).toBe(true);
     io.emit([{ target: again.rows[79], isIntersecting: true }]);
     expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
-    // Still marked: let go of, the animations would go back to where their own delay puts them, part way or not begun.
+    // Still marked while what it brought in could still be playing: let go of now, those animations would go back to
+    // where their own delay puts them, part way or not begun. (Taken off AGAIN_MS later.)
     expect(again.rows[79]!.hasAttribute("data-work-again")).toBe(true);
     again.dispose();
     expect(again.rows.some((row) => row.hasAttribute("data-work-again"))).toBe(false);
