@@ -4637,46 +4637,29 @@ describe("Claude Code background tasks: #282 review round 4", () => {
     }, 15_000);
 });
 
-describe("Codex: its own computer use, the ChatGPT app's", () => {
+describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
     // What the fake sends is what Codex 0.167 and ChatGPT 26.1106 were measured to send (fake-codex.ts, computer-use).
     const threadConfig = () => received().find((m) => m.method === "thread/start" || m.method === "thread/resume")?.params.config ?? {};
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const answers = () => logLines().flatMap((l) => (l.cuAnswer !== undefined ? [l.cuAnswer] : []));
     const appAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "DesktopControl");
     const on = { desktop: { enabled: true } };
-    let resources = "";
+    const PLUGIN = "unified-computer-use@openai-bundled";
     beforeEach(() => {
-        const app = join(tempDir("chatgpt-"), "ChatGPT.app");
-        resources = join(app, "Contents", "Resources");
-        for (const f of ["cua_node/bin/node", "cua_node/bin/node_repl", "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs"]) {
-            mkdirSync(join(resources, f, ".."), { recursive: true });
-            writeFileSync(join(resources, f), "");
-        }
-        const plugin = join(resources, "plugins/openai-bundled/plugins/unified-computer-use");
-        mkdirSync(plugin, { recursive: true });
-        writeFileSync(join(plugin, ".mcp.json"), JSON.stringify({ mcpServers: { cua_repl: { command: "node", args: [], enabled: false, enabled_tools: ["js", "js_reset", "turn_ended"], omit_tools_from: ["code_mode", "deferred"], startup_timeout_sec: 120, tools: { js: { output_token_limit: 25000 } } } } }));
-        process.env.CAVVY_CHATGPT_APP = app;
         process.env.FAKE_SCENARIO = "computer-use";
-    });
-    afterEach(() => {
-        delete process.env.CAVVY_CHATGPT_APP;
+        // Set up by the ChatGPT app: its plugin on in the person's own Codex config.
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
     });
 
     test.each([
         ["one app-server for the session", on],
         ["one app-server a turn", { ...on, agentCli: { liveSessions: false } }],
-    ])("on (%s): the thread gets the ChatGPT app's runtime, the apps never offered denied, and an app is asked about with Codex's choices", async (_, settings) => {
+    ])("on (%s): the person's own setup is left as it is, the apps never offered denied, and an app is asked about with Codex's choices", async (_, settings) => {
         const { run, events, asked } = await makeAgent({ provider: "codex", settings, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
         expect(await run("go")).toBe("done");
-        const server = threadConfig().mcp_servers.cua_repl;
-        expect(server).toMatchObject({
-            command: join(resources, "cua_node/bin/node"),
-            args: [join(resources, "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs")],
-            env: { CUA_REPL_NODE_REPL_PATH: join(resources, "cua_node/bin/node_repl"), CUA_REPL_ENABLED_SURFACES: "computer" },
-            enabled: true,
-            omit_tools_from: ["code_mode", "deferred"],
-            tools: { js: { output_token_limit: 25000 } },
-        });
+        // No server of Cavvy's own, and the plugin isn't touched.
+        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
+        expect(threadConfig().plugins?.[PLUGIN]).toBeUndefined();
         expect(threadConfig().computer_use.macos.bundle_ids).toMatchObject({ "com.apple.Terminal": "deny", "com.1password.1password": "deny", "dev.cavvy.desktop": "deny" });
         // Codex's own question about the call goes as any MCP call's; the app is asked as one of the Mac's apps.
         expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cua_repl__js", "DesktopControl"]);
@@ -4744,42 +4727,42 @@ describe("Codex: its own computer use, the ChatGPT app's", () => {
     });
 
     test("off: the person's own Codex computer use is turned off, bypass stays never, and an app it asks for is declined unasked", async () => {
-        process.env.FAKE_USER_PLUGINS = JSON.stringify({ "unified-computer-use@openai-bundled": { enabled: true }, "browser@openai-bundled": { enabled: true } });
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true }, "browser@openai-bundled": { enabled: true } });
         process.env.FAKE_USER_MCP = JSON.stringify({ node_repl: { command: "node_repl" } });
         const off = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: true }) });
         await off.run("go");
-        expect(threadConfig().plugins).toEqual({ "unified-computer-use@openai-bundled": { enabled: false } });
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
         expect(threadConfig().mcp_servers.node_repl).toEqual({ enabled: false });
-        expect(threadConfig().mcp_servers.cua_repl).toBeUndefined();
+        expect(threadConfig().computer_use).toBeUndefined();
         expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
         expect(appAsks(off.asked)).toEqual([]);
         expect(answers().at(-1)).toMatchObject({ action: "decline" });
     });
 
-    test("a project can't turn it on, and the user's own server of its name keeps it off rather than merged into", async () => {
-        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "unified-computer-use@openai-bundled": { enabled: true } });
-        const project = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+    test("a project can't turn it on, and a server of the person's own isn't touched while it's on", async () => {
+        process.env.FAKE_USER_PLUGINS = "null";
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
+        const project = await makeAgent({ provider: "codex", settings: on, mode: "bypassPermissions", ask: () => ({ allow: true }) });
         await project.run("go");
-        expect(threadConfig().plugins).toEqual({ "unified-computer-use@openai-bundled": { enabled: false } });
-        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
 
         delete process.env.FAKE_PROJECT_PLUGINS;
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
         process.env.FAKE_USER_MCP = JSON.stringify({ cua_repl: { url: "https://example.com/mcp" } });
         rmSync(LOG, { force: true });
         const mine = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
         await mine.run("go");
-        expect(threadConfig().mcp_servers.cua_repl).toEqual({ enabled: false });
-        expect(notices(mine.events).join("\n")).toContain("Codex already has a server named cua_repl");
+        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
     });
 
-    test("without the ChatGPT app it stays off, said once", async () => {
-        process.env.CAVVY_CHATGPT_APP = join(tempDir("no-chatgpt-"), "ChatGPT.app");
-        const first = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
-        await first.run("go");
-        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
-        expect(notices(first.events)).toContain("info: Codex can use your Mac's apps once the ChatGPT app is installed.");
-        const second = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
-        await second.run("go");
-        expect(notices(second.events).join("\n")).not.toContain("ChatGPT app");
+    test.if(process.platform === "darwin")("not set up in the ChatGPT app: off, said once a session", async () => {
+        process.env.FAKE_USER_PLUGINS = "null";
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(threadConfig().computer_use).toBeUndefined();
+        await run("again");
+        expect(notices(events).filter((n) => n.includes("ChatGPT app"))).toEqual(["info: To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app."]);
     });
 });

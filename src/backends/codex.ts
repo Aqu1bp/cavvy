@@ -29,7 +29,7 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
-import { CODEX_CU_SERVER, appNameFromId, chatgptRuntime, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseTitle, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
+import { appNameFromId, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseSetUp, computerUseTitle, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
 import { neverOfferedMessage } from "../desktop/apps";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
@@ -888,7 +888,7 @@ export class CodexTurn {
             const startMode = this.cliSession.mode();
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
-            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined, t.desktop && !t.readOnly ? CODEX_CU_SERVER : undefined].filter((n): n is string => Boolean(n)));
+            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
             const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
@@ -2058,31 +2058,24 @@ export class CodexTurn {
     }
 
     /**
-     * Codex's computer use for the thread (setting `computerUse`): on with desktop.enabled and the ChatGPT app,
-     * through Cavvy's own server entry; otherwise off, the person's own Codex config included. A read-only agent
-     * never has it. Thread config to add, if any.
+     * Codex's computer use for the thread (setting `computerUse`): with desktop.enabled, left on as the ChatGPT app set
+     * it up in Codex's home (the apps never offered denied); otherwise off, the person's own Codex config included. A
+     * read-only agent never has it. Thread config to add, if any.
      */
-    protected computerUseConfig(t: BackendTurn, overrides: { collisions: string[]; effective?: unknown }): ThreadConfig | undefined {
+    protected computerUseConfig(t: BackendTurn, overrides: { config?: ThreadConfig; effective?: unknown }): ThreadConfig | undefined {
         this.computerUse = false;
         const off = () => {
             const c = computerUseOffConfig(overrides.effective);
             return Object.keys(c).length ? c : undefined;
         };
-        // CAVVY_CHATGPT_APP: a ChatGPT app somewhere else (and the tests' stand-in for one).
-        const app = process.env.CAVVY_CHATGPT_APP;
-        if (!t.desktop || t.readOnly || (process.platform !== "darwin" && !app)) return off();
-        if (overrides.collisions.includes(CODEX_CU_SERVER)) {
-            this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_CU_SERVER}; it is disabled, and Codex can't use your Mac's apps here.` });
-            return off();
-        }
-        const runtime = chatgptRuntime(app ? [app] : undefined);
-        if (!runtime) {
-            if (!saidNoChatGpt) this.sink.emit({ type: "notice", level: "info", message: "Codex can use your Mac's apps once the ChatGPT app is installed." });
-            saidNoChatGpt = true;
+        if (!t.desktop || t.readOnly) return off();
+        if (!computerUseSetUp(overrides.effective, overrides.config)) {
+            if (process.platform === "darwin" && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
+            notSetUpSaid.add(t.sessionKey);
             return off();
         }
         this.computerUse = true;
-        return computerUseOnConfig(runtime);
+        return computerUseOnConfig();
     }
 
     /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
@@ -2509,8 +2502,8 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
 
 /** Said once: a Codex that doesn't run Cavvy's hooks itself doesn't start to. */
 let saidNoNativeHooks = false;
-/** Said once a process: Codex's computer use needs the ChatGPT app. */
-let saidNoChatGpt = false;
+/** The sessions told once that Codex's computer use is set up in the ChatGPT app. */
+const notSetUpSaid = new Set<string>();
 /**
  * The Mac apps the person let Codex use for the rest of a Cavvy session ("Allow for this session"), by session: asked
  * again, Codex gets the same yes. Until Cavvy quits, as the Desktop tools' grants.

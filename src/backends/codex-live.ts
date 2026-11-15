@@ -68,7 +68,7 @@ import {
     type SubAgent,
     type TurnOutput,
 } from "./codex";
-import { CODEX_CU_SERVER, mergeThreadConfig } from "./codex-computer-use";
+import { mergeThreadConfig } from "./codex-computer-use";
 
 /** How long finished background commands are gathered before a turn tells Codex (two ending together make one turn). */
 const NOTE_SETTLE_MS = 50;
@@ -384,7 +384,7 @@ export class CodexLiveConnection extends CodexTurn {
         const startMode = this.host.mode();
         const model = o.settings.model.id === "default" ? undefined : o.settings.model.id;
         let orch = t.orchestrator;
-        const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [orch?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined, t.desktop && !t.readOnly ? CODEX_CU_SERVER : undefined].filter((n): n is string => Boolean(n)));
+        const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [orch?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
         if (typeof overrides === "string") throw new Error(overrides);
         // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
         const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));

@@ -1,10 +1,7 @@
 // Codex's own computer use (src/backends/codex-computer-use.ts): what its approvals ask, from the shapes measured with
-// Codex 0.167 and ChatGPT 26.1106 (and the older ones t3code handles), and how its thread config is made.
+// Codex 0.167 and ChatGPT 26.1106 (and the older ones t3code handles), and the thread config that keeps it on or off.
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { tempDir } from "./helpers/isolate";
-import { appNameFromId, chatgptRuntime, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseTitle, mergeThreadConfig, neverOfferedApp, toolSurfaceApp } from "../src/backends/codex-computer-use";
+import { appNameFromId, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseSetUp, computerUseTitle, mergeThreadConfig, neverOfferedApp, toolSurfaceApp } from "../src/backends/codex-computer-use";
 import { codexPolicy } from "../src/backends/codex";
 import { approvalChoices } from "../gui/src/lib/approval";
 
@@ -53,30 +50,20 @@ describe("computerUseAsk", () => {
 });
 
 describe("thread config", () => {
-    test("on: the ChatGPT app's runtime, started for desktop control, with the plugin's tool settings", () => {
-        const app = join(tempDir("chatgpt-"), "ChatGPT.app");
-        const res = join(app, "Contents", "Resources");
-        expect(chatgptRuntime([app])).toBeUndefined();
-        for (const f of ["cua_node/bin/node", "cua_node/bin/node_repl", "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs"]) {
-            mkdirSync(join(res, f, ".."), { recursive: true });
-            writeFileSync(join(res, f), "");
-        }
-        // Without the plugin's file: defaults.
-        const bare = chatgptRuntime([app])!;
-        expect(computerUseOnConfig(bare).mcp_servers!.cua_repl).toMatchObject({ enabled_tools: ["js", "js_reset", "turn_ended"], startup_timeout_sec: 120, enabled: true });
-        const plugin = join(res, "plugins/openai-bundled/plugins/unified-computer-use");
-        mkdirSync(plugin, { recursive: true });
-        writeFileSync(join(plugin, ".mcp.json"), JSON.stringify({ mcpServers: { cua_repl: { command: "node", args: [], enabled: false, env: { X: "1" }, enabled_tools: ["js"], startup_timeout_sec: 60 } } }));
-        const server = computerUseOnConfig(chatgptRuntime([app])!).mcp_servers!.cua_repl as Record<string, unknown>;
-        expect(server).toEqual({
-            enabled_tools: ["js"],
-            startup_timeout_sec: 60,
-            command: join(res, "cua_node/bin/node"),
-            args: [join(res, "cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs")],
-            env: { CUA_REPL_NODE_REPL_PATH: join(res, "cua_node/bin/node_repl"), CUA_REPL_ENABLED_SURFACES: "computer" },
-            env_vars: ["CODEX_HOME"],
-            enabled: true,
-        });
+    test("set up: the ChatGPT app's plugin on in Codex's config, and not turned off for the thread", () => {
+        const plugin = "unified-computer-use@openai-bundled";
+        expect(computerUseSetUp({ plugins: { [plugin]: { enabled: true } } })).toBe(true);
+        expect(computerUseSetUp({ plugins: { [plugin]: { enabled: false } } })).toBe(false);
+        expect(computerUseSetUp({ plugins: { "computer-use@openai-bundled": { enabled: true } } })).toBe(false);
+        expect(computerUseSetUp({})).toBe(false);
+        // A project's, or one whose provenance Codex didn't say: turned off, so not set up.
+        expect(computerUseSetUp({ plugins: { [plugin]: { enabled: true } } }, { plugins: { [plugin]: { enabled: false } } })).toBe(false);
+    });
+
+    test("on: nothing of Cavvy's own, only the apps never offered denied", () => {
+        const config = computerUseOnConfig();
+        expect(Object.keys(config)).toEqual(["computer_use"]);
+        expect((config.computer_use as any).macos.bundle_ids).toMatchObject({ "com.apple.Terminal": "deny", "com.apple.Passwords": "deny", "dev.cavvy.desktop": "deny" });
     });
 
     test("off: only what's on is turned off", () => {

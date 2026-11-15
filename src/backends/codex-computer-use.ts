@@ -1,54 +1,33 @@
-// Codex's own computer use, the one the ChatGPT app ships: on for a Codex thread when desktop.enabled is on and the
-// ChatGPT app is installed, off otherwise (whatever the person's Codex config says); its per-app approvals go to the
-// person; its calls show as using the app. What's measured (Codex 0.167, ChatGPT 26.1106) is in docs/mac-apps.md.
+// Codex's own computer use, as the ChatGPT app sets it up in Codex's home (its unified-computer-use plugin): left on
+// for a Codex thread when desktop.enabled is on, turned off otherwise (whatever the person's Codex config says); its
+// per-app approvals go to the person; its calls show as using the app. Cavvy starts nothing of the app's itself.
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { NEVER_OFFERED, neverOffered, type NeverReason } from "../desktop/apps";
 
 /**
- * The MCP servers Codex's computer use runs as: `cua_repl` (the ChatGPT app's unified-computer-use plugin), and the
- * names older builds used (`computer-use`, and `node_repl`, the app's own runtime). Off, each is turned off by name.
+ * The MCP servers Codex's computer use runs as: `cua_repl` (the ChatGPT app's unified-computer-use plugin, Codex 0.167
+ * and ChatGPT 26.1106), and the names older builds used (`computer-use`, `node_repl`). Off, each is turned off by name.
  */
 export const CODEX_CU_SERVERS = ["cua_repl", "computer-use", "node_repl"] as const;
+/** The plugin the ChatGPT app sets up for it. */
+export const CODEX_CU_PLUGIN = "unified-computer-use@openai-bundled";
 /** The ChatGPT app's plugins that bring it (its bundled marketplace). Off, each is turned off. */
-export const CODEX_CU_PLUGINS = ["unified-computer-use@openai-bundled", "computer-use@openai-bundled"] as const;
-/** The server Cavvy starts it as. */
-export const CODEX_CU_SERVER = "cua_repl";
+export const CODEX_CU_PLUGINS = [CODEX_CU_PLUGIN, "computer-use@openai-bundled"] as const;
 
-/** Where the ChatGPT app keeps its computer-use runtime. */
-export interface ChatGptRuntime {
-    node: string;
-    nodeRepl: string;
-    launcher: string;
-    /** The plugin's own settings for its server (which tools, timeouts), without how it's started. */
-    server: Record<string, unknown>;
-}
+/** A thread's config for Codex: its MCP servers and plugins by name, and other keys. */
+export type ThreadConfig = { mcp_servers?: Record<string, unknown>; plugins?: Record<string, unknown>; [key: string]: unknown };
 
 const record = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 
-export const CHATGPT_APPS = ["/Applications/ChatGPT.app", join(homedir(), "Applications", "ChatGPT.app")];
-
-/** The ChatGPT app's computer-use runtime, if one is installed. */
-export function chatgptRuntime(apps: readonly string[] = CHATGPT_APPS): ChatGptRuntime | undefined {
-    for (const app of apps) {
-        const resources = join(app, "Contents", "Resources");
-        const cua = join(resources, "cua_node");
-        const node = join(cua, "bin", "node");
-        const nodeRepl = join(cua, "bin", "node_repl");
-        const launcher = join(cua, "lib", "node_modules", "@oai", "cua-repl", "bin", "cua-repl.mjs");
-        if (![node, nodeRepl, launcher].every((p) => existsSync(p))) continue;
-        let server: Record<string, unknown> = {};
-        try {
-            const mcp = JSON.parse(readFileSync(join(resources, "plugins", "openai-bundled", "plugins", "unified-computer-use", ".mcp.json"), "utf8"));
-            if (record(mcp?.mcpServers?.[CODEX_CU_SERVER])) server = mcp.mcpServers[CODEX_CU_SERVER];
-        } catch {
-            // The plugin's file is only where its tool settings come from: the defaults below do without it.
-        }
-        return { node, nodeRepl, launcher, server };
-    }
-    return undefined;
+/**
+ * Whether the ChatGPT app set computer use up in this Codex home: its plugin on in Codex's effective config
+ * (config/read), and not among what Cavvy turns off for the thread (a project's, or one of unknown provenance).
+ */
+export function computerUseSetUp(effective: unknown, turnedOff?: ThreadConfig): boolean {
+    const plugins = record(effective) && record(effective.plugins) ? effective.plugins : {};
+    const on = record(plugins[CODEX_CU_PLUGIN]) && plugins[CODEX_CU_PLUGIN].enabled !== false;
+    const off = record(turnedOff?.plugins) && record(turnedOff.plugins[CODEX_CU_PLUGIN]) && turnedOff.plugins[CODEX_CU_PLUGIN].enabled === false;
+    return on && !off;
 }
 
 /** What Codex is told about apps by bundle id: every one never offered is denied. */
@@ -56,29 +35,9 @@ export function deniedBundleIds(): Record<string, "deny"> {
     return Object.fromEntries(NEVER_OFFERED.map((a) => [a.bundleId, "deny" as const]));
 }
 
-/**
- * The thread config that turns Codex's computer use on: the ChatGPT app's runtime as the `cua_repl` server, started
- * the way the app starts it (desktop control only, no browser), and the apps never offered denied. Nothing is written
- * to the person's Codex config.
- */
-export function computerUseOnConfig(rt: ChatGptRuntime): ThreadConfig {
-    const { command: _c, args: _a, env: _e, enabled: _en, cwd: _cwd, env_vars: _ev, ...tools } = rt.server;
-    return {
-        mcp_servers: {
-            [CODEX_CU_SERVER]: {
-                enabled_tools: ["js", "js_reset", "turn_ended"],
-                startup_timeout_sec: 120,
-                ...tools,
-                command: rt.node,
-                args: [rt.launcher],
-                env: { CUA_REPL_NODE_REPL_PATH: rt.nodeRepl, CUA_REPL_ENABLED_SURFACES: "computer" },
-                // An account's own Codex home is where the app's computer-use service is looked for.
-                env_vars: ["CODEX_HOME"],
-                enabled: true,
-            },
-        },
-        computer_use: { macos: { bundle_ids: deniedBundleIds() } },
-    };
+/** The thread config with computer use on: the person's own setup as it is, with the apps never offered denied. */
+export function computerUseOnConfig(): ThreadConfig {
+    return { computer_use: { macos: { bundle_ids: deniedBundleIds() } } };
 }
 
 /**
@@ -95,9 +54,6 @@ export function computerUseOffConfig(effective: unknown): ThreadConfig {
     const off = (names: readonly string[]) => Object.fromEntries(names.map((n) => [n, { enabled: false as const }]));
     return { ...(pluginsOff.length ? { plugins: off(pluginsOff) } : {}), ...(serversOff.length ? { mcp_servers: off(serversOff) } : {}) };
 }
-
-/** A thread's config for Codex: its MCP servers and plugins by name, and other keys. */
-export type ThreadConfig = { mcp_servers?: Record<string, unknown>; plugins?: Record<string, unknown>; [key: string]: unknown };
 
 /** Two thread configs as one: their MCP servers and plugins merged (the second's win), anything else the second's. */
 export function mergeThreadConfig(a: ThreadConfig | undefined, b: ThreadConfig | undefined): ThreadConfig | undefined {
