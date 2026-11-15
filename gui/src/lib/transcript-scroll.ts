@@ -54,6 +54,8 @@ export function firstShown(heights: Heights, shown: number, atEnd: boolean, scre
 
 /** On a turn far from the view (Transcript): it skips layout and paint until it comes near. */
 export const FAR = "data-far";
+/** A turn of a page going in a few at a time, built but not laid out until the page is all in (Transcript.tsx). */
+export const STAGED = "data-staged";
 
 export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number; row?: number; rowOffset?: number };
 export type TranscriptPosition = {

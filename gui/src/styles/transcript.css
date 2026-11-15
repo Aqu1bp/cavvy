@@ -224,6 +224,12 @@
     content-visibility: auto;
 }
 
+/* A turn of a page going in a few at a time ("Show earlier", Transcript.tsx): built, not laid out until the page is
+   all in, then shown with it at once. */
+.turn[data-staged] {
+    display: none;
+}
+
 /* Measured tool rows and Markdown blocks, including those inside one large active turn.
    work-rendering.ts supplies their natural size, preserving their layout and mounted state. */
 [data-work-far] {

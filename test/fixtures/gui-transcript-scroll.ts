@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, STAGED, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
@@ -49,7 +49,7 @@ let revealingNow = false;
 /** Words came out a moment ago (lib/reveal.ts wordsFlowing(): a signal, as there, so what waits for the words to stop hears it). */
 const [flowingNow, setFlowingNow] = solid.createSignal(true);
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-staged"] !== undefined ? 0 : n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -109,6 +109,7 @@ const decorate = (n: Node): any => Object.assign(n, {
     addEventListener: (type: string, fn: (e: any) => void) => { (n as any).listeners[type] = fn; },
     removeEventListener: (type: string) => { delete (n as any).listeners[type]; },
     removeAttribute: (name: string) => { delete n.props[name]; },
+    setAttribute: (name: string, value: string) => { n.props[name] = value; },
     toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
 const elements = (n?: Node) => (n?.children ?? []).filter((c) => c.tag !== "#text");
@@ -156,7 +157,7 @@ const scope = {
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain,
+    anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
@@ -331,6 +332,9 @@ try {
     const before = turn("turn-5").getBoundingClientRect().top;
     button("earlier").props.onClick();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "paging including button removal preserves the old turn");
+    // The rest of the page goes in a few at a time, each above the place read: it stays put.
+    settle();
+    assert.equal(turn("turn-5").getBoundingClientRect().top, before, "and stays put as the rest of the page goes in");
     resize();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "resize does not fight the paging correction");
     scroller().props.onScroll();
@@ -768,6 +772,8 @@ try {
     assert.deepEqual(io.options, { root: scroller(), rootMargin: "100% 0px" }, "for whether it's within a screen of the view");
     scroll(0);
     button("earlier").props.onClick();
+    assert.ok(io.targets.size < 80, "a page shown earlier goes in a few turns at a time, not in one frame");
+    settle();
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
@@ -816,7 +822,7 @@ try {
     turnRects = 0; scroller().props.onScroll();
     assert.equal(turnRects, 0, "following the end, a scroll measures no turn");
     scroll(0);
-    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
     assert.equal(articles().length, 400);
     turnRects = 0; scroll(60000);
     assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "read from turn-300");
@@ -843,7 +849,7 @@ try {
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
     // Read all the way up, then back at the end: a while after, what's above its first page goes, from the page and from
     // what the window holds (forgetEarlier), not while a reply comes.
-    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
     assert.equal(articles().length, 400);
     forgets.length = 0;
     settle();
