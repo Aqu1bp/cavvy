@@ -1033,6 +1033,20 @@ describe("the process: crashes, restarts, settings", () => {
         expect(JSON.parse(s[1].argv[s[1].argv.indexOf("--settings") + 1]).permissions.deny).toContain("Bash(rm:*)");
     });
 
+    test("turning Mac apps on mid-session starts a process that has the guard for commands naming their helper", async () => {
+        process.env.FAKE_SCENARIO = "silent";
+        const { HELPER_GUARD } = await import("../src/backends/claude-helper-guard");
+        const settings: any = {};
+        const { run } = await makeAgent({ settings });
+        expect(await run("one")).toBe("done");
+        const inits = () => received().filter((m) => m.request?.subtype === "initialize").map((m) => m.request.hooks);
+        expect(inits()).toEqual([undefined]);
+        settings.desktop = { enabled: true };
+        expect(await run("two")).toBe("done");
+        expect(starts().length).toBe(2);
+        expect(inits().at(-1)).toEqual({ PreToolUse: [HELPER_GUARD] });
+    });
+
     test("an account switch while background work runs starts the other account's session; the old one's work stops, and the user is told", async () => {
         const { addAccount } = await import("../src/providers/accounts");
         const folder = tempDir("claude-work-account-");

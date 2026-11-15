@@ -1961,8 +1961,8 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
-        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode (claude-helper-guard.ts).
-        return withHelperGuard(this.userHooks().hooks);
+        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode, where there can be one (claude-helper-guard.ts).
+        return this.cfg.desktopGuard ? withHelperGuard(this.userHooks().hooks) : this.userHooks();
     }
 
     private userHooks(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
@@ -2082,7 +2082,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         // Without what changes on a running process (the model, effort, mode and fast mode) and the session it resumes.
         // Nor the account folders' deny rules: adding or removing an account restarts nothing (#375); a new process has them.
         const fixed = claudeArgs(this.def.id, { ...cfg, model: { ...cfg.model, id: "default", effortLevels: undefined, supportsFastMode: false }, effort: undefined, mode: "default", fastMode: false, resumeId: undefined, forkSession: false }, { ...o, accountDenies: false }).args;
-        const fingerprint = spawnFingerprint({ bin, args: fixed, cwd: cfg.cwd, env, hooks: cfg.hooks ?? null });
+        // The guard is registered at start: turning Mac apps on, or the helper appearing, starts a process that has it.
+        const fingerprint = spawnFingerprint({ bin, args: fixed, cwd: cfg.cwd, env, hooks: cfg.hooks ?? null, desktopGuard: Boolean(cfg.desktopGuard) });
         return { bin, args, cwd: cfg.cwd, env, fingerprint };
     }
 

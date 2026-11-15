@@ -1,11 +1,24 @@
-// A PreToolUse hook Cavvy installs in every Claude Code it runs (claude-code.ts, claude-live.ts), so a shell command
+// A PreToolUse hook Cavvy installs in Claude Code (claude-code.ts, claude-live.ts) where Mac app control is on or its
+// helper has been built (desktopGuardWanted), so a shell command
 // that names Cavvy's helper for Mac apps comes to Cavvy whatever Claude Code's mode: in bypass, and for commands Claude
 // Code takes for read-only (`ls`), it would otherwise run them without asking. Cavvy's checker then has the person
 // answer (src/permissions/checker.ts, namesDesktopHelper), and the hook gives Claude Code that answer: allow or deny.
 
+import { existsSync } from "fs";
+import { join } from "path";
+import { paths } from "../config/paths";
+import { desktopEnabled, type Settings } from "../config/settings";
 import { namesDesktopHelper } from "../permissions/checker";
 
 export const HELPER_GUARD_ID = "cavvy_helper_guard";
+
+/**
+ * Whether the guard can matter: Mac app control is on, or its helper has been built (it stays when the setting is
+ * turned off). Otherwise there's no helper to name, and Claude Code's shell calls go without the hook's round trip.
+ */
+export function desktopGuardWanted(settings: Settings): boolean {
+    return desktopEnabled(settings) || existsSync(join(paths.home(), "desktop"));
+}
 
 /**
  * Its registration: Claude Code's shell tools, with the longest wait it may take (the person may be away), since a

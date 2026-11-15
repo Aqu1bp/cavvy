@@ -297,6 +297,8 @@ export interface BackendTurn {
     rules: { deny: string[]; ask: string[]; root: string };
     /** Cavvy's hooks the backend runs itself, at its own lifecycle points (Claude Code). */
     hooks?: Partial<Record<HookEvent, HookConfig[]>>;
+    /** Claude Code: install the guard for commands naming Cavvy's helper for Mac apps (claude-helper-guard.ts). */
+    desktopGuard?: boolean;
     /** Stop after this many model turns (Claude Code). */
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */
