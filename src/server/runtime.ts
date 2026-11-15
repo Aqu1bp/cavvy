@@ -133,8 +133,13 @@ import { MAX_RESTART_RESUMES } from "./working";
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
-/** How often streamed output goes out to the GUI. */
+/** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
 const FLUSH_MS = 24;
+/**
+ * Words streamed into a session on screen: the GUI shows a reply a block at a time (gui/src/lib/reveal.ts), so text
+ * sooner than this isn't drawn sooner. Fewer, bigger messages: less sent for each word, and less for the window to do.
+ */
+const APPEND_FLUSH_MS = 100;
 /** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
 const HIDDEN_FLUSH_MS = 500;
 /** A tool call still under way is written to the UI log this often at most (its end at once): ops come every flush. */
@@ -305,8 +310,8 @@ export class Runtime {
     private batch = 0;
     private outbox: SessionOp[] = [];
     private flushTimer?: ReturnType<typeof setTimeout>;
-    /** The timer's one that can wait (HIDDEN_FLUSH_MS). */
-    private flushWaits = false;
+    /** When the waiting ops go out (performance.now()): the soonest any of them needs to. */
+    private flushDue = 0;
     private abort?: AbortController;
     private queued: Queued[] = [];
     private queueSeq = 0;
@@ -1012,11 +1017,13 @@ export class Runtime {
         applyOp(this.view, o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
         this.noteStep(o);
         this.outbox.push(o);
-        const waits = (o.op === "append" || o.op === "agent.append") && !this.engine.sessionShown(this.id);
-        if (this.flushTimer && (waits || !this.flushWaits)) return;
+        // Out by when the soonest of what's waiting needs to be: text can wait a little, anything else hardly.
+        const delay = o.op === "append" || o.op === "agent.append" ? (this.engine.sessionShown(this.id) ? APPEND_FLUSH_MS : HIDDEN_FLUSH_MS) : FLUSH_MS;
+        const due = performance.now() + delay;
+        if (this.flushTimer && this.flushDue <= due) return;
         clearTimeout(this.flushTimer);
-        this.flushWaits = waits;
-        this.flushTimer = setTimeout(() => this.flush(), waits ? HIDDEN_FLUSH_MS : FLUSH_MS);
+        this.flushDue = due;
+        this.flushTimer = setTimeout(() => this.flush(), delay);
     }
 
     /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */
