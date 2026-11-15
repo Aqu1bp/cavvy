@@ -2647,6 +2647,9 @@ export class Engine {
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const loaded = this.runtimes.has(id);
                 const rt = this.openSession(id);
+                // What's waiting to go out goes to the windows that have it open now, before this one is among them: one
+                // back after a drop (since) is sent it in what it missed (resume), and would have it twice otherwise.
+                if (loaded) rt.flush();
                 this.watch(client, rt.id);
                 if (!loaded) {
                     let timer: ReturnType<typeof setTimeout> | undefined;

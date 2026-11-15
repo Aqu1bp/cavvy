@@ -132,6 +132,56 @@ test("a project's index on workers lists it with git and finds in it, and here a
     }
 }, 60_000);
 
+// The terminal searches where it is, at once (search): its index is never handed to workers, which only the server's
+// asking (searchSoon) reads. Listed again after 30 s in a big project, it was, and offered nothing from then on.
+// A search on workers isn't left waiting when the listing shrinks to fewer parts (a worker let go of mid-search), and
+// a project's index let go of while it's listed doesn't start workers after.
+test("the terminal's index stays its own, a shrinking listing answers every search, and one let go of starts no workers", async () => {
+    const { MentionShards, mentionSharding } = await import("../src/ui/mention-shards");
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { join } = await import("path");
+    const { tmpdir } = await import("os");
+    const root = mkdtempSync(join(tmpdir(), "cavvy-mention-terminal-"));
+    const saved = { ...mentionSharding };
+    try {
+        for (const d of ["src/server", "docs"]) mkdirSync(join(root, d), { recursive: true });
+        for (const f of ["src/server/engine.ts", "src/server/find.ts", "docs/plan.md"]) writeFileSync(join(root, f), "x");
+        Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+        Object.assign(mentionSharding, { from: 0, perPart: 20, most: 2 });
+        const tui = new FileIndex(root);
+        expect(tui.search("find", 12)).toEqual(["src/server/find.ts"]);
+        // Listed again (it's been 30 s), in the background: still answered here.
+        (tui as any).builtAt = 1;
+        tui.search("find", 12);
+        await (tui as any).building;
+        expect((tui as any).shards).toBeUndefined();
+        expect(tui.search("find", 12)).toEqual(["src/server/find.ts"]);
+        tui.dispose();
+
+        // Let go of while it's being listed: no workers after.
+        const gone = new FileIndex(root);
+        const asked = gone.searchSoon("find", 12);
+        gone.dispose();
+        await asked.catch(() => undefined);
+        expect((gone as any).shards).toBeUndefined();
+
+        // A search under way as the listing shrinks from 2 parts to 1: answered (or failed), not left waiting.
+        const shards = new MentionShards();
+        const listing = (n: number) => new TextEncoder().encode(Array.from({ length: n }, (_, i) => `dir${i % 7}/file_${i}.ts`).join("\n") + "\n");
+        Object.assign(mentionSharding, { perPart: 4096, most: 2 });
+        expect(await shards.take(listing(2000))).toBe(true);
+        const searches = Array.from({ length: 20 }, () => shards.search("file_1", 5).then(() => "answered", () => "failed"));
+        expect(await shards.take(listing(100))).toBe(true);
+        const settled = await Promise.race([Promise.all(searches), Bun.sleep(3000).then(() => "waiting")]);
+        expect(settled).not.toBe("waiting");
+        expect(await shards.search("file_1", 3)).toEqual(["dir1/file_1.ts", "dir3/file_10.ts", "dir4/file_11.ts"]);
+        shards.stop();
+    } finally {
+        Object.assign(mentionSharding, saved);
+        rmSync(root, { recursive: true, force: true });
+    }
+}, 60_000);
+
 // Made from git's listing as it came (on a worker: no string for each path), it's the same index as made from its paths.
 test("made from the listing's bytes, it's what it is made from its paths", async () => {
     const { PathIndex } = await import("../src/ui/path-index");

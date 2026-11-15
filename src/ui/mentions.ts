@@ -28,6 +28,8 @@ export class FileIndex {
     private shards?: MentionShards;
     /** Workers couldn't be had, or one stopped: its paths are indexed here from then on. */
     private noShards = process.env.CAVVY_MENTION_WORKERS === "0";
+    /** Let go of (dispose): nothing more is listed or started for it. */
+    private disposed = false;
 
     constructor(private root: string) {}
 
@@ -71,18 +73,23 @@ export class FileIndex {
                 const [bytes, code] = await Promise.all([new Response(proc.stdout).bytes(), proc.exited]);
                 clearTimeout(timer);
                 // A big project's: indexed and searched on workers (each keeps its part as it was where it's the same).
+                if (this.disposed) return;
                 if (code === 0 && bytes.length >= mentionSharding.from && !this.noShards) {
-                    this.shards ??= new MentionShards();
-                    if (await this.shards.take(bytes)) {
+                    // Put to use once they have the listing: searches meanwhile have what was there before.
+                    const shards = this.shards ?? new MentionShards();
+                    if ((await shards.take(bytes)) && !this.disposed) {
+                        this.shards = shards;
                         this.index = new PathIndex();
                         this.listedHash = undefined;
                         this.builtAt = Date.now();
                         return;
                     }
+                    if (shards !== this.shards) shards.stop();
+                    if (this.disposed) return;
                     this.noShards = true;
                 }
-                this.shards?.stop();
-                this.shards = undefined;
+                // Indexed here: the workers (if there were) answer until it is.
+                const had = this.shards;
                 const out = code === 0 ? new TextDecoder().decode(bytes) : "";
                 const hash = code === 0 ? Bun.hash(out) : undefined;
                 // The same files as before: as it is.
@@ -92,6 +99,10 @@ export class FileIndex {
                 }
                 this.listedHash = hash;
                 await this.take(code === 0 ? this.listed(out) : this.walk(this.root, 0, []), () => new Promise((r) => setImmediate(r)));
+                if (had && this.shards === had) {
+                    had.stop();
+                    this.shards = undefined;
+                }
             } catch {
                 await this.take(this.walk(this.root, 0, []), () => new Promise((r) => setImmediate(r)));
             } finally {
@@ -120,6 +131,8 @@ export class FileIndex {
 
     /** The paths that best match `query`, best first (the terminal's: listed the first time before it answers). */
     search(query: string, limit = 12): string[] {
+        // Answered from this thread, at once: never from workers (searchSoon), the index here emptied for them.
+        this.noShards = true;
         this.build();
         return this.find(query, limit);
     }
@@ -148,6 +161,7 @@ export class FileIndex {
 
     /** Its workers let go of (it's not used again). */
     dispose() {
+        this.disposed = true;
         this.shards?.stop();
         this.shards = undefined;
     }

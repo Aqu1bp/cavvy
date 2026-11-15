@@ -97,5 +97,16 @@ test("a window back after its connection dropped is sent what it missed, or a sn
     const snap = await c.call("session.open", { id, last: 10, budget: 65536, since: { epoch, seq: before } });
     expect(snap.resumed).toBeUndefined();
     expect(snap.turns.length).toBeGreaterThan(0);
-    for (const w of [b, c]) w.ws.close();
+    // Back just as something new happens (renamed from another window: its ops wait up to 24 ms to go out): what was
+    // waiting comes once, in what it missed, not also as an event to it just before.
+    await until(() => b.batches.at(-1)!.ops.some((o) => o.op === "state" && (o as any).patch?.busy === false));
+    const d = await window();
+    const had2 = b.batches.at(-1)!.seq;
+    const renamed = b.call("session.rename", { id, title: "Renamed meanwhile" });
+    const mid = await d.call("session.open", { id, last: 10, budget: 65536, since: { epoch, seq: had2 } });
+    await renamed;
+    expect(mid.resumed).toBe(true);
+    expect(mid.ops.length).toBeGreaterThan(0);
+    expect(d.batches.filter((x) => x.seq <= mid.seq)).toEqual([]);
+    for (const w of [b, c, d]) w.ws.close();
 }, 60_000);

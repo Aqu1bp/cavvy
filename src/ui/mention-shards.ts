@@ -30,7 +30,7 @@ export class MentionShards {
     /** Workers with an index made (from the latest listing they were all given). */
     private parts = 0;
     private seq = 0;
-    private waiting = new Map<number, { answer: (r: ShardReply) => void; fail: (e: Error) => void }>();
+    private waiting = new Map<number, { answer: (r: ShardReply) => void; fail: (e: Error) => void; w: Worker }>();
     /** A worker stopped: none of them is used again (the caller indexes the paths itself). */
     broken = false;
 
@@ -53,7 +53,7 @@ export class MentionShards {
         if (this.broken) return Promise.reject(new Error("The file index workers stopped."));
         const id = ++this.seq;
         return new Promise((answer, fail) => {
-            this.waiting.set(id, { answer: answer as (r: ShardReply) => void, fail });
+            this.waiting.set(id, { answer: answer as (r: ShardReply) => void, fail, w });
             w.postMessage({ ...request, id });
         });
     }
@@ -69,9 +69,11 @@ export class MentionShards {
                 if (at + COPY_CHUNK < listing.length) await new Promise((r) => setImmediate(r));
             }
             while (this.workers.length < parts) this.workers.push(this.spawn());
-            while (this.workers.length > parts) this.workers.pop()!.terminate();
-            await Promise.all(this.workers.map((w, part) => this.ask<"taken">(w, { t: "take", listing: shared, part, parts })));
+            // Fewer parts than before: the ones not needed go once the others have theirs (searches meanwhile have
+            // every part of the listing before), and what they still owed fails rather than never coming.
+            await Promise.all(this.workers.slice(0, parts).map((w, part) => this.ask<"taken">(w, { t: "take", listing: shared, part, parts })));
             this.parts = parts;
+            for (const w of this.workers.splice(parts)) this.end(w);
             return true;
         } catch {
             return false;
@@ -83,6 +85,16 @@ export class MentionShards {
         if (this.broken) throw new Error("The file index workers stopped.");
         const found = await Promise.all(this.workers.slice(0, this.parts).map((w) => this.ask<"found">(w, { t: "find", query, limit })));
         return merged(found.flatMap((r) => r.top), limit);
+    }
+
+    /** One worker let go of: what it hadn't answered fails. */
+    private end(w: Worker) {
+        w.terminate();
+        for (const [id, x] of this.waiting) {
+            if (x.w !== w) continue;
+            this.waiting.delete(id);
+            x.fail(new Error("That part of the file index was let go of."));
+        }
     }
 
     /** Its workers let go of. */

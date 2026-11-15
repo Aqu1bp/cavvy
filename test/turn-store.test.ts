@@ -2,7 +2,7 @@
 // there next time: what the window is sent then is what building it from its logs would send, and a session whose
 // logs changed since is built from them again.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentRun, SessionSnapshot, Turn } from "../src/server/protocol";
@@ -280,6 +280,43 @@ test(`${what} opened the first time is built from its latest turns, and comes ou
     expect(canon(tail)).toEqual(canon(whole));
 }, 120_000);
 
+// A turn coming while the earlier turns are still being built (the notice a Claude Code session opens with here, where
+// it isn't installed; a prompt sent at once) started putting the latest ones in the store; the build, done, put them
+// there again from scratch, after the first had let go of them: those came out empty, there and in every open after.
+test("a long Claude Code session opened the first time, a turn coming while its earlier turns are built: none comes out empty", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-tail-turn-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 8000, kind: "cli", seed: 11 });
+    const file = findSessionAnywhere(t.id)!;
+    const forget = () => {
+        for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
+    };
+    const prompts = turnBuilding.tailPrompts;
+    turnBuilding.tailFirst = false;
+    let whole;
+    try {
+        whole = await everything(t.id);
+        await close(t.id);
+    } finally {
+        turnBuilding.tailFirst = true;
+    }
+    forget();
+    // More of its last turns first than the store starts at (KEEP_BUILT + EXTRA_BUILT).
+    turnBuilding.tailPrompts = 80;
+    try {
+        await call("session.open", { id: t.id, last: 5 });
+        const tail = await everything(t.id);
+        await close(t.id);
+        expect(canon(tail)).toEqual(canon(whole));
+        // And opened again, from its store.
+        const again = await everything(t.id);
+        await close(t.id);
+        expect(canon(again)).toEqual(canon(whole));
+    } finally {
+        turnBuilding.tailPrompts = prompts;
+    }
+}, 180_000);
+
 // Opened the first time, its turns are put in its store a slice at a time after the window is sent them. A new turn
 // meanwhile (a notice: Claude Code isn't installed here) left the rest to that: it put them all there at once, and
 // held the server 1.1 s for a session of 100,000 items.
@@ -347,6 +384,29 @@ test("a session that grows long while it's open lets go of its older turns then,
     await close(id);
     expect(unset({ turns: (await everything(id)).turns })).toEqual(shown);
     await close(id);
+}, 120_000);
+
+// A store whose turns can't be read (cut short by a power cut, damaged) isn't the session's undoing: it opens, built
+// from its logs as it was before it had a store. (It didn't open at all: "JSON Parse error", every time.)
+test("a session whose store is damaged opens anyway, built from its logs", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-damaged-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 5 });
+    const whole = await everything(t.id);
+    await close(t.id);
+    const file = findSessionAnywhere(t.id)!;
+    const data = storeOf(file, t.id).replace(/\.json$/, ".jsonl");
+    expect(existsSync(data)).toBe(true);
+    // Its last 4 KB zeroed: the latest turns, which an open reads first.
+    const size = Bun.file(data).size;
+    const fd = openSync(data, "r+");
+    writeSync(fd, Buffer.alloc(Math.min(4096, size)), 0, Math.min(4096, size), Math.max(0, size - 4096));
+    closeSync(fd);
+    expect(canon(await everything(t.id))).toEqual(canon(whole));
+    await close(t.id);
+    // And again: put in the store afresh.
+    expect(canon(await everything(t.id))).toEqual(canon(whole));
+    await close(t.id);
 }, 120_000);
 
 test("a rewind builds only the turns since the last compaction again, and they're what building all of them makes", async () => {
