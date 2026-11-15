@@ -46,7 +46,14 @@ A session's files are append-only logs: its transcript (`~/.cavvy/projects/<proj
 - The window is sent the last turns that fit in 256 KB (at most 100) and asks for earlier ones as you scroll up. Find searches the turns it hasn't been sent on the server.
 - As a session with more than 20 turns is let go of, its turns and sub-agents are written to its turn store (`turns/<session>.jsonl`, with an index in `turns/<session>.json`). Opened again, it reads the index and its latest 20 turns from there; any other turn is read when it's sent. A notice shown only while the session was open (a model that isn't available, say) isn't kept, as building the turns again wouldn't show it.
 - The store is used only if both logs are byte for byte as they were when it was written. A session written to elsewhere since (a terminal, another copy of Cavvy), or one that crashed, is built from its logs again. Deleting a session moves its store to the trash with its other files.
-- The transcript is still read whole as the session opens (what it says before its last compaction isn't parsed).
+- What a turn is sent with leaves out what its rows don't show until they're opened: a finished turn's thoughts come without their text (fetched as the row is pointed at or opened), and an edit's change comes once, in its diff. Finished sub-agents of turns not sent are counted, and the Agents list's Finished fold fetches them as it's shown.
+- Find works through turns the window hasn't been sent in slices of 8 ms, so other sessions keep streaming meanwhile.
+
+Not yet:
+
+- The transcript is still read whole as the session opens (what it says before its last compaction isn't parsed), and a Claude Code session keeps its whole history in memory.
+- Tool output and diffs of folded rows are still sent: a folded row's header reads them (exit codes, pass counts, +/- counts, the first changed line, the changes card), so they need working out on the server first.
+- Find jumping far back loads every turn between.
 
 `test/perf-size.test.ts` checks these at 3,000 and 30,000 items. On a Linux container, opening a 30,000-item session again: a Claude Code session in 28 ms, reading 4.7 MB and keeping 6.7 MB in the server; built from its logs, 521 ms and 58.6 MB read (and 132 MB kept, before the store). A session of one of Cavvy's own models: 43 ms and 2.9 MB kept; built, 327 ms.
 
