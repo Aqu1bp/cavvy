@@ -4,7 +4,7 @@
 // Everything is passed through the redactor before it touches disk.
 
 import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, renameSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { LEGACY } from "../config/legacy";
@@ -259,6 +259,8 @@ export class Session {
     title?: string;
     /** The latest compaction summary (/summary). */
     summary?: string;
+    /** Its file's segments: one, and one more after each compaction (as readSegments makes them). */
+    segments = 1;
     /** USD spent in this session (estimates included). */
     cost = 0;
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
@@ -843,6 +845,7 @@ export class Session {
         this.parked = [];
         this.summary = summary;
         this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
+        this.segments++;
         for (const m of messages) this.push(m);
     }
 
@@ -869,6 +872,62 @@ export class Session {
         return Session.read(file, false);
     }
 
+    /** What it is, as read from its file (Session.read): its checkpoint's state (readCheckpoint). */
+    private toState(): SessionState {
+        return {
+            meta: this.meta,
+            messages: this.messages,
+            notices: this.notices,
+            backends: [...this.backends],
+            backendPlaces: [...this.backendPlaces],
+            parked: this.parked,
+            summary: this.summary,
+            segments: this.segments,
+            model: this.model,
+            fastMode: this.savedFastMode,
+            title: this.title,
+            workdir: this.workdir,
+            goal: this.goal,
+            plans: this.plans,
+            planLinks: this.planLinks,
+            imported: this.imported,
+            cost: this.cost,
+            costUnknown: this.costUnknown,
+            usageByModel: [...this.usageByModel],
+            backgroundTasks: [...this.backgroundTasks],
+            schedules: this.savedSchedules,
+            accounts: this.accounts,
+            workedAt: this.workedAt,
+        };
+    }
+
+    /** As its checkpoint has it (toState), before what's been written since is read. */
+    private restoreState(st: SessionState) {
+        this.messages = st.messages;
+        this.notices = st.notices;
+        this.backends = new Map(st.backends);
+        this.backendPlaces = new Map(st.backendPlaces);
+        this.parked = st.parked;
+        this.summary = st.summary;
+        this.segments = st.segments;
+        this.model = st.model;
+        this.fastMode = this.savedFastMode = st.fastMode;
+        this.title = st.title;
+        this.workdir = st.workdir;
+        this.goal = st.goal;
+        this.plans = st.plans;
+        this.planLinks = st.planLinks;
+        this.imported = st.imported;
+        this.cost = st.cost;
+        this.costUnknown = st.costUnknown;
+        this.usageByModel = new Map(st.usageByModel);
+        for (const [k, v] of st.backgroundTasks) this.backgroundTasks.set(k, v);
+        this.savedSchedules = st.schedules;
+        this.schedules = JSON.parse(st.schedules) as ScheduledJob[];
+        this.accounts = st.accounts;
+        this.workedAt = this.savedWorkedAt = st.workedAt;
+    }
+
     /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
     private loadedLines?: readonly Line[];
 
@@ -881,11 +940,13 @@ export class Session {
 
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
-        let meta: SessionMeta | undefined;
+        // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
+        const cp = readCheckpoint(file);
+        let meta: SessionMeta | undefined = cp?.state.meta;
         const lines: Line[] = [];
-        let empty = true;
+        let empty = !cp;
         // A line at a time (lib eachLine): a session of any size, never all of it as one string.
-        const { endsWithNewline } = eachLine(file, (raw) => {
+        const { endsWithNewline, end } = eachLine(file, (raw) => {
             empty = false;
             if (!raw.trim()) return;
             // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
@@ -900,15 +961,21 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        });
+        }, undefined, cp?.offset ?? 0);
         if (!meta) throw new Error(`Not a session file: ${file}`);
         const s = new Session(meta, { file, persist });
         s.started = true;
+        if (cp) s.restoreState(cp.state);
         // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
-        // past it, or a session loaded for anything else would hold every line it ever had.
-        s.loadedLines = lines;
-        queueMicrotask(() => (s.loadedLines = undefined));
+        // past it, or a session loaded for anything else would hold every line it ever had. (Read from a checkpoint,
+        // they aren't all of them: readSegments reads the file.)
+        if (!cp) {
+            s.loadedLines = lines;
+            queueMicrotask(() => (s.loadedLines = undefined));
+        }
         for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
+        // (And as of its checkpoint.)
+        if (cp?.state.workedAt !== undefined) s.workedAt = Math.max(s.workedAt ?? -Infinity, cp.state.workedAt);
         // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
         if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);
         s.savedWorkedAt = s.workedAt;
@@ -936,6 +1003,7 @@ export class Session {
                 if (m) s.messages.push(m);
             }
             else if (l.t === "compact") {
+                s.segments++;
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
@@ -1004,6 +1072,9 @@ export class Session {
                 s.savedSchedules = JSON.stringify(s.schedules);
             }
         }
+        // Read far past where it was read from before (or all of it): from here, next time. As it is now, read: what
+        // happens to it from here (a repair below) is written to it, and read from it next time.
+        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState());
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
@@ -1040,6 +1111,110 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
 }
 
 /** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+/**
+ * A session as read from its file up to `offset` (Session.read), kept beside it (state/<id>.json) so it's read from
+ * there next time: a long session's file is mostly what its last compaction cleared, read and dropped each time it's
+ * opened (40 MB of a 30,000-item session). Used only if the file is the one it was read from (its inode) and still
+ * has, just before `offset`, the bytes it had then: it's only ever appended to.
+ */
+interface Checkpoint {
+    v: number;
+    offset: number;
+    ino: number;
+    /** The TAIL_BYTES before `offset`, base64. */
+    tail: string;
+    state: SessionState;
+}
+
+/** What a checkpoint keeps of a session (Session.toState). */
+interface SessionState {
+    meta: SessionMeta;
+    messages: Message[];
+    notices: TurnNotice[];
+    backends: [string, BackendSession][];
+    backendPlaces: [string, AccountPlace][];
+    parked: ParkedBackend[];
+    summary?: string;
+    segments: number;
+    model?: string;
+    fastMode?: boolean;
+    title?: string;
+    workdir?: string;
+    goal?: GoalRecord;
+    plans: PresentedPlan[];
+    planLinks: PlanLink[];
+    imported?: ImportRecord;
+    cost: number;
+    costUnknown: boolean;
+    usageByModel: [string, { usage: Usage; cost: number; unknown?: boolean }][];
+    backgroundTasks: [string, BackgroundTaskInfo][];
+    /** As saved (JSON). */
+    schedules: string;
+    accounts: Record<string, string>;
+    workedAt?: number;
+}
+
+const CHECKPOINT_VERSION = 1;
+/**
+ * `after`: read this far past a session's checkpoint (or with none), it's written anew. `most`: and kept only if it's
+ * at most this much of what it's read in place of. (Tests set them low to checkpoint short sessions.)
+ */
+export const checkpointing = { after: 1024 * 1024, most: 0.5 };
+const CHECKPOINT_TAIL = 256;
+
+export function checkpointFile(file: string): string {
+    return join(dirname(file), "state", basename(file).replace(/\.jsonl$/, ".json"));
+}
+
+/** The bytes of `file` (open as `fd`) before `offset`, as a checkpoint keeps them. */
+function tailBefore(fd: number, offset: number): string {
+    const n = Math.min(CHECKPOINT_TAIL, offset);
+    const b = Buffer.alloc(n);
+    readSync(fd, b, 0, n, offset - n);
+    return b.toString("base64");
+}
+
+function readCheckpoint(file: string): Checkpoint | undefined {
+    let cp: Checkpoint;
+    try {
+        cp = JSON.parse(readFileSync(checkpointFile(file), "utf-8")) as Checkpoint;
+    } catch {
+        return undefined;
+    }
+    if (cp?.v !== CHECKPOINT_VERSION || typeof cp.offset !== "number" || !cp.state?.meta) return undefined;
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const st = fstatSync(fd);
+        if (st.ino !== cp.ino || st.size < cp.offset || tailBefore(fd, cp.offset) !== cp.tail) return undefined;
+        return cp;
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+function writeCheckpoint(file: string, offset: number, state: SessionState) {
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const cp: Checkpoint = { v: CHECKPOINT_VERSION, offset, ino: fstatSync(fd).ino, tail: tailBefore(fd, offset), state };
+        const json = JSON.stringify(cp);
+        // Kept only if it's read in place of much more (a session never compacted keeps all its messages: no saving).
+        if (json.length > offset * checkpointing.most) return;
+        const out = checkpointFile(file);
+        ensureDir(dirname(out));
+        const tmp = `${out}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+        writeFileSync(tmp, json, { mode: 0o600 });
+        renameSync(tmp, out);
+    } catch {
+        // Read whole next time, as without it.
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
 /** How a message's line starts (write: redactedJson keeps the key order). */
 const MSG_LINE = '{"t":"msg",';
 /** What a compaction empties, or only changes what it empties: lines of these before the last one needn't be read. */

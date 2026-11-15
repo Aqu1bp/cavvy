@@ -12,26 +12,41 @@ const WHOLE_MAX = 256 * 1024 * 1024;
 
 /**
  * Calls `fn` with each line of `file` (without its newline), in order; a last line without a newline too. Says whether
- * the file ended with a newline (true for an empty file). Throws as openSync does (no file, no access). `wholeMax`: the
- * size up to which it's read whole (tests use 0 to read any file a chunk at a time).
+ * the file ended with a newline (true for an empty file), and where it ended (`end`: how far it was read). Throws as
+ * openSync does (no file, no access). `wholeMax`: the size up to which it's read whole (tests use 0 to read any file a
+ * chunk at a time). `from`: where to start (the start of a line).
  */
-export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX): { endsWithNewline: boolean } {
+export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX, from = 0): { endsWithNewline: boolean; end: number } {
     const fd = openSync(file, "r");
     try {
-        if (fstatSync(fd).size <= wholeMax) {
-            const text = readFileSync(fd, "utf-8");
+        const size = fstatSync(fd).size;
+        if (size - from <= wholeMax) {
+            let text: string;
+            let end: number;
+            if (from === 0) {
+                const b = readFileSync(fd);
+                text = b.toString("utf-8");
+                end = b.length;
+            } else {
+                const b = Buffer.allocUnsafe(Math.max(0, size - from));
+                let got = 0;
+                for (let n: number; got < b.length && (n = readSync(fd, b, got, b.length - got, from + got)) > 0; ) got += n;
+                text = b.subarray(0, got).toString("utf-8");
+                end = from + got;
+            }
             const lines = text.split("\n");
             // A final newline ends the last line; it doesn't start an empty one.
             const ends = text === "" || text.endsWith("\n");
             if (ends) lines.pop();
             for (const line of lines) fn(line);
-            return { endsWithNewline: ends };
+            return { endsWithNewline: ends, end };
         }
         const chunk = Buffer.allocUnsafe(CHUNK);
         // A line still being read: the pieces of it so far (chunks are reused, so copied).
         let parts: Buffer[] = [];
         let last = 10;
-        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, CHUNK, pos)) > 0; pos += n) {
+        let pos = from;
+        for (let n: number; (n = readSync(fd, chunk, 0, CHUNK, pos)) > 0; pos += n) {
             last = chunk[n - 1]!;
             const nl = chunk.lastIndexOf(10, n - 1);
             if (nl < 0) {
@@ -45,7 +60,7 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
             parts = nl + 1 < n ? [Buffer.from(chunk.subarray(nl + 1, n))] : [];
         }
         if (parts.length) fn(Buffer.concat(parts).toString("utf-8"));
-        return { endsWithNewline: last === 10 };
+        return { endsWithNewline: last === 10, end: pos };
     } finally {
         closeSync(fd);
     }

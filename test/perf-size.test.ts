@@ -145,9 +145,8 @@ describe("a session of one of Cavvy's own models", () => {
         const { small, large } = measured.native!;
         expect(within(Math.max(small.keptAfterReopen, 1), large.keptAfterReopen)).toBe(true);
     });
-    // Its log is still read whole (its messages before the last compaction aren't parsed: Session.read): its state
-    // kept with the store, and only what's after read, would leave what's on screen.
-    test.failing("opening it again reads what's on screen", () => {
+    // Its log from its checkpoint on (agent/session.ts: what reading it came to, kept as it was read).
+    test("opening it again reads what's on screen", () => {
         const { small, large } = measured.native!;
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);

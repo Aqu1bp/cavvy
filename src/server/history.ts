@@ -82,24 +82,6 @@ export function readSegments(file: string, session?: { takeLoadedLines(): readon
     return segmentsOf(lines);
 }
 
-/** How many segments a session has (one, and one more after each compaction), without reading their messages. */
-export function segmentCount(session: { readonly path: string; takeLoadedLines(): readonly object[] | undefined }): number {
-    let n = 1;
-    const loaded = session.takeLoadedLines() as readonly SegmentLine[] | undefined;
-    if (loaded) {
-        for (const l of loaded) if (l.t === "compact") n++;
-        return n;
-    }
-    try {
-        eachLine(session.path, (raw) => {
-            if (raw.startsWith('{"t":"compact"')) n++;
-        });
-    } catch {
-        // none: one segment
-    }
-    return n;
-}
-
 function segmentsOf(lines: readonly SegmentLine[]): Segment[] {
     const segments: Segment[] = [{ messages: [] }];
     for (const l of lines) {

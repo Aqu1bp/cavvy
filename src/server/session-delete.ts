@@ -52,6 +52,8 @@ export function pieces(dir: string, id: string): { live: string; trashed: string
         // Its turn store (turn-store.ts): the index first, so a store put back without it isn't read.
         { live: join(dir, "turns", `${id}.json`), trashed: "turns.json" },
         { live: join(dir, "turns", `${id}.jsonl`), trashed: "turns.jsonl" },
+        // What reading its transcript came to, up to a point (agent/session.ts checkpointFile).
+        { live: join(dir, "state", `${id}.json`), trashed: "state.json" },
         { live: join(dir, "file-history", id), trashed: "file-history" },
         { live: join(dir, "tool-images", id), trashed: "tool-images" },
         { live: join(dir, "queue", `${id}.json`), trashed: "queue.json" },
@@ -216,7 +218,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
     const file = join(dir, `${id}.jsonl`);
     // Each folder is checked before anything is made in it.
     mkdirSync(paths.projectsDir(), { recursive: true, mode: 0o700 });
-    for (const d of [dir, join(dir, "ui"), join(dir, "turns"), join(dir, "file-history"), join(dir, "tool-images"), join(dir, "queue")]) {
+    for (const d of [dir, join(dir, "ui"), join(dir, "turns"), join(dir, "state"), join(dir, "file-history"), join(dir, "tool-images"), join(dir, "queue")]) {
         mustBeInHome(d);
         if (!present(d)) mkdirSync(d, { mode: 0o700 });
     }
