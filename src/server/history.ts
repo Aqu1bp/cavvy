@@ -82,12 +82,38 @@ export function readSegments(file: string, session?: { takeLoadedLines(): readon
     return segmentsOf(lines);
 }
 
+/**
+ * A segment whose messages are taken from their lines when they're first read: a long session's lines are parsed as
+ * they're needed (Session.read), and a first open builds its last segment's turns first (Runtime), the rest after.
+ */
+function lazySegment(): Segment & { lines: SegmentLine[] } {
+    let messages: Message[] | undefined;
+    const seg = {
+        lines: [] as SegmentLine[],
+        get messages(): Message[] {
+            if (!messages) {
+                messages = [];
+                // A line whose message isn't to be had (torn) isn't one.
+                for (const l of seg.lines) if (l.m) messages.push(l.m);
+                seg.lines = [];
+            }
+            return messages;
+        },
+        set messages(m: Message[]) {
+            messages = m;
+            seg.lines = [];
+        },
+    };
+    return seg;
+}
+
 function segmentsOf(lines: readonly SegmentLine[]): Segment[] {
-    const segments: Segment[] = [{ messages: [] }];
+    const segments: (Segment & { lines: SegmentLine[] })[] = [lazySegment()];
     for (const l of lines) {
         const cur = segments[segments.length - 1]!;
-        if (l.t === "msg" && l.m) cur.messages.push(l.m);
-        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}), messages: [] });
+        // Not read yet (its message parsed only if it is: lazySegment).
+        if (l.t === "msg") cur.lines.push(l);
+        else if (l.t === "compact") segments.push(Object.assign(lazySegment(), { summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}) }));
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);

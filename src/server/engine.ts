@@ -1093,6 +1093,7 @@ export class Engine {
      * speed, mode and effort.
      */
     async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+        await original.allTurns();
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
@@ -2658,13 +2659,16 @@ export class Engine {
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
                 if (resumed) return resumed;
-                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined, p.fold === true);
+                // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
+                return await rt.snapshotSoon(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined, typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined, p.fold === true);
             }
             case "session.turns": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 // Only a session this window has open: its ops come to it, so what it's sent stays right.
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
+                // The turns asked for are earlier ones: there, once a first open has built them (Runtime.allTurns).
+                await rt.allTurns();
                 const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
@@ -2673,16 +2677,19 @@ export class Engine {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const also = Array.isArray(p.turns) ? (p.turns as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 10_000) : undefined;
+                await rt.allTurns();
                 return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also) };
             }
             case "session.agentList": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                await rt.allTurns();
                 return rt.agentList();
             }
             case "session.agent": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                await rt.allTurns();
                 return rt.agentWhole(str(p.agentId, "agentId"));
             }
             case "cliSessions.list":
@@ -2788,15 +2795,18 @@ export class Engine {
             case "session.rewindTargets": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                await rt.allTurns();
                 return rt.rewindTargets();
             }
             case "session.rewindPlan": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                await rt.allTurns();
                 return rt.rewindPlan(num(p.index, -1));
             }
             case "session.rewind":
                 await this.runtime(p.id).yieldIdleCompaction();
+                await this.runtime(p.id).allTurns();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));

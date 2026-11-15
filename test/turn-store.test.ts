@@ -14,7 +14,7 @@ const { applyOp } = await import("../src/server/timeline");
 const { writeThread } = await import("../scripts/perf-thread");
 const { TurnStore } = await import("../src/server/turn-store");
 const { findSessionAnywhere } = await import("../src/agent/session");
-const { turnStoring } = await import("../src/server/runtime");
+const { turnStoring, turnBuilding } = await import("../src/server/runtime");
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 let mock: ReturnType<typeof startMockLlm>;
@@ -228,6 +228,51 @@ test("a store that's mostly old versions of its turns is rewritten without them"
     expect(store.get(moved.get(at.at)!, at.len)).toEqual(turn(12));
     store.close();
 });
+
+/** Ids as where they first appear: two builds that number the same turns in another order compare equal. */
+function canon(x: unknown) {
+    const ids = new Map<string, string>();
+    const walk = (v: unknown, key = ""): unknown => {
+        if (typeof v === "string" && /(^id$|Id$)/.test(key)) {
+            if (!ids.has(v)) ids.set(v, `id${ids.size}`);
+            return ids.get(v);
+        }
+        if (Array.isArray(v)) return v.map((e) => walk(e, key));
+        if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, e]) => [k, walk(e, k)]));
+        return v;
+    };
+    return walk(x);
+}
+
+// A compacted session opened the first time: its last segment's turns built and sent first, the earlier ones after.
+// All of them are what building them at once makes; a window asking for its last turns isn't kept waiting for the rest.
+test("a compacted session opened the first time is built from its last segment, and comes out as built all at once", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-tail-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "native", seed: 11 });
+    const file = findSessionAnywhere(t.id)!;
+    const forget = () => {
+        for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
+    };
+    turnBuilding.tailFirst = false;
+    let whole;
+    try {
+        whole = await everything(t.id);
+        await close(t.id);
+    } finally {
+        turnBuilding.tailFirst = true;
+    }
+    forget();
+    // Its last turns: at once, with at least the earlier segments' compactions counted before them.
+    const first = (await call("session.open", { id: t.id, last: 5 })) as SessionSnapshot;
+    expect(first.turns.length).toBe(5);
+    expect(first.earlier).toBeGreaterThan(0);
+    await close(t.id);
+    forget();
+    const tail = await everything(t.id);
+    await close(t.id);
+    expect(canon(tail)).toEqual(canon(whole));
+}, 120_000);
 
 // Opened the first time, its turns are put in its store a slice at a time after the window is sent them. A new turn
 // meanwhile (a notice: Claude Code isn't installed here) left the rest to that: it put them all there at once, and

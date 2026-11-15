@@ -4,6 +4,7 @@
 // count is the one the window would make, and only the matches go to it.
 
 import { foldedParts, matchesIn, MAX_MATCHES, setEntityDecoder } from "../../gui/src/lib/find-text";
+import { nextSlice } from "../util/slices";
 import { decodeHTML } from "../../gui/src/lib/entity-decoder";
 import type { SessionFindMatch, Turn } from "./protocol";
 
@@ -69,7 +70,7 @@ export async function findBefore(
     let since = performance.now();
     for (const t of scope) {
         if (performance.now() - since > SLICE_MS) {
-            await new Promise((r) => setImmediate(r));
+            await nextSlice();
             if (o.stale?.()) return undefined;
             since = performance.now();
         }

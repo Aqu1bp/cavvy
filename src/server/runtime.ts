@@ -80,7 +80,7 @@ import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-wo
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type Segment, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -132,6 +132,7 @@ import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
 import { findBefore, type FindCache } from "./find";
+import { nextSlice } from "../util/slices";
 import { cardOf } from "../../gui/src/lib/cards";
 import { agentHeadOf, headOf, TurnStore, type TurnHead } from "./turn-store";
 
@@ -265,6 +266,8 @@ export function listedAgent(a: AgentRun): AgentRun {
  * (Tests set it to 0: a turn at a time.)
  */
 export const turnStoring = { sliceMs: 8 };
+/** `tailFirst`: a compacted session opened the first time has its last segment's turns built first (tests turn it off). */
+export const turnBuilding = { tailFirst: true };
 /**
  * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
  * (a slice at a time, 2.4 s for that session on an M5) when Find is used after. (Tests set it low.)
@@ -525,6 +528,9 @@ export class Runtime {
     private agentAt = new WeakMap<AgentRun, { at: number; len: number }>();
     private agentHeads = new WeakSet<AgentRun>();
     private agentChanged = new WeakSet<AgentRun>();
+    /** A first open's turns before its latest segment's, while they're built (buildEarlier), and how many there are at least. */
+    private earlierBuilt?: Promise<void>;
+    private earlierAtLeast = 0;
     /** Find calls so far (find): an earlier one still working stops. */
     private finding = 0;
     /** What Find searches in each turn, worked out (find.ts), while it's being used: let go of findKeeping.ms after. */
@@ -716,11 +722,23 @@ export class Runtime {
             // The rest are heads already.
             this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
         } else {
-            const turns = opts.resumed ? replay({ segments: segments ?? readSegments(session.path), current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
+            const segs = opts.resumed ? (segments ?? readSegments(session.path)) : [];
+            // Compacted (and no compaction kept a prompt across: each segment's turns are its own): its last segment's
+            // turns built now, sent first, and the earlier ones after, a segment at a time (buildEarlier). Built all at
+            // once, a 100,000-item session's first open parsed and built every message before it answered (566 ms).
+            const tailFirst = turnBuilding.tailFirst && segs.length > 1 && !segs.some((x) => x.kept) && !session.lastCompactKept;
+            const turns = !opts.resumed ? [] : tailFirst
+                ? replay({ segments: [segs[segs.length - 1]!], current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: segs.length - 1, marked: true } })
+                : replay({ segments: segs, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
             this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+            if (tailFirst) {
+                // At least each later segment's compaction (a turn of its own) comes before these.
+                this.earlierAtLeast = segs.length - 1;
+                this.earlierBuilt = this.buildEarlier(segs);
+            }
             // After the window is sent them, a slice at a time: put in the store before, they held its first open back
             // (220 ms of a 30,000-item session's).
-            if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
+            else if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
         }
         // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
         // held for an account, until one is picked: #410).
@@ -837,7 +855,7 @@ export class Runtime {
             const gone = () => this.closed || this.store !== store || this.storingRun !== run;
             const pause = async () => {
                 if (performance.now() - since <= turnStoring.sliceMs) return;
-                await new Promise((r) => setImmediate(r));
+                await nextSlice();
                 since = performance.now();
             };
             let turns = this.view.turns;
@@ -1021,6 +1039,8 @@ export class Runtime {
 
     /** What's changed put in the store, and its index written with the logs as they are now: as the session is let go of. */
     private saveTurns() {
+        // Not all of them here yet (buildEarlier): none stored, and it's built from its logs next time.
+        if (this.earlierBuilt) return;
         const all = this.view.turns;
         if (!this.store) {
             if (all.length <= KEEP_BUILT) return;
@@ -1481,7 +1501,63 @@ export class Runtime {
         sent.reverse();
         const turns = from ? all.slice(from) : all;
         const { agents, more } = agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a), foldedIds(sent));
-        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, epoch: this.epoch, ...(from ? { earlier: from } : {}), ...(more ? { agentsMore: more } : {}) };
+        // Those before the latest segment's still being built: at least as many as there are (the window is told how many
+        // when it asks for them: session.turns).
+        const earlier = from + (this.earlierAtLeast ?? 0);
+        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, epoch: this.epoch, ...(earlier ? { earlier } : {}), ...(more ? { agentsMore: more } : {}) };
+    }
+
+    /**
+     * The turns of segments before the last, built after its own (the constructor: tailFirst), a segment a slice, and
+     * put before them; then its turns go in the store. Let go of if the session is closed, or its turns built anew (a
+     * rewind waits for these first: allTurns), meanwhile.
+     */
+    private async buildEarlier(segs: Segment[]) {
+        const last = segs.length - 1;
+        const earlier: Turn[] = [];
+        // Built anew meanwhile (other turns): these are no longer theirs.
+        const turns = this.view.turns;
+        try {
+            for (let a = 0; a < last; a++) {
+                await nextSlice();
+                if (this.closed || this.view.turns !== turns) return;
+                // Segment `a`, and the next one's compaction, as building them all would (its own turn: archived when
+                // it's not the last segment's; that segment's other turns are built already).
+                const next = segs[a + 1]!;
+                const built = replay({ segments: [segs[a]!, { summary: next.summary, idle: next.idle, kept: next.kept, messages: [] }], current: [], currentNotices: [], ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: a, marked: a > 0 } });
+                const marker = built[built.length - 1];
+                if (marker && a + 1 < last && marker.pos?.seg === a + 1 && marker.pos.index === -1) marker.archived = true;
+                for (const t of built) earlier.push(t);
+            }
+            if (this.closed || this.view.turns !== turns) return;
+            turns.splice(0, 0, ...earlier);
+            const agents = agentsFromTurns(earlier, this.session.model, this.ui.agents);
+            const had = new Set(this.view.agents.map((a) => a.id));
+            this.view.agents.splice(0, 0, ...agents.filter((a) => !had.has(a.id)));
+            this.earlierAtLeast = 0;
+            if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        } finally {
+            this.earlierBuilt = undefined;
+            this.earlierAtLeast = 0;
+        }
+    }
+
+    /** Every turn here (a first open builds its earlier ones after: buildEarlier): what's asked of turns before the latest waits for them. */
+    async allTurns(): Promise<void> {
+        await this.earlierBuilt;
+    }
+
+    /**
+     * As snapshot, waiting for the turns before the latest segment's (buildEarlier) only if what's asked for reaches
+     * them: one asking for the last turns that fit 64 KB is answered at once.
+     */
+    async snapshotSoon(last?: number, budget?: number, fold = false): Promise<SessionSnapshot> {
+        if (this.earlierBuilt) {
+            const snap = this.snapshot(last, budget, fold);
+            if ((snap.earlier ?? 0) > this.earlierAtLeast) return snap;
+            await this.allTurns();
+        }
+        return this.snapshot(last, budget, fold);
     }
 
     /** Its folder's first snapshot taken ahead of the first prompt (Agent.warmSnapshots), once its agent is there. */
