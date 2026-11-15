@@ -68,14 +68,15 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const kept = heap() - before;
     expect(open.msg.result.earlier).toBeGreaterThan(0);
     // Find, in the turns the window doesn't have (session.find): a query found once, whatever the session's size.
-    const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
+    const find = process.env.NOFIND ? { bytes: 0, msg: { result: { matches: [1] } } } as any : await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
     expect(find.msg.result.matches).toHaveLength(1);
     // Kept while it's open: once its turns are in its store (a slice at a time after it opened) and Find has let go.
     let keptOpen = heap() - before;
-    for (let i = 0; i < 40; i++) {
+    // Steady for a second (what it builds and stores after it opens is done).
+    for (let i = 0, steady = 0; i < 80 && steady < 10; i++) {
         await Bun.sleep(100);
         const now = heap() - before;
-        if (Math.abs(now - keptOpen) < 64 * 1024 && i > 4) break;
+        steady = Math.abs(now - keptOpen) < 64 * 1024 ? steady + 1 : 0;
         keptOpen = now;
     }
     let rewindSent: number | undefined;

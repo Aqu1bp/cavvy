@@ -266,8 +266,36 @@ export function listedAgent(a: AgentRun): AgentRun {
  * (Tests set it to 0: a turn at a time.)
  */
 export const turnStoring = { sliceMs: 8 };
+/** And the rest a part of about this many messages at a time (buildHead). */
+const HEAD_PART = 500;
+
+/** Where each prompt of `messages` is (a user's message a turn starts at), before `end`. */
+function promptIndices(messages: readonly Message[], end = messages.length): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < end; i++) {
+        const m = messages[i]!;
+        if (m.role === "user" && (m.meta?.kind ?? "prompt") === "prompt") out.push(i);
+    }
+    return out;
+}
+
+/** Where the last `n` prompts start, when there are more than `n` (else undefined: it's built whole). */
+function lastPromptsFrom(messages: readonly Message[], n: number): number | undefined {
+    const at = promptIndices(messages);
+    return at.length > n ? at[at.length - n] : undefined;
+}
+
+/** How many prompts come before `end`. */
+function promptsBefore(messages: readonly Message[], end: number): number {
+    return promptIndices(messages, end).length;
+}
+
 /** `tailFirst`: a compacted session opened the first time has its last segment's turns built first (tests turn it off). */
-export const turnBuilding = { tailFirst: true };
+export const turnBuilding = {
+    tailFirst: true,
+    /** A one-segment session built from its logs, with more prompts than this: those last ones' turns built first (tailAt). */
+    tailPrompts: 100,
+};
 /**
  * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
  * (a slice at a time, 2.4 s for that session on an M5) when Find is used after. (Tests set it low.)
@@ -638,8 +666,16 @@ export class Runtime {
         // is read for what the session needs while it runs, not for every step it logged.
         const store = opts.resumed ? TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]) : undefined;
         let stored = store?.read();
-        this.ui = new UiLog(session.path, session.meta.id, opts.resumed && !stored, Boolean(stored));
+        // Built from its logs, one segment long (a Claude Code session never compacts here) and long: its last prompts'
+        // turns first, from the end of its GUI log (UiLog.readTail), and the rest after (buildHead). Read whole, that log
+        // held a 100,000-item session's first open 0.8 s (171 MB).
+        let tailAt = opts.resumed && !stored && turnBuilding.tailFirst && session.segments === 1 ? lastPromptsFrom(session.messages, turnBuilding.tailPrompts) : undefined;
+        this.ui = new UiLog(session.path, session.meta.id, opts.resumed && !stored && tailAt === undefined, Boolean(stored));
         if (stored) this.ui.restore(stored.ui);
+        else if (tailAt !== undefined && !this.ui.readTail(`0:${tailAt}`)) {
+            this.ui.readAll();
+            tailAt = undefined;
+        }
         // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
         const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
         this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
@@ -727,11 +763,17 @@ export class Runtime {
             // turns built now, sent first, and the earlier ones after, a segment at a time (buildEarlier). Built all at
             // once, a 100,000-item session's first open parsed and built every message before it answered (566 ms).
             const tailFirst = turnBuilding.tailFirst && segs.length > 1 && !segs.some((x) => x.kept) && !session.lastCompactKept;
-            const turns = !opts.resumed ? [] : tailFirst
+            const turns = !opts.resumed ? [] : tailAt !== undefined
+                ? replay({ segments: segs, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), range: { start: tailAt } })
+                : tailFirst
                 ? replay({ segments: [segs[segs.length - 1]!], current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: segs.length - 1, marked: true } })
                 : replay({ segments: segs, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
             this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
-            if (tailFirst) {
+            if (opts.resumed && tailAt !== undefined) {
+                // At least a turn for each prompt before these.
+                this.earlierAtLeast = promptsBefore(session.messages, tailAt);
+                this.earlierBuilt = this.buildHead(segs, tailAt);
+            } else if (tailFirst) {
                 // At least each later segment's compaction (a turn of its own) comes before these.
                 this.earlierAtLeast = segs.length - 1;
                 this.earlierBuilt = this.buildEarlier(segs);
@@ -1535,6 +1577,43 @@ export class Runtime {
             const had = new Set(this.view.agents.map((a) => a.id));
             this.view.agents.splice(0, 0, ...agents.filter((a) => !had.has(a.id)));
             this.earlierAtLeast = 0;
+            if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        } finally {
+            this.earlierBuilt = undefined;
+            this.earlierAtLeast = 0;
+        }
+    }
+
+    /**
+     * A one-segment session's turns before its last prompts' (the constructor: tailAt), built after them: its GUI log
+     * read whole, a slice at a time (UiLog.readAllSoon), then its turns a part at a time (a prompt's turn starts each),
+     * put before the latest; then its turns go in the store. Let go of as buildEarlier's are.
+     */
+    private async buildHead(segs: Segment[], end: number) {
+        const turns = this.view.turns;
+        const messages = this.session.messages;
+        const notices = this.session.notices;
+        try {
+            await this.ui.readAllSoon();
+            const head: Turn[] = [];
+            // Each part's sub-agents with it (a sub-agent's are of the same turn): all at once took 110-126 ms.
+            const agents: AgentRun[] = [];
+            const starts = promptIndices(messages, end);
+            for (let a = 0, k = 0; a < end; ) {
+                if (this.closed || this.view.turns !== turns) return;
+                // About PART_MESSAGES of them, to the next prompt (or the latest's first).
+                while (k < starts.length && starts[k]! <= a + HEAD_PART) k++;
+                const b = k < starts.length ? starts[k]! : end;
+                const built = replay({ segments: segs, current: messages, currentNotices: notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), range: { start: a, end: b } });
+                for (const t of built) head.push(t);
+                for (const x of agentsFromTurns(built, this.session.model, this.ui.agents)) agents.push(x);
+                a = b;
+                await nextSlice();
+            }
+            if (this.closed || this.view.turns !== turns) return;
+            turns.splice(0, 0, ...head);
+            const had = new Set(this.view.agents.map((a) => a.id));
+            this.view.agents.splice(0, 0, ...agents.filter((a) => !had.has(a.id)));
             if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
         } finally {
             this.earlierBuilt = undefined;

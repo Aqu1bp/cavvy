@@ -246,10 +246,15 @@ function canon(x: unknown) {
 
 // A compacted session opened the first time: its last segment's turns built and sent first, the earlier ones after.
 // All of them are what building them at once makes; a window asking for its last turns isn't kept waiting for the rest.
-test("a compacted session opened the first time is built from its last segment, and comes out as built all at once", async () => {
+// A Claude Code session (never compacted here) likewise: its last prompts' turns from the end of its GUI log, the rest after.
+for (const [kind, what] of [["native", "a compacted session"], ["cli", "a long Claude Code session"]] as const)
+test(`${what} opened the first time is built from its latest turns, and comes out as built all at once`, async () => {
     const cwd = join(tempDir("cavvy-turn-store-tail-"), "project");
     mkdirSync(cwd, { recursive: true });
-    const t = writeThread({ cwd, items: 3000, kind: "native", seed: 11 });
+    const t = writeThread({ cwd, items: 3000, kind, seed: 11 });
+    // Its last 10 prompts' turns first (a session of 3,000 items has fewer than the 100 it's built from otherwise).
+    const prompts = turnBuilding.tailPrompts;
+    turnBuilding.tailPrompts = 10;
     const file = findSessionAnywhere(t.id)!;
     const forget = () => {
         for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
@@ -271,6 +276,7 @@ test("a compacted session opened the first time is built from its last segment, 
     forget();
     const tail = await everything(t.id);
     await close(t.id);
+    turnBuilding.tailPrompts = prompts;
     expect(canon(tail)).toEqual(canon(whole));
 }, 120_000);
 
