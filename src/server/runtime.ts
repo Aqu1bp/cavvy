@@ -80,7 +80,7 @@ import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-wo
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, segmentCount, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -129,6 +129,7 @@ import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
 import { findBefore } from "./find";
+import { agentHeadOf, headOf, TurnStore, type TurnHead } from "./turn-store";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
@@ -140,15 +141,23 @@ export const RESTART_LABEL = "Continued after a restart";
  * left to come with their turns or on their own. A long Claude Code session opened with every sub-agent it ever ran:
  * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
  */
-export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean): AgentRun[] {
-    if (all) return structuredClone(agents as AgentRun[]);
+export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a): AgentRun[] {
+    if (all) return agents.map((a) => structuredClone(whole(a)));
     const ids = new Set(turns.map((t) => t.id));
     return agents.map((a) => {
-        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") return structuredClone(a);
+        if (ids.has(a.turnId) || a.status === "running" || a.status === "waiting") return structuredClone(whole(a));
         const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
         return { ...structuredClone(listed), blocks: [], partial: true as const };
     });
 }
+
+/**
+ * A long session keeps its latest this many turns built (beyond them, each only as its head: turn-store.ts): the one
+ * under way and those a change most likely reaches. Any other is read from the store when it's sent.
+ */
+const KEEP_BUILT = 20;
+/** And this many more changed since (a late tool result, a sub-agent finishing in an earlier turn). */
+const EXTRA_BUILT = 50;
 
 /** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
 const RESET_TURNS = 100;
@@ -370,6 +379,20 @@ export class Runtime {
     /** Plan requests answered by taking the plan to another session. */
     private handoffs = new Set<string>();
     private ui: UiLog;
+    /** A long session's turn store (turn-store.ts): its turns beyond the latest, kept there and not here. */
+    private store?: TurnStore;
+    /** Where each turn is in the store, as last put there. */
+    private storedAt = new WeakMap<Turn, { at: number; len: number }>();
+    /** Turns built that aren't among the latest (asked for since: a page, a change), oldest first. */
+    private built = new Set<Turn>();
+    /** Turns changed since they were last put in the store. */
+    private changed = new WeakSet<Turn>();
+    /** The same for sub-agents: where each is whole in the store, those kept here as their head, those changed since. */
+    private agentAt = new WeakMap<AgentRun, { at: number; len: number }>();
+    private agentHeads = new WeakSet<AgentRun>();
+    private agentChanged = new WeakSet<AgentRun>();
+    /** Notices shown and not kept (notice()): building the turns again leaves them out, and so does the store. */
+    private liveOnly = new Set<string>();
     /** Compactions so far: the transcript segment new prompts belong to. */
     private segment = 0;
     private ids = 0;
@@ -466,7 +489,12 @@ export class Runtime {
             if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
             else session.setFastMode(Boolean(ws.settings.fastMode));
         }
-        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
+        // A long session opened before, with its logs as they were left: its turns are in its store, and its GUI log
+        // is read for what the session needs while it runs, not for every step it logged.
+        const store = opts.resumed ? TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]) : undefined;
+        let stored = store?.read();
+        this.ui = new UiLog(session.path, session.meta.id, opts.resumed && !stored, Boolean(stored));
+        if (stored) this.ui.restore(stored.ui);
         // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
         const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
         this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
@@ -517,12 +545,40 @@ export class Runtime {
         this.reviewer = ws.settings.reviewModel;
         if (opts.resumed) resetToolState(this.toolState, session.messages);
 
-        const segments = opts.resumed ? readSegments(session.path, session) : [{ messages: [] }];
-        this.segment = segments.length - 1;
+        // Its turns from its store: only how many segments there are (their messages aren't read: Session.read).
+        let segments = !opts.resumed ? [{ messages: [] }] : stored ? undefined : readSegments(session.path, session);
+        this.segment = segments ? segments.length - 1 : segmentCount(session) - 1;
         // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
-        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
-        const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
-        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+        // Its turns are built again then (the store has it running).
+        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) {
+            session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
+            stored = undefined;
+            this.ui.full();
+        }
+        if (stored) {
+            this.store = store;
+            this.ids = Math.max(this.ids, stored.ids);
+            const turns = stored.heads.map(({ head, at, len }) => {
+                const t = { ...head, blocks: [] } as Turn;
+                this.storedAt.set(t, { at, len });
+                return t;
+            });
+            const agents = stored.agents.map(({ head, at, len }) => {
+                const a = { ...head, blocks: [] } as AgentRun;
+                if (at !== undefined && len !== undefined) {
+                    this.agentAt.set(a, { at, len });
+                    this.agentHeads.add(a);
+                }
+                return a;
+            });
+            this.view = { state: this.initialState(), turns, agents };
+            // The latest, built: what a window is sent, and what the session goes on from. (Sub-agents, when they change.)
+            for (const t of turns.slice(-KEEP_BUILT)) Object.assign(t, store!.get(this.storedAt.get(t)!.at, this.storedAt.get(t)!.len));
+        } else {
+            const turns = opts.resumed ? replay({ segments: segments ?? readSegments(session.path), current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
+            this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+            if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlder(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
+        }
         // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
         // held for an account, until one is picked: #410).
         if (opts.resumed) {
@@ -610,6 +666,164 @@ export class Runtime {
 
     private newId(): string {
         return `b${(++this.ids).toString(36)}`;
+    }
+
+    // -----------------------------------------------------------------------
+    // The turn store (turn-store.ts): a long session's turns beyond its latest are there, each kept here as its head
+    // (blocks: none), and built again when asked for.
+
+    /** Its turns beyond the latest put in `store` and let go of here (as they were just built: all of them). */
+    private storeOlder(store: TurnStore) {
+        this.store = store;
+        store.clear();
+        this.storedAt = new WeakMap();
+        this.agentAt = new WeakMap();
+        this.agentHeads = new WeakSet();
+        this.built.clear();
+        this.trimBuilt();
+        // Its steps were to build them: they're built (and stored) now.
+        this.ui.lighten();
+    }
+
+    /** Kept here as its head only: its blocks are in the store. */
+    private headOnly(t: Turn): boolean {
+        return this.storedAt.has(t) && !t.blocks.length && !this.built.has(t) && !this.latest(t);
+    }
+
+    /** Among the latest turns, which are always built. */
+    private latest(t: Turn): boolean {
+        const all = this.view.turns;
+        for (let i = all.length - 1; i >= Math.max(0, all.length - KEEP_BUILT); i--) if (all[i] === t) return true;
+        return false;
+    }
+
+    /** The turn whole: as it's here, or (kept as its head) as the store has it, without keeping it built. */
+    private whole(t: Turn): Turn {
+        if (!this.store || !this.headOnly(t)) return t;
+        const where = this.storedAt.get(t)!;
+        return this.store.get(where.at, where.len);
+    }
+
+    /** A sub-agent whole: as it's here, or (kept as its head) as the store has it. */
+    private agentFull(a: AgentRun): AgentRun {
+        if (!this.store || !this.agentHeads.has(a)) return a;
+        const where = this.agentAt.get(a)!;
+        return this.store.get<AgentRun>(where.at, where.len);
+    }
+
+    /** Built here again, to be changed. */
+    private buildAgent(a: AgentRun) {
+        if (!this.store || !this.agentHeads.has(a)) return;
+        const where = this.agentAt.get(a)!;
+        Object.assign(a, this.store.get<AgentRun>(where.at, where.len));
+        this.agentHeads.delete(a);
+    }
+
+    /** Put in the store (when changed) and kept here as its head. */
+    private letGoAgent(a: AgentRun) {
+        if (this.agentHeads.has(a)) return;
+        this.putAgent(a);
+        a.blocks = [];
+        delete a.prompt;
+        delete a.report;
+        this.agentHeads.add(a);
+    }
+
+    private putAgent(a: AgentRun) {
+        if (this.agentHeads.has(a) || (this.agentAt.has(a) && !this.agentChanged.has(a))) return;
+        this.agentAt.set(a, this.store!.put(this.kept(a)));
+        this.agentChanged.delete(a);
+    }
+
+    /** A copy of the turn whole, to send. */
+    private sent(t: Turn): Turn {
+        const w = this.whole(t);
+        return w === t ? structuredClone(t) : w;
+    }
+
+    /** Built here again, to be changed (its blocks from the store); kept built a while (the most recent EXTRA_BUILT). */
+    private build(t: Turn) {
+        if (!this.store) return;
+        if (this.headOnly(t)) {
+            const where = this.storedAt.get(t)!;
+            Object.assign(t, this.store.get(where.at, where.len));
+        }
+        if (this.latest(t)) return;
+        this.built.delete(t);
+        this.built.add(t);
+        this.trimBuilt();
+    }
+
+    /** No more built than the latest KEEP_BUILT and the most recent EXTRA_BUILT asked for: the rest put in the store (when changed) and let go of. */
+    private trimBuilt() {
+        if (!this.store) return;
+        const all = this.view.turns;
+        for (let i = 0; i < all.length - KEEP_BUILT; i++) {
+            const t = all[i]!;
+            if (this.built.has(t) || (!t.blocks.length && this.storedAt.has(t))) continue;
+            this.letGo(t);
+        }
+        for (const t of this.built) {
+            if (this.built.size <= EXTRA_BUILT) break;
+            if (this.latest(t)) this.built.delete(t);
+            else this.letGo(t);
+        }
+        // Sub-agents: those of the latest turns, and any still working, kept whole.
+        const recent = new Set<string>();
+        for (let i = Math.max(0, all.length - KEEP_BUILT); i < all.length; i++) recent.add(all[i]!.id);
+        for (const a of this.view.agents) if (!recent.has(a.turnId) && a.status !== "running" && a.status !== "waiting") this.letGoAgent(a);
+    }
+
+    /** As it's kept: without what was only shown (liveOnly), as it would be built again. */
+    private kept<T extends Turn | AgentRun>(x: T): T {
+        return this.liveOnly.size && x.blocks.some((b) => this.liveOnly.has(b.id)) ? { ...x, blocks: x.blocks.filter((b) => !this.liveOnly.has(b.id)) } : x;
+    }
+
+    private letGo(t: Turn) {
+        if (this.changed.has(t) || !this.storedAt.has(t)) {
+            this.storedAt.set(t, this.store!.put(this.kept(t)));
+            this.changed.delete(t);
+        }
+        t.blocks = [];
+        this.built.delete(t);
+    }
+
+    /** What's changed put in the store, and its index written with the logs as they are now: as the session is let go of. */
+    private saveTurns() {
+        const all = this.view.turns;
+        if (!this.store) {
+            if (all.length <= KEEP_BUILT) return;
+            this.store = TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]);
+            this.store.clear();
+        }
+        try {
+            const heads: { head: TurnHead; at: number; len: number }[] = [];
+            for (const t of all) {
+                if (!this.headOnly(t)) {
+                    const kept = this.kept(t);
+                    // A turn that held only what was shown (a notice as the session opened): not built again either.
+                    if (!kept.blocks.length && !t.prompt && !t.archived && !t.imported) continue;
+                    if (this.changed.has(t) || !this.storedAt.has(t)) {
+                        this.storedAt.set(t, this.store!.put(kept));
+                        this.changed.delete(t);
+                    }
+                }
+                heads.push({ head: headOf(t), ...this.storedAt.get(t)! });
+            }
+            const agents = this.view.agents.map((a) => {
+                this.putAgent(a);
+                return { head: agentHeadOf(a), ...this.agentAt.get(a)! };
+            });
+            // Mostly versions since replaced: without them.
+            const moved = this.store.compact([...heads, ...agents]);
+            if (moved) for (const x of [...heads, ...agents]) x.at = moved.get(x.at)!;
+            this.store.writeIndex(heads, agents, this.ids, this.ui.lightState());
+        } catch {
+            // Not kept: it's built from the logs next time, as before there was a store.
+            this.store.forget();
+        } finally {
+            this.store.close();
+        }
     }
 
     settings(): Settings {
@@ -1010,7 +1224,7 @@ export class Runtime {
         if (budget !== undefined) {
             let size = 0;
             for (let i = all.length - 1; i > from; i--) {
-                size += JSON.stringify(all[i]).length;
+                size += JSON.stringify(this.whole(all[i]!)).length;
                 if (size >= budget) {
                     from = i;
                     break;
@@ -1018,19 +1232,19 @@ export class Runtime {
             }
         }
         const turns = from ? all.slice(from) : all;
-        return { state: structuredClone(this.view.state), turns: structuredClone(turns), agents: agentsFor(this.view.agents, turns, !from), seq: this.batch, ...(from ? { earlier: from } : {}) };
+        return { state: structuredClone(this.view.state), turns: turns.map((t) => this.sent(t)), agents: agentsFor(this.view.agents, turns, !from, (a) => this.agentFull(a)), seq: this.batch, ...(from ? { earlier: from } : {}) };
     }
 
     /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
     find(query: string, before?: string): SessionFindMatch[] {
         this.flush();
-        return findBefore(this.view.turns, query, before);
+        return findBefore(this.view.turns, query, before, (t) => this.whole(t), (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined));
     }
 
     /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
     agentWhole(agentId: string): AgentRun | null {
         const a = this.view.agents.find((x) => x.id === agentId);
-        return a ? structuredClone(a) : null;
+        return a ? structuredClone(this.agentFull(a)) : null;
     }
 
     /**
@@ -1056,15 +1270,32 @@ export class Runtime {
         }
         const turns = all.slice(from, at);
         const ids = new Set(turns.map((t) => t.id));
-        const agents = this.view.agents.filter((a) => ids.has(a.turnId));
-        return { turns: structuredClone(turns), earlier: from, seq: this.batch, ...(agents.length ? { agents: structuredClone(agents) } : {}) };
+        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => structuredClone(this.agentFull(a)));
+        return { turns: turns.map((t) => this.sent(t)), earlier: from, seq: this.batch, ...(agents.length ? { agents } : {}) };
     }
 
     /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */
     private op(o: SessionOp, sent?: SessionOp) {
+        // A change to a turn kept as its head (turn-store.ts) is made to it whole, and it's put in the store again.
+        const changes = "turnId" in o && this.store ? findTurn(this.view, o.turnId) : undefined;
+        if (changes) {
+            this.build(changes);
+            this.changed.add(changes);
+        }
+        // So is a change to a sub-agent's.
+        const agent = this.store && (o.op === "agent.patch" || o.op === "agent.block" || o.op === "agent.block.patch" || o.op === "agent.append") ? this.view.agents.findLast((a) => a.id === o.id) : undefined;
+        if (agent) {
+            this.buildAgent(agent);
+            this.agentChanged.add(agent);
+        }
         // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
         // only read (most ops while a reply streams), so it isn't copied.
         applyOp(this.view, sent || o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
+        // A turn gone by beyond the latest: let go of, once put in the store (started once a session has grown long).
+        if (o.op === "turn") {
+            if (this.store) this.trimBuilt();
+            else if (this.view.turns.length > KEEP_BUILT + EXTRA_BUILT) this.storeOlder(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        }
         this.noteStep(o);
         this.outbox.push(sent ?? o);
         // Out by when the soonest of what's waiting needs to be: text can wait a little, anything else hardly.
@@ -1827,7 +2058,10 @@ export class Runtime {
     notice(text: string, level: "info" | "warn" | "error" = "info", data?: NoticeData) {
         const turn = this.currentTurn();
         this.closeOpen();
-        this.op({ op: "block", turnId: turn.id, block: liveNotice(this.newId(), level, text, data) });
+        const block = liveNotice(this.newId(), level, text, data);
+        // Shown, not kept (a backend's turn logs its steps, this among them): not in the turn store either.
+        if (!this.backendTurns.has(turn.id)) this.liveOnly.add(block.id);
+        this.op({ op: "block", turnId: turn.id, block });
     }
 
     /**
@@ -2392,10 +2626,14 @@ export class Runtime {
                 if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
-            case "notice":
+            case "notice": {
                 this.agentText.delete(id);
-                this.op({ op: "agent.block", id, block: liveNotice(this.newId(), e.level, e.message, e.data) });
+                const block = liveNotice(this.newId(), e.level, e.message, e.data);
+                const owner = this.view.agents.find((x) => x.id === id);
+                if (!owner || !this.backendTurns.has(owner.turnId)) this.liveOnly.add(block.id);
+                this.op({ op: "agent.block", id, block });
                 break;
+            }
             case "retry":
                 this.agentPatch(id, { activity: `Retrying: ${redact(e.reason)}` });
                 break;
@@ -4126,6 +4364,8 @@ export class Runtime {
 
     /** The timeline again from the transcript (after a rewind). */
     private rebuild() {
+        // Every step it logged, to build them from (a session opened from its store read only what it runs on).
+        this.ui.full();
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
@@ -4133,17 +4373,19 @@ export class Runtime {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
             // One still working goes on being logged under its turn's new id.
             if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
-            return live ? { ...live, turnId: r.turnId } : r;
+            return live ? { ...this.agentFull(live), turnId: r.turnId } : r;
         });
         // And the ones each kept one started of its own (its call is in that one's activity), in its turn.
         for (const a of this.view.agents) {
             const up = a.parentId ? agents.find((x) => x.id === a.parentId && !x.replayed) : undefined;
-            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...a, turnId: up.turnId });
+            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...this.agentFull(a), turnId: up.turnId });
         }
         // The windows get its last turns, and how many came before (session.turns has them), as when it opens: a long
         // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
         const from = Math.max(0, turns.length - RESET_TURNS);
         this.op({ op: "reset", turns, agents }, from ? { op: "reset", turns: structuredClone(turns.slice(from)), agents: agentsFor(agents, turns.slice(from), false), earlier: from } : undefined);
+        // Built anew: a long session's store starts again with them, and keeps all but the latest.
+        if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
     }
 
     /**
@@ -4639,6 +4881,9 @@ export class Runtime {
             await commit;
             this.ui.close();
             this.session.release();
+            // Its turns, for the next time it's opened (turn-store.ts): written once nothing more is (letting the
+            // session go may note when it last worked).
+            this.saveTurns();
         }
     }
 }

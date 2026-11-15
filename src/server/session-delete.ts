@@ -1,5 +1,5 @@
-// Deleting a session from the GUI. Its files (the transcript, the UI side log,
-// its saved queue and the file copies kept for /rewind) move out of projects/ into
+// Deleting a session from the GUI. Its files (the transcript, the UI side log, its
+// turn store, its saved queue and the file copies kept for /rewind) move out of projects/ into
 // trash/<id>/ in the Cavvy home, so Undo can put them back; entries older
 // than a week are purged. Nothing outside the Cavvy home is touched: paths
 // are built from checked ids, each folder they're in must resolve inside the
@@ -49,6 +49,9 @@ export function pieces(dir: string, id: string): { live: string; trashed: string
     return [
         { live: join(dir, `${id}.jsonl`), trashed: "transcript.jsonl" },
         { live: join(dir, "ui", `${id}.jsonl`), trashed: "ui.jsonl" },
+        // Its turn store (turn-store.ts): the index first, so a store put back without it isn't read.
+        { live: join(dir, "turns", `${id}.json`), trashed: "turns.json" },
+        { live: join(dir, "turns", `${id}.jsonl`), trashed: "turns.jsonl" },
         { live: join(dir, "file-history", id), trashed: "file-history" },
         { live: join(dir, "tool-images", id), trashed: "tool-images" },
         { live: join(dir, "queue", `${id}.json`), trashed: "queue.json" },
@@ -213,7 +216,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
     const file = join(dir, `${id}.jsonl`);
     // Each folder is checked before anything is made in it.
     mkdirSync(paths.projectsDir(), { recursive: true, mode: 0o700 });
-    for (const d of [dir, join(dir, "ui"), join(dir, "file-history"), join(dir, "tool-images"), join(dir, "queue")]) {
+    for (const d of [dir, join(dir, "ui"), join(dir, "turns"), join(dir, "file-history"), join(dir, "tool-images"), join(dir, "queue")]) {
         mustBeInHome(d);
         if (!present(d)) mkdirSync(d, { mode: 0o700 });
     }

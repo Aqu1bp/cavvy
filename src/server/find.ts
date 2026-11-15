@@ -26,11 +26,11 @@ function stampOf(t: Turn): string {
     return s;
 }
 
-function partsOf(t: Turn) {
-    const stamp = stampOf(t);
+function partsOf(t: Turn, whole: (t: Turn) => Turn = (x) => x, stamped?: (t: Turn) => string | undefined) {
+    const stamp = stamped?.(t) ?? stampOf(t);
     const had = searched.get(t);
     if (had?.stamp === stamp) return had.parts;
-    const parts = foldedParts(t);
+    const parts = foldedParts(whole(t));
     searched.set(t, { stamp, parts });
     return parts;
 }
@@ -40,14 +40,16 @@ function partsOf(t: Turn) {
  * MAX_MATCHES. An empty query finds nothing, but works out what's searched: Find asks it as it opens, so the first
  * words typed don't wait for every reply of a long session to be rendered (0.6-1.1 s for 100,000 items; 34-64 ms after).
  */
-export function findBefore(turns: readonly Turn[], query: string, before?: string): SessionFindMatch[] {
+export function findBefore(turns: readonly Turn[], query: string, before?: string, whole?: (t: Turn) => Turn, stamped?: (t: Turn) => string | undefined): SessionFindMatch[] {
+    // `whole`: a turn kept as its head, whole (the session's store has its blocks); `stamped`: what it is, for it.
+    const parts = (t: Turn) => partsOf(t, whole, stamped);
     const end = before === undefined ? turns.length : turns.findIndex((t) => t.id === before);
     if (end < 0) return [];
     const scope = turns.slice(0, end);
     if (!query) {
-        for (const t of scope) partsOf(t);
+        for (const t of scope) parts(t);
         return [];
     }
     const pos = new Map(scope.map((t) => [t.id, t.pos]));
-    return matchesIn(scope, partsOf, query).map((m) => ({ ...m, ...(pos.get(m.turnId) ? { pos: pos.get(m.turnId)! } : {}) }));
+    return matchesIn(scope, parts, query).map((m) => ({ ...m, ...(pos.get(m.turnId) ? { pos: pos.get(m.turnId)! } : {}) }));
 }

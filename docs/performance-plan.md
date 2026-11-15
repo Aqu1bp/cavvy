@@ -39,6 +39,17 @@ The Mac-only targets (5, 7, and the window's share of 3 and 9) are measured with
 - **A figure that looks too good is suspect.** A bench must fail if it isn't measuring what it says: `bench-stream` stops if a session didn't open, because the rail holds its rows while the real cursor is over it, and a stretch on the wrong session reads as a great result. Bench connections call `session.shown`, or the server counts them as looking at everything.
 - **Tracing inflates.** Rows from `bench-reply`'s trace run slower than the same work untraced.
 
+## Long sessions
+
+A session's files are append-only logs: its transcript (`~/.cavvy/projects/<project>/<session>.jsonl`) and, for a CLI's turns, the steps the window showed (`ui/<session>.jsonl`). Building its turns from them reads all of both, so a long session cost more to open the longer it got. Now:
+
+- The window is sent the last turns that fit in 256 KB (at most 100) and asks for earlier ones as you scroll up. Find searches the turns it hasn't been sent on the server.
+- As a session with more than 20 turns is let go of, its turns and sub-agents are written to its turn store (`turns/<session>.jsonl`, with an index in `turns/<session>.json`). Opened again, it reads the index and its latest 20 turns from there; any other turn is read when it's sent. A notice shown only while the session was open (a model that isn't available, say) isn't kept, as building the turns again wouldn't show it.
+- The store is used only if both logs are byte for byte as they were when it was written. A session written to elsewhere since (a terminal, another copy of Cavvy), or one that crashed, is built from its logs again. Deleting a session moves its store to the trash with its other files.
+- The transcript is still read whole as the session opens (what it says before its last compaction isn't parsed).
+
+`test/perf-size.test.ts` checks these at 3,000 and 30,000 items. On a Linux container, opening a 30,000-item session again: a Claude Code session in 28 ms, reading 4.7 MB and keeping 6.7 MB in the server; built from its logs, 521 ms and 58.6 MB read (and 132 MB kept, before the store). A session of one of Cavvy's own models: 43 ms and 2.9 MB kept; built, 327 ms.
+
 ## Recovery
 
 Not a speed line, but required: if the window's page crashes, it's back in about 150–200 ms with the same session, the reply still coming, the half-written message and the terminal (30 checks in the packaged app: mid-reply, idle, with a browser tab open, hidden, a crash loop). A rule in `test/perf-rules.test.ts` keeps the handler in place.

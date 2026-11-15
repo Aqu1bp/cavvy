@@ -1,0 +1,206 @@
+// A session's turns as they were built (replay), kept beside its logs, so the server needn't keep them all in memory,
+// nor build them all again each time the session is opened. A long session's turns are its whole content (what each
+// tool printed, each diff): the server kept every one, 132 MB for 30,000 items of a Claude Code session.
+//
+// <project>/turns/<id>.jsonl holds turns, a line each, appended (the latest line for a turn is it); <id>.json is the
+// index: each turn's place in the store and what the turn is without its blocks (the window's list, and what the
+// server keeps of a turn it lets go of), the sub-agents, and the session's logs as they were when it was written.
+// Written as the session is closed: a session opened again with its logs unchanged since opens from it. One whose
+// logs changed (a crash after the store was written, the session written to elsewhere) doesn't: it's built again.
+
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { dirname, join } from "path";
+import type { UiLight } from "./history";
+import type { AgentRun, Turn } from "./protocol";
+
+/** The store's format: an index of another is not read. */
+const VERSION = 3;
+/** Old versions of turns the store may hold beyond twice what's current, before it's rewritten without them. */
+const COMPACT_SLACK = 8 * 1024 * 1024;
+/** How much of a log's end is kept, to tell later that it's the same log, unchanged. */
+const TAIL_BYTES = 256;
+
+/** What a log was when the store was written: its size and its last bytes. */
+interface LogStamp {
+    size: number;
+    tail: string;
+}
+
+/** A turn without its blocks: what the server keeps of a turn it isn't showing. */
+export type TurnHead = Omit<Turn, "blocks">;
+
+interface Index {
+    v: number;
+    logs: LogStamp[];
+    /** The runtime's id counter when it was written: new ids go on from there, so none is used twice. */
+    ids: number;
+    turns: { head: TurnHead; at: number; len: number }[];
+    /** Sub-agents: each as its list shows it (AgentHead), and where it is whole in the store, if it's there. */
+    agents: StoredAgent[];
+    /** The GUI log, light (UiLog.lightState): the session's opened without reading it. */
+    ui: UiLight;
+}
+
+function stamp(file: string): LogStamp {
+    let fd: number;
+    try {
+        fd = openSync(file, "r");
+    } catch {
+        return { size: -1, tail: "" };
+    }
+    try {
+        const size = fstatSync(fd).size;
+        const n = Math.min(TAIL_BYTES, size);
+        const b = Buffer.alloc(n);
+        readSync(fd, b, 0, n, size - n);
+        return { size, tail: b.toString("base64") };
+    } finally {
+        closeSync(fd);
+    }
+}
+
+/** A sub-agent without its steps, its prompt and its report: what its list shows (AgentRun.partial). */
+export type AgentHead = Omit<AgentRun, "blocks" | "prompt" | "report">;
+export interface StoredAgent {
+    head: AgentHead;
+    /** Where it is whole in the store; none: the head is all of it (no steps, prompt or report). */
+    at?: number;
+    len?: number;
+}
+
+export function agentHeadOf(a: AgentRun): AgentHead {
+    const { blocks: _b, prompt: _p, report: _r, partial: _partial, ...head } = a;
+    return head;
+}
+
+export function headOf(t: Turn): TurnHead {
+    const { blocks: _blocks, ...head } = t;
+    return head;
+}
+
+export class TurnStore {
+    private readonly file: string;
+    private readonly indexFile: string;
+    private fd?: number;
+    /** Where the store's next turn goes. */
+    private end = 0;
+
+    private constructor(dir: string, id: string, private readonly logs: string[]) {
+        this.file = join(dir, `${id}.jsonl`);
+        this.indexFile = join(dir, `${id}.json`);
+    }
+
+    /** The store of the session in `sessionFile`, whose logs are `logs` (the session's file and its GUI log). */
+    static of(sessionFile: string, id: string, logs: string[]): TurnStore {
+        return new TurnStore(join(dirname(sessionFile), "turns"), id, logs);
+    }
+
+    /** What it was when written, if its logs are still as they were then (else nothing: the turns are built again). */
+    read(): { heads: { head: TurnHead; at: number; len: number }[]; agents: StoredAgent[]; ids: number; ui: UiLight } | undefined {
+        let index: Index;
+        try {
+            index = JSON.parse(readFileSync(this.indexFile, "utf-8")) as Index;
+        } catch {
+            return undefined;
+        }
+        if (index.v !== VERSION || index.logs.length !== this.logs.length || !index.ui) return undefined;
+        for (let i = 0; i < this.logs.length; i++) {
+            const now = stamp(this.logs[i]!);
+            if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail) return undefined;
+        }
+        if (!existsSync(this.file)) return undefined;
+        this.end = this.open();
+        return { heads: index.turns, agents: index.agents, ids: index.ids, ui: index.ui };
+    }
+
+    /** A turn (or a sub-agent) as the store has it, at `at` (its line). */
+    get<T = Turn>(at: number, len: number): T {
+        const fd = this.fd ?? (this.open(), this.fd!);
+        const b = Buffer.allocUnsafe(len);
+        readSync(fd, b, 0, len, at);
+        return JSON.parse(b.toString("utf-8")) as T;
+    }
+
+    /** Put a turn (or a sub-agent) in the store (its latest): where it went. */
+    put(t: Turn | AgentRun): { at: number; len: number } {
+        if (this.fd === undefined) this.end = this.open();
+        const b = Buffer.from(JSON.stringify(t) + "\n");
+        writeSync(this.fd!, b, 0, b.length, this.end);
+        const at = this.end;
+        this.end += b.length;
+        return { at, len: b.length - 1 };
+    }
+
+    /** How much of it there is, old versions of turns included. */
+    get size(): number {
+        return this.end;
+    }
+
+    /**
+     * Rewritten with only `kept` (what the index will point at), in their order, when the rest (versions since
+     * replaced) is most of it: where each went, by where it was. Before the index is written: the old index points
+     * into the old file, and a store whose index doesn't match its logs isn't read.
+     */
+    compact(kept: { at: number; len: number }[]): Map<number, number> | undefined {
+        const live = kept.reduce((n, k) => n + k.len + 1, 0);
+        if (this.end <= 2 * live + COMPACT_SLACK) return undefined;
+        const moved = new Map<number, number>();
+        const tmp = `${this.file}.${process.pid}.tmp`;
+        const out = openSync(tmp, "w", 0o600);
+        try {
+            let end = 0;
+            for (const k of kept) {
+                if (moved.has(k.at)) continue;
+                const b = Buffer.allocUnsafe(k.len + 1);
+                readSync(this.fd ?? (this.open(), this.fd!), b, 0, k.len, k.at);
+                b[k.len] = 0x0a;
+                writeSync(out, b, 0, b.length, end);
+                moved.set(k.at, end);
+                end += b.length;
+            }
+        } finally {
+            closeSync(out);
+        }
+        // The index goes first: the store isn't read without one that matches it.
+        this.forget();
+        renameSync(tmp, this.file);
+        this.close();
+        this.end = this.open();
+        return moved;
+    }
+
+    /** Starts the store afresh (the turns were built again: nothing in it is theirs). */
+    clear() {
+        this.close();
+        rmSync(this.file, { force: true });
+        rmSync(this.indexFile, { force: true });
+    }
+
+    /**
+     * Writes the index: each turn's head and place (in order), the sub-agents, and the logs as they are now. Written
+     * last, and whole (a new file put in place): a store without it, or with one from before, isn't read.
+     */
+    writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight) {
+        const index: Index = { v: VERSION, logs: this.logs.map(stamp), ids, turns, agents, ui };
+        mkdirSync(dirname(this.indexFile), { recursive: true, mode: 0o700 });
+        const tmp = `${this.indexFile}.${process.pid}.tmp`;
+        writeFileSync(tmp, JSON.stringify(index), { mode: 0o600 });
+        renameSync(tmp, this.indexFile);
+    }
+
+    /** Not to be read until written again: the logs are about to change in ways it doesn't know (a rewind). */
+    forget() {
+        rmSync(this.indexFile, { force: true });
+    }
+
+    close() {
+        if (this.fd !== undefined) closeSync(this.fd);
+        this.fd = undefined;
+    }
+
+    private open(): number {
+        mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+        this.fd = openSync(this.file, existsSync(this.file) ? "r+" : "w+", 0o600);
+        return fstatSync(this.fd).size;
+    }
+}

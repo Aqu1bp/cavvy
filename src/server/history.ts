@@ -82,6 +82,24 @@ export function readSegments(file: string, session?: { takeLoadedLines(): readon
     return segmentsOf(lines);
 }
 
+/** How many segments a session has (one, and one more after each compaction), without reading their messages. */
+export function segmentCount(session: { readonly path: string; takeLoadedLines(): readonly object[] | undefined }): number {
+    let n = 1;
+    const loaded = session.takeLoadedLines() as readonly SegmentLine[] | undefined;
+    if (loaded) {
+        for (const l of loaded) if (l.t === "compact") n++;
+        return n;
+    }
+    try {
+        eachLine(session.path, (raw) => {
+            if (raw.startsWith('{"t":"compact"')) n++;
+        });
+    } catch {
+        // none: one segment
+    }
+    return n;
+}
+
 function segmentsOf(lines: readonly SegmentLine[]): Segment[] {
     const segments: Segment[] = [{ messages: [] }];
     for (const l of lines) {
@@ -155,6 +173,19 @@ function place(blocks: Block[], b: Block, after: string | null | undefined) {
     blocks.splice(after === null || j > 0 ? j : blocks.length, 0, b);
 }
 
+/** The GUI's log of the session in `sessionFile` (UiLog). */
+export function uiLogFile(sessionFile: string, id: string): string {
+    return join(dirname(sessionFile), "ui", `${id}.jsonl`);
+}
+
+/** A light UiLog, as kept with a turn store: its state, and the turn that started last (what cutOffPrompt reads). */
+export interface UiLight {
+    state: UiState;
+    lastStarted?: string;
+    last?: Extract<UiRecord, { t: "turn" }>;
+    created: boolean;
+}
+
 export class UiLog {
     tools = new Map<string, Extract<UiRecord, { t: "tool" }>>();
     turns = new Map<string, Extract<UiRecord, { t: "turn" }>>();
@@ -171,17 +202,71 @@ export class UiLog {
     /** Its session was let go of: another process may be keeping this log now. */
     private closed = false;
 
-    constructor(sessionFile: string, id: string, readExisting = true) {
-        this.file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
+    /**
+     * `light`: only what the session needs while it runs (its turns' records and its state), not every step, tool
+     * record and sub-agent it ever logged, which only building its turns again needs (full()): opened from its turn
+     * store (turn-store.ts), a session doesn't build them, and a long one's log is hundreds of megabytes of them.
+     */
+    constructor(sessionFile: string, id: string, readExisting = true, private light = false) {
+        this.file = uiLogFile(sessionFile, id);
         if (readExisting) this.read();
+    }
+
+    /** The file this log is in. */
+    get path(): string {
+        return this.file;
+    }
+
+    /** Only what the session runs on from now (its turns built and stored: turn-store.ts), the rest let go of. */
+    lighten() {
+        if (this.light) return;
+        this.light = true;
+        this.tools.clear();
+        this.steps.clear();
+        this.agents.clear();
+        this.evicted.clear();
+    }
+
+    /** What a light log is (lightState): kept with a turn store, to open from without reading the log again. */
+    lightState(): UiLight {
+        const last = this.lastStarted === undefined ? undefined : this.turns.get(this.lastStarted);
+        return { state: this.state, ...(this.lastStarted !== undefined && last ? { lastStarted: this.lastStarted, last } : {}), created: this.created };
+    }
+
+    /** Light, as `l` says it was: the log unchanged since (turn-store.ts checks), so it isn't read. */
+    restore(l: UiLight) {
+        this.light = true;
+        this.state = { ...l.state };
+        this.turns.clear();
+        if (l.lastStarted !== undefined && l.last) {
+            this.lastStarted = l.lastStarted;
+            this.turns.set(l.lastStarted, l.last);
+        }
+        this.created = l.created;
+    }
+
+    /** All of it, steps and all (light, it had only its turns' records): to build the session's turns again. */
+    full(): this {
+        if (!this.light) return this;
+        this.light = false;
+        this.tools.clear();
+        this.turns.clear();
+        this.steps.clear();
+        this.agents.clear();
+        this.evicted.clear();
+        this.state = {};
+        this.lastStarted = undefined;
+        this.read();
+        return this;
     }
 
     private read() {
         try {
             // A line at a time: a log of any size (one past 2 GiB, read as one string, failed: the session showed none of
-            // its steps).
+            // its steps). Light, a step's or a sub-agent's line isn't parsed at all.
             eachLine(this.file, (raw) => {
                 if (!raw) return;
+                if (this.light && (raw.startsWith('{"t":"step"') || raw.startsWith('{"t":"tool"') || raw.startsWith('{"t":"agent"') || raw.startsWith('{"t":"blocks"'))) return;
                 try {
                     this.apply(JSON.parse(raw) as UiRecord);
                 } catch {
@@ -195,6 +280,8 @@ export class UiLog {
     }
 
     private apply(r: UiRecord) {
+        // Light: what's written of steps, tools and sub-agents goes to the file, not into memory (full() reads it back).
+        if (this.light && (r.t === "step" || r.t === "tool" || r.t === "agent" || r.t === "blocks")) return;
         if (r.t === "tool") this.tools.set(r.id, { ...this.tools.get(r.id), ...r });
         else if (r.t === "turn") {
             const k = `${r.seg}:${r.index}`;

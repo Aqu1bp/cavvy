@@ -888,6 +888,11 @@ export class Session {
         const { endsWithNewline } = eachLine(file, (raw) => {
             empty = false;
             if (!raw.trim()) return;
+            // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
+            if (raw.startsWith(MSG_LINE)) {
+                lines.push(lazyMessage(raw));
+                return;
+            }
             try {
                 const l = JSON.parse(raw) as Line;
                 if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
@@ -921,8 +926,15 @@ export class Session {
                 // read-only file: nothing will be appended either
             }
         }
-        for (const l of lines) {
-            if (l.t === "msg") s.messages.push(l.m);
+        // Before the last compaction: nothing it clears (the messages and all that's about them) is read.
+        const lastCompact = lines.findLastIndex((l) => l.t === "compact");
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i]!;
+            if (i < lastCompact && CLEARED_BY_COMPACT.has(l.t)) continue;
+            if (l.t === "msg") {
+                const m = l.m as Message | undefined;
+                if (m) s.messages.push(m);
+            }
             else if (l.t === "compact") {
                 s.messages = [];
                 s.notices = [];
@@ -1028,6 +1040,32 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
 }
 
 /** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+/** How a message's line starts (write: redactedJson keeps the key order). */
+const MSG_LINE = '{"t":"msg",';
+/** What a compaction empties, or only changes what it empties: lines of these before the last one needn't be read. */
+const CLEARED_BY_COMPACT = new Set<string>(["msg", "rewind", "withdraw", "notice", "imagesRefused"]);
+
+/** A message's line, parsed when its message is first read (undefined: a torn line). */
+function lazyMessage(raw: string): Line {
+    let m: Message | undefined;
+    let read = false;
+    return {
+        t: "msg",
+        get m() {
+            if (!read) {
+                read = true;
+                try {
+                    const l = JSON.parse(raw) as Line;
+                    if (l.t === "msg") m = l.m;
+                } catch {
+                    // a torn final line from a crash
+                }
+            }
+            return m as Message;
+        },
+    } as Line;
+}
+
 function markRefused(m: Message, model: string) {
     if (m.role !== "user" || m.meta?.imagesRefused?.includes(model)) return;
     m.meta = { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), model] };
