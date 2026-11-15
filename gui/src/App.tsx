@@ -2,7 +2,7 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connFor, connNote, handleFor, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -264,10 +264,32 @@ function Reconnecting() {
             {/* The window's own connection, or the one the session on screen is shown over (another machine's). */}
             <Show when={app.conn !== "open" || connFor(app.activeId) !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> {(app.conn !== "open" && connNote()) || "Not connected"} · Reconnecting…
-                    <button class="link-btn" onClick={() => (app.conn !== "open" ? rpc : rpcFor(app.activeId)).reconnectNow()}>
-                        Reconnect now
-                    </button>
+                    <Show
+                        when={app.conn === "open" && problemFor(app.activeId)}
+                        fallback={
+                            <>
+                                <Spinner size={12} /> {(app.conn !== "open" && connNote()) || "Not connected"} · Reconnecting…
+                                <button class="link-btn" onClick={() => (app.conn !== "open" ? rpc : rpcFor(app.activeId)).reconnectNow()}>
+                                    Reconnect now
+                                </button>
+                            </>
+                        }
+                    >
+                        {(issue) => (
+                            <>
+                                {/* Tried again by itself; or that machine needs the user's word (its key, an update, starting it), asked there. */}
+                                <Show when={issue().status === "failed"}><Spinner size={12} /></Show> {issue().message}
+                                <Show
+                                    when={issue().status !== "failed"}
+                                    fallback={<button class="link-btn" onClick={() => rpcFor(app.activeId).reconnectNow()}>Reconnect now</button>}
+                                >
+                                    <button class="link-btn" onClick={() => void serversUi().then((m) => m.switchMachine(issue().machine || undefined, app.activeId), reportError)}>
+                                        Go to {issue().machine}
+                                    </button>
+                                </Show>
+                            </>
+                        )}
+                    </Show>
                 </div>
             </Show>
             <Show when={app.conn === "open" && app.slowRequest}>

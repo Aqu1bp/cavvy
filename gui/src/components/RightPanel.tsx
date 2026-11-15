@@ -10,7 +10,7 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, Mat
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, reportError, rpc, serversUi, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
 import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
@@ -414,17 +414,37 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
-                            <BrowserPane handle={p.handle} />
+                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} />}>
+                                <BrowserPane handle={p.handle} />
+                            </Show>
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>
                         <div class="pane">
-                            <SimulatorPane handle={p.handle} />
+                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} />}>
+                                <SimulatorPane handle={p.handle} />
+                            </Show>
                         </div>
                     </Match>
                 </Switch>
             </div>
             </div>
         </aside>
+    );
+}
+
+/**
+ * The Browser or Simulator of another machine's session opened in this window: what it shows is that machine's (its
+ * pictures come over the window's connection there), so it's seen in a window on that machine.
+ */
+function OnItsMachine(p: { id: string }) {
+    const name = () => awayMachine(p.id) || "this computer";
+    return (
+        <div class="panel-empty">
+            <p>This session runs on {name()}.</p>
+            <button class="btn secondary sm" onClick={() => void serversUi().then((m) => m.switchMachine(awayMachine(p.id) || undefined, p.id), reportError)}>
+                Open in a window on {name()}
+            </button>
+        </div>
     );
 }

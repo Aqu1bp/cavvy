@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { allLinks, dropLink, LinkError, linkTo, opened } from "../lib/machine-links";
+import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
@@ -46,7 +46,7 @@ rpc.route = (method, params) => {
     // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`. Others'
     // ids (an account's, a terminal's) aren't sessions', whatever they're called.
     const p = params as { id?: unknown; sessionId?: unknown } | undefined;
-    const id = method.startsWith("session.") && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
+    const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
     const link = id !== undefined ? away.get(id) : undefined;
     return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
 };
@@ -55,10 +55,16 @@ rpc.route = (method, params) => {
  * from (cavvy.navigation's `on`); else the window's own.
  */
 function machineOf(id: string): string | undefined {
+    // Opened here from another machine (a fork made there may not be listed yet).
+    if (awayOn.has(id)) return awayOn.get(id) || undefined;
     const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
     if (at) return at.machine;
     if (restoredOn && restoredOn.id === id) return restoredOn.on || undefined;
     return machine;
+}
+/** The other machine `sessionId` is opened here from, if it is (a server's name; "" this computer, in a window on a server). */
+export function awayMachine(sessionId: string | undefined): string | undefined {
+    return sessionId !== undefined ? awayOn.get(sessionId) : undefined;
 }
 /** A session made on another machine from one of its sessions opened here (a fork, a plan carried out): on there too. */
 export function sameMachine(from: string, made: string) {
@@ -109,6 +115,14 @@ export function refreshModelsFor(sessionId: string | undefined, refresh = false)
 }
 /** Each other machine's connection, as it is now: for its sessions opened here (connFor). */
 const [linkStates, setLinkStates] = createStore<Record<string, ConnectionState>>({});
+/** Why each other machine's connection is down, while it is: for the banner of its session on screen (problemFor). */
+const [linkIssues, setLinkIssues] = createStore<Record<string, LinkProblem | undefined>>({});
+/** Why the connection `sessionId` is shown over (another machine's) is down, if it is and that's known. */
+export function problemFor(sessionId: string | undefined): (LinkProblem & { machine: string }) | undefined {
+    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    const issue = on !== undefined && connFor(sessionId) !== "open" ? linkIssues[on] : undefined;
+    return issue && { ...issue, machine: on! };
+}
 /** The state of the connection `sessionId` is shown over: its machine's, or the window's own. */
 export function connFor(sessionId: string | undefined): ConnectionState {
     const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
@@ -121,7 +135,9 @@ export function connFor(sessionId: string | undefined): ConnectionState {
  */
 function forUs(e: ServerEvent): boolean {
     if (e.type === "notify") return e.kind === "background";
-    return e.type === "session.ops" || e.type === "session.reload" || e.type === "draft";
+    // Its browser's and simulator's state: what the agent opened there is said here (its pictures aren't: the panes offer
+    // a window on that machine for them, RightPanel).
+    return e.type === "session.ops" || e.type === "session.reload" || e.type === "draft" || e.type === "browser.state" || e.type === "simulator.state";
 }
 /** The session on screen (start), undefined while the window is hidden. */
 let shownNow: () => string | undefined = () => undefined;
@@ -145,7 +161,8 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
     const on = name ?? "";
     const theirs = (e: ServerEvent, from: Rpc) => {
         const sessionId = (e as { sessionId?: unknown }).sessionId;
-        if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) onEvent(e);
+        // As if heard on the window's own connection: what listens there (onEvent, the browser's state) has it.
+        if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
         // Its models changed (a key added there): asked for again, if they were asked for.
         else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
     };
@@ -157,7 +174,10 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
         setLinkStates(on, link.state);
         // Dropped and back: its sessions here have what they missed (session.open's since), as the window's own do.
         link.onState((s) => {
-            setLinkStates(on, s);
+            batch(() => {
+                setLinkStates(on, s);
+                setLinkIssues(on, s === "open" ? undefined : linkProblem(link));
+            });
             const mine = [...handles.values()].filter((h) => away.get(h.id) === link);
             if (s !== "open") return void mine.forEach((h) => h.setReady(false));
             void Promise.all(mine.map((h) => reopen(h)));

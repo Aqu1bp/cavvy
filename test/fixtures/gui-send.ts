@@ -41,7 +41,7 @@ function submit() {
     }).then((ok) => { if (ok) draft.clearSent(submitted, ok === "command"); return ok; });
 }
 mock.module("../../gui/src/state/app", () => ({
-    app, rpc, rpcFor: () => rpc, modelsFor: () => app.models, refreshModelsFor: noop, connFor: () => app.conn, reportError: (e: unknown) => errors.push(e),
+    app, rpc, rpcFor: () => rpc, modelsFor: () => app.models, refreshModelsFor: noop, connFor: () => app.conn, awayMachine: () => undefined, reportError: (e: unknown) => errors.push(e),
     toast: (text: string, _level: string, action: any) => notices.push({ text, action }),
     createSession: async () => { created++; return { id: "created" }; }, setApp: (key: string, value: any) => {
         Object.assign(app, { [key]: value });

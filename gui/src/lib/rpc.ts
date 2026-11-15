@@ -86,6 +86,11 @@ export class Rpc {
         return () => this.listeners.delete(fn);
     }
 
+    /** Something heard over another connection (another machine's, for its session open here), told as if heard here. */
+    hear(e: ServerEvent) {
+        for (const fn of this.listeners) fn(e);
+    }
+
     onState(fn: (s: ConnectionState, attempt: number) => void): () => void {
         this.stateListeners.add(fn);
         return () => this.stateListeners.delete(fn);

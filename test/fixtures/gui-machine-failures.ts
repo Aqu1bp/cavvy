@@ -25,6 +25,8 @@ const snapshot = (id: string) => ({ seq: 0, epoch: "e", state: { id, cwd: "/srv/
 /** What box's Cavvy can be asked for: reached, or why not; a held answer waits for `release`. */
 let reach: "ok" | "failed" | "hold" = "ok";
 let release: (() => void) | undefined;
+/** Box's next connection is refused before it opens (a sign-in it no longer takes). */
+let refuseNext = false;
 /** Every call, by where it went. */
 const calls: { on: "box" | "here"; method: string; params: any }[] = [];
 const boxSockets = () => Socket.instances.filter((s) => (s as ServerSocket).url.includes("box")) as ServerSocket[];
@@ -34,7 +36,10 @@ class ServerSocket extends Socket {
     constructor(url: string) {
         super();
         this.url = String(url);
-        queueMicrotask(() => this.open());
+        if (this.url.includes("box") && refuseNext) {
+            refuseNext = false;
+            queueMicrotask(() => this.close());
+        } else queueMicrotask(() => this.open());
     }
     send(raw: string) {
         super.send(raw);
@@ -70,7 +75,8 @@ const until = async (what: string, ok: () => boolean, ms = 5000) => {
 /** An event from box's Cavvy, as it would send it. */
 const fromBox = (event: unknown) => boxSockets().filter((s) => s.readyState === 1).forEach((s) => s.message({ event }));
 
-const { start, rpc, app, activate, handleFor, upsertSession, warmFor, connFor, forkSession, toasts } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, handleFor, upsertSession, warmFor, connFor, forkSession, toasts, problemFor } = await import("../../gui/src/state/app");
+const connects = () => calls.filter((c) => c.method === "servers.connect");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 const listBox = () => upsertSession(summary("b1", { machine: "box" }) as never);
 
@@ -99,6 +105,9 @@ try {
     await settle();
     const asked = calls.filter((c) => c.method === "servers.connect");
     assert.deepEqual(asked.map((c) => c.params), [{ name: "box", link: true, retry: true }]);
+    // Let go of: not asked again by itself (a link kept for it would try every few seconds).
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal(connects().length, 1, "a machine only pointed at isn't kept trying");
     // Then clicked, once box can be: it opens (it was hung for good, the failed connection kept).
     reach = "ok";
     await activate("b1");
@@ -117,8 +126,15 @@ try {
     assert.equal(connFor("l1"), "open");
     assert.equal(handleFor("b1")!.ready(), false);
     await until("a try to reconnect", () => calls.filter((c) => c.method === "servers.connect").length > asked.length + 1);
+    assert.match(problemFor("b1")?.message ?? "", /Couldn't reach box/, "the banner says why");
     reach = "ok";
     await until("box's session back", () => handleFor("b1")!.ready() && connFor("b1") === "open", 15_000);
+    assert.equal(problemFor("b1"), undefined);
+    // A sign-in box no longer takes: the next one asked for is a new one (renew).
+    refuseNext = true;
+    for (const s of boxSockets()) if (s.readyState === 1) s.close();
+    await until("box's session back after a refused sign-in", () => handleFor("b1")!.ready() && connFor("b1") === "open", 15_000);
+    assert.ok(connects().some((c) => c.params.renew === true), "a new sign-in asked for after one opened nothing");
 
     // Box says what isn't its to say: a row for this computer, one of this computer's gone, a toast, a notification
     // this computer's Cavvy says itself. None of it lands. What's of its session does.
@@ -150,6 +166,9 @@ try {
     await forkSession("b1", { index: 0, text: "hi", turn: "b1-t" });
     await settle();
     assert.equal(app.activeId, "f1");
+    await settle();
+    // Where the window was is kept with its machine: loaded again, the fork is opened from box (MODE=reload).
+    assert.equal(JSON.parse(store.get("cavvy.navigation")!).on, "box");
     await rpc.call("session.interrupt", { id: "f1" });
     assert.equal(calls.filter((c) => c.method === "session.interrupt").at(-1)!.on, "box");
 
@@ -170,6 +189,21 @@ try {
     await settle();
     assert.ok(handleFor(other), "opened on the second click");
     assert.equal(app.opening, undefined);
+
+    // Clicked while box's connection waits to try again (a few tries failed, the next seconds away): tried now.
+    await activate("l1");
+    await settle();
+    upsertSession(summary("b4", { machine: "box" }) as never);
+    reach = "failed";
+    for (const s of boxSockets()) if (s.readyState === 1) s.close();
+    const failedBefore = connects().length;
+    await until("a few tries to reconnect", () => connects().length >= failedBefore + 3, 15_000);
+    reach = "ok";
+    const clicked = Date.now();
+    await activate("b4");
+    await settle();
+    assert.ok(handleFor("b4"), "opened");
+    assert.ok(Date.now() - clicked < 800, `opened at once, not after the wait (${Date.now() - clicked} ms)`);
 
     // Overtaken: a click on box's session while box is being reached, then another session picked. The first is
     // shown as picked at once, and the second stays.

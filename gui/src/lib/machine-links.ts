@@ -70,6 +70,11 @@ export function linkTo(name: string | undefined, via: Rpc, own: Rpc | undefined,
     return made;
 }
 
+/** Why the connection couldn't be made the last time it was tried, until it's made. */
+export function linkProblem(link: Rpc): LinkProblem | undefined {
+    return problems.get(link);
+}
+
 /** The connection already made to that machine, if there is one. */
 export function linkOf(name: string | undefined): Rpc | undefined {
     return links.get(name ?? "");

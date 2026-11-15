@@ -227,12 +227,12 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
             if (!open) return;
             const before = made();
             const r = await rpc.call("session.implementPlan", { id: p.sessionId, toolId: p.info.id, branch: before?.branch ?? b, base: base().trim() || undefined, mode: mode(), resume: before?.path });
+            // Made where the plan's session is: on another machine, if that's where it was opened from.
+            if (r.sessionId) sameMachine(p.sessionId, r.sessionId);
             if (r.failed || !r.sessionId) {
                 setMade(r);
                 return;
             }
-            // Made where the plan's session is: on another machine, if that's where it was opened from.
-            sameMachine(p.sessionId, r.sessionId);
             p.setBusy(false);
             p.onClose();
             toast(`Implementing the plan on ${r.branch}`, "success");

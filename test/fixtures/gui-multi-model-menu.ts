@@ -93,9 +93,9 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
         Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
-        app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
-        // The window's own models, whatever the session (all of them are this computer's here).
-        refreshModelsFor() {}, connFor: () => "open",
+        // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
+        app: { models: [], providers: more.providers ?? [], limits: more.limits ?? {} },
+        refreshModelsFor() {}, connFor: () => "open", awayMachine: () => undefined,
         modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},

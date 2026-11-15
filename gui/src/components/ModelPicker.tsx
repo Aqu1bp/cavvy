@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, handleFor, modelsFor, noModel, refreshModels, refreshModelsFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, modelsFor, noModel, refreshModels, refreshModelsFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -121,7 +121,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
 
-    const accountInfo = (provider = currentProvider()) => app.providers.find((p) => p.id === provider)?.agentCli;
+    // This computer's accounts: none offered for another machine's session opened here (its machine has its own).
+    const accountInfo = (provider = currentProvider()) => (awayMachine(p.sessionId) !== undefined ? undefined : app.providers.find((p) => p.id === provider)?.agentCli);
     const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
