@@ -3001,6 +3001,13 @@
     white-space: pre;
 }
 
+/* A finished reply's code: one out of sight isn't styled or laid out, at its size (its lines, each a line high) till it
+   comes near: a long reply's code is most of what it is. */
+.md .code:not(.writing) > .code-body {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto calc(var(--lines) * 1lh);
+}
+
 /* While it's being written, a box for each finished line: the line being typed is laid out on its own, not the block with it. */
 .code-lit.lines,
 .code-lit.lines .line {

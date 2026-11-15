@@ -9,6 +9,13 @@ const LABELS: Record<string, string> = { ts: "TypeScript", typescript: "TypeScri
 /** While code streams, its finished lines are highlighted at most this often. */
 const STREAM_HIGHLIGHT_MS = 250;
 
+/** How many lines `code` is drawn as (one it ends with starts none). */
+export function linesOf(code: string): number {
+    let n = 1;
+    for (let at = code.indexOf("\n"); at !== -1 && at < code.length - 1; at = code.indexOf("\n", at + 1)) n++;
+    return n;
+}
+
 export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean; bare?: boolean; maxHeight?: number }) {
     return <RenderBoundary raw={() => p.code}><CodeBlockContent {...p} /></RenderBoundary>;
 }
@@ -127,7 +134,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
                     <CopyButton text={() => p.code} label="Copy code" />
                 </div>
             </Show>
-            <pre class="code-body" style={p.maxHeight ? { "max-height": `${p.maxHeight}px` } : undefined}>
+            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "--lines": String(linesOf(p.code)) }}>
                 <code>
                     <Show when={head()}>{(h) => <span class="code-lit" classList={{ lines: h().lines }} ref={(el) => {
                         const show = growing(el);
