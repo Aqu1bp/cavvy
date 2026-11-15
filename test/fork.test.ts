@@ -2,8 +2,9 @@
 // what it doesn't, the original left as it was, the timeline log it takes
 // along, and /fork in the terminal.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -29,6 +30,16 @@ const reply = (text: string): AssistantMessage => ({ role: "assistant", content:
 const call = (id: string): AssistantMessage => ({ role: "assistant", content: [{ type: "text", text: "Reading it." }, { type: "tool_call", id, name: "Read", input: { file_path: "a.ts" } }], provider: "test", model: "m1", stopReason: "tool_use" });
 const result = (id: string): Message => ({ role: "user", content: [{ type: "tool_result", toolCallId: id, toolName: "Read", content: "1\tx" }], meta: { kind: "tool_results" } });
 const USAGE = { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+/** Every append to `path` fails as an unwritable file's does. Not by its mode: root writes past that. */
+function unwritable(path: string): { [Symbol.dispose](): void } {
+    const realAppend = fs.appendFileSync;
+    const spy = spyOn(fs, "appendFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, opts?: fs.WriteFileOptions) => {
+        if (file === path) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" });
+        realAppend(file, data, opts);
+    }) as typeof fs.appendFileSync);
+    return { [Symbol.dispose]: () => spy.mockRestore() };
+}
 
 /** A saved session with a title, a model, a speed, spend and a Claude Code session, as one in use would be. */
 function original(cwd = realpathSync(tempDir())) {
@@ -340,15 +351,11 @@ describe("the fork's file", () => {
 
     test("a backend session is shared only once the original has saved that it won't continue it in place", () => {
         const s = original();
-        chmodSync(s.path, 0o400);
-        try {
-            const f = forkSession(s, { cut: 6 });
-            f.release();
-            expect(f.backends.size).toBe(0);
-            expect(f.messages).toEqual(s.messages);
-        } finally {
-            chmodSync(s.path, 0o600);
-        }
+        using _ = unwritable(s.path);
+        const f = forkSession(s, { cut: 6 });
+        f.release();
+        expect(f.backends.size).toBe(0);
+        expect(f.messages).toEqual(s.messages);
     });
 
     test("its own checkpoints come after the ones it was forked with, even from a clock that was ahead", () => {
@@ -369,11 +376,9 @@ describe("the fork's file", () => {
         const s = original();
         // An append that failed half way (a full disk): part of a line, and no newline.
         appendFileSync(s.path, '{"t":"title","title":"Half wri');
-        chmodSync(s.path, 0o400);
-        try {
+        {
+            using _ = unwritable(s.path);
             s.setTitle("not saved");
-        } finally {
-            chmodSync(s.path, 0o600);
         }
         const f = forkSession(s, { cut: 6 });
         f.release();
