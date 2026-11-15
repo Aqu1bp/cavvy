@@ -1,9 +1,13 @@
 // The desktop tools: the person's Mac apps, each only once they've said the agent may use it (src/desktop). Four
 // tools, to keep their definitions short (each goes to the model with every request): control (which apps), read
-// (snapshot, screenshot), act. They share a session's grants through ToolState.desktop. They're Cavvy's own, for the
-// models it runs; Claude Code and Codex use computer-use tools of their own.
+// (snapshot, screenshot), act. They share a session's grants through ToolState.desktop. Cavvy's own models get them
+// built in, and Claude Code from Cavvy's MCP server (it has no computer use of its own); Codex uses its own.
+
+/** The names these tools have when Cavvy serves them to Claude Code (mcp__cavvy__desktop_act). */
+export const DESKTOP_SERVER_TOOLS = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
 
 import { desktopEnabled, type Settings } from "../config/settings";
+import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { DesktopError, DesktopSession } from "../desktop/session";
 import { redact } from "../util/redact";
 import { imageMarkdown, saveScreenshot } from "./browser-tools";
@@ -275,3 +279,44 @@ export const DESKTOP_TOOL_HEADINGS: Record<string, string> = {
 };
 
 export const DESKTOP_TOOLS: Tool<any>[] = [DesktopControlTool, DesktopSnapshotTool, DesktopActTool, DesktopScreenshotTool];
+
+const SERVED_NAMES: Record<string, Tool<any>> = Object.fromEntries(DESKTOP_TOOLS.map((t, i) => [DESKTOP_SERVER_TOOLS[i]!, t]));
+const SERVED_TITLES = ["Use the Mac's apps", "Read an app", "Act in an app", "Screenshot the apps"];
+
+/**
+ * The desktop tools for Claude Code. `run` takes a call through Cavvy's checks (rules, mode, hooks, the user), as the
+ * same tool called by a model Cavvy runs.
+ */
+export function desktopServerTools(run: (tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string) => Promise<ServerToolResult>): ServerTool[] {
+    return DESKTOP_SERVER_TOOLS.map((name, i) => {
+        const tool = SERVED_NAMES[name]!;
+        return {
+            name,
+            title: SERVED_TITLES[i],
+            description: tool.description,
+            inputSchema: tool.parameters,
+            annotations: { readOnlyHint: tool.readOnly === true, destructiveHint: name === "desktop_act", openWorldHint: false },
+            call: (args, { signal, meta }) => run(tool, args, signal, typeof meta.callId === "string" ? meta.callId : undefined),
+        };
+    });
+}
+
+/** The name a desktop tool has when served (DesktopAct -> desktop_act); undefined for any other tool. */
+export function servedDesktopName(tool: string): string | undefined {
+    return DESKTOP_SERVER_TOOLS[DESKTOP_TOOLS.findIndex((t) => t.name === tool)];
+}
+
+/** A call of a served desktop tool (mcp__cavvy__desktop_act) as the Cavvy tool it is (DesktopAct), for the transcript. */
+export function nativeDesktopCall(tool: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | undefined {
+    const native = SERVED_NAMES[tool];
+    return native ? { name: native.name, input } : undefined;
+}
+
+/** Whether a call (by the name its backend gave it) is of a served desktop tool, which Cavvy runs its own hooks for. */
+export function servedDesktopTool(server: string | undefined, toolName: unknown): boolean {
+    return Boolean(server) && typeof toolName === "string" && DESKTOP_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
+}
+
+export const DESKTOP_INSTRUCTIONS = `# Mac apps (cavvy)
+
+desktop_control, desktop_snapshot, desktop_act and desktop_screenshot use apps on the user's Mac, each only once the user says so: ask with desktop_control action=request_access app=<name>, then bring it to the front with action=open and read it with desktop_snapshot: its refs (e12) name elements for desktop_act. Take a screenshot only when how it looks matters. The user can take over at any time: when they use the mouse or keyboard, an action stops and the next result says so.`;

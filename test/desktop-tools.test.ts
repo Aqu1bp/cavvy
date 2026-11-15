@@ -7,7 +7,8 @@ import { dirname } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 isolate();
-const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable } = await import("../src/tools/desktop-tools");
+const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable, desktopServerTools, nativeDesktopCall, servedDesktopName, servedDesktopTool } = await import("../src/tools/desktop-tools");
+const { stopServer } = await import("../src/mcp/server");
 const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE } = await import("../src/desktop/session");
 const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
@@ -116,6 +117,7 @@ beforeEach(() => {
     });
 });
 afterEach(() => {
+    stopServer();
     resetDesktop();
     setDesktopHelperStarter(undefined);
 });
@@ -375,38 +377,45 @@ describe("permissions", () => {
 
 // ---------------------------------------------------------------------------
 
+const makeAgent = async (settings: object, mode: "default" | "bypassPermissions", provider = "anthropic", answer = true) => {
+    const { Agent } = await import("../src/agent/agent");
+    const { Session } = await import("../src/agent/session");
+    const { BUILTIN_TOOLS } = await import("../src/tools/index");
+    const asked: any[] = [];
+    const s = session();
+    const agent = new Agent({
+        session: Session.create(W, { persist: false }),
+        model: { provider, id: "default" },
+        client: {} as any,
+        settings: () => settings as any,
+        checker: new PermissionChecker(() => settings as any, W),
+        tools: BUILTIN_TOOLS,
+        mode: { get: () => mode, set: () => undefined },
+        toolState: { cwd: W, projectRoot: W, fileState: new Map(), todos: [], shells: new Map(), desktop: s },
+        helpers: { resolveModel: async () => undefined } as any,
+        listings: () => [],
+        host: {
+            emit: () => undefined,
+            // Someone to sign in: Cavvy's MCP server has a tool for every CLI, so it's there for each.
+            ui: { requestSignIn: async () => ({ signedIn: false }) },
+            askPermission: async (req: any) => {
+                asked.push(req);
+                return { allow: answer };
+            },
+        },
+    } as any);
+    return { agent, asked, s };
+};
+const on = { desktop: { enabled: true } };
+
 describe("the agent", () => {
     test("an app is the user's to give: not a mode, a rule that allows the tool, or a hook", async () => {
-        const { Agent } = await import("../src/agent/agent");
-        const { Session } = await import("../src/agent/session");
-        const { BUILTIN_TOOLS } = await import("../src/tools/index");
         const run = async (settings: object, mode: "default" | "bypassPermissions", tool: any, input: Record<string, unknown>, answer = true) => {
-            const asked: any[] = [];
-            const s = session();
-            const agent = new Agent({
-                session: Session.create(W, { persist: false }),
-                model: { provider: "anthropic", id: "default" },
-                client: {} as any,
-                settings: () => settings as any,
-                checker: new PermissionChecker(() => settings as any, W),
-                tools: BUILTIN_TOOLS,
-                mode: { get: () => mode, set: () => undefined },
-                toolState: { cwd: W, projectRoot: W, fileState: new Map(), todos: [], shells: new Map(), desktop: s },
-                helpers: { resolveModel: async () => undefined } as any,
-                host: {
-                    emit: () => undefined,
-                    ui: {},
-                    askPermission: async (req: any) => {
-                        asked.push(req);
-                        return { allow: answer };
-                    },
-                },
-            } as any);
+            const { agent, asked, s } = await makeAgent(settings, mode, "anthropic", answer);
             // The checks a call of the agent's own goes through (runLent is runServed: prepare, then run).
             const r = await agent.runLent(tool, input, new AbortController().signal);
             return { r, asked, s };
         };
-        const on = { desktop: { enabled: true } };
         // Asked for in bypass mode, with a rule allowing the tool; the prompt reads "Use TextEdit".
         const given = await run({ ...on, permissions: { allow: ["DesktopControl"] } }, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "TextEdit" });
         expect(given.asked).toHaveLength(1);
@@ -425,6 +434,56 @@ describe("the agent", () => {
         const terminal = await run(on, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "Terminal" });
         expect(terminal.asked).toHaveLength(0);
         expect(terminal.r.text).toMatch(/Terminal can't be used/);
+    });
+});
+
+describe("Claude Code", () => {
+    test("gets the tools as mcp__cavvy__desktop_*, mapped back to Cavvy's for the transcript and hooks", () => {
+        expect(servedDesktopName("DesktopAct")).toBe("desktop_act");
+        expect(servedDesktopName("Read")).toBeUndefined();
+        expect(nativeDesktopCall("desktop_control", { action: "list" })).toEqual({ name: "DesktopControl", input: { action: "list" } });
+        expect(servedDesktopTool("cavvy", "mcp__cavvy__desktop_snapshot")).toBe(true);
+        expect(servedDesktopTool("cavvy", "mcp__cavvy__simulator_act")).toBe(false);
+        expect(desktopServerTools(async () => ({ text: "" })).map((t) => [t.name, t.annotations?.readOnlyHint])).toEqual([
+            ["desktop_control", false],
+            ["desktop_snapshot", true],
+            ["desktop_act", false],
+            ["desktop_screenshot", true],
+        ]);
+    });
+
+    test("Cavvy's MCP server offers them to Claude Code with the setting on; never to Codex, and not with it off", async () => {
+        const served = async (provider: string, settings: object) => ((await makeAgent(settings, "default", provider)).agent as any).orchestrator()?.tools ?? [];
+        const names = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
+        if (process.platform === "darwin") expect(await served("claude-code", on)).toEqual(expect.arrayContaining(names));
+        for (const [provider, settings] of [
+            ["claude-code", {}],
+            ["codex", on],
+            ["codex", {}],
+        ] as const) {
+            const tools: string[] = await served(provider, settings);
+            // The server is there (with the user's other tools), just without these.
+            expect(tools.length, provider).toBeGreaterThan(0);
+            expect(tools.filter((t) => t.startsWith("desktop_")), `${provider} ${JSON.stringify(settings)}`).toEqual([]);
+        }
+    });
+
+    test("its calls go through Cavvy's checks: a rule naming the served tool holds, and an app is still the user's to give", async () => {
+        const run = async (settings: object, mode: "default" | "bypassPermissions", tool: any, input: Record<string, unknown>) => {
+            const { agent, asked, s } = await makeAgent(settings, mode, "claude-code");
+            const r = await (agent as any).runServed(tool, input, new AbortController().signal);
+            return { r, asked, s };
+        };
+        // An allow rule for the served name, in bypass mode: the app is still asked about.
+        const given = await run({ ...on, permissions: { allow: ["mcp__cavvy__desktop_control"] } }, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "TextEdit" });
+        expect(given.asked).toHaveLength(1);
+        expect(given.asked[0].decision).toMatchObject({ appGrant: "TextEdit" });
+        expect(given.s.approved().map((a) => a.name)).toEqual(["TextEdit"]);
+        // A deny rule naming the served tool refuses the call before anything runs.
+        const denied = await run({ ...on, permissions: { deny: ["mcp__cavvy__desktop_act"] } }, "bypassPermissions", DesktopActTool, { action: "click", x: 1, y: 1 });
+        expect(denied.r).toMatchObject({ isError: true });
+        expect(denied.r.text).toMatch(/Denied by permission rule mcp__cavvy__desktop_act/);
+        expect(helper.sent("click")).toHaveLength(0);
     });
 });
 
