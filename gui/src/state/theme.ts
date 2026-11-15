@@ -127,6 +127,11 @@ let fallback: ReturnType<typeof setTimeout> | undefined;
 const PENDING_MS = 3000;
 /** Theme switches under way: the crossfade's CSS holds while any is. */
 let swapping = 0;
+/** The last crossfade, done when it's over. */
+let fading: Promise<unknown> = Promise.resolve();
+
+/** Once the crossfade under way is over: work on the main thread meanwhile (a picture for an agent) holds it up. */
+export const afterFade = () => fading;
 
 /** Runs `apply` as one crossfade of the whole window (a view transition), or at once where motion's not wanted. */
 function swap(apply: () => void, animate: boolean) {
@@ -139,7 +144,8 @@ function swap(apply: () => void, animate: boolean) {
     // Skipped by the next switch, these reject; that's expected.
     t.ready.catch(() => undefined);
     t.updateCallbackDone.catch(() => undefined);
-    void t.finished.catch(() => undefined).finally(() => {
+    fading = t.finished.catch(() => undefined);
+    void fading.finally(() => {
         if (--swapping === 0) delete root.dataset.themeSwitch;
     });
 }

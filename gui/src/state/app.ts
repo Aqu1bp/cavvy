@@ -792,6 +792,8 @@ async function themeApplied(id: string | null, entry: ThemeEntry | undefined, re
     m.applyTheme(id ?? undefined);
     const still = !prefs.themeMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
     const drawn = id ? await m.whenDrawn(id) : undefined;
+    // Made after the crossfade: it draws on the main thread, and during it would hold the fade up (measured: 244 ms).
+    if (drawn) await m.afterFade();
     // A picture of it for the agent, made only now that one has asked.
     const s = m.shown();
     const picture = drawn && s ? await import("../lib/theme-picture").then((p) => p.themePicture(s.look, s.palette.vars, drawn.map)).catch(() => undefined) : undefined;
