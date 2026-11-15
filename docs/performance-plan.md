@@ -56,7 +56,9 @@ A session's files are append-only logs: its transcript (`~/.cavvy/projects/<proj
 
 Not yet:
 
-- A Claude Code session's transcript (never compacted here) is still read whole as it opens, and its whole history kept in memory.
+- A Claude Code session's transcript (never compacted here) is still read whole as it opens, and its whole history kept in memory: 6 MB at 30,000 items (Linux), 16-20 MB at 100,000 (M5). Loading it as it's needed wouldn't hold: while a session runs, the agent reads all of it (estimating its context, listing rewind and fork targets, the CLI's context from where it was synced), from 103 places.
+- Bytes on the wire per character of a reply streamed to a remote window: 1.5 through the compressed tunnel, at about Opus's pace (target 1.2). The text is 0.26 of it, flushing a message for each chunk the model sends 0.56, and the message around it 0.71 (mostly its sequence number). Fewer messages means sending text less often than every 24 ms, which made a reply feel worse.
+- Palette search: 19-27 ms a keystroke with 10,000 sessions (Linux), most of it a stat of every session file, so that what another process just wrote is found. Watching the folders instead depends on how they're watched on macOS, not checked yet.
 - Find jumping far back loads every turn between.
 
 `test/perf-size.test.ts` checks these at 3,000 and 30,000 items. On a Linux container, opening a 30,000-item session again: a Claude Code session in 28 ms, reading 4.7 MB and keeping 6.7 MB in the server; built from its logs, 521 ms and 58.6 MB read (and 132 MB kept, before the store). A session of one of Cavvy's own models: 43 ms and 2.9 MB kept; built, 327 ms.
