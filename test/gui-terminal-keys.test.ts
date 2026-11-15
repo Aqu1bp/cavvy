@@ -2,7 +2,7 @@
 // its terminal took the keyboard: the card's number keys and Esc went to the shell. A terminal takes the keyboard
 // when the user asks for it (lib/terminal-keys.ts); one that came into view by itself leaves it to the card.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { cardArrived, terminalAsked, terminalTakesKeys, terminalUsed } from "../gui/src/lib/terminal-keys";
+import { cardArrived, terminalAsked, terminalScreenCame, terminalTakesKeys, terminalUsed } from "../gui/src/lib/terminal-keys";
 
 /** As much of a terminal's element as the rule looks at. */
 function screen() {
@@ -70,6 +70,24 @@ test("opened by the user, it takes the keyboard even from a waiting card, and ke
     expect(comesIntoView(el)).toBe(true);
     cardArrived();
     expect(el.blurred).toBe(0);
+});
+
+test("opened by the user, it takes the keyboard however long its screen took to load; not one opened long before", () => {
+    const el = screen();
+    page.card = true;
+    terminalAsked();
+    const sent = now;
+    now += 6000; // its code, over a slow link
+    terminalScreenCame(sent);
+    now += 300;
+    expect(comesIntoView(el)).toBe(true);
+    // Asked for long before the screen was sent for (its tabs back after a reload): the card keeps the keyboard.
+    page.activeElement = null;
+    now += 100_000;
+    const later = now;
+    now += 6000;
+    terminalScreenCame(later);
+    expect(comesIntoView(screen())).toBe(false);
 });
 
 test("with no card it takes the keyboard as before; a card arriving in the moment after gets the keyboard back", () => {

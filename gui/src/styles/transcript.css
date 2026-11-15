@@ -242,6 +242,12 @@
 :is([data-work-again], [data-work-again] *) {
     animation-delay: -60s !important;
 }
+/* What the reader sets going in one all the same plays: the mark on a turn found from ⌘K, a card's tools on hover, what
+   closes. */
+.turn.flash,
+[data-work-again] :is(.cmd-tools, .tcard-tools, .leaving) {
+    animation-delay: 0s !important;
+}
 
 /* A turn a steer ended: the next one carries straight on, so they sit close. */
 .turn.chained {

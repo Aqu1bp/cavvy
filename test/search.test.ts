@@ -85,6 +85,16 @@ describe("searching session files", () => {
         expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
     });
 
+    test("an old session open here, written to just after a search, is found by the next one at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-open-"), "proj");
+        const old = write([prompt("the oldest session"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits).toEqual([]);
+        appendFileSync(old.file, JSON.stringify(reply("a platypus")) + "\n");
+        expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
     // Each session's runs of three characters (search.ts gramsOf) let a search skip those that can't have it: never one
     // that does, in any case or script.
     test("what a session says is found, whatever the case or script; what none says isn't", async () => {
@@ -944,7 +954,9 @@ describe("listing a big project folder", () => {
         // A newer search while it lists: it stops there.
         let n = 0;
         expect(await searchSessions("whiskey", { stale: () => ++n > folders + 5, budgetMs })).toMatchObject({ hits: [], stale: true });
-        // No time left once it's listed: partial, even though no session was looked at.
+        // No time left once it's listed: partial, even though no session was looked at. Listed anew (a search just
+        // after another reuses its listing).
+        clearSearchCache();
         const late = await searchSessions("whiskey", { include: () => false, budgetMs: 0 });
         expect(late.partial).toBe(true);
     }, 60_000);

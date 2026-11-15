@@ -9,12 +9,15 @@ import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { loadTabs, restoreTabs, saveTabs, TerminalClosures } from "../lib/terminal";
 import { withShortcut } from "../state/keybindings";
-import { terminalAsked } from "../lib/terminal-keys";
+import { terminalAsked, terminalScreenCame } from "../lib/terminal-keys";
 import { setupTickets, signInTabs, type Tab } from "../lib/terminal-tabs";
 
 // The screen, with the emulator (xterm, a quarter of what the window loaded before anything showed): loaded once a
 // terminal is opened, not with the window.
-const TerminalScreen = lazy(() => import("./TerminalScreen"));
+const TerminalScreen = lazy(() => {
+    const since = performance.now();
+    return import("./TerminalScreen").then((m) => (terminalScreenCame(since), m));
+});
 
 const MAX_TABS = 12;
 
@@ -136,6 +139,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     }, { defer: true }));
     const close = (tab: Tab) => {
         tab.closing = true;
+        // Not shown yet (its screen still coming): what it would have taken goes with it.
+        setupTickets.delete(tab.id);
+        signInTabs.delete(tab.id);
         if (currentTabs().length === 1) setTerminalOpen(false);
         setTabs((all) => all.filter((t) => t !== tab));
     };

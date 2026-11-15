@@ -980,6 +980,7 @@ export class Engine {
             limit: Math.max(1, Math.min(Math.floor(limit), 200)),
             include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
             stale: () => this.searches.get(client) !== seq || this.stopping,
+            open: new Set(this.runtimes.keys()),
         });
         if (r.stale) return { hits: [], partial: true, stale: true };
         return {

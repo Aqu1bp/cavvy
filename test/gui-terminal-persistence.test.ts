@@ -170,7 +170,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     // The panel, its screen (a chunk of its own, lazy there: here as it is) and what they share, as one source.
     const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
     let source = [read("../gui/src/lib/terminal-tabs.ts"), read("../gui/src/components/TerminalScreen.tsx"), read("../gui/src/components/TerminalPanel.tsx")].join("\n");
-    source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export default /gm, "").replace(/^export /gm, "").replace(/^const TerminalScreen = lazy\(.*\);\r?\n/m, "");
+    source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export default /gm, "").replace(/^export /gm, "").replace(/^const TerminalScreen = lazy\([\s\S]*?^\}\);\r?\n/m, "");
     const compiled = transformSync(source, { filename: "TerminalPanel.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const noop = () => ({});
