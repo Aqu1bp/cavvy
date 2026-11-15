@@ -845,6 +845,15 @@ try {
     assert.deepEqual(forgets, [40], "back at the end a while: let go of, but for its first page");
     assert.equal(articles().length, 40);
     assert.ok(turn("turn-399"), "the end still there");
+    // Find showing a turn far above what's drawn: a page around it, not every turn down to it; the rest after, a few a frame.
+    setFindShown(true);
+    findProps.show("turn-10");
+    assert.ok(turn("turn-10"), "the turn found is drawn");
+    assert.ok(articles().length <= 40, `a page around it, not all ${400 - 10} turns down to it (${articles().length})`);
+    assert.equal(turn("turn-399"), undefined, "those far below go in after");
+    for (let i = 0; i < 4; i++) settle();
+    assert.ok(articles().length > 40, "and they do");
+    setFindShown(false);
     dispose();
 
     // A conversation that fits (nothing to scroll): a wheel up there scrolls nothing, so it stops nothing, and the

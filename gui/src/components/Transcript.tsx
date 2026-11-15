@@ -103,6 +103,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
     let ready = false;
+    /** The turns still to go in (trimmed, or short of the page) put in a few at a time from the next frame (onMount). */
+    let growMore: (() => void) | undefined;
     /** Until its first frame: drawing what the session already had (DrawnAgain), so nothing of it comes in again. */
     let settling = true;
     let smoothScroll = false;
@@ -650,6 +652,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // After the frame paints: a frame, then a task.
         const later = () => (growing = requestAnimationFrame(() => setTimeout(grow, 0)));
         if (pending()) later();
+        growMore = () => {
+            if (!growing && pending()) later();
+        };
         // Opened with what fits its first screens (OPEN_BYTES): the rest of its page comes once that's painted, put in
         // above as "Show earlier" puts a page, the end (or the place read) where it was.
         const topUp = async () => {
@@ -929,8 +934,17 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (i < 0) return;
         reading = undefined; // Explicit navigation owns the next position.
         const need = turns().length - i;
-        setTrimmed(0);
-        if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        // Far above what's drawn (a find a thousand turns up): a page around it, and the turns below it go in a few at
+        // a time after, as when opened there. Drawn all at once down to it, they were a frame of hundreds of turns.
+        if (need > shown() + PAGE) {
+            const half = Math.floor(PAGE / 2);
+            setShown(Math.min(turns().length, need + half));
+            setTrimmed(Math.max(0, need - 1 - half));
+            growMore?.();
+        } else {
+            setTrimmed(0);
+            if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        }
         smoothScroll = false;
         setStick(false);
     };
