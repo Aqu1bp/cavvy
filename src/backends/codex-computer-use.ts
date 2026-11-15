@@ -79,7 +79,17 @@ const APP_QUESTION = /^Allow (?:ChatGPT|Computer Use|Codex) to use "?(.+?)"?\?$/
 /** What Codex's computer use asks the person through an MCP elicitation. */
 export type ComputerUseAsk =
     /** Using one of the Mac's apps. `persist`: what Codex can keep a yes for besides this once. */
-    | { kind: "app"; name: string; bundleId?: string; /** What it named the app by, when that's not a bundle id (a name, a path). */ target?: string; persist: ("session" | "always")[]; callId?: string }
+    | {
+          kind: "app";
+          name: string;
+          bundleId?: string;
+          /** What it named the app by, when that's not a bundle id (a name, a path). */
+          target?: string;
+          /** Every name and id it gave the app (shown, asked about, its parameter): each is checked against the apps never offered. */
+          aliases: string[];
+          persist: ("session" | "always")[];
+          callId?: string;
+      }
     /** Recording the Mac's audio: never offered (Cavvy doesn't start it with audio). */
     | { kind: "audio" }
     /** A link to open (to set it up): cancelled, as a decline would be kept as a refusal. */
@@ -114,15 +124,24 @@ export function computerUseAsk(p: any): ComputerUseAsk | undefined {
     const persist = (Array.isArray(meta.persist) ? meta.persist : []).filter((x: unknown): x is "session" | "always" => x === "session" || x === "always");
     const callId = typeof meta.tool_call_id === "string" && meta.tool_call_id ? meta.tool_call_id : undefined;
     const raw = typeof params.app === "string" && params.app.trim() ? params.app.trim() : undefined;
-    return { kind: "app", name, ...(id && looksLikeBundleId(id) ? { bundleId: id } : raw ? { target: raw } : {}), persist, ...(callId ? { callId } : {}) };
+    const aliases = [...new Set([shown?.value, asked, raw].map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean))];
+    return { kind: "app", name, ...(id && looksLikeBundleId(id) ? { bundleId: id } : raw ? { target: raw } : {}), aliases, persist, ...(callId ? { callId } : {}) };
 }
 
 const looksLikeBundleId = (s: string) => /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+){2,}$/.test(s);
 
-/** Why an app Codex asks for is never offered, if it is: by its bundle id, the name it's shown by, or what else it was named by. */
-export function neverOfferedApp(ask: { name: string; bundleId?: string; target?: string }): NeverReason | undefined {
-    // The target as a bundle id too: some listed ones have only two parts (org.alacritty), unlike what's taken for one.
-    return neverOffered({ name: ask.name, bundleId: ask.bundleId }) ?? (ask.target ? (neverOffered({ name: "", bundleId: ask.target }) ?? neverOffered({ name: ask.target })) : undefined);
+/**
+ * Why an app Codex asks for is never offered, if it is. Every name and id it gave is checked, each both as a name (the
+ * core's patterns, a path's last part) and as a bundle id (the listed ones, two-part ids such as org.alacritty too):
+ * one that matches is enough. One that matches nothing isn't let through by this: the person is asked.
+ */
+export function neverOfferedApp(ask: { name: string; bundleId?: string; target?: string; aliases?: readonly string[] }): NeverReason | undefined {
+    const all = [ask.name, ask.bundleId, ask.target, ...(ask.aliases ?? [])].filter((s): s is string => typeof s === "string" && s.trim() !== "");
+    for (const s of all) {
+        const why = neverOffered({ name: "", bundleId: s.trim() }) ?? neverOffered({ name: s });
+        if (why) return why;
+    }
+    return undefined;
 }
 
 /** The app a computer-use call used, by bundle id, as its result says (`codex/toolSurface`, kind computerUse). */

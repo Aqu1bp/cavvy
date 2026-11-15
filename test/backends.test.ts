@@ -4790,6 +4790,15 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(answers()[1]).toEqual({ action: "decline", content: null, _meta: null });
         expect(received().filter((m) => m.method === "turn/steer").map((m) => JSON.stringify(m.params.input)).join("\n")).toContain("Terminal can't be used: it's a terminal.");
 
+        // A two-part bundle id, shown as another app: refused all the same.
+        process.env.FAKE_CU_APP = "org.alacritty";
+        process.env.FAKE_CU_APP_NAME = "Notes";
+        rmSync(LOG, { force: true });
+        const twoPart = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await twoPart.run("go")).toBe("done");
+        expect(appAsks(twoPart.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "decline", content: null, _meta: null });
+
         delete process.env.FAKE_CU_APP;
         delete process.env.FAKE_CU_APP_NAME;
         process.env.FAKE_CU_URL = "1";

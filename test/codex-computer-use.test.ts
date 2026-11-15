@@ -19,13 +19,13 @@ const appAsk = (meta: Record<string, unknown> = {}, extra: Record<string, unknow
 
 describe("computerUseAsk", () => {
     test("an app approval: its name, bundle id, what a yes can be kept for, and the call", () => {
-        expect(computerUseAsk(appAsk())).toEqual({ kind: "app", name: "Safari", bundleId: "com.apple.Safari", persist: ["session", "always"], callId: "exec-1" });
+        expect(computerUseAsk(appAsk())).toEqual({ kind: "app", name: "Safari", bundleId: "com.apple.Safari", aliases: ["Safari", "com.apple.Safari"], persist: ["session", "always"], callId: "exec-1" });
         // Persistent approvals turned off by the person's organization: once or the session only.
         expect(computerUseAsk(appAsk({ persist: ["session"] }))).toMatchObject({ persist: ["session"] });
     });
 
     test("older builds: the question alone names the app", () => {
-        expect(computerUseAsk({ serverName: "computer-use", mode: "form", message: "Allow ChatGPT to use Safari?", _meta: null })).toEqual({ kind: "app", name: "Safari", persist: [] });
+        expect(computerUseAsk({ serverName: "computer-use", mode: "form", message: "Allow ChatGPT to use Safari?", _meta: null })).toEqual({ kind: "app", name: "Safari", aliases: ["Safari"], persist: [] });
     });
 
     test("Codex's own approval of a js call isn't one: it goes as any MCP call's", () => {
@@ -70,6 +70,19 @@ describe("computerUseAsk", () => {
         expect(computerUseAsk(appAsk({ tool_params: { app: "org.alacritty" }, tool_params_display: [{ name: "app", display_name: "App", value: "Notes" }] }))).toMatchObject({ target: "org.alacritty" });
         expect(neverOfferedApp({ name: "Notes", target: "org.alacritty" })).toBe("terminal");
         expect(neverOfferedApp({ name: "Notes", target: "org.tabby" })).toBe("terminal");
+    });
+
+    test("never offered: whichever name or id Codex gives for the app, two-part bundle ids and names alone included", () => {
+        const check = (p: any) => neverOfferedApp(computerUseAsk(p) as any);
+        // By a two-part bundle id, shown as another app, or not shown at all.
+        expect(check(appAsk({ tool_params: { app: "org.alacritty" }, tool_params_display: [{ name: "app", display_name: "App", value: "Notes" }] }, { message: 'Allow Computer Use to use "Notes"?' }))).toBe("terminal");
+        expect(check(appAsk({ tool_params: { app: "org.alacritty" }, tool_params_display: [] }, { message: 'Allow Computer Use to use "org.alacritty"?' }))).toBe("terminal");
+        // By its name alone (an older question with no parameters).
+        expect(check({ serverName: "computer-use", mode: "form", message: "Allow ChatGPT to use Alacritty?", _meta: null })).toBe("terminal");
+        // Shown as one app, asked about as another: either is enough.
+        expect(check(appAsk({ tool_params: {}, tool_params_display: [{ name: "app", display_name: "App", value: "Notes" }] }, { message: 'Allow Computer Use to use "1Password"?' }))).toBe("credentials");
+        // Nothing that's never offered: not refused by this, so the person is asked.
+        expect(check(appAsk({ tool_params: { app: "org.example" }, tool_params_display: [{ name: "app", display_name: "App", value: "Example" }] }, { message: 'Allow Computer Use to use "Example"?' }))).toBeUndefined();
     });
 });
 
