@@ -177,11 +177,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     const done = createMemo(() => tools().filter((t) => !isLive(t)));
     const key = () => `run:${tools()[0]?.id ?? ""}`;
     // A call under way with no live line to say so (a turn a steered message ended keeps the calls that began in
-    // it): its row is the only thing that does, so the run stays open while there is one.
-    const mustShow = createMemo(() => !p.hideLive && tools().some(isLive));
-    // Once shown that way it stays open (until the reader closes it): its row isn't taken away as the call ends.
-    createEffect(() => mustShow() && folds.get(key()) === undefined && folds.set(key(), true));
-    const open = () => mustShow() || (folds.get(key()) ?? prefs.expandActivity);
+    // it): its row is the only thing that does, so the run opens while there is one, and its line has a spinner
+    // while the reader keeps it closed.
+    const unshown = createMemo(() => (p.hideLive ? 0 : tools().filter(isLive).length));
+    // Once shown that way it stays open until the reader closes it: its row isn't taken away as the call ends.
+    createEffect(() => unshown() && folds.get(key()) === undefined && folds.set(key(), true));
+    const open = () => folds.get(key()) ?? (unshown() > 0 || prefs.expandActivity);
     // Find's match in one of its steps, or in a thought among them, opens it.
     createEffect(on(findReveal, (r) => r && p.items.some((it) => (it.kind === "activity" ? it.steps.some((b) => b.id === r.part) : it.block.id === r.part)) && folds.set(key(), true)));
     const title = createMemo(() => (done().length === 1 ? oneCall(done()[0]!) : summarize(done())));
@@ -225,6 +226,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
                     <Show when={denied()}>
                         <span class="wflag warn" title={`${plural(denied(), "call")} declined`}>
                             <X size={12} /> {denied()}
+                        </span>
+                    </Show>
+                    <Show when={unshown() && !open()}>
+                        <span class="wflag run-live" title={`${plural(unshown(), "call")} running`}>
+                            <Spinner size={12} class="tone-accent" />
+                            <span class="sr-only">{`${plural(unshown(), "call")} running`}</span>
                         </span>
                     </Show>
                     <Show when={!pictured()}>
