@@ -103,6 +103,13 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+/* One session: no boxes of their own, so the column lays out and paints as it did before there were splits (the
+   stage placed in .main, its stacking context .keep's). */
+.panes:not([data-split]),
+.panes:not([data-split]) > .stage-pane {
+    display: contents;
+}
+
 .stage-pane {
     position: relative;
     min-width: 0;
