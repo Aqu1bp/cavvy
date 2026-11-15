@@ -9,7 +9,7 @@
 //   - let a destination be read as an option (`--` before it, and store.ts checks it).
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { homedir, networkInterfaces, tmpdir } from "os";
 import { dirname, join } from "path";
 import { childEnv } from "../util/env";
 import { cavvyHome } from "../config/paths";
@@ -34,6 +34,8 @@ export class SshError extends ServerError {
         readonly detail?: string,
         /** A command that puts it right. */
         readonly fix?: string,
+        /** What the user can make of it, in a sentence: "It may be off, …". `offline`: this machine has no network. */
+        readonly more: { hint?: string; offline?: boolean } = {},
     ) {
         super(message);
     }
@@ -218,11 +220,38 @@ export function sshFailure(stderr: string, e: ServerEntry): SshError {
     }
     // Whatever kept the connection from being made: the reason varies with the system and how it's off the network.
     if (/^ssh: connect to host /m.test(stderr) || /Could not resolve hostname|Name or service not known|nodename nor servname|Temporary failure in name resolution|timed out|Connection refused|No route to host|Network is (unreachable|down)|Connection closed by|closed by remote host|Connection reset|Connection abort|kex_exchange_identification|Broken pipe|Host is down|Timeout, server .* not responding/i.test(stderr)) {
-        return new SshError("unreachable", `Can't reach ${host}.`, detail);
+        return unreachable(stderr, e, detail);
     }
     // By the name the user gave it, not its address: this is said of a server they already use.
     if (/Killed by signal \d+/.test(stderr)) return new SshError("other", `The connection to ${e.name || host} was cut off.`);
     return new SshError("other", `Couldn't connect to ${host}.`, detail);
+}
+
+/** What's known of this machine's network: whether it has an address beyond itself and its own link. */
+export const network = {
+    online(): boolean {
+        for (const list of Object.values(networkInterfaces()))
+            for (const a of list ?? []) {
+                if (a.internal) continue;
+                // 169.254/16 and fe80::/10 are what a link gives itself with nothing to hand out addresses: no way out.
+                if (a.family === "IPv4" ? !a.address.startsWith("169.254.") : !/^fe[89ab]/i.test(a.address)) return true;
+            }
+        return false;
+    },
+};
+
+/**
+ * Why no connection was made, told apart by what ssh said: the user acts differently on each (waits for the network,
+ * fixes the address, starts SSH there, or looks at the machine and its firewall). Said of the server by the user's name for it.
+ */
+function unreachable(stderr: string, e: ServerEntry, detail?: string): SshError {
+    const name = e.name || hostOf(e);
+    if (!network.online()) return new SshError("unreachable", "You're offline.", detail, undefined, { offline: true });
+    if (/Could not resolve hostname|Name or service not known|nodename nor servname|Temporary failure in name resolution/i.test(stderr)) return new SshError("unreachable", `Can't find ${name}.`, detail, undefined, { hint: "Check its address." });
+    if (/Connection refused/i.test(stderr)) return new SshError("unreachable", `${name} refused the connection.`, detail, undefined, { hint: "It's on, but not taking SSH connections." });
+    if (/Connection closed by|closed by remote host|Connection reset|Connection abort|kex_exchange_identification|Broken pipe/i.test(stderr)) return new SshError("unreachable", `${name} closed the connection.`, detail);
+    // Timed out, no route, host down: nothing came back at all.
+    return new SshError("unreachable", `${name} isn't answering.`, detail, undefined, { hint: "It may be off, or its firewall may block this network." });
 }
 
 /** Whether a private key file is encrypted (so only an agent holding it can use it here). */

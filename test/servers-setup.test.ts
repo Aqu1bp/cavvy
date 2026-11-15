@@ -5,7 +5,7 @@
 // "SSH", the tunnel, and the server's own code. What isn't: the network, and
 // systemd (the pretend server has none, so Cavvy runs detached there).
 
-import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "fs";
 import { connect as tcp } from "net";
 import { join } from "path";
@@ -21,7 +21,7 @@ const fake = fakeSsh();
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { setUpServer, ServerBusy } = await import("../src/servers/install");
 const { probeServer } = await import("../src/servers/remote");
-const { offeredHostKey, trustHostKey, SshError } = await import("../src/servers/ssh");
+const { offeredHostKey, trustHostKey, SshError, sshFailure, network } = await import("../src/servers/ssh");
 const { ServerLink, exchangeCode } = await import("../src/servers/connect");
 const { previousBuild, remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
@@ -229,11 +229,15 @@ describe("a server's host key", () => {
 });
 
 describe("a server that can't be connected to", () => {
+    // Whatever network the machine running these has.
+    const online = network.online;
+    beforeAll(() => (network.online = () => true));
+    afterAll(() => (network.online = online));
     test.each([
-        ["timeout", "unreachable", "Can't reach box.example.", false],
-        ["refused", "unreachable", "Can't reach box.example.", false],
-        ["dns", "unreachable", "Can't reach box.example.", false],
-        ["closed", "unreachable", "Can't reach box.example.", false],
+        ["timeout", "unreachable", "box isn't answering.", false],
+        ["refused", "unreachable", "box refused the connection.", false],
+        ["dns", "unreachable", "Can't find box.", false],
+        ["closed", "unreachable", "box closed the connection.", false],
         ["auth", "auth", "box.example refused your SSH keys.", true],
     ] as const)("%s: %s", async (how, kind, message, permanent) => {
         fake.fail(how);
@@ -243,6 +247,28 @@ describe("a server that can't be connected to", () => {
             expect({ kind: e.kind, message: e.message, permanent: e.permanent }).toEqual({ kind, message, permanent });
         } finally {
             fake.fail();
+        }
+    });
+});
+
+describe("why a server couldn't be reached", () => {
+    test("each reason comes with what the user can make of it, and none when this machine is offline", () => {
+        const said = (stderr: string) => {
+            const e = sshFailure(stderr, entry);
+            return { kind: e.kind, message: e.message, ...e.more };
+        };
+        expect(said("ssh: connect to host box.example port 22: Operation timed out")).toEqual({ kind: "unreachable", message: "box isn't answering.", hint: "It may be off, or its firewall may block this network." });
+        expect(said("ssh: connect to host box.example port 22: No route to host")).toEqual({ kind: "unreachable", message: "box isn't answering.", hint: "It may be off, or its firewall may block this network." });
+        expect(said("ssh: connect to host box.example port 22: Connection refused")).toEqual({ kind: "unreachable", message: "box refused the connection.", hint: "It's on, but not taking SSH connections." });
+        expect(said("ssh: Could not resolve hostname box.example: Name or service not known")).toEqual({ kind: "unreachable", message: "Can't find box.", hint: "Check its address." });
+        const online = network.online;
+        network.online = () => false;
+        try {
+            for (const stderr of ["ssh: Could not resolve hostname box.example: nodename nor servname provided, or not known", "ssh: connect to host 192.0.2.1 port 22: Network is unreachable", "ssh: connect to host 192.0.2.1 port 22: Operation timed out"]) {
+                expect(said(stderr)).toEqual({ kind: "unreachable", message: "You're offline.", offline: true });
+            }
+        } finally {
+            network.online = online;
         }
     });
 });
@@ -471,7 +497,7 @@ describe("the terminal's commands", () => {
     test("--server: a server that can't be reached is said in plain words, with ssh's own line under it", async () => {
         fake.fail("timeout");
         try {
-            expect(await cavvy("--server", "box", "--version")).toEqual({ code: 1, out: "", err: "Can't reach box.example.\n  ssh: connect to host box.example port 22: Operation timed out\n" });
+            expect(await cavvy("--server", "box", "--version")).toEqual({ code: 1, out: "", err: "box isn't answering.\n  It may be off, or its firewall may block this network.\n  ssh: connect to host box.example port 22: Operation timed out\n" });
         } finally {
             fake.fail();
         }

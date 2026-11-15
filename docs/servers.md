@@ -29,7 +29,10 @@ What can go wrong, and what you see:
 
 | | |
 |---|---|
-| The server doesn't answer | `Can't reach <host>.`, with ssh's own line. Nothing is added. |
+| This machine has no network | `You're offline.` |
+| The address doesn't resolve | `Can't find <name>.` |
+| Nothing listens for SSH there | `<name> refused the connection.` |
+| The server doesn't answer | `<name> isn't answering.`: it's off, or a firewall drops the connection (one that only lets in an address you no longer have, say). |
 | It refuses your key | `<host> refused this key.` |
 | Your key needs its passphrase, and no agent holds it | `This key needs its passphrase. Add it to ssh-agent, then retry.`, with the `ssh-add` command. Cavvy never asks for a passphrase or a password. |
 | First connection | Its key's fingerprint, and `Trust <host>?`. Only the key you were shown is saved: to your `known_hosts`, or to Cavvy's own list when your SSH config keeps no keys for that host. Without a terminal to ask at, nothing is trusted. |
@@ -45,7 +48,7 @@ Creating one goes like this:
 
 1. **The provider's sign-in.** If its CLI is signed out, you get the [sign-in card](sign-in.md).
 2. **The price.** `Create a server for $12/month?`, with its name, where it runs, its size and its system. **Create** goes ahead, **Change…** lets you say what you'd rather have, **Cancel** creates nothing. This is asked in every permission mode, Bypass included: no mode, rule or reviewer answers it for you.
-3. **The server is created and added.** There's no key to pick and no `Trust this host?`: Cavvy made a key for it and gave the server its identity before it started, so it knows the server's fingerprint in advance. The steps show in the conversation.
+3. **The server is created and added.** The agent is told to let SSH in from any address: yours changes, and a firewall held to it would lock you out. Only Cavvy's key gets in (the start-up script turns password sign-in off). There's no key to pick and no `Trust this host?`: Cavvy made a key for it and gave the server its identity before it started, so it knows the server's fingerprint in advance. The steps show in the conversation.
    While this runs the session's status line says which step it's at: `Waiting for aws-mumbai to start`, `Copying Cavvy to aws-mumbai`, `Installing Codex and Claude Code on aws-mumbai`. A machine needs about 1 GB of memory for Cavvy and an agent CLI; agents are told to pick at least that, the start-up script adds swap on a smaller one, and the agent says so if it's short.
 4. **Its sign-ins.** `Sign in on aws-mumbai?` lists Claude Code, Codex and GitHub: what's signed in says as whom, the rest have **Sign in**. **Later** leaves them; the server is added either way.
 
@@ -89,7 +92,9 @@ To list a server's sessions this machine stays connected to it, as a window on i
 
 What a window on a server doesn't have: the desktop app's own browser pane and the Finder (choosing a folder uses Cavvy's own list of the server's folders; Reveal isn't offered). The Browser tool there needs a Chrome on the server.
 
-If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself).
+Opening a server, or one of its sessions, connects to it first: the window stays on what you were looking at until the server answers, and then goes there. When it takes more than a moment, a dialog says `Connecting to <name>…`. When it can't, the dialog says why over what you were looking at, with **Try again** and **Fix with an agent**: that starts a session on this machine, which has your SSH setup and the provider's CLI, asking an agent to find out why and to ask before changing anything. When getting there needs your word, the same dialog asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself). A window that's reloaded while its server can't be reached goes back to this machine and says so there.
+
+If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs your word, the dialog above asks it over what the window shows.
 
 Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
 

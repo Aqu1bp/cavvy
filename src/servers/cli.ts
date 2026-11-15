@@ -46,6 +46,7 @@ function report(e: unknown): boolean {
     // Some of these words are a server's own: nothing in them may draw on the terminal.
     if (e instanceof SshError) {
         err(printable(e.message, 2000));
+        if (e.more.hint) err(`  ${e.more.hint}`);
         if (e.detail) err(`  ${printable(e.detail)}`);
         if (e.fix) err(`  ${printable(e.fix)}`);
         return true;

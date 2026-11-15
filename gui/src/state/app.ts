@@ -585,7 +585,7 @@ export async function forkSession(id: string, at: { index: number; text: string;
 export async function activate(id: string | undefined, cwd?: string) {
     // One on another machine: the window goes there, and opens it.
     const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
-    if (at && at.machine !== machine) return void serversUi().then((m) => m.switchMachine(at.machine, id), reportError);
+    if (at && at.machine !== machine) return void serversUi().then((m) => m.goTo(at.machine, id), reportError);
     if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();

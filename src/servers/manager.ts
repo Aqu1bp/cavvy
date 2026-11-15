@@ -36,7 +36,7 @@ export interface ServerLinkEvent {
 
 function problemOf(e: unknown): ServerProblem {
     // Some of these words are a server's own: nothing in them may draw on a screen.
-    if (e instanceof SshError) return { message: printable(e.message, 2000), ...(e.detail ? { detail: printable(e.detail) } : {}), ...(e.fix ? { fix: printable(e.fix) } : {}) };
+    if (e instanceof SshError) return { message: printable(e.message, 2000), ...(e.more.hint ? { hint: e.more.hint } : {}), ...(e.more.offline ? { offline: true } : {}), ...(e.detail ? { detail: printable(e.detail) } : {}), ...(e.fix ? { fix: printable(e.fix) } : {}) };
     if (e instanceof ServerError) return { message: printable(e.message, 2000) };
     return { message: printable(String((e as Error)?.message ?? e), 2000) };
 }
@@ -193,6 +193,7 @@ export class ServerLinks {
             ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
             // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
             ...(s.cloud?.teardown?.length ? { rented: true } : {}),
+            ...(s.cloud?.provider ? { provider: [s.cloud.provider, s.cloud.where].filter(Boolean).join(", ") } : {}),
         }));
     }
 

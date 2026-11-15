@@ -25,7 +25,7 @@ export type { Attachment } from "../lib/attachments";
 /** Back to the home screen to start a new session (optionally in another project). */
 /** `on`: the session or project heading it was asked from, when the machine that's on may not be the window's. */
 export function newSession(cwd?: string, on?: { machine?: string }) {
-    if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    if (onAnother(on, machine)) return void serversUi().then((m) => m.goTo(on!.machine, undefined, cwd), reportError);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();

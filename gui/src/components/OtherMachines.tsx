@@ -12,7 +12,8 @@ import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
-import { home, switchMachine } from "../lib/machines";
+import { home } from "../lib/machines";
+import { goTo } from "./Servers";
 import { focused, machine, notify } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { orderSessions } from "../lib/session-order";
@@ -137,7 +138,7 @@ function Trouble() {
     return (
         <For each={trouble.list}>
             {(m) => (
-                <button class="om-h" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
+                <button class="om-h" title={`Go to ${m.name}`} onClick={() => goTo(m.name)}>
                     <span class="truncate">{m.name}</span>
                     <span class="om-n">{m.note}</span>
                 </button>
@@ -180,7 +181,7 @@ function tell(ev: Extract<ServerEvent, { type: "servers.notify" }>) {
     if ((onIt && !ev.lent) || !prefs.notifications) return;
     // On screen already, in the session that's open (lib/lent.ts).
     if (focused() && (ev.kind === "done" || (onIt && app.activeId === ev.sessionId))) return;
-    const open = () => (onIt ? void activate(ev.sessionId || undefined) : switchMachine(ev.name, ev.sessionId || undefined));
+    const open = () => (onIt ? void activate(ev.sessionId || undefined) : goTo(ev.name, ev.sessionId || undefined));
     // The machine first: the rest is the session's own words, and a long title is cut at its end.
     void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, open, { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
 }
