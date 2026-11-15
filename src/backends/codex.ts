@@ -2070,8 +2070,8 @@ export class CodexTurn {
         };
         if (!t.desktop || t.readOnly) return off();
         if (!computerUseSetUp(overrides.effective, overrides.config)) {
-            // Without provenance every plugin is off, set up or not: the warning about it says enough.
-            if (process.platform === "darwin" && !overrides.missingProvenance && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
+            // Said only where it isn't set up: one Cavvy turned off (a project's, or without provenance, with its own warning) is.
+            if (process.platform === "darwin" && !computerUseSetUp(overrides.effective) && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
             notSetUpSaid.add(t.sessionKey);
             return off();
         }

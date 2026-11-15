@@ -4772,6 +4772,15 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(notices(events).join("\n")).not.toContain("ChatGPT app");
     });
 
+    test.if(process.platform === "darwin")("set up, but also turned on by the project: off, without telling the person to set it up", async () => {
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(notices(events).join("\n")).not.toContain("ChatGPT app");
+    });
+
     test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
         process.env.FAKE_CU_APP = "com.apple.Terminal";
         process.env.FAKE_CU_APP_NAME = "Terminal";
