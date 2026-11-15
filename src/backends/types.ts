@@ -88,6 +88,8 @@ export interface BackendPermission {
      * keep a yes for besides this once. The person chooses (PermissionAnswer.persist), in every mode.
      */
     appPersist?: ("session" | "always")[];
+    /** With appPersist: the person allowed this app for the session already; allowed again unless a rule now denies it. */
+    appRemembered?: boolean;
 }
 
 export type PermissionAnswer =

@@ -4746,6 +4746,21 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(appAsks(asked)).toHaveLength(2);
     });
 
+    test("an app allowed for the session isn't asked about again, until a deny rule is added", async () => {
+        const settings: any = { ...on };
+        const { run, asked } = await makeAgent({ provider: "codex", settings, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
+        await run("one");
+        rmSync(LOG, { force: true });
+        await run("two");
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toEqual({ action: "accept", content: {}, _meta: { persist: "session" } });
+        settings.permissions = { deny: ["DesktopControl"] };
+        rmSync(LOG, { force: true });
+        await run("three");
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+    });
+
     test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
         process.env.FAKE_CU_APP = "com.apple.Terminal";
         process.env.FAKE_CU_APP_NAME = "Terminal";

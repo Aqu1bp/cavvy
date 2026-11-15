@@ -3339,6 +3339,8 @@ export class Agent {
             ruled = false;
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
+        // An app the user already allowed for the session, asked about again by the backend's computer use.
+        if (decision.appGrant !== undefined && req.appPersist && req.appRemembered) return { allow: true, persist: "session" };
         let title = req.title ?? tool.name;
         try {
             title = tool.title(input as any) || title;

@@ -2254,10 +2254,10 @@ export class CodexTurn {
         }
         if (ask.bundleId) this.appNames.set(ask.bundleId.toLowerCase(), ask.name);
         const key = (ask.bundleId ?? ask.name).toLowerCase();
-        const granted = sessionApps.get(this.t.sessionKey);
-        if (granted?.has(key)) return reply("accept", ask.persist.includes("session") ? "session" : undefined);
+        // Allowed for the session already: yes again without asking, once the rules have had their say (a deny added since).
+        const remembered = sessionApps.get(this.t.sessionKey)?.has(key) === true;
         // Its preview given here: DesktopControl's own would look the app up with Cavvy's helper, which Codex doesn't use.
-        const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: ask.name }, title: `Use ${ask.name}`, preview: { summary: `Use ${ask.name}` }, appPersist: ask.persist, agentLabel, ...this.subAsk(from) });
+        const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: ask.name }, title: `Use ${ask.name}`, preview: { summary: `Use ${ask.name}` }, appPersist: ask.persist, ...(remembered ? { appRemembered: true } : {}), agentLabel, ...this.subAsk(from) });
         const d = this.decision(a, ask.callId, from);
         if (d !== "accept") {
             // Codex goes on after a no to an MCP call (even "cancel"): the turn is stopped here, as the user asked.
