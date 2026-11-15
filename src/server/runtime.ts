@@ -736,6 +736,18 @@ export class Runtime {
             stored = undefined;
             this.ui.full();
         }
+        // Its latest turns from the store, built: what a window is sent, and what the session goes on from. One that
+        // can't be read (cut short, damaged: TurnStore.get) is let go of, and the session built from its logs instead.
+        let latest: Turn[] | undefined;
+        if (stored) {
+            try {
+                latest = stored.heads.slice(-KEEP_BUILT).map(({ at, len }) => store!.get<Turn>(at, len));
+            } catch {
+                store!.close();
+                stored = undefined;
+                this.ui.full();
+            }
+        }
         if (stored) {
             this.store = store;
             this.ids = Math.max(this.ids, stored.ids);
@@ -754,7 +766,7 @@ export class Runtime {
             });
             this.view = { state: this.initialState(), turns, agents };
             // The latest, built: what a window is sent, and what the session goes on from. (Sub-agents, when they change.)
-            for (const t of turns.slice(-KEEP_BUILT)) Object.assign(t, store!.get(this.storedAt.get(t)!.at, this.storedAt.get(t)!.len));
+            turns.slice(-KEEP_BUILT).forEach((t, i) => Object.assign(t, latest![i]));
             // The rest are heads already.
             this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
         } else {
@@ -882,6 +894,8 @@ export class Runtime {
      * turn came, the model's notice as a Claude Code session of 100,000 items opened, and held the server 1.1 s.)
      */
     private storeOlderSoon(store: TurnStore) {
+        // Another one before it (a rewind's turns put in afresh): its file let go of.
+        if (this.store && this.store !== store) this.store.close();
         this.store = store;
         this.storing = true;
         const run = ++this.storingRun;
@@ -1070,9 +1084,16 @@ export class Runtime {
         return this.liveOnly.size && x.blocks.some((b) => this.liveOnly.has(b.id)) ? { ...x, blocks: x.blocks.filter((b) => !this.liveOnly.has(b.id)) } : x;
     }
 
+    /** Turns let go of with nothing kept of them (only what was shown: a notice as the session opened). */
+    private shownOnly = new WeakSet<Turn>();
+
     private letGo(t: Turn) {
         if (this.changed.has(t) || !this.storedAt.has(t)) {
-            this.storedAt.set(t, this.store!.put(this.kept(t)));
+            const kept = this.kept(t);
+            // Only what was shown, not kept (a notice as the session opened): not in its index either (saveTurns).
+            if (!kept.blocks.length && !t.prompt && !t.archived && !t.imported) this.shownOnly.add(t);
+            else this.shownOnly.delete(t);
+            this.storedAt.set(t, this.store!.put(kept));
             this.changed.delete(t);
         }
         t.blocks = [];
@@ -1092,6 +1113,8 @@ export class Runtime {
         try {
             const heads: { head: TurnHead; at: number; len: number }[] = [];
             for (const t of all) {
+                // Let go of holding only what was shown: left out, as it is while it's built (below).
+                if (this.headOnly(t) && this.shownOnly.has(t)) continue;
                 if (!this.headOnly(t)) {
                     const kept = this.kept(t);
                     // A turn that held only what was shown (a notice as the session opened): not built again either.
@@ -1729,7 +1752,9 @@ export class Runtime {
             this.trimmedTo = Math.max(0, this.trimmedTo - 1);
         }
         // A turn gone by beyond the latest: let go of, once put in the store (started once a session has grown long).
-        if (o.op === "turn") {
+        // Not while the earlier turns are still being built (a first open's): that puts them all in the store once it's
+        // done. Started now as well, the build's would start it again from scratch, with these let go of already.
+        if (o.op === "turn" && !this.earlierBuilt) {
             if (this.store) this.trimBuilt();
             else if (this.view.turns.length > KEEP_BUILT + EXTRA_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
         }

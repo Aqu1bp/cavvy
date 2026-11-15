@@ -8,7 +8,7 @@
 // Written as the session is closed: a session opened again with its logs unchanged since opens from it. One whose
 // logs changed (a crash after the store was written, the session written to elsewhere) doesn't: it's built again.
 
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import type { UiLight } from "./history";
 import type { AgentRun, Turn } from "./protocol";
@@ -20,10 +20,11 @@ const COMPACT_SLACK = 8 * 1024 * 1024;
 /** How much of a log's end is kept, to tell later that it's the same log, unchanged. */
 const TAIL_BYTES = 256;
 
-/** What a log was when the store was written: its size and its last bytes. */
+/** What a log was when the store was written: which file (its inode), its size and its last bytes. */
 interface LogStamp {
     size: number;
     tail: string;
+    ino?: number;
 }
 
 /** A turn without its blocks: what the server keeps of a turn it isn't showing. */
@@ -49,11 +50,12 @@ function stamp(file: string): LogStamp {
         return { size: -1, tail: "" };
     }
     try {
-        const size = fstatSync(fd).size;
+        const st = fstatSync(fd);
+        const size = st.size;
         const n = Math.min(TAIL_BYTES, size);
         const b = Buffer.alloc(n);
         readSync(fd, b, 0, n, size - n);
-        return { size, tail: b.toString("base64") };
+        return { size, tail: b.toString("base64"), ino: st.ino };
     } finally {
         closeSync(fd);
     }
@@ -106,7 +108,8 @@ export class TurnStore {
         if (index.v !== VERSION || index.logs.length !== this.logs.length || !index.ui) return undefined;
         for (let i = 0; i < this.logs.length; i++) {
             const now = stamp(this.logs[i]!);
-            if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail) return undefined;
+            // Another file in its place (restored from a backup, synced) of the same size and end: not the one it was.
+            if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail || now.ino !== index.logs[i]!.ino) return undefined;
         }
         if (!existsSync(this.file)) return undefined;
         this.end = this.open();
@@ -117,15 +120,26 @@ export class TurnStore {
     get<T = Turn>(at: number, len: number): T {
         const fd = this.fd ?? (this.open(), this.fd!);
         const b = Buffer.allocUnsafe(len);
-        readSync(fd, b, 0, len, at);
-        return JSON.parse(b.toString("utf-8")) as T;
+        // Not all there (cut short, a power cut before it was on the disk), or not what was written: thrown, for the
+        // caller to build the session from its logs instead (and the index let go of, so the next open does).
+        if (readSync(fd, b, 0, len, at) !== len) {
+            this.forget();
+            throw new Error("The turn store is incomplete.");
+        }
+        try {
+            return JSON.parse(b.toString("utf-8")) as T;
+        } catch (e) {
+            this.forget();
+            throw e;
+        }
     }
 
     /** Put a turn (or a sub-agent) in the store (its latest): where it went. */
     put(t: Turn | AgentRun): { at: number; len: number } {
         if (this.fd === undefined) this.end = this.open();
         const b = Buffer.from(JSON.stringify(t) + "\n");
-        writeSync(this.fd!, b, 0, b.length, this.end);
+        // Written whole or not at all (a full disk): an index never points at a turn half written.
+        if (writeSync(this.fd!, b, 0, b.length, this.end) !== b.length) throw new Error("The turn store couldn't be written.");
         const at = this.end;
         this.end += b.length;
         return { at, len: b.length - 1 };
@@ -152,12 +166,13 @@ export class TurnStore {
             for (const k of kept) {
                 if (moved.has(k.at)) continue;
                 const b = Buffer.allocUnsafe(k.len + 1);
-                readSync(this.fd ?? (this.open(), this.fd!), b, 0, k.len, k.at);
+                const read = readSync(this.fd ?? (this.open(), this.fd!), b, 0, k.len, k.at);
                 b[k.len] = 0x0a;
-                writeSync(out, b, 0, b.length, end);
+                if (read !== k.len || writeSync(out, b, 0, b.length, end) !== b.length) throw new Error("The turn store couldn't be rewritten.");
                 moved.set(k.at, end);
                 end += b.length;
             }
+            fsyncSync(out);
         } finally {
             closeSync(out);
         }
@@ -182,6 +197,8 @@ export class TurnStore {
      */
     writeIndex(turns: { head: TurnHead; at: number; len: number }[], agents: StoredAgent[], ids: number, ui: UiLight) {
         const index: Index = { v: VERSION, logs: this.logs.map(stamp), ids, turns, agents, ui };
+        // On the disk before the index that points into it is (a power cut leaves no index over turns that aren't).
+        if (this.fd !== undefined) fsyncSync(this.fd);
         mkdirSync(dirname(this.indexFile), { recursive: true, mode: 0o700 });
         const tmp = `${this.indexFile}.${process.pid}.tmp`;
         writeFileSync(tmp, JSON.stringify(index), { mode: 0o600 });

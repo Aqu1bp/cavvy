@@ -72,20 +72,24 @@ export function FindBar(p: {
     // In the turns the window hasn't been sent: found where they are (counted the same way), asked again when the
     // query changes or turns come in. Asked with no query as the bar opens, so what's searched is ready by the time
     // something's typed.
-    const [elsewhere, setElsewhere] = createSignal<SessionFindMatch[]>([]);
+    // Tagged with the query they're for: until the answer for this one is in, the last query's aren't this one's.
+    const [elsewhere, setElsewhere] = createSignal<{ q: string; ms: SessionFindMatch[] }>({ q: "", ms: [] });
     let asking = 0;
     // The turns the window has folded, by id, changing only as one comes whole or another comes folded.
     const folded = createMemo(() => p.turns().filter((t) => t.folded).map((t) => t.id).join("\n"));
     createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded], ([q, earlier, first, ids]) => {
         const ask = ++asking;
-        if ((!earlier && !ids) || !first) return setElsewhere([]);
-        void p.elsewhere(q, first, ids ? ids.split("\n") : []).then((ms) => ask === asking && setElsewhere(ms), () => ask === asking && setElsewhere([]));
+        if ((!earlier && !ids) || !first) return setElsewhere({ q, ms: [] });
+        void p.elsewhere(q, first, ids ? ids.split("\n") : []).then((ms) => ask === asking && setElsewhere({ q, ms }), () => ask === asking && setElsewhere({ q, ms: [] }));
     }));
+    /** What the server found for this query is in (or there's nothing it has that the window doesn't). */
+    const answered = () => elsewhere().q === findQuery();
     const matches = createMemo(() => {
         const q = findQuery();
         edits();
         folded();
-        const there = elsewhere();
+        const e = elsewhere();
+        const there = e.q === q ? e.ms : [];
         return untrack(() => allMatches(p.turns(), q, there));
     });
 
@@ -185,10 +189,13 @@ export function FindBar(p: {
 
     let counted: string | undefined;
     // A jump while open, on what it was already finding.
-    createEffect(on(p.anchor, (a) => a && takeAnchor(untrack(matches)), { defer: true }));
+    // (A jump's turn is often folded: its matches are the server's, so it waits for them.)
+    createEffect(on(p.anchor, (a) => a && untrack(answered) && takeAnchor(untrack(matches)), { defer: true }));
     createEffect(
         on(matches, (ms) => {
             const q = untrack(findQuery);
+            // A jump waiting for the server's answer for its query: nothing moves until it's in.
+            if (untrack(p.anchor) && !untrack(answered)) return;
             const again = q === counted;
             counted = q;
             if (takeAnchor(ms)) return;

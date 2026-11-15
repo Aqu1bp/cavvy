@@ -19,6 +19,7 @@ const { writeThread } = await import("../scripts/perf-thread");
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
 const { findKeeping } = await import("../src/server/runtime");
 // What Find searches, let go of soon after it was used (as it is a while after: runtime.ts findKeeping).
+const keptFor = findKeeping.ms;
 findKeeping.ms = 300;
 
 const SMALL = 3_000;
@@ -68,7 +69,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const kept = heap() - before;
     expect(open.msg.result.earlier).toBeGreaterThan(0);
     // Find, in the turns the window doesn't have (session.find): a query found once, whatever the session's size.
-    const find = process.env.NOFIND ? { bytes: 0, msg: { result: { matches: [1] } } } as any : await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
+    const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
     expect(find.msg.result.matches).toHaveLength(1);
     // Kept while it's open: once its turns are in its store (a slice at a time after it opened) and Find has let go.
     let keptOpen = heap() - before;
@@ -144,6 +145,8 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+    // Other test files run in the same process (a CI shard): as it was.
+    findKeeping.ms = keptFor;
     ws?.close();
     await srv?.stop();
     mock?.stop();
@@ -212,11 +215,12 @@ describe("a Claude Code session", () => {
 
 // A session whose GUI log passes 2 GiB (whole files written, long diffs, sub-agents that run long: the worst the app
 // keeps of each) opens with all its steps: the log was read into one string, which can't be that long, and the read's
-// failure was taken for an empty log. It writes 2.2 GB and takes a while: set CAVVY_PERF_HUGE=1 to run it.
-(process.env.CAVVY_PERF_HUGE ? test.failing : test.skip)("a session whose log passes 2 GiB opens with its work", async () => {
+// failure was taken for an empty log. It writes 2.3 GB and takes a while: set CAVVY_PERF_HUGE=1 to run it. (100,000
+// items came to 1.9 GB, under 2 GiB: it passed as failing without ever reaching what it's about.)
+(process.env.CAVVY_PERF_HUGE ? test : test.skip)("a session whose log passes 2 GiB opens with its work", async () => {
     const cwd = join(tempDir("cavvy-perf-huge-"), "project");
     mkdirSync(cwd, { recursive: true });
-    const t = writeThread({ cwd, items: 100_000, kind: "cli", heavy: true, seed: 3 });
+    const t = writeThread({ cwd, items: 120_000, kind: "cli", heavy: true, seed: 3 });
     expect(t.uiBytes).toBeGreaterThan(2 ** 31);
     // As the window opens one (gui/src/state/app.ts: OPEN_TURNS, OPEN_BYTES).
     const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });

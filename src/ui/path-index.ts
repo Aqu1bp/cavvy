@@ -201,6 +201,21 @@ function grown<T extends Uint32Array | Float64Array>(a: T): T {
     return b;
 }
 
+/**
+ * Where its name is in a path lower-cased (beyond ASCII, a character can lower-case to two: "İ"), as it's scored: the
+ * name's place in the path as written is another one there.
+ */
+function nameIn(l: string): { from: number; end: number } {
+    const end = l.endsWith("/") ? l.length - 1 : l.length;
+    return { from: l.lastIndexOf("/", end - 1) + 1, end };
+}
+
+/**
+ * Where folders' hashes start (FNV-1a's basis), other each time: a repository's names can't be made to all land on one
+ * slot of the table they're found in again (each such name made it look through all the others before it).
+ */
+const DIR_SEED = crypto.getRandomValues(new Uint32Array(1))[0]!;
+
 export class PathIndex {
     /**
      * Each path lower-cased, a line each, as bytes: found in by the engine's own search, with no string to reach for
@@ -221,7 +236,7 @@ export class PathIndex {
     /** Each path's length. */
     private len = new Uint32Array(0);
     /** Those beyond ASCII, by their place: as written, and lower-cased. */
-    private wide = new Map<number, { p: string; l: string }>();
+    private wide = new Map<number, { p: string; l: string; from: number; end: number }>();
     /** Each path's place among all of a project's paths, when this has a part of them (take's `first`). */
     private keys?: Float64Array;
     /**
@@ -294,7 +309,7 @@ export class PathIndex {
         const masks = new Uint32Array(n);
         const most = new Float64Array(n);
         const len = new Uint32Array(n);
-        const wide = new Map<number, { p: string; l: string }>();
+        const wide = new Map<number, { p: string; l: string; from: number; end: number }>();
         const keys = keyed ? new Float64Array(n) : undefined;
         let at = 0;
         for (let i = 0; i < n; i++) {
@@ -308,7 +323,7 @@ export class PathIndex {
             // length lower-cased is its own but beyond ASCII, where it's its string's.)
             if (NON_ASCII.test(p)) {
                 const l = p.toLowerCase();
-                wide.set(i, { p, l });
+                wide.set(i, { p, l, ...nameIn(l) });
                 masks[i] = charMask(l);
                 most[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
             } else {
@@ -396,7 +411,7 @@ export class PathIndex {
         for (let k = 0; k < nf; k++) {
             const from = fileFrom[k]!;
             const end = from + fileLen[k]!;
-            let h = 2166136261;
+            let h = DIR_SEED;
             for (let j = from; j < end; j++) {
                 h = Math.imul(h ^ src[j]!, 16777619) >>> 0;
                 // A "/" not first: a folder up to it.
@@ -448,7 +463,7 @@ export class PathIndex {
         const masks = new Uint32Array(n);
         const mostOf = new Float64Array(n);
         const len = new Uint32Array(n);
-        const wide = new Map<number, { p: string; l: string }>();
+        const wide = new Map<number, { p: string; l: string; from: number; end: number }>();
         const keys = keyed ? new Float64Array(n) : undefined;
         const text = new TextDecoder();
         let at = 0;
@@ -487,7 +502,7 @@ export class PathIndex {
                 len[i] = p.length;
                 baseEnd[i] = end;
                 baseFrom[i] = p.lastIndexOf("/", end - 1) + 1;
-                wide.set(i, { p, l });
+                wide.set(i, { p, l, ...nameIn(l) });
                 masks[i] = charMask(l);
                 mostOf[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
             }
@@ -527,8 +542,8 @@ export class PathIndex {
             if (best.length > limit) best.pop();
         };
         // In a path's string (one beyond ASCII), as before.
-        const scoreWide = (i: number, w: { l: string }) => {
-            const base = scoreIn(q, w.l, this.baseFrom[i]!, this.baseEnd[i]!);
+        const scoreWide = (i: number, w: { l: string; from: number; end: number }) => {
+            const base = scoreIn(q, w.l, w.from, w.end);
             const s = Math.max(scoreIn(q, w.l, 0, w.l.length), base >= 0 ? base + 50 : -1);
             if (s > 0) consider(i, s - this.len[i]! * 0.05);
         };
