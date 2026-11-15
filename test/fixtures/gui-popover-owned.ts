@@ -17,7 +17,7 @@ Object.assign(globalThis, {
 
 const Popover = componentCode("Popover", {
     ...solid, node, Show: "Show", Portal: "Portal",
-    mountMenu: () => () => {}, placePopover: () => ({ top: 0, left: 0 }), sp: (n: number) => n, settingsTab: () => undefined,
+    mountMenu: () => () => {}, placePopover: () => ({ top: 0, left: 0 }), sp: (n: number) => n, settingsTab: () => undefined, usePane: () => ({ parked: () => false }),
 }, undefined, "ui/Popover");
 
 const [picked, setPicked] = solid.createSignal(false);

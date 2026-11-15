@@ -4,6 +4,7 @@ import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
 import { sp } from "../../state/prefs";
 import { settingsTab } from "../../state/ui";
+import { usePane } from "../../state/split";
 
 export interface PopoverProps {
     open: boolean;
@@ -94,6 +95,12 @@ export function Popover(p: PopoverProps) {
     // when that went, and one opened while it's covered (a shortcut, say) closes at once.
     createEffect(() => {
         if (settingsTab() && open() && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
+    });
+    // Its session switched away from by a key, kept out of sight (Panes.tsx): closed as it would be with the session gone,
+    // not left over the next one, acting on this one.
+    const pane = usePane();
+    createEffect(() => {
+        if (pane.parked() && open()) p.onClose();
     });
 
     onMount(() => {
