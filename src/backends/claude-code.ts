@@ -2002,8 +2002,8 @@ class ClaudeTurn {
      * their answers, calling back (hook_callback) for each.
      */
     private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
-        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode (claude-helper-guard.ts).
-        return withHelperGuard(this.userHooks().hooks);
+        // A command naming Cavvy's helper for Mac apps comes to Cavvy in every mode, where there can be one (claude-helper-guard.ts).
+        return this.t.desktopGuard ? withHelperGuard(this.userHooks().hooks) : this.userHooks();
     }
 
     private userHooks(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
@@ -2112,7 +2112,7 @@ export function splitPreamble(prompt: string, preamble?: string): { preamble?: s
 }
 
 /** What claudeArgs reads of a turn: its spawn settings. */
-export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" | "resumeId" | "forkSession" | "maxTurns" | "additionalDirectories" | "pluginDirs" | "readOnly" | "trusted" | "agents" | "rules" | "orchestrator" | "fastMode" | "cwd" | "approvedMcpServers" | "hooks">;
+export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" | "resumeId" | "forkSession" | "maxTurns" | "additionalDirectories" | "pluginDirs" | "readOnly" | "trusted" | "agents" | "rules" | "orchestrator" | "fastMode" | "cwd" | "approvedMcpServers" | "hooks" | "desktopGuard">;
 
 /**
  * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the

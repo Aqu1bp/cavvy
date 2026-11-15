@@ -78,6 +78,7 @@ import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMon
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { DesktopSession } from "../desktop/session";
+import { desktopGuardWanted } from "../backends/claude-helper-guard";
 import { DESKTOP_INSTRUCTIONS, DesktopControlTool, desktopServerTools, nativeDesktopCall, servedDesktopName } from "../tools/desktop-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
@@ -1697,6 +1698,7 @@ export class Agent {
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
             // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
             hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
+            desktopGuard: this.model.provider === "claude-code" && desktopGuardWanted(s),
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             // Codex's own computer use goes with Cavvy's Mac apps setting (src/backends/codex-computer-use.ts).
