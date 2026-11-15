@@ -232,3 +232,15 @@
         opacity: 0;
     }
 }
+
+/* The session shown before, kept to be shown again as it was (Panes.tsx). Its conversation keeps its style and layout:
+   shown again, nothing is worked out again unless the window's size changed meanwhile. Its title bar goes; it's
+   small. Each by name: a rule for "everything under it" would have the shown one's style worked out whole again too,
+   each time it's parked or shown. */
+.panes > .stage-pane[data-parked] > .header {
+    display: none;
+}
+
+.panes > .stage-pane[data-parked] > .stage {
+    content-visibility: hidden;
+}

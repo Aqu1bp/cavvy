@@ -107,7 +107,7 @@ try {
     const js = async (expression: string) => (await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })).result?.result?.value;
 
     // 1. Startup: the window up, and the composer there to type in.
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(20); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(20); }
     const interactive = Math.round(performance.now() - spawnedAt);
     await sleep(1500);
     report.startup = { ...(await metrics())?.marks, interactiveFromSpawn: interactive };
@@ -118,15 +118,15 @@ try {
 
     // 3. The agent browses the demo site (the floating view shows it).
     const turnAt = performance.now();
-    for (let attempt = 0; attempt < 10 && !(await js(`(document.querySelector('.transcript')?.innerText ?? '').includes('check the app in the browser')`)); attempt++) {
-        await js(`(() => { const box = document.querySelector('textarea[aria-label="Message"]'); box.value = 'check the app in the browser'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    for (let attempt = 0; attempt < 10 && !(await js(`(document.querySelector('.transcript:not([data-parked] *)')?.innerText ?? '').includes('check the app in the browser')`)); attempt++) {
+        await js(`(() => { const box = document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)'); box.value = 'check the app in the browser'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
         await sleep(300);
         await js(`document.querySelector('button[aria-label="Send"]')?.click()`);
         await sleep(1000);
     }
     for (let i = 0; i < 200 && !(await js(`!!document.querySelector('button[title="Allow once"]')`)); i++) await sleep(50);
     await js(`document.querySelector('button[title="Allow once"]')?.click()`);
-    for (let i = 0; i < 400 && !(await js(`/Subscribed \\(1\\)/.test(document.querySelector('.transcript')?.innerText ?? '')`)); i++) await sleep(50);
+    for (let i = 0; i < 400 && !(await js(`/Subscribed \\(1\\)/.test(document.querySelector('.transcript:not([data-parked] *)')?.innerText ?? '')`)); i++) await sleep(50);
     report.agentTurnMs = Math.round(performance.now() - turnAt);
     await sleep(6000);
     await sample("afterAgentBrowsed");
@@ -200,7 +200,7 @@ try {
     await sleep(3000);
     const sampled = sample("multiSession");
     for (let i = 0; i < 30; i++) {
-        await js(`document.querySelector('textarea[aria-label="Message"]')?.focus()`);
+        await js(`document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')?.focus()`);
         await cdp("Input.insertText", { text: "x" });
         await sleep(250);
     }
@@ -219,7 +219,7 @@ try {
     });
     report.webviewsAdded = views.length;
     report.multiSessionSmoothness = { turnsStarted: turns, frames: mf.length, p50ms: Math.round(ms[Math.floor(ms.length * 0.5)] ?? 0), p95ms: Math.round(ms[Math.floor(ms.length * 0.95)] ?? 0), maxms: Math.round(ms.at(-1) ?? 0), over20ms: mf.filter((f) => f > 20).length, longTasks: ml.length, longTaskMs: Math.round(ml.reduce((a, b) => a + b, 0)), keyToPaintP50ms: Math.round(ks[Math.floor(ks.length * 0.5)] ?? 0), keyToPaintP95ms: Math.round(ks[Math.floor(ks.length * 0.95)] ?? 0), keys: ks.length };
-    await js(`(() => { const t = document.querySelector('textarea[aria-label="Message"]'); if (t) { t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); } })()`);
+    await js(`(() => { const t = document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)'); if (t) { t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); } })()`);
     for (let i = 0; i < 60; i++) {
         const list = ((await call("sessions.list", {})).result ?? []) as { id: string; status?: string }[];
         if (!work.some((w) => list.find((x) => x.id === w.id)?.status === "running")) break;

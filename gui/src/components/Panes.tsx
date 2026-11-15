@@ -1,6 +1,7 @@
 // The stage's sessions: the one in view, or two side by side (state/split.ts). Each is a pane of its own, kept by its
 // session's id: a second one coming or going, or the other one replaced, leaves a pane's conversation as it was.
-// While a session is dragged from the rail, the stage shows where it would go.
+// While a session is dragged from the rail, the stage shows where it would go. The one shown before stays, out of sight
+// (parked): switched back to, it's there as it was, nothing built or laid out again.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
 import { activate, app, handleFor, type SessionHandle } from "../state/app";
@@ -37,7 +38,7 @@ function SessionView(p: { handle: SessionHandle }) {
     const key = {};
     createEffect(() => {
         const h = dockH();
-        if (h !== undefined) paneDock(key, h);
+        if (h !== undefined) paneDock(key, pane.parked() ? undefined : h);
     });
     onCleanup(() => paneDock(key, undefined));
     return (
@@ -89,10 +90,10 @@ function OpeningPane(p: { id: string }) {
     );
 }
 
-/** `share`: how much of the column it is (1 alone). */
-function Pane(p: { id: string; first: boolean; last: boolean; share: number }) {
+/** `share`: how much of the column it is (1 alone). `parked`: the one shown before, kept out of sight (Panes). */
+function Pane(p: { id: string; first: boolean; last: boolean; share: number; parked: boolean }) {
     const inSplit = () => Boolean(split());
-    const focused = () => !inSplit() || app.activeId === p.id;
+    const focused = () => !p.parked && (!inSplit() || app.activeId === p.id);
     const handle = () => handleFor(p.id);
     // A sub-agent's view, in a split: each pane keeps its own (state/split.ts). Alone, App.tsx shows it in place of the pane.
     const agent = () => {
@@ -108,7 +109,7 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number }) {
         wasFocused = focused();
         if (!wasFocused) focusPane(p.id);
     };
-    const ctx = { id: p.id, focused, split: inSplit, rightmost: () => p.last, share: () => p.share, wasFocused: () => wasFocused };
+    const ctx = { id: p.id, focused, parked: () => p.parked, split: inSplit, rightmost: () => p.last, share: () => p.share, wasFocused: () => wasFocused };
     // In a split each pane has the steps of its own width (shell.css, lib/layout.ts); alone, the column's are on .main.
     const narrow = createMemo(() => (inSplit() && shellLayout().sheet.w ? columnSteps(shellLayout().column.w * p.share, PANE_NARROW) : undefined));
     // Its title bar's own: the first one's holds the rail's buttons where the rail isn't docked and shown (header.css).
@@ -125,6 +126,7 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number }) {
                 data-focused={inSplit() ? (focused() ? "on" : "off") : undefined}
                 data-narrow={narrow()}
                 data-bar={bar()}
+                data-parked={p.parked ? "" : undefined}
                 aria-label={inSplit() ? titleOf(p.id) : undefined}
                 ref={(el) => el.addEventListener("pointerdown", take, true)}
                 onFocusIn={() => {
@@ -278,14 +280,45 @@ function SplitBar(p: { left: number }) {
 export function Panes(p: { single?: SessionHandle }) {
     /** The left one's share of the column: as dragged now, or as it was left; kept within each one's least. */
     const left = createMemo(() => splitShare(splitDrag() ?? splitRatio(), shellLayout().column.w));
-    const ids = createMemo(() => splitIds() ?? (p.single ? [p.single.id] : []), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
+    const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
+    /**
+     * The one shown before, alone: switched back to (the usual way back and forth between two), it's shown as it was
+     * left, with its style and layout kept (stage.css), rather than built again from its turns. Only while its session
+     * is idle: one streaming out of sight would spend each frame on what nobody sees. One, not more: each kept costs what
+     * its conversation does.
+     */
+    let before: string | undefined;
+    let last: string | undefined;
+    /** The panes in the order they were put in: one moved in the page would lose what it kept. */
+    let order: string[] = [];
+    const ids = createMemo(() => {
+        const both = splitIds();
+        const now = p.single?.id;
+        if (last !== now) {
+            if (last) before = last;
+            last = now;
+        }
+        if (both) return (order = [...both]);
+        // Only one already built: one let go of (it went busy) isn't built again out of sight when it's idle again.
+        const h = before !== now && order.includes(before!) ? handleFor(before) : undefined;
+        const want = [now, h && !h.view.state.busy ? h.id : undefined].filter((id): id is string => id !== undefined);
+        order = [...order.filter((id) => want.includes(id)), ...want.filter((id) => !order.includes(id))];
+        return order;
+    }, undefined, { equals: same });
+    /** Those in sight: the split's two, or the one. */
+    const shown = createMemo(() => (split() ? ids() : ids().filter((id) => id === p.single?.id)), undefined, { equals: same });
     const dropping = () => {
         const id = draggedSession();
         return id && canDrop(id) ? id : undefined;
     };
     return (
         <div class="panes" data-split={split() ? "" : undefined} style={split() ? { "grid-template-columns": `minmax(0, ${left() * 100}%) minmax(0, 1fr)` } : undefined}>
-            <For each={ids()}>{(id, i) => <Pane id={id} first={i() === 0} last={i() === ids().length - 1} share={ids().length < 2 ? 1 : i() === 0 ? left() : 1 - left()} />}</For>
+            <For each={ids()}>
+                {(id) => {
+                    const i = () => shown().indexOf(id);
+                    return <Pane id={id} parked={i() < 0} first={i() <= 0} last={i() < 0 || i() === shown().length - 1} share={shown().length < 2 ? 1 : i() === 0 ? left() : 1 - left()} />;
+                }}
+            </For>
             <Show when={split()}>
                 <SplitBar left={left()} />
             </Show>

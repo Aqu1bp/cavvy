@@ -103,20 +103,20 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         await page("Emulation.setDeviceMetricsOverride", { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
         await page("Page.addScriptToEvaluateOnNewDocument", { source: COUNT_GLIDES });
         await page("Page.navigate", { url: `http://127.0.0.1:${port}/#token=${TOKEN}` });
-        await until("the composer", 30_000, () => js(`!!document.querySelector("textarea")`));
+        await until("the composer", 30_000, () => js(`!!document.querySelector("textarea:not([data-parked] *)")`));
         // The app settles (its model and project known) before it takes a prompt.
         await sleep(1500);
 
         const enter = async () => { for (const type of ["keyDown", "keyUp"]) await page("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) }); };
         const send = async (prompt: string) => {
-            await js(`document.querySelector("textarea").focus()`);
+            await js(`document.querySelector("textarea:not([data-parked] *)").focus()`);
             await page("Input.insertText", { text: prompt });
-            await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`));
+            await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea:not([data-parked] *)")?.value === ${JSON.stringify(prompt)}`));
             await enter();
             await until("the reply to start", 45_000, async () => {
                 if (await js(`!!document.querySelector(".md.streaming")`)) return true;
                 // Not taken (the composer wasn't ready for it): the prompt is still there to send.
-                if (await js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`)) await enter();
+                if (await js(`document.querySelector("textarea:not([data-parked] *)")?.value === ${JSON.stringify(prompt)}`)) await enter();
                 return false;
             });
         };
@@ -127,7 +127,7 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
             let last;
             const frame = () => {
                 if (!document.querySelector(".md.streaming")) return;
-                const top = [...document.querySelectorAll(".transcript [data-turn]")].at(-1)?.getBoundingClientRect().top;
+                const top = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1)?.getBoundingClientRect().top;
                 if (last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
                 last = top;
                 requestAnimationFrame(frame);
@@ -144,8 +144,8 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         expect(await js(`window.__down`)).toEqual([]);
         expect(await js(`window.__resizeLoops`)).toBe(0);
         const { glides, replyHeight, viewHeight } = await js(`(() => {
-            const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
-            return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript").clientHeight };
+            const turn = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1);
+            return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript:not([data-parked] *)").clientHeight };
         })()`);
         const screens = replyHeight / viewHeight;
         expect(screens).toBeGreaterThan(2.5);
@@ -176,7 +176,7 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
             let el, last;
             const frame = () => {
                 if (!window.__watch) return;
-                const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
+                const turn = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1);
                 const md = [...(turn?.querySelectorAll(".md") ?? [])].at(-1);
                 const top = md?.getBoundingClientRect().top;
                 if (turn?.getAttribute("aria-busy") === "true" && md === el && last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
@@ -214,11 +214,11 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         const long = await js(`document.querySelector("[data-session-id].cur")?.dataset.sessionId`);
         expect(typeof long).toBe("string");
         await js(`document.querySelector(".nav-row[title^='New session']").click()`);
-        await until("a new session's composer", 10_000, () => js(`!document.querySelector(".transcript article.turn")`));
+        await until("a new session's composer", 10_000, () => js(`!document.querySelector(".transcript:not([data-parked] *) article.turn")`));
         await send("a short one");
         await until("the short reply to finish", 60_000, finished);
         await page("Page.reload");
-        await until("the short session again", 30_000, () => js(`!!document.querySelector(".transcript .user-bubble") && document.querySelector("[data-session-id='${long}']") !== null`));
+        await until("the short session again", 30_000, () => js(`!!document.querySelector(".transcript:not([data-parked] *) .user-bubble") && document.querySelector("[data-session-id='${long}']") !== null`));
         await sleep(1500);
         await js(`(() => {
             window.__frames = [];
@@ -230,7 +230,7 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
                 probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
                 const ro = new ResizeObserver(() => {
                     ro.disconnect();
-                    const sc = document.querySelector(".transcript");
+                    const sc = document.querySelector(".transcript:not([data-parked] *)");
                     const said = [...(sc?.querySelectorAll(".user-bubble") ?? [])].at(-1)?.textContent ?? "";
                     const which = said.includes("perfreply 60000") ? "long" : said.includes("a short one") ? "short" : "blank";
                     window.__frames.push(which === "long" ? which + (sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 1 ? "@end" : "@" + Math.round(sc.scrollTop)) : which);

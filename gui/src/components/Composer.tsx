@@ -236,8 +236,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenuDismissedFor(undefined);
         focusSoon();
     }));
-    // Back from Settings, which keeps this mounted under it: focused as when it opened.
+    // Back from Settings, which keeps this mounted under it, or shown again after being kept out of sight (Panes.tsx):
+    // focused as when it opened.
     createEffect(on(settingsTab, (tab, was) => { if (was && !tab) focusSoon(); }, { defer: true }));
+    createEffect(on(pane.parked, (parked, was) => { if (was && !parked) focusSoon(); }, { defer: true }));
     createEffect(() => {
         const selected = menuSel();
         const items = menu();

@@ -230,6 +230,13 @@
     content-visibility: auto;
 }
 
+/* A row put in again at the size it had (work-rendering.ts): drawn first wherever it's read from, often in view at once.
+   What it brings in (a step rising in) came in long ago: its one-time animations start already over, in that first
+   frame. Endless ones (a shimmer) only start at another point in their loop. */
+:is([data-work-again], [data-work-again] *) {
+    animation-delay: -60s !important;
+}
+
 /* A turn a steer ended: the next one carries straight on, so they sit close. */
 .turn.chained {
     padding-bottom: calc(6 * var(--sp));

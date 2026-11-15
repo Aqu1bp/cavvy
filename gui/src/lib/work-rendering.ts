@@ -8,6 +8,8 @@ import { settlingObserver, type SettlingObserver } from "./settling-observer";
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
 const FAR = "data-work-far";
+/** Put in again at a remembered size (shown before): what it brings in (a step rising in) came in long ago, so it starts already over (transcript.css). */
+const AGAIN = "data-work-again";
 /** A turn a screen or more from the view (Transcript.tsx): its rows skip their layout with it, so they aren't watched. */
 const TURN_FAR = "data-far";
 const MIN_ROWS = 80;
@@ -39,8 +41,7 @@ const turnOf = (el: HTMLElement) => el.closest<HTMLElement>("[data-turn]")?.data
  */
 export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true, session?: string) {
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
-    /** `again`: skipped as it was put in, at its remembered size (shown before): its entrances end as it first comes near. */
-    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean; again?: boolean }>();
+    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
     let io: SettlingObserver | undefined;
     let ro: ResizeObserver | undefined;
@@ -117,20 +118,10 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                 if (!row.near) going.push(el);
             }
             skip(going);
-            const first: HTMLElement[] = [];
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
-                const row = rows.get(el);
-                if (!row?.near) continue;
-                el.removeAttribute(FAR);
-                if (row.again) {
-                    row.again = false;
-                    first.push(el);
-                }
+                if (rows.get(el)?.near) el.removeAttribute(FAR);
             }
-            // Drawn for the first time since it was put in again: what it brings in (a step rising in) came in long ago.
-            // Ended now, while it's still a screen away, rather than played as it scrolls into view.
-            finishEntrancesIn(first);
             const moved = above.reduce((sum, { el, height }) => sum + el.getBoundingClientRect().height - height, 0);
             if (Math.abs(moved) > 0.5) shift(moved);
         };
@@ -163,6 +154,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         unwatch(el);
         el.removeAttribute(TRACKED);
         el.removeAttribute(FAR);
+        el.removeAttribute(AGAIN);
         el.style.containIntrinsicBlockSize = row.intrinsic;
         rows.delete(el);
     };
@@ -225,7 +217,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         for (const [el, row, h] of known) {
             row.height = h;
             row.near = false;
-            row.again = true;
+            el.setAttribute(AGAIN, "");
             el.style.containIntrinsicBlockSize = `auto ${h}px`;
             el.setAttribute(TRACKED, "sized");
             el.setAttribute(FAR, "");
