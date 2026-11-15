@@ -90,6 +90,11 @@ export interface BackendPermission {
     appPersist?: ("session" | "always")[];
     /** With appPersist: the person allowed this app for the session already; allowed again unless a rule now denies it. */
     appRemembered?: boolean;
+    /**
+     * Only the person answers it, this once: no allow rule, mode, hook, reviewer or earlier yes does; a deny rule still
+     * refuses it (a computer-use call whose code names Cavvy's helper for Mac apps).
+     */
+    personOnly?: boolean;
 }
 
 export type PermissionAnswer =

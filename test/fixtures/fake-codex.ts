@@ -57,7 +57,7 @@
 //                     computer-use: a js call on the ChatGPT app's cua_repl, which asks (as measured with Codex 0.167
 //                     and ChatGPT 26.1106) Codex's own approval of the call, then the server's approval of an app
 //                     (FAKE_CU_APP bundle id, FAKE_CU_APP_NAME), or (FAKE_CU_URL=1) a link to open; FAKE_CU_TWICE=1
-//                     makes a second call that asks for the same app; FAKE_CU_UNKNOWN=1 asks something of a shape not
+//                     makes a second call that asks for the same app; FAKE_CU_CODE is the call's code; FAKE_CU_UNKNOWN=1 asks something of a shape not
 //                     known (no app named) in its place; each answer is logged as {cuAnswer}
 // FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
@@ -754,10 +754,16 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const app = process.env.FAKE_CU_APP ?? "com.apple.TextEdit";
         const name = process.env.FAKE_CU_APP_NAME ?? "TextEdit";
         for (let n = 0; n < (process.env.FAKE_CU_TWICE === "1" ? 2 : 1); n++) {
-            const item = { type: "mcpToolCall", id: `exec-${turnId}-${n}`, server: "cua_repl", tool: "js", arguments: { code: "await sky.get_app_state({ app })", title: "Type a note" }, status: "inProgress", result: null, error: null, pluginId: null };
+            const item = { type: "mcpToolCall", id: `exec-${turnId}-${n}`, server: "cua_repl", tool: "js", arguments: { code: process.env.FAKE_CU_CODE ?? "await sky.get_app_state({ app })", title: "Type a note" }, status: "inProgress", result: null, error: null, pluginId: null };
+            // Cavvy's PreToolUse hook, where Codex runs it, sees the call first (as Codex 0.167 runs it for MCP tools too).
+            const hooked = await preToolUse(threadId, turnId, "mcp__cua_repl__js", item.arguments, item.id);
+            if (hooked.deny !== undefined) {
+                log({ cuBlocked: hooked.deny });
+                continue;
+            }
             notify("item/started", { threadId, turnId, item });
-            // Codex's own question about the call (its approval policy asks for MCP tools).
-            const call = await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
+            // Codex's own question about the call: in auto mode its reviewer answers it (measured), otherwise Cavvy.
+            const call = policy.approvalsReviewer === "auto_review" ? { action: "accept", content: {}, _meta: null } : await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
             log({ cuAnswer: call });
             const asked =
                 process.env.FAKE_CU_UNKNOWN === "1"

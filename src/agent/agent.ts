@@ -3315,6 +3315,11 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        // The backend says only the person answers this one: as a command naming Cavvy's helper is, past all but deny rules.
+        if (req.personOnly && decision.behavior !== "deny") {
+            decision = { ...decision, behavior: "ask", personOnly: true, everyTime: true, dangerous: true, reason: "This names Cavvy's helper for Mac apps, which can act in any app." };
+            ruled = false;
+        }
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -3394,7 +3399,8 @@ export class Agent {
         if (answer.allow) {
             const grant = answer.grant ? ask.grant : undefined;
             // A yes to part of a call isn't one to the next call that looks the same.
-            if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
+            // A yes the person alone gives covers this call only.
+            if (!req.incomplete && !decision.personOnly) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
             return { allow: true, mode: answer.setMode, ...(ask.appPersist && answer.persist ? { persist: answer.persist } : {}) };
         }

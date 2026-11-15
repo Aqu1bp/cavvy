@@ -2011,8 +2011,10 @@ export class CodexTurn {
         }
         // Cavvy's helper for Mac apps, named in a command: the person answers it, in every mode. Codex runs some
         // commands without asking (auto, bypass): this hook runs before each of them all the same.
-        if (this.namesHelper(call.toolName, call.input)) {
-            const a = await this.cliSession.permission({ toolName: call.toolName, input: call.input, callId: id, agentLabel, ...this.subAsk(from) });
+        // Asked already (Codex's own approval of a computer-use call can come first): once is enough.
+        if (this.namesHelper(call.toolName, call.input) && !(id && this.personAllowed.has(id))) {
+            const mcp = call.toolName !== "Bash";
+            const a = await this.cliSession.permission({ toolName: call.toolName, input: call.input, callId: id, ...(mcp ? { personOnly: true } : {}), agentLabel, ...this.subAsk(from) });
             if (!a.allow) {
                 if (a.stop) this.interrupt(from);
                 return deny(a.message || "Denied.");
@@ -2023,9 +2025,15 @@ export class CodexTurn {
         return preToolUseAnswer({ context });
     }
 
-    /** A shell command naming Cavvy's helper for Mac apps, while the guard is on. */
+    /**
+     * A shell command naming Cavvy's helper for Mac apps, or a call of Codex's computer use (its `js` code, any of its
+     * arguments) that does, while the guard is on.
+     */
     protected namesHelper(toolName: string, input: Record<string, unknown>): boolean {
-        return this.guardsHelper && toolName === "Bash" && typeof input.command === "string" && namesDesktopHelper(input.command);
+        if (!this.guardsHelper) return false;
+        if (toolName === "Bash") return typeof input.command === "string" && namesDesktopHelper(input.command);
+        const server = /^mcp__(.+?)__/.exec(toolName)?.[1];
+        return isComputerUseServer(server) && Object.values(input).some((v) => typeof v === "string" && namesDesktopHelper(v));
     }
 
     /**
@@ -2233,12 +2241,16 @@ export class CodexTurn {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
             // In bypass Codex asks only so its computer use's app approvals reach the person (codexPolicy): the mode decides the rest.
             const hooksOnly = this.computerUse && (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" ? true : undefined;
+            // A computer-use call whose code names Cavvy's helper: the person alone, once (the PreToolUse hook may have asked already).
+            const helper = call !== undefined && this.namesHelper(call.name, call.input);
+            if (helper && call.id && this.personAllowed.delete(call.id)) return reply("accept", {});
             const a = await this.cliSession.permission(
                 call
-                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, hooksOnly, ...this.subAsk(from) }
+                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, ...(helper ? { personOnly: true } : { hooksOnly }), ...this.subAsk(from) }
                     : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, hooksOnly, ...this.subAsk(from) },
             );
             const d = this.decision(a, call?.id, from);
+            if (helper && d === "accept" && call.id) this.personAllowed.add(call.id);
             const asked = call?.id ? this.items.get(call.id) : undefined;
             if (asked) asked.asking = false;
             if (d === "accept") return reply("accept", {});
