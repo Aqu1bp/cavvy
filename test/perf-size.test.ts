@@ -153,7 +153,8 @@ describe("a session of one of Cavvy's own models", () => {
         expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
     });
     // Its log from its checkpoint on (agent/session.ts: what reading it came to, kept as it was read).
-    test("opening it again reads what's on screen", () => {
+    // Counted from /proc/self/io: Linux only (CI's).
+    test.skipIf(!existsSync("/proc/self/io"))("opening it again reads what's on screen", () => {
         const { small, large } = measured.native!;
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
