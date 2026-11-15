@@ -194,6 +194,13 @@ async function firstsOf(singles: Best[], pairs: (Best | undefined)[], lower: Uin
     }
 }
 
+/** `a` twice as long, what it had first. */
+function grown<T extends Uint32Array | Float64Array>(a: T): T {
+    const b = new (a.constructor as new (n: number) => T)(Math.max(16, a.length * 2));
+    b.set(a);
+    return b;
+}
+
 export class PathIndex {
     /**
      * Each path lower-cased, a line each, as bytes: found in by the engine's own search, with no string to reach for
@@ -333,6 +340,169 @@ export class PathIndex {
         // paths took. Without slices, someone's waiting (the terminal's first search): a query searches them all.
         if (o.slice) await firstsOf(singles, pairs, lower, start, baseFrom, baseEnd, len, wide, pause);
         Object.assign(this, { lower: lower.subarray(0, at), written: written.subarray(0, at), start, baseFrom, baseEnd, masks, most, len, wide, keys, singles, pairs });
+    }
+
+    /**
+     * As take, from git's listing as it came (a line a file): no string made for a path but one beyond ASCII, so the
+     * thread making it has next to nothing to collect after (on a worker, its collecting a million paths' strings
+     * stopped the server's own thread too, 9-16 ms at a time). `most`: files taken at most.
+     */
+    async takeBytes(src: Uint8Array, o: { slice?: () => Promise<void>; first?: number; most?: number } = {}) {
+        let since = performance.now();
+        const pause = (k: number): Promise<void> | undefined => {
+            if (!o.slice || k % 512 || performance.now() - since < SLICE_MS) return undefined;
+            return o.slice().then(() => void (since = performance.now()));
+        };
+        const keyed = o.first !== undefined;
+        const first = o.first ?? 0;
+        const most = o.most ?? MAX_INDEXED;
+        // The files: where each line starts and ends (an empty one passed over).
+        let fileFrom = new Uint32Array(1024);
+        let fileLen = new Uint32Array(1024);
+        let nf = 0;
+        for (let a = 0; a < src.length && nf < most; ) {
+            let b = src.indexOf(NL, a);
+            if (b < 0) b = src.length;
+            if (b > a) {
+                if (nf === fileFrom.length) [fileFrom, fileLen] = [grown(fileFrom), grown(fileLen)];
+                fileFrom[nf] = a;
+                fileLen[nf] = b - a;
+                nf++;
+            }
+            a = b + 1;
+        }
+        // Each file's folders (a line's start up to and with a "/"), up from its own until one is there already, put in
+        // shallowest first, as take does: found again by their bytes' hash (FNV-1a, made going along the line).
+        let dirFrom = new Uint32Array(1024);
+        let dirLen = new Uint32Array(1024);
+        let dirHash = new Uint32Array(1024);
+        let dirKey = new Float64Array(keyed ? 1024 : 0);
+        let nd = 0;
+        let table = new Int32Array(4096);
+        const same = (d: number, from: number, length: number) => {
+            if (dirLen[d] !== length) return false;
+            const at = dirFrom[d]!;
+            for (let j = 0; j < length; j++) if (src[at + j] !== src[from + j]) return false;
+            return true;
+        };
+        const slot = (h: number, from: number, length: number) => {
+            const mask = table.length - 1;
+            let i = h & mask;
+            while (table[i] && !(dirHash[table[i]! - 1] === h && same(table[i]! - 1, from, length))) i = (i + 1) & mask;
+            return i;
+        };
+        const slashes: number[] = [];
+        const hashes: number[] = [];
+        for (let k = 0; k < nf; k++) {
+            const from = fileFrom[k]!;
+            const end = from + fileLen[k]!;
+            let h = 2166136261;
+            for (let j = from; j < end; j++) {
+                h = Math.imul(h ^ src[j]!, 16777619) >>> 0;
+                // A "/" not first: a folder up to it.
+                if (src[j] === 47 && j > from) {
+                    slashes.push(j);
+                    hashes.push(h);
+                }
+            }
+            // Deepest first, until one is there.
+            let fresh = slashes.length;
+            while (fresh > 0) {
+                const j = slashes[fresh - 1]!;
+                if (table[slot(hashes[fresh - 1]!, from, j - from + 1)]) break;
+                fresh--;
+            }
+            for (let s = fresh; s < slashes.length; s++) {
+                if (nd === dirFrom.length) {
+                    [dirFrom, dirLen, dirHash] = [grown(dirFrom), grown(dirLen), grown(dirHash)];
+                    if (keyed) dirKey = grown(dirKey);
+                }
+                const length = slashes[s]! - from + 1;
+                dirFrom[nd] = from;
+                dirLen[nd] = length;
+                dirHash[nd] = hashes[s]!;
+                // As many "/" as it has: those before it on the line, and its own (a "/" first on the line too).
+                if (keyed) dirKey[nd] = folderKey(first + k, s + 1 + (src[from] === 47 ? 1 : 0));
+                table[slot(hashes[s]!, from, length)] = nd + 1;
+                nd++;
+                if (nd * 2 > table.length) {
+                    table = new Int32Array(table.length * 2);
+                    for (let d = 0; d < nd; d++) table[slot(dirHash[d]!, dirFrom[d]!, dirLen[d]!)] = d + 1;
+                }
+            }
+            slashes.length = 0;
+            hashes.length = 0;
+            const waiting = pause(k);
+            if (waiting) await waiting;
+        }
+        table = new Int32Array(0);
+        const n = nd + nf;
+        let bytes = n;
+        for (let d = 0; d < nd; d++) bytes += dirLen[d]!;
+        for (let k = 0; k < nf; k++) bytes += fileLen[k]!;
+        const lower = Buffer.allocUnsafe(bytes);
+        const written = Buffer.allocUnsafe(bytes);
+        const start = new Uint32Array(n + 1);
+        const baseFrom = new Uint32Array(n);
+        const baseEnd = new Uint32Array(n);
+        const masks = new Uint32Array(n);
+        const mostOf = new Float64Array(n);
+        const len = new Uint32Array(n);
+        const wide = new Map<number, { p: string; l: string }>();
+        const keys = keyed ? new Float64Array(n) : undefined;
+        const text = new TextDecoder();
+        let at = 0;
+        for (let i = 0; i < n; i++) {
+            const from = i < nd ? dirFrom[i]! : fileFrom[i - nd]!;
+            const length = i < nd ? dirLen[i]! : fileLen[i - nd]!;
+            start[i] = at;
+            let m = 0;
+            let ascii = true;
+            for (let j = 0; j < length; j++) {
+                let c = src[from + j]!;
+                if (c >= 128) {
+                    ascii = false;
+                    break;
+                }
+                written[at + j] = c;
+                if (c >= 65 && c <= 90) c += 32;
+                lower[at + j] = c;
+                m |= charBit(c);
+            }
+            if (ascii) {
+                const end = src[from + length - 1] === 47 ? length - 1 : length;
+                let q = end - 1;
+                while (q >= 0 && src[from + q] !== 47) q--;
+                len[i] = length;
+                baseEnd[i] = end;
+                baseFrom[i] = q + 1;
+                masks[i] = m;
+                mostOf[i] = Math.max(1250 - (end - q - 1) * 0.01, 1200 - length * 0.01) - length * 0.05;
+                at += length;
+            } else {
+                // Beyond ASCII: as take has it, from its string.
+                const p = text.decode(src.subarray(from, from + length));
+                const l = p.toLowerCase();
+                const end = p.endsWith("/") ? p.length - 1 : p.length;
+                len[i] = p.length;
+                baseEnd[i] = end;
+                baseFrom[i] = p.lastIndexOf("/", end - 1) + 1;
+                wide.set(i, { p, l });
+                masks[i] = charMask(l);
+                mostOf[i] = Math.max(1250 - (end - baseFrom[i]!) * 0.01, 1200 - l.length * 0.01) - p.length * 0.05;
+            }
+            lower[at] = NL;
+            written[at] = NL;
+            at++;
+            if (keys) keys[i] = i < nd ? dirKey[i]! : FOLDERS_END + first + (i - nd);
+            const waiting = pause(i);
+            if (waiting) await waiting;
+        }
+        start[n] = at;
+        const singles: Best[] = o.slice ? Array.from({ length: 128 }, () => []) : [];
+        const pairs: (Best | undefined)[] = o.slice ? new Array(128 * 128) : [];
+        if (o.slice) await firstsOf(singles, pairs, lower, start, baseFrom, baseEnd, len, wide, pause);
+        Object.assign(this, { lower: lower.subarray(0, at), written: written.subarray(0, at), start, baseFrom, baseEnd, masks, most: mostOf, len, wide, keys, singles, pairs });
     }
 
     /** The paths that best match `query`, best first. */

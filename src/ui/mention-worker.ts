@@ -43,11 +43,10 @@ async function take(r: Extract<ShardRequest, { t: "take" }>): Promise<ShardReply
     // How many files come before it: its paths' places among all of them (PathIndex.take's `first`).
     let first = 0;
     for (let i = bytes.indexOf(NL); i >= 0 && i < from; i = bytes.indexOf(NL, i + 1)) first++;
-    const files = new TextDecoder().decode(own).split("\n").filter(Boolean);
-    const kept = Math.max(0, Math.min(files.length, MAX_INDEXED - first));
     const next = new PathIndex();
-    // A slice at a time: what's asked meanwhile is answered from the index there was.
-    await next.take(kept < files.length ? files.slice(0, kept) : files, { first, slice: () => new Promise((r) => setImmediate(r)) });
+    // From its bytes (no string for each path), a slice at a time: what's asked meanwhile is answered from the index
+    // there was.
+    await next.takeBytes(own, { first, most: Math.max(0, MAX_INDEXED - first), slice: () => new Promise((r) => setImmediate(r)) });
     index = next;
     madeFrom = { from, to, hash };
     return { id: r.id, t: "taken" };

@@ -131,3 +131,27 @@ test("a project's index on workers lists it with git and finds in it, and here a
         rmSync(root, { recursive: true, force: true });
     }
 }, 60_000);
+
+// Made from git's listing as it came (on a worker: no string for each path), it's the same index as made from its paths.
+test("made from the listing's bytes, it's what it is made from its paths", async () => {
+    const { PathIndex } = await import("../src/ui/path-index");
+    let seed = 13;
+    const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+    const words = ["src", "Lib", "components", "Server", "index", "main", "a_b", "x-y", "ünï", "café", "test", "/lead"];
+    const files = Array.from({ length: 3000 }, (_, i) => {
+        const parts = Array.from({ length: Math.floor(r() * 4) }, () => words[Math.floor(r() * words.length)]!);
+        return `${parts.join("/")}${parts.length ? "/" : ""}${words[Math.floor(r() * words.length)]}_${i}${i % 9 ? "" : " copy"}.${["ts", "MD"][i % 2]}`;
+    });
+    const listing = new TextEncoder().encode(files.join("\n") + "\n\n");
+    for (const o of [{}, { first: 7, slice: () => Promise.resolve() }]) {
+        const made = new PathIndex();
+        await made.take(files, o);
+        const fromBytes = new PathIndex();
+        await fromBytes.takeBytes(listing, o);
+        const all = (x: any) => Array.from({ length: x.size }, (_, i) => [x.path(i), x.keys?.[i]]);
+        expect(all(fromBytes)).toEqual(all(made));
+        for (const q of ["s", "src", "src/", "lib/c", "serv", "_4", "x-", "ün", "café/", "md", "e", "", "/", "/l", "copy", "zz"]) {
+            for (const limit of [12, 3]) expect([q, limit, fromBytes.top(q, limit)]).toEqual([q, limit, made.top(q, limit)]);
+        }
+    }
+});

@@ -69,7 +69,7 @@ Not yet:
 
 @-mention completion in a repository with a listing of 2 MB or more (about 50,000 files) is indexed and searched on worker threads (up to four, leaving two cores), each with a part of the paths, so the server's own thread never scores them. Each keeps its paths as bytes and finds a query in all of them with the engine's own search; one and two characters (the first keystrokes after "@") are answered from what indexing worked out. `scripts/mention-bench.ts`, a million files on a 4-core Linux container with 2 workers: a keystroke takes 1-4 ms at the median and 35-42 ms at most, against 70-180 ms for most queries on the server's thread before. Indexing takes about 2.5 s, on the workers. Their memory is about what the index took on the server's thread: 228 MB for a million files once settled (3 workers), near 400 MB for a few seconds as they index.
 
-Not yet: while they index, the server's thread still stops for 9-16 ms at a time, a few times a second (it was 50-70 ms when it indexed them itself). It does nothing then: a full collection in a worker stops it too (checked: two workers collecting in a loop held it up to 12 ms; two allocating, or computing, didn't). Making less garbage as they index (no string for each path lower-cased) didn't change it.
+Not yet: while they index, the server's thread still stops for up to 6-10 ms once or twice in the 2 s (it was 50-70 ms when it indexed them itself, and 6-7 times as they made a string of each path). It does nothing then: a full collection in a worker stops it too (checked: two workers collecting in a loop held it up to 12 ms; two allocating typed arrays, or computing, didn't). They index from git's listing as bytes now, with next to nothing to collect after.
 
 ## Recovery
 
