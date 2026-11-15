@@ -65,6 +65,7 @@ import { ClaudeLive, liveTiming } from "./claude-live";
 import type { AgentCliStatus } from "./index";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
+import { servedDesktopTool } from "../tools/desktop-tools";
 import { servedSessionTool } from "../tools/session-tools";
 import { SESSION_VAR } from "../util/session-processes";
 
@@ -2020,8 +2021,8 @@ class ClaudeTurn {
         const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
         if (!cb || !this.cliSession.hookHandler) return {};
         const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
-        // Cavvy's browser, simulator and session tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
-        if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name) || servedSimulatorTool(this.t.orchestrator?.name, input.tool_name) || servedSessionTool(this.t.orchestrator?.name, input.tool_name)) return {};
+        // Cavvy's browser, simulator, desktop and session tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+        if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name) || servedSimulatorTool(this.t.orchestrator?.name, input.tool_name) || servedDesktopTool(this.t.orchestrator?.name, input.tool_name) || servedSessionTool(this.t.orchestrator?.name, input.tool_name)) return {};
         const r = await this.cliSession.hookHandler(cb.event, cb.hook, input, this.t.signal);
         return claudeCodeHookOutput(cb.event, r);
     }

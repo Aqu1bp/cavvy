@@ -78,6 +78,7 @@ import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMon
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { DesktopSession } from "../desktop/session";
+import { DESKTOP_INSTRUCTIONS, DesktopControlTool, desktopServerTools, nativeDesktopCall, servedDesktopName } from "../tools/desktop-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
 import { nativeSessionCall, servedSessionName, servedSessionTool, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
@@ -1754,13 +1755,16 @@ export class Agent {
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to both, on a Mac with Xcode.
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
+        // The user's Mac apps, once the user has turned them on: for Claude Code, which has no computer use of its own
+        // (Codex has, and never gets these).
+        const desktop = caller === "claude-code" && offered(DesktopControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
         const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
-        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !desktop && !worktrees && !peers && !servers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1805,6 +1809,10 @@ export class Agent {
         if (simulating) {
             tools.push(...simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
             instructions.push(SIMULATOR_INSTRUCTIONS);
+        }
+        if (desktop) {
+            tools.push(...desktopServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            instructions.push(DESKTOP_INSTRUCTIONS);
         }
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
@@ -2964,7 +2972,7 @@ export class Agent {
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeServerCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeDesktopCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeServerCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -3169,7 +3177,7 @@ export class Agent {
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedDesktopName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
