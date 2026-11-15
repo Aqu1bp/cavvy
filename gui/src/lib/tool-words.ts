@@ -216,6 +216,17 @@ function ownWords(t: ToolBlock): Words | undefined {
             const [verb, running] = fixed[a] ?? ["Use the browser", "Using the browser"];
             return { verb, running };
         }
+        // Which theme, and what of it: a list, a theme read whole and its layers read one by one aren't one thing.
+        case "ThemeList": {
+            const id = s("id")?.trim();
+            if (!id) return { verb: "List themes", running: "Listing themes" };
+            return s("layer") ? { verb: "Read layer of", running: "Reading a layer of", arg: id } : { verb: "Read theme", running: "Reading theme", arg: id };
+        }
+        case "ThemeSet": {
+            const id = s("id")?.trim();
+            if (id === "none") return { verb: "Turn the theme off", running: "Turning the theme off" };
+            return i.theme !== undefined && i.theme !== null ? { verb: "Save theme", running: "Saving theme", arg: id } : { verb: "Show theme", running: "Showing theme", arg: id };
+        }
         case "BrowserSnapshot":
             return { verb: "Read the page", running: "Reading the page" };
         case "BrowserScreenshot":
