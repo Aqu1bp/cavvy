@@ -21,6 +21,18 @@ const MAX_OUTPUT = 30_000;
 /** Bound for the retained head and rolling tail, and for unfinished lines. */
 const MAX_KEPT = MAX_OUTPUT * 20;
 export const OUTPUT_FILE_LIMIT = 8 * 1024 * 1024;
+/** The characters a token is made of where a long line is cut (/[A-Za-z0-9_.-]/), by character code. */
+const TOKEN_CHAR = (() => {
+    const t = new Uint8Array(128);
+    for (let c = 0; c < 128; c++) t[c] = /[A-Za-z0-9_.-]/.test(String.fromCharCode(c)) ? 1 : 0;
+    return t;
+})();
+/** Where the token that `text` has at `at` starts: at or after `floor`, no further back than that is looked. */
+function tokenStart(text: string, at: number, floor = 0): number {
+    let start = at;
+    while (start > floor && TOKEN_CHAR[text.charCodeAt(start - 1)]) start--;
+    return start;
+}
 const SESSION_OUTPUT_LIMIT = 64 * 1024 * 1024;
 const SESSION_OUTPUT_FILES = 256;
 // Properties are forwarded to the underlying Map by sub-agents' trackShells proxies.
@@ -649,14 +661,33 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
     let tailAnsi = ansiChunks();
     // Only the displayed ends plus secret context are needed after a line exceeds maxLine.
     const window = MAX_OUTPUT * 2 + context;
-    const appendTail = (text: string) => {
+    // The line still being read, a piece at a time: where each piece ends, and the last character before that end
+    // that no token has (-1: none yet). Where a token starts is found from them, not by stepping back through megabytes.
+    let pieceEnds: number[] = [];
+    let pieceBreaks: number[] = [];
+    const notePiece = (piece: string, from: number) => {
+        if (!keepEnds) return;
+        const b = tokenStart(piece, piece.length);
+        pieceEnds.push(from + piece.length);
+        pieceBreaks.push(b > 0 ? from + b - 1 : (pieceBreaks.at(-1) ?? -1));
+    };
+    /** Where the token at `cut` of the pending line starts. */
+    const pendingTokenStart = (cut: number) => {
+        let i = 0;
+        while (i < pieceEnds.length - 1 && pieceEnds[i]! <= cut) i++;
+        const from = i > 0 ? pieceEnds[i - 1]! : 0;
+        const start = tokenStart(pending, cut, from);
+        return start > from ? start : (i > 0 ? pieceBreaks[i - 1]! : -1) + 1;
+    };
+    /** `startOf`: where the token at a cut starts, when there's a quicker way than looking back through `text`. */
+    const appendTail = (text: string, startOf?: (cut: number) => number) => {
         const joined = longTail + text;
         const cut = Math.max(0, joined.length - window);
         if (cut) {
             // Remember whether the retained window begins inside an ANSI payload.
             tailAnsi(joined.slice(0, cut));
-            let start = cut;
-            while (start > 0 && /[A-Za-z0-9_.-]/.test(joined[start - 1]!)) start--;
+            // And whether it begins inside a secret: the token it begins in, from its start.
+            const start = startOf?.(cut) ?? tokenStart(joined, cut);
             const prefix = joined.slice(start, start + 128);
             tailTokenSecret = (start === 0 && tailTokenSecret) || redact(prefix) !== prefix;
         }
@@ -729,19 +760,26 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
             } else if (!skipping) {
                 flushRun();
                 if (!pending) order = nextOrder();
-                pending += chunk.slice(start, end);
+                const piece = chunk.slice(start, end);
+                notePiece(piece, pending.length);
+                pending += piece;
                 if (pending.length > maxLine) {
                     if (keepEnds) {
                         longHead = pending.slice(0, window);
-                        appendTail(pending);
+                        // (longTail is empty: the cut is in the pending line, as it is.)
+                        appendTail(pending, pendingTokenStart);
                         overflow(pending);
                     } else emit(overflow(pending), order);
                     pending = "";
+                    pieceEnds = [];
+                    pieceBreaks = [];
                     skipping = true;
                 } else if (nl >= 0) {
                     inspect?.(pending);
                     emit(redact(pending), order);
                     pending = "";
+                    pieceEnds = [];
+                    pieceBreaks = [];
                 }
             } else if (keepEnds) {
                 const text = chunk.slice(start, end);
