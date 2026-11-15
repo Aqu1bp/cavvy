@@ -42,6 +42,7 @@ import { accountEnv, defaultAccount } from "../providers/accounts";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import { accountProtectionFolders } from "./account-permissions";
+import { claudeMemoryDirectory } from "./claude-memory";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
@@ -742,6 +743,7 @@ class ClaudeTurn {
         if (t.agents && Object.keys(t.agents).length && !t.readOnly) this.agentsFile ??= writeAgentsFile(t.agents);
         const { args, mcpWarning } = claudeArgs(this.def.id, t, {
             pluginDir: this.pluginDir,
+            memoryDir: claudeMemoryDirectory(claudeConfigDir(this.def.id, t), t.cwd, t.trusted),
             agentsPath: this.agentsFile?.path,
             append: [t.appendSystemPrompt, t.goalContext,
                 `After an answer, Cavvy waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
@@ -2108,7 +2110,7 @@ export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" 
  * `mcpWarning`: what the MCP policy says the user should know. `accountDenies: false` leaves out the deny
  * rules for CLI account folders (a live process's fingerprint: accounts added or removed restart nothing).
  */
-export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[]; accountDenies?: boolean }): { args: string[]; mcpWarning?: string } {
+export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[]; accountDenies?: boolean; memoryDir?: string }): { args: string[]; mcpWarning?: string } {
     const a = [...extraArgs(defId), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
     if (t.model.id !== "default") a.push("--model", t.model.id);
     if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
@@ -2131,15 +2133,17 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
     const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+    // A named account's memory by its real path: the one Claude Code would use is in a denied account folder (claude-memory.ts).
+    const memory = o.memoryDir ? { autoMemoryDirectory: o.memoryDir } : {};
     const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
     if (mcp.strict) a.push("--strict-mcp-config");
     if (!t.readOnly) {
-        a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
+        a.push("--settings", JSON.stringify({ permissions, fastMode, ...memory, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
         return { args: a, mcpWarning: mcp.warning };
     }
     // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (Cavvy lets read-only ones run).
     a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
+    const settings = { fastMode, ...memory, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
     a.push("--settings", JSON.stringify(settings));
     return { args: a, mcpWarning: mcp.warning };
 }

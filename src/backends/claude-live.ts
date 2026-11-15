@@ -30,6 +30,7 @@ import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/h
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
 import { accountEnv } from "../providers/accounts";
+import { claudeMemoryDirectory } from "./claude-memory";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import type { ProviderDef } from "../providers/registry";
@@ -2065,7 +2066,7 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         const t = cfg as BackendTurn;
         const { pluginDir } = claudeSkills(this.def.id, t);
         const agentsPath = cfg.agents && Object.keys(cfg.agents).length && !cfg.readOnly ? agentsFileFor(cfg.agents) : undefined;
-        const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt] };
+        const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt], memoryDir: claudeMemoryDirectory(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, cfg.cwd, cfg.trusted) };
         const { args } = claudeArgs(this.def.id, cfg, o);
         // Without what changes on a running process (the model, effort, mode and fast mode) and the session it resumes.
         // Nor the account folders' deny rules: adding or removing an account restarts nothing (#375); a new process has them.
