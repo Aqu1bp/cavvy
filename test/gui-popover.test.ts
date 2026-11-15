@@ -48,7 +48,7 @@ test("the popover is drawn at the width it was placed with", () => {
     const win = { innerWidth: 500, innerHeight: 700, addEventListener() {}, removeEventListener() {} };
     const doc = { addEventListener() {}, removeEventListener() {} };
     const Popover = component(source, "Popover", {
-        settingsTab: () => undefined, document: doc, window: win, requestAnimationFrame: (fn: () => void) => fn(), mountMenu: () => () => {}, placePopover, sp: (n: number) => scaled(n, 18),
+        settingsTab: () => undefined, usePane: () => ({ parked: () => false }), document: doc, window: win, requestAnimationFrame: (fn: () => void) => fn(), mountMenu: () => () => {}, placePopover, sp: (n: number) => scaled(n, 18),
         renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
     });
     const anchor = { getBoundingClientRect: () => ({ left: 300, right: 340, top: 40, bottom: 68 }), closest: () => null };
@@ -58,5 +58,28 @@ test("the popover is drawn at the width it was placed with", () => {
         const box = all(root).find((n) => String(n.props.class ?? "").startsWith("popover"))!;
         const style = typeof box.props.style === "function" ? box.props.style() : box.props.style;
         expect({ left: style.left, width: style.width }).toEqual({ left: "8px", width: `${500 - 16}px` });
+    } finally { dispose(); }
+});
+
+test("a popover whose session is kept out of sight (switched away from by a key) closes", () => {
+    const source = readFileSync(new URL("../gui/src/components/ui/Popover.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
+    const win = { innerWidth: 1200, innerHeight: 800, addEventListener() {}, removeEventListener() {} };
+    const doc = { addEventListener() {}, removeEventListener() {} };
+    const [parked, setParked] = solid.createSignal(false);
+    const Popover = component(source, "Popover", {
+        settingsTab: () => undefined, usePane: () => ({ parked }), document: doc, window: win, requestAnimationFrame: (fn: () => void) => fn(), mountMenu: () => () => {}, placePopover, sp: (n: number) => n,
+        renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
+    });
+    const anchor = { getBoundingClientRect: () => ({ left: 300, right: 340, top: 40, bottom: 68 }), closest: () => null };
+    const [open, setOpen] = solid.createSignal(true);
+    let closed = 0;
+    const dispose = renderer.render(() => Popover({ get open() { return open(); }, onClose() { closed++; setOpen(false); }, anchor: () => anchor, width: 300, children: "Project scripts" }), node("root"));
+    try {
+        expect(closed).toBe(0);
+        setParked(true);
+        expect(closed).toBe(1);
+        // Shown again, it stays closed until it's opened again.
+        setParked(false);
+        expect(open()).toBe(false);
     } finally { dispose(); }
 });
