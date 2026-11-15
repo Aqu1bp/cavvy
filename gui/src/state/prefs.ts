@@ -33,7 +33,8 @@ export const sp = (n: number) => scaled(n, prefs.fontSize);
 
 /** The one scheme the theme showing is made for (state/theme.ts): the window follows it while it shows. theme-boot.js puts it on <html> before the first paint. */
 const bootForced = () => {
-    const v = document.documentElement.dataset.themeOnly;
+    // Read where there's a page: the state's also loaded without one (tests, the terminal's shared code).
+    const v = typeof document === "undefined" ? undefined : document.documentElement?.dataset?.themeOnly;
     return v === "light" || v === "dark" ? v : undefined;
 };
 export const [forcedScheme, setForcedScheme] = createSignal<"light" | "dark" | undefined>(bootForced());
