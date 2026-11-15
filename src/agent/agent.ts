@@ -1698,7 +1698,8 @@ export class Agent {
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
             // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
             hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
-            desktopGuard: this.model.provider === "claude-code" && desktopGuardWanted(s),
+            // Claude Code's and Codex's: one rule for both (desktopGuardWanted).
+            desktopGuard: (this.model.provider === "claude-code" || this.model.provider === "codex") && desktopGuardWanted(s),
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             // Codex's own computer use goes with Cavvy's Mac apps setting (src/backends/codex-computer-use.ts).

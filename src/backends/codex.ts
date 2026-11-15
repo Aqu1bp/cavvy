@@ -23,7 +23,7 @@ import { cliNotice } from "./notice-data";
 import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
-import { APP_NAME, APP_TITLE, APP_VERSION, cavvyHome } from "../config/paths";
+import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { namesDesktopHelper } from "../permissions/checker";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
@@ -2551,12 +2551,9 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
 
 /** Said once: a Codex that doesn't run Cavvy's hooks itself doesn't start to. */
 let saidNoNativeHooks = false;
-/**
- * Whether commands naming Cavvy's helper for Mac apps need guarding in Codex's threads: the Mac apps setting is on, or
- * the helper has been built (its folder exists), whatever the setting says now.
- */
-export function guardsDesktopHelper(t: { desktop?: boolean }): boolean {
-    return t.desktop === true || existsSync(join(cavvyHome(), "desktop"));
+/** Whether commands naming Cavvy's helper for Mac apps need guarding in Codex's threads: the turn says (desktopGuardWanted). */
+export function guardsDesktopHelper(t: { desktopGuard?: boolean }): boolean {
+    return t.desktopGuard === true;
 }
 
 /** The events Codex runs Cavvy's hooks for: those with hooks of the person's, and PreToolUse for the helper's guard. */
