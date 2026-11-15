@@ -772,7 +772,7 @@ test("with tool activity set to open, a command card starts open", () => {
     } finally { h.dispose(); }
 });
 
-test("a turn sent with its work folded shows its work once it's whole, and asks for it as it's opened", () => {
+test("a turn sent with its work folded shows its rows as it's opened, asks for it whole, and fills them in as it comes", () => {
     turnLoads.length = 0;
     const h = setup([command("c", "ok")], false, [], undefined, false);
     try {
@@ -782,14 +782,15 @@ test("a turn sent with its work folded shows its work once it's whole, and asks 
         // Folded: "Worked for", nothing asked for.
         expect(worked().props["aria-expanded"]).toBe(false);
         expect(turnLoads).toEqual([]);
-        // Opened: asked for, and its work isn't drawn without what its rows show.
+        // Opened: asked for, and its rows drawn at once (not a moment of nothing under "Worked for").
         worked().props.onClick({ currentTarget: worked() });
         expect(worked().props["aria-expanded"]).toBe(true);
         expect(turnLoads).toEqual(["turn"]);
-        expect(work()).toBeUndefined();
-        // Whole: drawn.
-        h.setView(produce((v: any) => { v.turns[0].blocks = [{ ...command("c", "ok"), output: "all done" }]; delete v.turns[0].folded; }));
         expect(work()).toBeDefined();
+        const drawnRow = row(h.root, "c");
+        // Whole: the same row, filled in.
+        h.setView(produce((v: any) => { v.turns[0].blocks = [{ ...command("c", "ok"), output: "all done" }]; delete v.turns[0].folded; }));
+        expect(row(h.root, "c")).toBe(drawnRow);
         expect(turnLoads).toEqual(["turn"]);
     } finally {
         h.dispose();

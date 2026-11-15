@@ -635,10 +635,14 @@ function TurnViewContent(p: TurnViewProps) {
         setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
-    // Sent with its work folded (Turn.folded): what its rows show opened comes as the work is to be shown, and the work
-    // is shown once it has (not a moment with rows missing their output).
+    // Sent with its work folded (Turn.folded): its rows are there, what they show opened comes whole (session.turn).
+    // Asked for as the pointer or focus comes to "Worked for", so it's usually here by the click (a round trip and up to
+    // 760 KB over a remote link); else as the work is shown, its rows at once and the rest filled in as it comes.
+    const wholeTurn = () => {
+        if (p.turn.folded) void loadTurn(handleFor(p.state.id), p.turn.id);
+    };
     createEffect(() => {
-        if (showWork() && p.turn.folded) void loadTurn(handleFor(p.state.id), p.turn.id);
+        if (showWork()) wholeTurn();
     });
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
@@ -699,7 +703,7 @@ function TurnViewContent(p: TurnViewProps) {
                 </Show>
             }
         >
-            <Show when={showWork() && !p.turn.folded}>
+            <Show when={showWork()}>
                 <div class={`worklog ${folding() ? "leaving" : ""}`}>
                     {/* One quiet line for the run, opening into its steps' rows. */}
                     <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>
@@ -727,7 +731,7 @@ function TurnViewContent(p: TurnViewProps) {
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
                     <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
-                        <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
+                        <button class="fold acts-h worked" aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
