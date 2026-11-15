@@ -52,9 +52,12 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean } = {}
     cpSync(join(repo, "gui", "dist"), join(stage, "gui"), { recursive: true });
     const server = join(stage, "cavvy");
     // Which build this is, said to the program: compiled, it has no checkout to ask, and a server it sets up runs the same one.
-    const { thisBuild, packServerBuild, buildTimeDefine, CARRIED_TARGETS, UNKNOWN_BUILD } = await import("../src/servers/build.ts");
+    const { thisBuild, packServerBuild, buildTimeDefine, bytecodeFor, CARRIED_TARGETS, UNKNOWN_BUILD } = await import("../src/servers/build.ts");
+    // Starts in a quarter of the time compiled to bytecode, which only this Bun's own version runs (bytecodeFor).
+    const bytecode = bytecodeFor(process.execPath);
+    if (!bytecode.length) console.log(`Bun ${Bun.version} isn't ${SERVER_BUN}, the server's: its program is built without bytecode, and starts slower.`);
     const build = thisBuild();
-    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-darwin-${arch}-v${SERVER_BUN}`, ...(build === UNKNOWN_BUILD ? [] : ["--define", `CAVVY_BUILD_ID=${JSON.stringify(build)}`, ...buildTimeDefine()]), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts"), join(repo, "src", "agent", "stat-worker.ts")]);
+    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", ...bytecode, `--target=bun-darwin-${arch}-v${SERVER_BUN}`, ...(build === UNKNOWN_BUILD ? [] : ["--define", `CAVVY_BUILD_ID=${JSON.stringify(build)}`, ...buildTimeDefine()]), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts"), join(repo, "src", "agent", "stat-worker.ts")]);
     const extra = [join(stage, "gui")];
     if (o.serverBuilds && build !== UNKNOWN_BUILD) {
         const builds = join(stage, "server-builds");

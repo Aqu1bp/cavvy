@@ -20,6 +20,25 @@ import { ServerError } from "./store";
  */
 export const SERVER_BUN = "1.4.4";
 
+/**
+ * `--bytecode` when the Bun at `bun` (compiling) is SERVER_BUN (what the program runs on): compiled ahead to the
+ * engine's bytecode, it starts answering in a quarter of the time (Linux: 119-133 ms to its first health check, 30-31
+ * with it). Bytecode from another Bun is passed over when it runs (checked: built by 1.3.14 for 1.4.4, it ran as
+ * without, and was larger), so then it's left out.
+ */
+export function bytecodeFor(bun: string): string[] {
+    let version = Bun.version;
+    if (bun !== process.execPath) {
+        try {
+            const r = Bun.spawnSync([bun, "--version"], { stdout: "pipe", stderr: "ignore" });
+            version = r.exitCode === 0 ? r.stdout.toString().trim() : "";
+        } catch {
+            version = "";
+        }
+    }
+    return version === SERVER_BUN ? ["--bytecode"] : [];
+}
+
 /** Set when Cavvy is compiled (`--define`): a compiled program has no checkout to ask. */
 declare const CAVVY_BUILD_ID: string | undefined;
 
@@ -242,7 +261,7 @@ export async function packServerBuild(root: string, id: string, target: LinuxTar
     mkdirSync(stage);
     o.onStep?.(`Building Cavvy for ${targetName(target)}…`);
     const built = await run(
-        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, "cavvy"), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts")],
+        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", ...bytecodeFor(o.bun), `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, "cavvy"), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts")],
         root,
         o.signal,
     );

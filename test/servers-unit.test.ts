@@ -13,7 +13,7 @@ const iso = isolate();
 const fake = fakeSsh();
 const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase, printable, offeredHostKey, trustHostKey, ownKnownHosts } = await import("../src/servers/ssh");
 const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile, desktopIdFile } = await import("../src/servers/store");
-const { compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
+const { bytecodeFor, compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
 const { planCopy, portableMcpEntry, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
@@ -340,6 +340,11 @@ describe("which build is newer", () => {
         expect(readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
         // And the one a release's builds are made with.
         expect(readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
+    });
+
+    test("compiled to bytecode only by the server's own Bun, which is the only one that reads it", () => {
+        expect(bytecodeFor(process.execPath)).toEqual(Bun.version === SERVER_BUN ? ["--bytecode"] : []);
+        expect(bytecodeFor(join(tempDir("bun"), "no-bun-here"))).toEqual([]);
     });
 });
 
