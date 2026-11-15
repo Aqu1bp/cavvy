@@ -52,6 +52,37 @@ func disclaim() {
 
 disclaim()
 
+// MARK: - Who may drive it
+
+/// Cavvy hands a secret made for this start on file descriptor 3, a pipe only it holds (never argv or the
+/// environment, which `ps` shows), and sends it back as the first line on stdin. Run any other way (no such pipe, a
+/// wrong or missing secret), the helper takes no command. This stops other programs from simply running it; something
+/// already running as the person could still imitate Cavvy.
+func admitted() -> Bool {
+    guard fcntl(3, F_GETFD) != -1 else { return false }
+    var buf = [UInt8](repeating: 0, count: 256)
+    var got = 0
+    while got < buf.count {
+        let n = buf.withUnsafeMutableBytes { read(3, $0.baseAddress! + got, $0.count - got) }
+        if n <= 0 { break }
+        got += n
+    }
+    close(3)
+    let secret = Array(String(decoding: buf[0..<got], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+    guard secret.count >= 32, let line = readLine(strippingNewline: true), let data = line.data(using: .utf8),
+          let hello = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], hello["op"] as? String == "hello",
+          let given = (hello["secret"] as? String).map({ Array($0.utf8) }), given.count == secret.count else { return false }
+    // Compared in constant time.
+    var diff: UInt8 = 0
+    for i in 0..<secret.count { diff |= secret[i] ^ given[i] }
+    return diff == 0
+}
+
+if !admitted() {
+    FileHandle.standardError.write(Data("Cavvy Desktop Control takes commands only from the Cavvy that started it.\n".utf8))
+    exit(2)
+}
+
 // MARK: - Output
 
 let outLock = NSLock()

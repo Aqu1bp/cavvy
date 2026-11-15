@@ -196,8 +196,18 @@ export class DesktopHelper implements DesktopHelperLike {
         child.on("close", ended);
     }
 
+    /**
+     * Starts the helper with a secret made for this start: written once to an extra pipe (fd 3) only this process
+     * holds, then sent back as the first line on stdin. The helper takes commands only when the two agree.
+     */
     static start(bin: string): DesktopHelper {
-        return new DesktopHelper(spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] }));
+        const secret = randomBytes(32).toString("hex");
+        const child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe", "pipe"] });
+        const handover = child.stdio[3] as Writable | null;
+        handover?.on("error", () => undefined);
+        handover?.end(secret);
+        child.stdin.write(`${JSON.stringify({ op: "hello", secret })}\n`);
+        return new DesktopHelper(child as unknown as ChildProcessByStdio<Writable, Readable, Readable>);
     }
 
     get running(): boolean {
