@@ -30,7 +30,7 @@ function index(files: string[]) {
     return idx;
 }
 
-test("it offers what scoring every path did, in the same order, typed on or asked afresh", () => {
+test("it offers what scoring every path did, in the same order, typed on or asked afresh, made at once or in slices", async () => {
     let seed = 9;
     const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
     const words = ["src", "Lib", "components", "Server", "agent", "tools", "util", "test", "README", "index", "main", "app.config", "a_b", "x-y", "ünï", "café"];
@@ -41,6 +41,10 @@ test("it offers what scoring every path did, in the same order, typed on or aske
     const dirs = [...new Set(files.flatMap((f) => f.split("/").slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join("/") + "/")))];
     const idx = index(files);
     expect(pathsOf(idx).slice(0, dirs.length).sort()).toEqual([...dirs].sort());
+    // Made in slices (as the server's are, and a worker's): each character's best, and each two's, worked out ahead.
+    const sliced = new FileIndex("/nonexistent");
+    await (sliced as any).take(files, () => Promise.resolve());
+    (sliced as any).builtAt = Date.now();
     const queries = ["s", "sr", "src", "src/", "src/c", "src/co", "srv", "Serv", "server", "mai", "main.", "main.t", "./ind", "ap", "app.c", "a_", "x-", "ün", "café", "zzz", "comp ts", "/", "md", "ME", "e", "", "2", "29", "copy"];
     for (const limit of [12, 8, 1]) {
         for (const q of queries) {
@@ -49,6 +53,7 @@ test("it offers what scoring every path did, in the same order, typed on or aske
             const order = new Map(pathsOf(fresh).map((p, i) => [p, i]));
             const want = reference(dirs.filter((d) => order.has(d)).sort((a, b) => order.get(a)! - order.get(b)!), files, q, limit);
             expect([q, limit, fresh.search(q, limit)]).toEqual([q, limit, want]);
+            expect([q, limit, "sliced", sliced.search(q, limit)]).toEqual([q, limit, "sliced", want]);
             for (let k = 1; k <= q.length; k++) idx.search(q.slice(0, k), limit);
             expect([q, limit, "typed", idx.search(q, limit)]).toEqual([q, limit, "typed", want]);
         }

@@ -115,6 +115,85 @@ function indexIn(q: Uint8Array, t: Uint8Array, from: number, end: number): numbe
     return -1;
 }
 
+/** How many paths each character keeps as its best (PathIndex.singles): more asked for, they're searched for. */
+const SINGLES = 32;
+
+type Best = { i: number; s: number }[];
+
+/** `score` among `list`'s best SINGLES, the paths coming in order: one only above an equal one if better. */
+function keep(list: Best, i: number, score: number) {
+    if (list.length === SINGLES && score <= list[SINGLES - 1]!.s) return;
+    let at = list.length;
+    while (at > 0 && list[at - 1]!.s < score) at--;
+    list.splice(at, 0, { i, s: score });
+    if (list.length > SINGLES) list.pop();
+}
+
+/**
+ * Each ASCII character's best paths, and each pair of them side by side (PathIndex.singles, pairs), as top scores a
+ * query of it where it's in a path as it is: where it's first in the path, and in its name (by 50 more), less a
+ * twentieth of the path's length; the earlier on a tie. One pass over the paths' bytes.
+ */
+async function firstsOf(singles: Best[], pairs: (Best | undefined)[], lower: Uint8Array, start: Uint32Array, baseFrom: Uint32Array, baseEnd: Uint32Array, len: Uint32Array, wide: Map<number, unknown>, pause: (k: number) => Promise<void> | undefined) {
+    const full = new Int32Array(128 * 128).fill(-1);
+    const base = new Int32Array(128 * 128).fill(-1);
+    const fullOne = new Int32Array(128).fill(-1);
+    const baseOne = new Int32Array(128).fill(-1);
+    const met: number[] = [];
+    const metOne: number[] = [];
+    const pair = new Uint8Array(2);
+    for (let i = 0; i < len.length; i++) {
+        if (wide.has(i)) continue;
+        const from = start[i]!;
+        const length = len[i]!;
+        const end = from + length;
+        const bFrom = from + baseFrom[i]!;
+        const bEnd = from + baseEnd[i]!;
+        const bLen = bEnd - bFrom;
+        for (let k = from; k < end; k++) {
+            const c = lower[k]!;
+            if (fullOne[c]! < 0) {
+                fullOne[c] = k;
+                metOne.push(c);
+            }
+            const inBase = k >= bFrom && k < bEnd;
+            if (inBase && baseOne[c]! < 0) baseOne[c] = k;
+            if (k + 1 >= end) continue;
+            const p = c * 128 + lower[k + 1]!;
+            if (full[p]! < 0) {
+                full[p] = k;
+                met.push(p);
+            }
+            if (inBase && k + 1 < bEnd && base[p]! < 0) base[p] = k;
+        }
+        const scored = (h: number, hb: number, ql: number, q?: Uint8Array) => {
+            const idx = h - from;
+            const whole = 1000 - idx - length * 0.01 + (idx === 0 || isBoundary(lower[h - 1]!) ? 200 : 0);
+            let name = -1;
+            if (hb >= 0) name = 1000 - (hb - bFrom) - bLen * 0.01 + (hb === bFrom || isBoundary(lower[hb - 1]!) ? 200 : 0);
+            // Not side by side in its name, but in order (a path of nearly a thousand characters): as top scores it.
+            else if (q && whole < 5 * ql + 50) name = inOrder(q, lower, bFrom, bEnd);
+            return Math.max(whole, name >= 0 ? name + 50 : -1) - length * 0.05;
+        };
+        for (const c of metOne) {
+            keep(singles[c]!, i, scored(fullOne[c]!, baseOne[c]!, 1));
+            fullOne[c] = -1;
+            baseOne[c] = -1;
+        }
+        for (const p of met) {
+            pair[0] = p >> 7;
+            pair[1] = p & 127;
+            keep((pairs[p] ??= []), i, scored(full[p]!, base[p]!, 2, pair));
+            full[p] = -1;
+            base[p] = -1;
+        }
+        met.length = 0;
+        metOne.length = 0;
+        const waiting = pause(i);
+        if (waiting) await waiting;
+    }
+}
+
 export class PathIndex {
     /**
      * Each path lower-cased, a line each, as bytes: found in by the engine's own search, with no string to reach for
@@ -138,6 +217,13 @@ export class PathIndex {
     private wide = new Map<number, { p: string; l: string }>();
     /** Each path's place among all of a project's paths, when this has a part of them (take's `first`). */
     private keys?: Float64Array;
+    /**
+     * For each character (lower-cased ASCII), the paths it's best in, best first, at most SINGLES: what a query of that
+     * one character offers (the first keystroke after "@"), worked out in one pass over the paths as they're indexed.
+     */
+    private singles: Best[] = [];
+    /** The same for each two characters side by side (by the first's code times 128, and the second's). */
+    private pairs: (Best | undefined)[] = [];
 
     get size(): number {
         return this.len.length;
@@ -230,7 +316,13 @@ export class PathIndex {
             if (waiting) await waiting;
         }
         start[n] = at;
-        Object.assign(this, { lower: lower.subarray(0, at), written: written.subarray(0, at), start, baseFrom, baseEnd, masks, most, len, wide, keys });
+        // (None worked out: none used.)
+        const singles: Best[] = o.slice ? Array.from({ length: 128 }, () => []) : [];
+        const pairs: (Best | undefined)[] = o.slice ? new Array(128 * 128) : [];
+        // Made a slice at a time (on a worker, or the server's in the background): with a second to spare, as a million
+        // paths took. Without slices, someone's waiting (the terminal's first search): a query searches them all.
+        if (o.slice) await firstsOf(singles, pairs, lower, start, baseFrom, baseEnd, len, wide, pause);
+        Object.assign(this, { lower: lower.subarray(0, at), written: written.subarray(0, at), start, baseFrom, baseEnd, masks, most, len, wide, keys, singles, pairs });
     }
 
     /** The paths that best match `query`, best first. */
@@ -260,7 +352,13 @@ export class PathIndex {
             const s = Math.max(scoreIn(q, w.l, 0, w.l.length), base >= 0 ? base + 50 : -1);
             if (s > 0) consider(i, s - this.len[i]! * 0.05);
         };
-        if (!q) {
+        // One character, or two: as worked out when it was indexed (where it's in a path as it is), and those beyond
+        // ASCII scored now. Two only when the last of them beats what's in a path only in order (5 + 1 + 50).
+        const known = NON_ASCII.test(q) ? undefined : q.length === 1 ? this.singles[q.charCodeAt(0)] : q.length === 2 ? this.pairs[q.charCodeAt(0) * 128 + q.charCodeAt(1)] : undefined;
+        if (known && limit <= SINGLES && (q.length === 1 || (known.length >= limit && known[limit - 1]!.s > 56))) {
+            for (const b of known) consider(b.i, b.s);
+            for (const [i, w] of this.wide) scoreWide(i, w);
+        } else if (!q) {
             // Every path scores 1, its name 1 + 50: the shortest first.
             for (let i = 0; i < n; i++) if (best.length < limit || 51 - this.len[i]! * 0.05 >= worst()) consider(i, 51 - this.len[i]! * 0.05);
         } else if (NON_ASCII.test(q)) {
