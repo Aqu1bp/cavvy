@@ -261,7 +261,7 @@ export async function packServerBuild(root: string, id: string, target: LinuxTar
     mkdirSync(stage);
     o.onStep?.(`Building Cavvy for ${targetName(target)}…`);
     const built = await run(
-        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", ...bytecodeFor(o.bun), `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, "cavvy"), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts")],
+        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", ...bytecodeFor(o.bun), `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, "cavvy"), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts"), join(root, "src", "ui", "mention-worker.ts")],
         root,
         o.signal,
     );

@@ -37,7 +37,7 @@ mkdirSync(outDir, { recursive: true });
 const out = join(outDir, `cavvy-${triple}${triple.includes("windows") ? ".exe" : ""}`);
 const build = Bun.spawnSync(
     // Bytecode: it starts in a quarter of the time. The target names no version, so it's this Bun's, which reads it.
-    ["bun", "build", "--compile", "--minify", "--sourcemap=none", "--bytecode", `--target=${bunTarget}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", out, join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts")],
+    ["bun", "build", "--compile", "--minify", "--sourcemap=none", "--bytecode", `--target=${bunTarget}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", out, join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts"), join(root, "src", "ui", "mention-worker.ts")],
     { cwd: root, stdout: "inherit", stderr: "inherit" },
 );
 if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);

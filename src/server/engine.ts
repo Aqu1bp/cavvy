@@ -885,6 +885,7 @@ export class Engine {
         for (const [cwd, ws] of idle) {
             if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
             this.workspaces.delete(cwd);
+            ws.files.dispose();
             void ws.mcp.closeAll().catch(() => undefined);
         }
         return result;
@@ -3216,7 +3217,11 @@ export class Engine {
                 const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
                 this.homeFiles.delete(cwd);
                 this.homeFiles.set(cwd, index);
-                for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
+                for (const [old, dropped] of this.homeFiles) {
+                    if (this.homeFiles.size <= 4) break;
+                    this.homeFiles.delete(old);
+                    dropped.dispose();
+                }
                 return await index.searchSoon(query, 12);
             }
             case "fs.dirs":

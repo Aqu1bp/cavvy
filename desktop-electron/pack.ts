@@ -57,7 +57,7 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean } = {}
     const bytecode = bytecodeFor(process.execPath);
     if (!bytecode.length) console.log(`Bun ${Bun.version} isn't ${SERVER_BUN}, the server's: its program is built without bytecode, and starts slower.`);
     const build = thisBuild();
-    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", ...bytecode, `--target=bun-darwin-${arch}-v${SERVER_BUN}`, ...(build === UNKNOWN_BUILD ? [] : ["--define", `CAVVY_BUILD_ID=${JSON.stringify(build)}`, ...buildTimeDefine()]), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts"), join(repo, "src", "agent", "stat-worker.ts")]);
+    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", ...bytecode, `--target=bun-darwin-${arch}-v${SERVER_BUN}`, ...(build === UNKNOWN_BUILD ? [] : ["--define", `CAVVY_BUILD_ID=${JSON.stringify(build)}`, ...buildTimeDefine()]), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts"), join(repo, "src", "agent", "stat-worker.ts"), join(repo, "src", "ui", "mention-worker.ts")]);
     const extra = [join(stage, "gui")];
     if (o.serverBuilds && build !== UNKNOWN_BUILD) {
         const builds = join(stage, "server-builds");
