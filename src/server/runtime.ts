@@ -171,6 +171,19 @@ const EDIT_CONTENT = ["content", "old_string", "new_string", "edits", "new_sourc
  * diff (gui/src/components/blocks/Activity.tsx EditCard). A whole file written was sent twice: a heavy session's turn
  * of 1 MB had 223 KB of it. Changes the blocks given: a copy's.
  */
+/**
+ * A finished turn's thoughts without their text, as a window is sent the turn whole: a thought's row shows how long it
+ * took, and its text only opened (gui/src/components/blocks/Activity.tsx Thinking), which asks for it (session.block).
+ * Find doesn't search them. 159 of the 414 KB a heavy session sent as it opened. Changes the blocks given: a copy's.
+ */
+export function omitThinking(blocks: Block[]): Block[] {
+    for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]!;
+        if (b.t === "thinking" && b.text) blocks[i] = { ...b, text: "", omitted: true };
+    }
+    return blocks;
+}
+
 /** A copy of a sub-agent whole, as a window is sent it. */
 function sentAgent(a: AgentRun): AgentRun {
     const c = structuredClone(a);
@@ -786,7 +799,16 @@ export class Runtime {
         const w = this.whole(t);
         const c = w === t ? structuredClone(t) : w;
         slimEdits(c.blocks);
+        if (c.status !== "running") omitThinking(c.blocks);
         return c;
+    }
+
+    /** A block of a turn whole (session.block: one sent without its thinking's text). */
+    blockWhole(turnId: string, blockId: string): Block | null {
+        this.flush();
+        const t = findTurn(this.view, turnId);
+        const b = t ? findBlock(this.whole(t), blockId) : undefined;
+        return b ? structuredClone(b) : null;
     }
 
     /** Built here again, to be changed (its blocks from the store); kept built a while (the most recent EXTRA_BUILT). */
@@ -4447,7 +4469,7 @@ export class Runtime {
         // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
         const from = Math.max(0, turns.length - RESET_TURNS);
         const sent = from ? agentsFor(agents, turns.slice(from), false) : undefined;
-        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
+        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t.status !== "running" && omitThinking(t.blocks), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
         // Built anew: a long session's store starts again with them, and keeps all but the latest.
         if (this.store || turns.length > KEEP_BUILT) this.storeOlder(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
     }

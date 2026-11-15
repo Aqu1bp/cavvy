@@ -101,6 +101,13 @@ const storeOf = (file: string, id: string) => join(dirname(file), "turns", `${id
 /** Unset on the wire is null (wireReplacer), and unset or absent in memory alike: compared as absent. */
 const unset = (x: unknown) => JSON.parse(JSON.stringify(x), (_k, v) => (v === null ? undefined : v));
 
+/** A finished turn's thoughts come without their text: each as the window asks for it, opened (session.block). */
+async function fillThoughts(id: string) {
+    for (const t of views.get(id)!.turns) {
+        for (const [i, b] of t.blocks.entries()) if (b.t === "thinking" && b.omitted) t.blocks[i] = await call("session.block", { id, turnId: t.id, blockId: b.id });
+    }
+}
+
 /** Less the notice each open shows on its own (Claude Code isn't installed here: the session says so as it opens). */
 const lessOpenNotice = (turns: Turn[]) => turns.filter((t) => t.prompt || t.blocks.some((b) => b.t !== "notice" || !b.text.includes("isn't available now")));
 
@@ -110,6 +117,7 @@ async function everything(id: string) {
     // A call that sends what's waiting first: the ops opening it made (a notice) are in the view.
     await call("session.find", { id, query: "" });
     const v = views.get(id)!;
+    await fillThoughts(id);
     // Every sub-agent: as listed (those not sent are only counted as it opens), and whole.
     const list = (await call("session.agentList", { id })) as AgentRun[];
     const agents = [];
@@ -137,7 +145,8 @@ for (const kind of ["cli", "native"] as const) {
             // As the window opens it: its last turns, the rest a page at a time.
             const last = await open(t.id, { last: 5 });
             const page = await call("session.turns", { id: t.id, before: last.turns[0]!.id, all: true });
-            expect(unset(lessOpenNotice([...page.turns, ...last.turns]))).toEqual(built.turns);
+            const thoughtless = (turns: Turn[]) => turns.map((x) => ({ ...x, blocks: x.blocks.map((b) => (b.t === "thinking" ? { ...b, text: "", omitted: true } : b)) }));
+            expect(unset(lessOpenNotice([...page.turns, ...last.turns]))).toEqual(unset(thoughtless(built.turns)));
             await close(t.id);
         }, 60_000);
 
@@ -168,6 +177,7 @@ test("a turn taken after opening from the store is kept, and the session opens a
     await call("session.send", { id: t.id, text: "One more thing" });
     await until(t.id, (v) => v.turns.at(-1)?.prompt?.text === "One more thing" && v.turns.at(-1)!.status === "done" && !v.state.busy);
     await call("session.find", { id: t.id, query: "" });
+    await fillThoughts(t.id);
     const shown = unset({ turns: views.get(t.id)!.turns });
     await close(t.id);
 
@@ -235,6 +245,7 @@ test("a session that grows long while it's open lets go of its older turns then,
     const page = await call("session.turns", { id, before: views.get(id)!.turns.at(-1)!.id, all: true });
     expect(page.turns.map((t: Turn) => t.prompt?.text)).toEqual(Array.from({ length: 74 }, (_, i) => `Prompt ${i}`));
     await call("session.find", { id, query: "" });
+    await fillThoughts(id);
     const shown = unset({ turns: views.get(id)!.turns });
     await close(id);
     expect(unset({ turns: (await everything(id)).turns })).toEqual(shown);

@@ -2851,6 +2851,11 @@ export class Engine {
                 }
                 return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
             }
+            case "session.block": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.blockWhole(str(p.turnId, "turnId"), str(p.blockId, "blockId"));
+            }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.promptImages":

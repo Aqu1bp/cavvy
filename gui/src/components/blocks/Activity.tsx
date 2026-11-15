@@ -42,7 +42,7 @@ import { short, summarize } from "../../lib/run-summary";
 import { backgroundOf } from "../../lib/background";
 import { agentProvider, agentStep } from "../../lib/agent-marks";
 import { now } from "../../lib/clock";
-import { app, handleFor, reportError, rpc } from "../../state/app";
+import { app, handleFor, loadBlock, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
@@ -291,12 +291,18 @@ export function ActivityGroup(p: GroupProps) {
  */
 export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const [open, setOpen] = createSignal(false);
+    // A finished turn's thought comes without its text (ThinkingBlock.omitted): asked for as the pointer comes to it,
+    // so it's there by the click, or as it's opened.
+    const folds = useCardFolds();
+    const fetch = () => {
+        if (p.block.omitted && folds.sessionId) void loadBlock(folds.sessionId, p.block.id);
+    };
     const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
             <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
-                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
                     <ChevronRight size={14} class="chev" />
                     <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
                 </button>

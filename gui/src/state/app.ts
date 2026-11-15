@@ -597,6 +597,36 @@ export function loadAgentList(h: SessionHandle): Promise<void> {
     return run;
 }
 
+/** Each block's fetch under way (loadBlock). */
+const loadingBlock = new Map<string, Promise<void>>();
+
+/**
+ * A block of a turn the window has whole, for one sent without all of itself (a finished turn's thought, without its
+ * text: ThinkingBlock.omitted), put in its place.
+ */
+export function loadBlock(sessionId: string, blockId: string): Promise<void> {
+    const h = handles.get(sessionId);
+    // Only one still without its text: a whole one has nothing more to bring.
+    const turn = h?.view.turns.findLast((t) => t.blocks.some((b) => b.id === blockId && b.t === "thinking" && b.omitted));
+    if (!h || !turn) return Promise.resolve();
+    const key = `${sessionId}:${blockId}`;
+    const going = loadingBlock.get(key);
+    if (going) return going;
+    const turnId = turn.id;
+    const run = rpc.call("session.block", { id: sessionId, turnId, blockId }).then((b) => {
+        if (!b) return;
+        h.set(produce((v) => {
+            const t = v.turns.findLast((x) => x.id === turnId);
+            const i = t ? t.blocks.findIndex((x) => x.id === blockId) : -1;
+            // Still without it (not sent again whole since).
+            const was = t?.blocks[i];
+            if (was?.t === "thinking" && was.omitted) t!.blocks[i] = b;
+        }));
+    }, () => undefined).finally(() => loadingBlock.delete(key));
+    loadingBlock.set(key, run);
+    return run;
+}
+
 /** Each sub-agent's fetch under way (loadAgent): one at a time. */
 const loadingAgent = new Map<string, Promise<void>>();
 

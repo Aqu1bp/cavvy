@@ -129,7 +129,10 @@ export interface TextBlock {
 export interface ThinkingBlock {
     t: "thinking";
     id: string;
+    /** Empty when `omitted`. */
     text: string;
+    /** Its text wasn't sent (a finished turn sent whole: it's read only opened): session.block has it. */
+    omitted?: true;
     startedAt?: number;
     durationMs?: number;
 }
@@ -2229,6 +2232,8 @@ export interface Methods {
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
+    /** A block of a turn whole: one sent without all of itself (ThinkingBlock.omitted). Null when it's gone. */
+    "session.block": { params: { id: string; turnId: string; blockId: string }; result: Block | null };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     "session.toolImage": { params: { id: string; key: string }; result: { mediaType: string; data: string } };

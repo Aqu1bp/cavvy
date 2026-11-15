@@ -174,3 +174,22 @@ test("an edit is sent with its change once: in its diff, not again in its input"
     // The server's own turn keeps all of it (Find, export, rewind read it).
     expect((view.turns[1]!.blocks[0] as { input: object }).input).toEqual({ file_path: "a.ts", content: "the whole file" });
 });
+
+test("a finished turn's thoughts are sent without their text, which comes when one is opened", () => {
+    const { rt, view } = runtime(3);
+    const thought = (id: string) => ({ t: "thinking", id, text: `thinking about ${id}`, durationMs: 4000 });
+    view.turns[1]!.blocks = [thought("a"), { t: "text", id: "r", text: "the reply" }] as Turn["blocks"];
+    view.turns[2]!.blocks = [thought("b")] as Turn["blocks"];
+    view.turns[2]!.status = "running";
+    const sent = rt.snapshot().turns;
+    // How long it took is what its row shows.
+    expect(sent[1]!.blocks).toEqual([{ t: "thinking", id: "a", text: "", omitted: true, durationMs: 4000 }, { t: "text", id: "r", text: "the reply" }]);
+    // One still being written: as it is (the live line shows its latest line).
+    expect(sent[2]!.blocks[0]).toEqual(thought("b"));
+    expect(rt.turnsBefore("t2", { all: true })!.turns[1]!.blocks[0]).toMatchObject({ text: "", omitted: true });
+    // Asked for: whole. The server's own keeps it.
+    expect(rt.blockWhole("t1", "a")).toEqual(thought("a"));
+    expect(rt.blockWhole("t1", "gone")).toBeNull();
+    expect(rt.blockWhole("gone", "a")).toBeNull();
+    expect((view.turns[1]!.blocks[0] as { text: string }).text).toBe("thinking about a");
+});

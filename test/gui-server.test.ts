@@ -3038,6 +3038,12 @@ describe("reopening a Claude Code session", () => {
             const c2 = new Client(TOKEN, {}, restarted.port);
             await c2.opened();
             const snap = await c2.call<SessionSnapshot>("session.open", { id });
+            // A finished turn's thoughts come without their text: each as the window asks for it, opened.
+            for (const t of snap.turns) {
+                for (const [i, b] of t.blocks.entries()) {
+                    if (b.t === "thinking" && b.omitted) t.blocks[i] = await c2.call<Block>("session.block", { id, turnId: t.id, blockId: b.id });
+                }
+            }
             c2.close();
             return snap;
         } finally {
