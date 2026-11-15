@@ -21,6 +21,7 @@ import { redact, registerSecret } from "../util/redact";
 import { encodeBrowserFrame, encodeSimulatorFrame } from "./browser-wire";
 import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
+import { orderedSender, type OrderedSender } from "./ws-send";
 
 export interface ServeOptions extends EngineOptions {
     host?: string;
@@ -102,6 +103,8 @@ interface Conn {
     desktop?: { host?: DesktopHost };
     held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
     client: EngineClient;
+    /** Everything this socket sends, in order and none dropped (ws-send.ts). */
+    out?: OrderedSender;
 }
 
 export async function startServer(o: ServeOptions = {}): Promise<RunningServer> {
@@ -258,8 +261,9 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             sendPings: true,
             open(ws: ServerWebSocket<Conn>) {
                 sockets.add(ws);
+                const out = (ws.data.out = orderedSender(ws));
                 if (ws.data.desktop) {
-                    ws.data.desktop.host = attachDesktopHost({ send: (t) => void ws.send(t), close: (code, reason) => ws.close(code, reason) });
+                    ws.data.desktop.host = attachDesktopHost({ send: (t) => out.send(t), close: (code, reason) => ws.close(code, reason) });
                     log("the desktop app's browser connected");
                     return;
                 }
@@ -267,19 +271,19 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 c.send = (ev: ServerEvent) => {
                     if (ws.readyState !== 1) return;
                     // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
-                    if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() > 1024 * 1024) {
+                    if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() + out.queued > 1024 * 1024) {
                         ws.close(1013, "Browser viewer is too slow; reconnect");
                         return;
                     }
                     if (ws.data.browser && ev.type === "browser.frame") {
                         const { sessionId, frameId, tab, width, height, data } = ev;
-                        ws.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
+                        out.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
                     } else if (ws.data.browser && ev.type === "simulator.frame") {
                         // Binary as the helper made it: no base64 on the way.
                         const { sessionId, frameId, width, height, data } = ev;
-                        ws.send(encodeSimulatorFrame({ sessionId, frameId, width, height }, typeof data === "string" ? Buffer.from(data, "base64") : data));
-                    } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") ws.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
-                    else ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
+                        out.send(encodeSimulatorFrame({ sessionId, frameId, width, height }, typeof data === "string" ? Buffer.from(data, "base64") : data));
+                    } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") out.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
+                    else out.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
                 engine.clients.add(c);
             },
@@ -320,7 +324,10 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
                     reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
-                if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
+                if (!notification && ws.readyState === 1) ws.data.out!.send(JSON.stringify(reply, wireReplacer));
+            },
+            drain(ws: ServerWebSocket<Conn>) {
+                ws.data.out?.drain();
             },
             close(ws: ServerWebSocket<Conn>) {
                 sockets.delete(ws);
