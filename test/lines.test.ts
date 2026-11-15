@@ -1,10 +1,10 @@
 // A file's lines a chunk at a time (src/util/lines.ts): the same lines a whole read and a split give, for a file of
 // any size.
 import { expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tempDir } from "./helpers/isolate";
-import { eachLine } from "../src/util/lines";
+import { eachLine, linesFromEnd } from "../src/util/lines";
 
 const lines = (file: string, wholeMax?: number) => {
     const out: string[] = [];
@@ -41,4 +41,29 @@ test("lines across the chunks it reads in, and characters of several bytes acros
 
 test("a file that isn't there throws, as reading it would", () => {
     expect(() => eachLine(join(tempDir("cavvy-lines-"), "none"), () => {})).toThrow();
+});
+
+test("from the end: the same lines, last first, whatever the chunks; stopping reads no further back", () => {
+    const dir = tempDir("cavvy-lines-end-");
+    const texts = ["", "\n", "a", "a\n", "\na", "one\ntwo\n", "one\n\nthree", "é😀\nñ\n" + "x😀".repeat(50) + "\nlast"];
+    for (const [i, text] of texts.entries()) {
+        const file = join(dir, `t${i}`);
+        writeFileSync(file, text);
+        for (const chunk of [1, 2, 3, 7, 64 * 1024]) {
+            const out: string[] = [];
+            linesFromEnd(file, (l) => void out.push(l), chunk);
+            expect([out, chunk, text]).toEqual([split(text).reverse(), chunk, text]);
+        }
+    }
+    // Stopped after two: the rest isn't read (a chunk at a time from the end).
+    const big = join(dir, "big");
+    writeFileSync(big, Array.from({ length: 10_000 }, (_, i) => `line ${i}`).join("\n") + "\n");
+    const got: string[] = [];
+    const readSoFar = () => (existsSync("/proc/self/io") ? Number(/rchar: (\d+)/.exec(readFileSync("/proc/self/io", "utf8"))?.[1]) : undefined);
+    const before = readSoFar();
+    linesFromEnd(big, (l) => got.push(l) < 2, 64);
+    const after = readSoFar();
+    expect(got).toEqual(["line 9999", "line 9998"]);
+    // Two chunks of its 98,890 bytes (and the counter's own file, read once).
+    if (before !== undefined) expect(after! - before).toBeLessThan(4096);
 });

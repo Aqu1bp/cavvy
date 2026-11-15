@@ -14,7 +14,7 @@ import type { GoalRecord } from "./goal";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
-import { eachLine } from "../util/lines";
+import { eachLine, linesFromEnd } from "../util/lines";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
 
@@ -1848,18 +1848,18 @@ export function loadPromptHistory(cwd: string, limit = 500): string[] {
     const file = paths.history();
     if (!existsSync(file)) return [];
     try {
-        const lines = readFileSync(file, "utf-8").split("\n");
         const out: string[] = [];
-        for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
-            const raw = lines[i];
-            if (!raw) continue;
+        // From its end, as far back as it takes: it's every project's, kept for good.
+        linesFromEnd(file, (raw) => {
+            if (!raw) return;
             try {
                 const e = JSON.parse(raw) as { cwd: string; text: string };
                 if (e.cwd === cwd && e.text && out[out.length - 1] !== e.text) out.push(e.text);
             } catch {
                 // ignore
             }
-        }
+            return out.length < limit;
+        });
         return out.reverse();
     } catch {
         return [];

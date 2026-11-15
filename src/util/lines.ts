@@ -50,3 +50,40 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
         closeSync(fd);
     }
 }
+
+/** How much is read at a time from a file's end (linesFromEnd). */
+const TAIL_CHUNK = 64 * 1024;
+
+/**
+ * Calls `fn` with each line of `file`, last first (an empty last line after a final newline isn't one), until `fn`
+ * returns false: what's before is never read. For the end of a file that only grows (a history kept for good).
+ */
+export function linesFromEnd(file: string, fn: (line: string) => boolean | void, chunkSize = TAIL_CHUNK) {
+    const fd = openSync(file, "r");
+    try {
+        let pos = fstatSync(fd).size;
+        // The start of a line whose beginning is in a chunk not read yet.
+        let rest: Buffer = Buffer.alloc(0);
+        let first = true;
+        while (pos > 0) {
+            const n = Math.min(chunkSize, pos);
+            pos -= n;
+            const b = Buffer.allocUnsafe(n);
+            readSync(fd, b, 0, n, pos);
+            let buf = rest.length ? Buffer.concat([b, rest]) : b;
+            // A final newline ends the last line.
+            if (first && buf.length && buf[buf.length - 1] === 10) buf = buf.subarray(0, buf.length - 1);
+            first = false;
+            let end = buf.length;
+            // Each whole line in it (a newline never falls inside a character's bytes), last first.
+            for (let nl = buf.lastIndexOf(10, end - 1); nl >= 0; nl = end > 0 ? buf.lastIndexOf(10, end - 1) : -1) {
+                if (fn(buf.subarray(nl + 1, end).toString("utf-8")) === false) return;
+                end = nl;
+            }
+            rest = Buffer.from(buf.subarray(0, end));
+        }
+        if (rest.length || !first) fn(rest.toString("utf-8"));
+    } finally {
+        closeSync(fd);
+    }
+}
