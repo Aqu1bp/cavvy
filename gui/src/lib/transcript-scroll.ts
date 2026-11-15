@@ -56,6 +56,8 @@ export function firstShown(heights: Heights, shown: number, atEnd: boolean, scre
 export const FAR = "data-far";
 /** A turn of a page going in a few at a time, built but not laid out until the page is all in (Transcript.tsx). */
 export const STAGED = "data-staged";
+/** Put in again skipped at a remembered size: what it brings in starts already over (transcript.css; work-rendering's rows too). */
+export const AGAIN = "data-work-again";
 
 export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number; row?: number; rowOffset?: number };
 export type TranscriptPosition = {
