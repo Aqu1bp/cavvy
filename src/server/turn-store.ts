@@ -20,10 +20,11 @@ const COMPACT_SLACK = 8 * 1024 * 1024;
 /** How much of a log's end is kept, to tell later that it's the same log, unchanged. */
 const TAIL_BYTES = 256;
 
-/** What a log was when the store was written: its size and its last bytes. */
+/** What a log was when the store was written: which file (its inode), its size and its last bytes. */
 interface LogStamp {
     size: number;
     tail: string;
+    ino?: number;
 }
 
 /** A turn without its blocks: what the server keeps of a turn it isn't showing. */
@@ -49,11 +50,12 @@ function stamp(file: string): LogStamp {
         return { size: -1, tail: "" };
     }
     try {
-        const size = fstatSync(fd).size;
+        const st = fstatSync(fd);
+        const size = st.size;
         const n = Math.min(TAIL_BYTES, size);
         const b = Buffer.alloc(n);
         readSync(fd, b, 0, n, size - n);
-        return { size, tail: b.toString("base64") };
+        return { size, tail: b.toString("base64"), ino: st.ino };
     } finally {
         closeSync(fd);
     }
@@ -106,7 +108,8 @@ export class TurnStore {
         if (index.v !== VERSION || index.logs.length !== this.logs.length || !index.ui) return undefined;
         for (let i = 0; i < this.logs.length; i++) {
             const now = stamp(this.logs[i]!);
-            if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail) return undefined;
+            // Another file in its place (restored from a backup, synced) of the same size and end: not the one it was.
+            if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail || now.ino !== index.logs[i]!.ino) return undefined;
         }
         if (!existsSync(this.file)) return undefined;
         this.end = this.open();

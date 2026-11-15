@@ -1084,9 +1084,16 @@ export class Runtime {
         return this.liveOnly.size && x.blocks.some((b) => this.liveOnly.has(b.id)) ? { ...x, blocks: x.blocks.filter((b) => !this.liveOnly.has(b.id)) } : x;
     }
 
+    /** Turns let go of with nothing kept of them (only what was shown: a notice as the session opened). */
+    private shownOnly = new WeakSet<Turn>();
+
     private letGo(t: Turn) {
         if (this.changed.has(t) || !this.storedAt.has(t)) {
-            this.storedAt.set(t, this.store!.put(this.kept(t)));
+            const kept = this.kept(t);
+            // Only what was shown, not kept (a notice as the session opened): not in its index either (saveTurns).
+            if (!kept.blocks.length && !t.prompt && !t.archived && !t.imported) this.shownOnly.add(t);
+            else this.shownOnly.delete(t);
+            this.storedAt.set(t, this.store!.put(kept));
             this.changed.delete(t);
         }
         t.blocks = [];
@@ -1106,6 +1113,8 @@ export class Runtime {
         try {
             const heads: { head: TurnHead; at: number; len: number }[] = [];
             for (const t of all) {
+                // Let go of holding only what was shown: left out, as it is while it's built (below).
+                if (this.headOnly(t) && this.shownOnly.has(t)) continue;
                 if (!this.headOnly(t)) {
                     const kept = this.kept(t);
                     // A turn that held only what was shown (a notice as the session opened): not built again either.

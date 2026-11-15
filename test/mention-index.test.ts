@@ -33,7 +33,7 @@ function index(files: string[]) {
 test("it offers what scoring every path did, in the same order, typed on or asked afresh, made at once or in slices", async () => {
     let seed = 9;
     const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
-    const words = ["src", "Lib", "components", "Server", "agent", "tools", "util", "test", "README", "index", "main", "app.config", "a_b", "x-y", "ünï", "café"];
+    const words = ["src", "Lib", "components", "Server", "agent", "tools", "util", "test", "README", "index", "main", "app.config", "a_b", "x-y", "ünï", "café", "İzmir", "İstanbul"];
     const files = Array.from({ length: 3000 }, (_, i) => {
         const parts = Array.from({ length: 1 + Math.floor(r() * 4) }, () => words[Math.floor(r() * words.length)]!);
         return `${parts.join("/")}/${words[Math.floor(r() * words.length)]}${i % 7 ? "" : " copy"}.${["ts", "md", "json"][i % 3]}`;
@@ -45,7 +45,7 @@ test("it offers what scoring every path did, in the same order, typed on or aske
     const sliced = new FileIndex("/nonexistent");
     await (sliced as any).take(files, () => Promise.resolve());
     (sliced as any).builtAt = Date.now();
-    const queries = ["s", "sr", "src", "src/", "src/c", "src/co", "srv", "Serv", "server", "mai", "main.", "main.t", "./ind", "ap", "app.c", "a_", "x-", "ün", "café", "zzz", "comp ts", "/", "md", "ME", "e", "", "2", "29", "copy"];
+    const queries = ["s", "sr", "src", "src/", "src/c", "src/co", "srv", "Serv", "server", "mai", "main.", "main.t", "./ind", "ap", "app.c", "a_", "x-", "ün", "café", "zzz", "comp ts", "/", "md", "ME", "e", "", "2", "29", "copy", "izm", "istanbul", "notes", "ts"];
     for (const limit of [12, 8, 1]) {
         for (const q of queries) {
             // Asked afresh, and typed one letter at a time (each a search, as the composer asks).
