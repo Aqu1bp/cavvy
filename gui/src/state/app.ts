@@ -40,11 +40,26 @@ export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversU
  * (lib/machine-links.ts) that what's asked of each goes over, and what it says of each comes back on.
  */
 const away = new Map<string, Rpc>();
+/** And the machine each is on ("" for this computer). */
+const awayOn = new Map<string, string>();
 rpc.route = (method, params) => {
-    const id = (params as { id?: unknown } | undefined)?.id;
-    const link = typeof id === "string" ? away.get(id) : undefined;
+    // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`.
+    const p = params as { id?: unknown; sessionId?: unknown } | undefined;
+    const id = typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
+    const link = id !== undefined ? away.get(id) : undefined;
     return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
 };
+/** The connection to ask about `sessionId` over what isn't named by it (the files in its folder: fs.mentions). */
+export function rpcFor(sessionId: string | undefined): Rpc {
+    return (sessionId !== undefined && away.get(sessionId)) || rpc;
+}
+/** Each other machine's models, as its Cavvy lists them: for its sessions opened in this window (modelsFor). */
+const [machineModels, setMachineModels] = createStore<Record<string, ProviderModels[]>>({});
+/** The models to offer in `sessionId`: its machine's. */
+export function modelsFor(sessionId: string | undefined): ProviderModels[] {
+    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    return on === undefined ? app.models : (machineModels[on] ?? []);
+}
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
 
@@ -835,7 +850,11 @@ export async function activate(id: string | undefined, cwd?: string) {
     const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
     if (id && at && at.machine !== machine && !away.has(id)) {
         try {
-            away.set(id, await linkFor(at.machine));
+            const link = await linkFor(at.machine);
+            const on = at.machine ?? "";
+            away.set(id, link);
+            awayOn.set(id, on);
+            if (!(on in machineModels)) void link.call("models.list", { refresh: false }).then((m) => setMachineModels(on, m), () => undefined);
         } catch (e) {
             return reportError(e);
         }

@@ -94,6 +94,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
+        // The window's own models, whatever the session (all of them are this computer's here).
+        modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),

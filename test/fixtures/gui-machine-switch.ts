@@ -19,6 +19,8 @@ Object.assign(globalThis, {
 
 const summary = (id: string, o: object = {}) => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
 const opened: { url: string; id: string }[] = [];
+/** Where each lookup by folder or path went (fs.*), and what it was. */
+const looked: { url: string; method: string }[] = [];
 
 class ServerSocket extends Socket {
     url: string;
@@ -39,6 +41,10 @@ class ServerSocket extends Socket {
         else if (method === "session.open") {
             opened.push({ url: this.url, id: params.id });
             reply({ seq: 0, epoch: "e", state: { id: params.id, cwd: "/srv/app", busy: false, interactions: [] }, turns: [{ id: `${params.id}-t`, status: "done", startedAt: 1, prompt: { text: "hi" }, blocks: [] }], agents: [] });
+        } else if (method === "models.list") reply(onBox ? [{ provider: "boxp", providerName: "Box's", status: "ok", models: [{ ref: "boxp:only-on-box", id: "only-on-box", name: "Only on box", provider: "boxp" }] }] : []);
+        else if (method.startsWith("fs.")) {
+            looked.push({ url: this.url, method });
+            reply(method === "fs.mentions" ? [] : {});
         } else if (method === "settings.get") reply({});
         else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
@@ -47,7 +53,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, handleFor, upsertSession } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, handleFor, upsertSession, modelsFor, rpcFor } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -73,6 +79,13 @@ try {
     assert.equal(app.activeId, "b1");
     assert.deepEqual(opened.filter((o) => o.id === "b1").map((o) => o.url.includes("box")), [true], "opened over a connection to box");
     assert.ok(handleFor("b1"), "box's session has a handle in this page");
+    // What its composer offers and looks up is box's: its models, the files in its folder, the paths in what it says.
+    assert.deepEqual(modelsFor("b1").flatMap((g) => g.models.map((m) => m.ref)), ["boxp:only-on-box"]);
+    assert.deepEqual(modelsFor("l1"), app.models);
+    await rpcFor("b1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
+    await rpc.call("fs.exists", { sessionId: "b1", paths: ["README.md"] } as never);
+    await rpcFor("l1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
+    assert.deepEqual(looked.map((l) => [l.method, l.url.includes("box") ? "box" : "here"]), [["fs.mentions", "box"], ["fs.exists", "box"], ["fs.mentions", "here"]]);
 
     // And back: the window's own, at once (its handle kept), and box's still there for next time.
     lost = [];

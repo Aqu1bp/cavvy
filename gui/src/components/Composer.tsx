@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { app, handleFor, reportError, rpc, rpcFor, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -340,7 +340,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             mentionTimer = setTimeout(async () => {
                 try {
                     const [found, resources] = await Promise.all([
-                        rpc.call("fs.mentions", { cwd, query: tok.query }),
+                        // Of the folder on the session's machine (another machine's, opened here: rpcFor).
+                        rpcFor(sid).call("fs.mentions", { cwd, query: tok.query }),
                         hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
@@ -704,7 +705,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen() && pane.focused()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                sessionId={p.sessionId} current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen() && pane.focused()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
             <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen() && pane.focused()} setOpen={setModePickerOpen} placement={menuSide()} />
