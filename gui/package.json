@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.8.0",
     "@tauri-apps/plugin-notification": "^2.7.0",
     "@tauri-apps/plugin-opener": "^2.7.0",
+    "entities": "6.0.1",
     "lucide-solid": "^1.57.0",
     "marked": "^18.1.0",
     "shiki": "^4.5.0",

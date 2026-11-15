@@ -54,13 +54,13 @@ import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
+import { cardOf, EDIT_TOOLS, type Card } from "../../lib/cards";
 
 export type Item =
     | { kind: "block"; block: Block }
     | { kind: "activity"; id: string; tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; card?: Card };
 
 /** A call shown as its own card rather than a line in a group: an edit (its diff), a command (its output), or a plan (PlanCard). */
-export type Card = "edit" | "command" | "plan";
 
 /**
  * Fold runs of tool calls (and the thinking between them) into activity groups.
@@ -102,16 +102,7 @@ export function groupBlocks(blocks: Block[]): Item[] {
     return out;
 }
 
-const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
-
-/** Whether a call gets a card of its own (sub-agents keep their own row). */
-export function cardOf(t: ToolBlock): Card | undefined {
-    if (t.agent) return undefined;
-    if (EDIT_TOOLS.has(t.name)) return "edit";
-    if (t.name === "Bash") return "command";
-    if (t.name === "ExitPlanMode") return "plan";
-    return undefined;
-}
+export { cardOf, type Card };
 
 // ---------------------------------------------------------------------------
 // Icons and summaries (the words are lib/tool-words.ts's)
