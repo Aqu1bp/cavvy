@@ -10,7 +10,7 @@ import { reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, themeTraits, type AccentId, type Scheme } from "../state/prefs";
+import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, themeTraits, type AccentId } from "../state/prefs";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
 const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));
@@ -336,34 +336,6 @@ function General() {
 }
 
 /**
- * A small picture of the window in that scheme: the rail on the glass, the
- * sheet beside it. Each face carries its own data-theme, so it's drawn with
- * that palette's tokens whichever scheme is showing; System is half of each.
- */
-function SchemeTile(p: { id: Scheme; label: string }) {
-    const on = () => prefs.scheme === p.id;
-    return (
-        <button class={`ap-tile ${on() ? "on" : ""}`} aria-pressed={on()} disabled={Boolean(forcedScheme())} onClick={() => setPrefs("scheme", p.id)}>
-            <span class="ap-pv" aria-hidden="true">
-                <Show when={p.id !== "dark"}>
-                    <span class="ap-face" data-theme="light">
-                        <i />
-                        <u />
-                    </span>
-                </Show>
-                <Show when={p.id !== "light"}>
-                    <span class={`ap-face ${p.id === "system" ? "half" : ""}`} data-theme="dark">
-                        <i />
-                        <u />
-                    </span>
-                </Show>
-            </span>
-            {p.label}
-        </button>
-    );
-}
-
-/**
  * A small picture of the window with that tint: the rail on the tinted glass,
  * the sheet beside it. The face carries only its own data-tint, so it's drawn
  * in the scheme, accent and Window showing (tokens.css matches it under <html>).
@@ -383,7 +355,7 @@ function TintTile(p: { id: typeof prefs.tint; label: string }) {
     );
 }
 
-/** Settings → Appearance, as the mockup draws it: scheme tiles, then the look, then text and layout. */
+/** Settings → Appearance: the theme (its scheme, the gallery), then the look, then text and layout. */
 function Appearance() {
     const size = (n: number) => setPrefs("fontSize", Math.max(12, Math.min(18, n)));
     // Blue is the default: picking it clears the choice.
@@ -396,6 +368,16 @@ function Appearance() {
         <div class="ap">
             <Group>Theme</Group>
             <div class="set-group ap-group">
+                {/* The scheme picks which of a theme's looks shows, so it sits with them; a theme with one look sets it. */}
+                <Row title="Color scheme" desc={forcedScheme() ? `${themeTraits()?.name ?? "This theme"} is ${forcedScheme()} only.` : undefined} changed={prefs.scheme !== PREF_DEFAULTS.scheme} reset={() => setPrefs("scheme", PREF_DEFAULTS.scheme)}>
+                    <Segmented
+                        size="sm"
+                        label="Color scheme"
+                        value={prefs.scheme}
+                        onChange={(v) => setPrefs("scheme", v)}
+                        options={(["system", "light", "dark"] as const).map((v) => ({ value: v, label: v[0]!.toUpperCase() + v.slice(1), disabled: Boolean(forcedScheme()) }))}
+                    />
+                </Row>
                 <Suspense>
                     <ThemeGallery />
                 </Suspense>
@@ -403,18 +385,6 @@ function Appearance() {
                     <Row title="Animate" changed={!prefs.themeMotion} reset={() => setPrefs("themeMotion", true)}>
                         <Toggle label="Animate" checked={prefs.themeMotion} onChange={(v) => setPrefs("themeMotion", v)} />
                     </Row>
-                </Show>
-            </div>
-
-            <Group>Color scheme</Group>
-            <div class="set-group ap-group">
-                <div class="ap-tiles" role="group" aria-label="Color scheme">
-                    <SchemeTile id="system" label="System" />
-                    <SchemeTile id="light" label="Light" />
-                    <SchemeTile id="dark" label="Dark" />
-                </div>
-                <Show when={forcedScheme()}>
-                    <p class="ap-note">{`${themeTraits()?.name ?? "This theme"} is ${forcedScheme()} only.`}</p>
                 </Show>
             </div>
 
