@@ -134,6 +134,8 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
     const List = componentCode("WorkList", {
         createSignal: (initial: unknown) => [() => initial, (v: unknown) => void sets.push(v)],
         createMemo: (f: () => unknown) => f,
+        createEffect: (f: () => unknown) => void f(),
+        loadAgentList: async () => {},
         For: (p: { each: unknown[]; children: (x: unknown) => unknown }) => p.each.map((x) => p.children(x)),
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? (typeof p.children === "function" ? p.children(() => p.when) : p.children) : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),

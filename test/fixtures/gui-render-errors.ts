@@ -14,6 +14,7 @@ import * as diffWindow from "../../gui/src/lib/diff-window";
 import { oneSided } from "../../gui/src/lib/review-stack";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
+import * as cards from "../../gui/src/lib/cards";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -84,7 +85,7 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
         const Widget = component(source(file), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
-            ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
+            ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...cards, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
             onMount() {}, highlight: async () => undefined, createBlocks, DrawnAgain, paint() {}, oneSided,
             groupBlocks: () => { throw Error("bad turn"); },

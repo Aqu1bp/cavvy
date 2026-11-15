@@ -13,6 +13,7 @@ import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
 import * as turnPlaces from "../../gui/src/lib/turn-places";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
+import * as cards from "../../gui/src/lib/cards";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
 import { createBlocks, DrawnAgain } from "../../gui/src/lib/reveal";
 import { applyOp } from "../../src/server/timeline";
@@ -42,7 +43,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
+        ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, ...cards, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
@@ -269,7 +270,7 @@ test("thinking lookahead stays linear", () => {
     const blocks = new Proxy([tool("a"), ...Array.from({ length: n }, (_, i) => ({ t: "thinking", id: `t${i}`, text: "thought" })), tool("b")], {
         get(target, key, receiver) { if (/^\d+$/.test(String(key))) accesses++; return Reflect.get(target, key, receiver); },
     });
-    const group = component(activity, "groupBlocks", {});
+    const group = component(activity, "groupBlocks", { ...cards });
     const result = group(blocks);
     expect(result).toHaveLength(1);
     expect(result[0].steps).toHaveLength(n + 2);
@@ -754,3 +755,4 @@ test("with tool activity set to open, a command card starts open", () => {
         expect(text(row(h.root, "cmd"))).toContain("kiwi output");
     } finally { h.dispose(); }
 });
+

@@ -102,7 +102,6 @@ export function groupBlocks(blocks: Block[]): Item[] {
     return out;
 }
 
-export { cardOf, type Card };
 
 // ---------------------------------------------------------------------------
 // Icons and summaries (the words are lib/tool-words.ts's)
