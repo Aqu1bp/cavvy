@@ -4716,6 +4716,8 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
         expect(bypass.asked[0]!.preview?.summary).toBe("Allow Computer Use to take over the screen");
         expect(bypass.asked[0]!.decision.appGrant).toBeDefined();
+        // A yes is for this once: offered as such, without a line saying it lasts the session.
+        expect(bypass.asked[0]!.decision).toMatchObject({ appPersist: [], reason: undefined });
         expect(answers()).toEqual([
             { action: "accept", content: {}, _meta: null },
             { action: "accept", content: {}, _meta: null },

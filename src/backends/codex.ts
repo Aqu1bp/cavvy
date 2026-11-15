@@ -2242,7 +2242,7 @@ export class CodexTurn {
             // Not a shape Cavvy knows: the person answers its question, in every mode, as for an app (never the mode,
             // a rule, a hook or a reviewer); a yes is for this once. Nobody to ask: declined.
             const question = ask.question.replace(/[?.\s]+$/, "");
-            const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: question }, title: question, preview: { summary: question }, agentLabel, ...this.subAsk(from) });
+            const a = await this.cliSession.permission({ toolName: "DesktopControl", input: { action: "request_access", app: question }, title: question, preview: { summary: question }, appPersist: [], agentLabel, ...this.subAsk(from) });
             const d = this.decision(a, undefined, from);
             if (d === "cancel") this.interrupt(from);
             return reply(d === "accept" ? "accept" : "decline");
