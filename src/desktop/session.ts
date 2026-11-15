@@ -87,6 +87,15 @@ async function withHelper<T>(fn: (h: DesktopHelperLike) => Promise<T>): Promise<
     }
 }
 
+/** Has macOS show its Accessibility prompt (once for each helper), and says in one line what to turn on. */
+async function askAccessibility(h: DesktopHelperLike): Promise<string> {
+    if (!promptedAccessibility) {
+        promptedAccessibility = true;
+        await h.call({ op: "status", ask: "accessibility" }).catch(() => undefined);
+    }
+    return trustedBefore() ? ACCESSIBILITY_STALE_LINE : ACCESSIBILITY_LINE;
+}
+
 /** A command, with what a missing grant needs said in one line (and macOS's own prompt shown once). */
 async function call(h: DesktopHelperLike, command: Record<string, unknown>, timeoutMs?: number): Promise<Reply> {
     try {
@@ -95,13 +104,7 @@ async function call(h: DesktopHelperLike, command: Record<string, unknown>, time
         return r;
     } catch (e) {
         if (!(e instanceof DesktopError)) throw e;
-        if (e.code === "accessibility") {
-            if (!promptedAccessibility) {
-                promptedAccessibility = true;
-                await h.call({ op: "status", ask: "accessibility" }).catch(() => undefined);
-            }
-            throw new DesktopError(trustedBefore() ? ACCESSIBILITY_STALE_LINE : ACCESSIBILITY_LINE, e.code);
-        }
+        if (e.code === "accessibility") throw new DesktopError(await askAccessibility(h), e.code);
         if (e.code === "screen") {
             await h.call({ op: "status", ask: "screen" }).catch(() => undefined);
             // A process sees a new Screen Recording grant only once it starts again.
@@ -209,11 +212,8 @@ export class DesktopSession {
         this.grants.add({ name: app.name, bundleId: app.bundleId });
         const ready = `You can use ${app.name} until this session ends.`;
         // Seeing it takes Accessibility: said now, while the person is here, rather than on the first snapshot.
-        const status = await withHelper((h) => h.call({ op: "status" })).catch(() => undefined);
-        if (status && status.accessibility !== true) {
-            await withHelper((h) => call(h, { op: "look", pids: [] })).catch(() => undefined);
-            return `${ready} ${trustedBefore() ? ACCESSIBILITY_STALE_LINE : ACCESSIBILITY_LINE}`;
-        }
+        const missing = await withHelper(async (h) => ((await h.call({ op: "status" })).accessibility === true ? undefined : askAccessibility(h))).catch(() => undefined);
+        if (missing) return `${ready} ${missing}`;
         return `${ready}${app.running ? "" : " It isn't running: DesktopControl action=open starts it."}`;
     }
 
