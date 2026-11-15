@@ -141,14 +141,17 @@ export type UiRecord =
     | { t: "blocks"; seg: number; index: number; blocks: Block[]; prompt?: string }
     | { t: "agent"; agent: AgentRun; id?: undefined };
 
-/** A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there). */
+/**
+ * A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there).
+ * Looked for from the end: what's written is nearly always the newest step, and a long turn has thousands.
+ */
 function place(blocks: Block[], b: Block, after: string | null | undefined) {
-    const i = blocks.findIndex((x) => x.id === b.id);
+    const i = blocks.findLastIndex((x) => x.id === b.id);
     if (i >= 0) {
         blocks[i] = b;
         return;
     }
-    const j = after === null ? 0 : after === undefined ? -1 : blocks.findIndex((x) => x.id === after) + 1;
+    const j = after === null ? 0 : after === undefined ? -1 : blocks.findLastIndex((x) => x.id === after) + 1;
     blocks.splice(after === null || j > 0 ? j : blocks.length, 0, b);
 }
 

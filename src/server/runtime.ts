@@ -864,7 +864,8 @@ export class Runtime {
         let logged = this.stepsLogged.get(turnId);
         if (!logged) this.stepsLogged.set(turnId, (logged = new Map()));
         for (const id of [...ids]) {
-            const i = turn.blocks.findIndex((b) => b.id === id);
+            // From the end: what changed is nearly always the newest, and a long turn has thousands of steps.
+            const i = turn.blocks.findLastIndex((b) => b.id === id);
             const b = turn.blocks[i];
             if (b && !all && (b.id === this.openText || b.id === this.openThinking || (b.t === "tool" && b.status === "streaming"))) continue;
             // Under way: each flush's progress would be serialized again (and compared); once logged, again only a while
