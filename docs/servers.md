@@ -86,7 +86,7 @@ A new session starts on the machine named first in the strip under its composer 
 
 - Search (⌘K) finds text only in the sessions of the machine the open session is on.
 - Recently deleted lists that machine's too.
-- A server that can't be reached, was stopped, or needs your word says so at the foot of the sidebar; its sessions stay listed, none shown as working.
+- A server that can't be reached, was stopped, or needs your word is marked at the foot of the sidebar; the list of machines says which and why. Its sessions stay listed, none shown as working.
 
 To list a server's sessions this machine stays connected to it, as a window on it would: a Cavvy there that isn't running (the server rebooted) is started, one you stopped is left stopped, and nothing is installed or updated. When a session on a machine other than the open one's finishes or needs you, the notification names the machine first (`box: Fix the login test`), and a click on it opens that session.
 

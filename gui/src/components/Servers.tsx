@@ -13,7 +13,7 @@ import { RpcError } from "../lib/rpc";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
-import { watchOthers } from "./OtherMachines";
+import { machineNote, watchOthers } from "./OtherMachines";
 import "../lib/lent";
 import "../styles/servers.css";
 
@@ -162,8 +162,8 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                     <div class="server-row">
                         <button role="menuitemradio" aria-checked={machine === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), machine !== s.name && goTo(s.name))}>
                             <span class="grow">{s.name}</span>
-                            <Show when={s.cost}>
-                                <span class="server-cost">{s.cost}</span>
+                            <Show when={machineNote(s.name)} fallback={<Show when={s.cost}><span class="server-cost">{s.cost}</span></Show>}>
+                                {(note) => <span class="server-cost tone-warn">{note()}</span>}
                             </Show>
                             <Show when={machine === s.name}>
                                 <Check size={14} />

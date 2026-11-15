@@ -5,15 +5,16 @@
 // on has to tell its user comes as a notification that names the machine.
 //
 // This computer's own Cavvy hears each server (servers.overview: src/servers/watch.ts). Part of the servers code,
-// loaded only when there are servers. A server that can't be reached as it is says so above the sidebar's foot.
+// loaded only when there are servers. A server that can't be reached as it is is marked in the sidebar's foot.
 
-import { batch, createEffect, createRoot, For, on } from "solid-js";
+import { batch, createEffect, createRoot, on, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
 import { home } from "../lib/machines";
-import { goTo } from "./Servers";
+import { goTo, openMachines } from "./Servers";
+import { Server } from "lucide-solid";
 import { focused, machine, notify } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { orderSessions } from "../lib/session-order";
@@ -36,7 +37,12 @@ const left = (id: string, at: string | undefined) => {
 /** The machines whose sessions are in the list. */
 let joined = new Set<string | undefined>();
 let here = "This computer";
-const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "Can't reach it", stopped: "Stopped", "needs-you": "Open to connect", disconnected: "Disconnected" };
+const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "Can't reach it", stopped: "Stopped", "needs-you": "Needs you", disconnected: "Disconnected" };
+/** What the list of machines says beside a server that can't be reached as it is (components/Servers.tsx). */
+export function machineNote(name: string): string | undefined {
+    const m = servers.get(name);
+    return m && name !== machine ? NOTES[m.state] : undefined;
+}
 /** The servers that can't be reached as they are, and why. */
 const [trouble, setTrouble] = createStore<{ list: { name: string; note: string }[] }>({ list: [] });
 
@@ -134,23 +140,25 @@ rpc.route = (method, params) => {
 };
 
 
+/** One mark in the sidebar's foot for every server that can't be reached as it is: the list of machines says which and why. */
 function Trouble() {
+    const label = () => (trouble.list.length === 1 ? `${trouble.list[0]!.name}: ${trouble.list[0]!.note}` : `${trouble.list.length} servers unavailable`);
     return (
-        <For each={trouble.list}>
-            {(m) => (
-                <button class="om-h" title={`Go to ${m.name}`} onClick={() => goTo(m.name)}>
-                    <span class="truncate">{m.name}</span>
-                    <span class="om-n">{m.note}</span>
-                </button>
-            )}
-        </For>
+        <Show when={trouble.list.length}>
+            <button class="hb lg om-mark" title={label()} aria-label={label()} aria-haspopup="menu" onClick={(e) => openMachines(e.currentTarget, "end")}>
+                <Server size={16} />
+                <Show when={trouble.list.length > 1}>
+                    <span class="om-count">{trouble.list.length}</span>
+                </Show>
+            </button>
+        </Show>
     );
 }
 
 let host: HTMLElement | undefined;
 let seenRail: MutationObserver | undefined;
 
-/** Puts the servers in trouble above the sidebar's foot, and back there when the sidebar is built again (hidden and shown). */
+/** Puts the mark for servers in trouble in the sidebar's foot, and back there when the sidebar is built again (hidden and shown). */
 function attach(tries = 0) {
     const rail = document.querySelector(".win-rail");
     if (!rail) {
@@ -163,9 +171,10 @@ function attach(tries = 0) {
         host.className = "others";
         render(() => <Trouble />, host);
     }
+    // In the foot, just before Settings.
     const place = () => {
         const foot = rail.querySelector(".sidebar .side-foot");
-        if (foot && host!.nextElementSibling !== foot) foot.before(host!);
+        if (foot && host!.parentElement !== foot) foot.insertBefore(host!, foot.lastElementChild);
     };
     place();
     // Only the rail's own children: told when the sidebar comes and goes, not on what changes inside it.
