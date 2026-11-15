@@ -13,6 +13,7 @@ import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../l
 import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
+import { KeyedList } from "../lib/keyed-list";
 import { finishEntrances, finishEntrancesIn } from "../lib/entrances";
 import { settlingObserver, type SettlingObserver } from "../lib/settling-observer";
 import { TurnView } from "./TurnView";
@@ -1175,8 +1176,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     </Show>
                     <DrawnAgain.Provider value={() => settling}>
                     <CardFoldsProvider sessionId={id}>
-                        <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</For>
+                        {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
+                        <KeyedList each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</KeyedList>
                     </CardFoldsProvider>
                     </DrawnAgain.Provider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
