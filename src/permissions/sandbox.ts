@@ -196,7 +196,8 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     // The secrets, accounts/ (registered or not) and server-keys/ can't even be listed; the rest of the
     // home can, but not read: settings and session logs may hold secrets too.
-    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts", "server-keys"].flatMap((f) => bothForms(join(h, f))));
+    // desktop/ is the helper for Mac apps, which holds the person's macOS grants: not run, read or listed either.
+    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts", "server-keys", "desktop"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
     const globalConfig = [opencodeConfigDir(home), ...antigravityConfigDirs(home)].flatMap(bothForms);

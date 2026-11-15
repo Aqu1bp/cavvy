@@ -264,13 +264,14 @@ export class DesktopSession {
     }
 
     /**
-     * Whether the person has used the Mac since the agent last looked: clicked, typed or scrolled anywhere but Cavvy
-     * (answering its prompts doesn't count), as the helper counts. A helper started since couldn't count: undefined.
+     * Whether the person has used the session's apps since the agent last looked: clicked, typed or scrolled in them
+     * (input elsewhere, Cavvy's prompts included, doesn't count), as `reply` (a look at them) counts. A helper started
+     * since couldn't count: undefined.
      */
-    private touched(h: DesktopHelperLike): boolean | undefined {
-        if (!this.seen) return false;
+    private touched(h: DesktopHelperLike, reply: Reply | undefined): boolean | undefined {
+        if (!this.seen || !reply) return false;
         if (this.seen.helper !== h.pid) return undefined;
-        return this.seen.used !== h.used;
+        return this.seen.used !== Number(reply.used ?? 0);
     }
 
     /** What a ref stands for, as the person is asked about it ("button \"Bold\""), if the last outline had it. */
@@ -308,10 +309,10 @@ export class DesktopSession {
         const reply = read?.reply ?? (await call(h, { op: "look", pid: app.pid, pids: r.pids }));
         const tree = (reply.tree ?? {}) as DesktopNode & { truncated?: boolean };
         const o = outlineApp(tree, app.pid!, this.lastRef);
-        const note = this.touched(h) ? `\n${USED_NOTE}` : "";
+        const note = this.touched(h, reply) ? `\n${USED_NOTE}` : "";
         this.refs = o.refs;
         this.lastRef = o.lastRef;
-        this.seen = { helper: h.pid, used: h.used };
+        this.seen = { helper: h.pid, used: Number(reply.used ?? 0) };
         const front = typeof reply.front === "number" ? reply.front : r.front;
         const head = `Apps you may use: ${appList(r.apps, front)}${r.apps.length < this.grants.size ? `; not running: ${this.approved().filter((g) => !r.apps.some((a) => a.bundleId.toLowerCase() === g.bundleId.toLowerCase())).map((g) => g.name).join(", ")}` : ""}.`;
         const away = r.pids.includes(front ?? -1) ? "" : "\nAnother app is in front: keys reach only an app you may use, so bring one to the front first (DesktopControl action=open), and clicks reach only what isn't covered.";
@@ -365,6 +366,8 @@ export class DesktopSession {
             } catch (e) {
                 const code = e instanceof DesktopError ? (e.code ?? "") : "";
                 const [kind, count] = code.split(":");
+                // Gone quiet: whatever it's still doing for this action stops.
+                if (kind === "timeout") h.cancel(token);
                 if (signal?.aborted || kind === "cancelled") throw new DesktopError("Interrupted by user.", "cancelled");
                 const typed = count ? ` (${count} characters were typed.)` : "";
                 if (kind === "human") {
@@ -402,7 +405,7 @@ export class DesktopSession {
             if (e instanceof DesktopError && e.code === "cancelled") throw e;
             return undefined;
         });
-        if (this.touched(a.h)) throw new DesktopError(`Not done: ${target.ref} may not be what it was.\n\n${await this.look(a.h)}`);
+        if (this.touched(a.h, now)) throw new DesktopError(`Not done: ${target.ref} may not be what it was.\n\n${await this.look(a.h)}`);
         const still = now?.tree ? refStill(ref, now.tree as DesktopNode) : undefined;
         if (still === undefined) throw new DesktopError(`Not done: ${target.ref} isn't there any more: the app has changed.\n\n${await this.look(a.h)}`);
         return { x: ref.x, y: ref.y, name: `${JSON.stringify(still)} [${target.ref}]`, ref };

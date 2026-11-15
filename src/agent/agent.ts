@@ -3353,9 +3353,8 @@ export class Agent {
         if (req.hookDecision === "ask") ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
-        if (req.hookDecision === "allow" && !decision.dangerous && decision.appGrant === undefined) return { allow: true };
-        // Nor does a PermissionRequest hook: an app on the user's Mac is theirs to give.
-        if (this.o.settings().hooks?.PermissionRequest?.length && decision.appGrant === undefined) {
+        if (req.hookDecision === "allow" && !decision.dangerous && !decision.personOnly) return { allow: true };
+        if (this.o.settings().hooks?.PermissionRequest?.length && !decision.personOnly) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
             if (h?.stop) return { allow: false, message: `Stopped by PermissionRequest hook: ${h.stop}`, stop: true };
@@ -3568,7 +3567,7 @@ export class Agent {
         const sandbox = decision.sandbox;
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
         // Nor an app on the user's Mac: they give each themselves.
-        if (hookDecision === "allow" && !decision.dangerous && decision.appGrant === undefined) return { tool, input, sandbox, auto: "hook" };
+        if (hookDecision === "allow" && !decision.dangerous && !decision.personOnly) return { tool, input, sandbox, auto: "hook" };
 
         // A browser tool Claude Code or Codex calls, in auto mode: runs without Cavvy's reviewer, as T3 Code's do (that
         // reviewer would be a one-off run of the CLI itself). Rules, plan mode, read-only agents and hooks still hold.
@@ -3593,7 +3592,7 @@ export class Agent {
             }
         }
 
-        if (settings.hooks?.PermissionRequest?.length && decision.appGrant === undefined) {
+        if (settings.hooks?.PermissionRequest?.length && !decision.personOnly) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
             if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`, undefined, quiet) };

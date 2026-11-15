@@ -72,6 +72,8 @@ export interface Decision {
     remembered?: boolean;
     /** Asks the user for one of their Mac's apps (DesktopControl request_access): in every mode, past rules that allow, hooks and the reviewer. */
     appGrant?: string;
+    /** Only the person answers it, each time: no allow rule, mode, hook, reviewer or earlier yes does (an app grant, Cavvy's helper for Mac apps named in a command). */
+    personOnly?: boolean;
     /** With appGrant, from an agent CLI's own computer use: what its yes can be kept for besides this once (the prompt offers each). */
     appPersist?: ("session" | "always")[];
 }
@@ -249,7 +251,7 @@ export class PermissionChecker {
         const d = this.decide(tool, input, mode, cwd, own?.memoryDir);
         if (d.behavior !== "ask") return d;
         // Rules that ask every time keep asking; anything else the user already said yes to runs.
-        if (!d.rule && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
+        if (!d.rule && !d.personOnly && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
         return d;
     }
 
@@ -306,7 +308,7 @@ export class PermissionChecker {
      * configuration (a grant there would let the model widen its permissions).
      */
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
-        if (d.dangerous || d.config || d.rule || d.appGrant !== undefined || tool.category === "edit" || tool.category === "read") return undefined;
+        if (d.dangerous || d.config || d.rule || d.personOnly || tool.category === "edit" || tool.category === "read") return undefined;
         if (isShellTool(tool.name)) {
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
@@ -449,7 +451,7 @@ export class PermissionChecker {
         // One of the user's Mac apps: they say yes to each themselves, whatever the mode (plan and bypass too), and
         // whatever rule, hook or reviewer would allow it.
         if (tool.name === "DesktopControl" && input?.action === "request_access") {
-            return { behavior: "ask", appGrant: String(input?.app ?? ""), everyTime: true, reason: "The agent can see and use it until this session ends." };
+            return { behavior: "ask", appGrant: String(input?.app ?? ""), personOnly: true, everyTime: true, reason: "The agent can see and use it until this session ends." };
         }
 
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
@@ -474,9 +476,6 @@ export class PermissionChecker {
         if (isShellTool(tool.name)) {
             const server = this.server();
             dangerous = dangerousReason(t.command ?? "", 0, false, server);
-            // Cavvy's helper for Mac apps holds the person's macOS grants: run by hand, it skips asking them for each
-            // app (it still refuses the apps never offered). Asked about in every mode, bypass too.
-            if (!dangerous && /Cavvy Desktop Control|\.cavvy\/desktop\b/i.test(judged)) dangerous = "runs Cavvy's helper for Mac apps directly, which skips asking you for each app";
             // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
             // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
             const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;
@@ -520,6 +519,11 @@ export class PermissionChecker {
             }
         }
 
+        // Cavvy's helper for Mac apps holds the person's macOS grants: a command that names it (to run it as Cavvy
+        // would) is the person's to allow, every time. A guard, not a wall: a command that hides the name isn't caught.
+        if (isShellTool(tool.name) && namesDesktopHelper(judged)) {
+            return { behavior: "ask", dangerous: true, personOnly: true, everyTime: true, reason: "This command names Cavvy's helper for Mac apps, which can act in any app." };
+        }
         if (dangerous) {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
@@ -1059,6 +1063,17 @@ export function registryHosts(cmd: string): string[] {
 function dirGlob(abs: string): string {
     const dir = dirname(abs);
     return dir === "/" ? "//**" : `/${dir}/**`;
+}
+
+/**
+ * Whether a command names Cavvy's helper for Mac apps: its name, or its folder however it's written (`~`, `$HOME`,
+ * `$CAVVY_HOME`, the full path), quotes and backslashes aside.
+ */
+export function namesDesktopHelper(cmd: string, home = homedir(), cavvy = cavvyHome()): boolean {
+    const plain = cmd.replace(/\\(.)/g, "$1").replace(/["']/g, "");
+    if (/cavvy\s*desktop\s*control/i.test(plain)) return true;
+    const folders = new Set(["~/.cavvy/desktop", "$HOME/.cavvy/desktop", "${HOME}/.cavvy/desktop", "$CAVVY_HOME/desktop", "${CAVVY_HOME}/desktop", join(home, ".cavvy", "desktop"), join(cavvy, "desktop"), join(canonical(cavvy), "desktop")]);
+    return [...folders].some((f) => new RegExp(`${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w.-])`, "i").test(plain));
 }
 
 /** What allowing one thing a simulator is told allows, in words: the popup's "Allow … this session". */
