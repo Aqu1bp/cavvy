@@ -3,7 +3,7 @@
 // stale refs, missing macOS grants, how the permission checker and the agent treat each call, and the setting.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 isolate();
@@ -470,6 +470,36 @@ describe("permissions", () => {
         expect(checker({ permissions: { allow: ["DesktopControl(open)"] } }).check(DesktopControlTool, { action: "open", app: "TextEdit" }, "default", W).behavior).toBe("allow");
     });
 
+    test("a shell command that names Cavvy's helper asks the person, in every mode, past rules; others don't", () => {
+        const { BashTool } = require("../src/tools/bash");
+        const { homedir } = require("os");
+        const { paths } = require("../src/config/paths");
+        const c = checker({ permissions: { allow: ["Bash(ls:*)", "Bash"] } });
+        for (const command of ["ls ~/.cavvy/desktop", `ls "$HOME/.cavvy/desktop"`, `${homedir()}/.cavvy/desktop/Cavvy\\ Desktop\\ Control < cmds`, `"${paths.home()}/desktop/Cavvy Desktop Control"`]) {
+            for (const mode of ["default", "auto", "bypassPermissions"] as const) {
+                const d = c.check(BashTool, { command }, mode, W);
+                expect(d, `${mode} ${command}`).toMatchObject({ behavior: "ask", personOnly: true, dangerous: true });
+            }
+            // Nothing wider is offered, and a yes isn't remembered.
+            expect(c.withGrant(BashTool, { command }, c.check(BashTool, { command }, "default", W), W).grant).toBeUndefined();
+            c.approve(BashTool, { command }, W);
+            expect(c.check(BashTool, { command }, "bypassPermissions", W).behavior).toBe("ask");
+        }
+        expect(c.check(BashTool, { command: "ls ~/Desktop" }, "bypassPermissions", W).behavior).toBe("allow");
+        expect(c.check(BashTool, { command: "git status" }, "bypassPermissions", W).behavior).toBe("allow");
+        // A deny rule still wins.
+        expect(checker({ permissions: { deny: ["Bash(ls:*)"] } }).check(BashTool, { command: "ls ~/.cavvy/desktop" }, "bypassPermissions", W).behavior).toBe("deny");
+    });
+
+    test("auto mode's sandbox can't read, list or run the helper's folder", () => {
+        const { sandboxPolicy } = require("../src/permissions/sandbox");
+        const { realpathSync } = require("fs");
+        const { paths } = require("../src/config/paths");
+        mkdirSync(join(paths.home(), "desktop"), { recursive: true });
+        const p = sandboxPolicy([W], { cavvyHome: paths.home() });
+        expect(p.unreadable).toContain(join(realpathSync(paths.home()), "desktop"));
+    });
+
     test("plan mode reads the apps but doesn't open, click or type", () => {
         const c = checker();
         expect(c.check(DesktopSnapshotTool, {}, "plan", W).behavior).toBe("allow");
@@ -545,6 +575,11 @@ describe("the agent", () => {
         const answers = `echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`;
         const answered = await run({ ...on, hooks: { PermissionRequest: [{ matcher: "DesktopControl", command: answers }] } }, "default", DesktopControlTool, { action: "request_access", app: "TextEdit" });
         expect(answered.asked).toHaveLength(1);
+        // Nor a hook that answers permission requests, for a command naming Cavvy's helper.
+        const { BashTool } = await import("../src/tools/bash");
+        const named = await run({ ...on, permissions: { allow: ["Bash"] }, hooks: { PermissionRequest: [{ matcher: "Bash", command: answers }] } }, "bypassPermissions", BashTool, { command: "ls ~/.cavvy/desktop" }, false);
+        expect(named.asked).toHaveLength(1);
+        expect(named.r.isError).toBe(true);
         // Never offered: refused before the user is asked.
         const terminal = await run(on, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "Terminal" });
         expect(terminal.asked).toHaveLength(0);
@@ -662,35 +697,4 @@ test("off unless the user's own settings turn it on; any settings file turns it 
     expect(desktopAvailable({ desktop: { enabled: true } })).toBe(process.platform === "darwin");
     expect(desktopAvailable({})).toBe(false);
     expect(DESKTOP_TOOLS.every((t) => t.enabled!({ settings: {} }) === false)).toBe(true);
-});
-
-test("in the terminal app, /clear and /resume start over: the apps given before are asked for again", async () => {
-    const { App } = await import("../src/ui/app");
-    const { Session } = await import("../src/agent/session");
-    const trust = await import("../src/config/trust");
-    trust.trustForSession(W);
-    const app = new App({ cwd: W, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
-    (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
-    app.notice = () => {};
-    (app as any).makeAgent = () => {};
-    (app as any).replayTranscript = () => {};
-    (app as any).sessionSwitched = () => {};
-    try {
-        app.session = Session.create(W, { system: "sys" });
-        app.session.push({ role: "user", content: [{ type: "text", text: "use TextEdit" }], meta: { kind: "prompt" } });
-        const given = () => {
-            const s = (app.toolState.desktop ??= new DesktopSession());
-            s.grants.add({ name: "TextEdit", bundleId: "com.apple.TextEdit" });
-        };
-        given();
-        const pathA = app.session.path;
-        app.newSession();
-        expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
-        given();
-        app.resume(pathA);
-        expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
-    } finally {
-        const t = (app as any).backgroundTimer;
-        if (t) clearInterval(t);
-    }
 });

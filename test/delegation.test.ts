@@ -2441,6 +2441,25 @@ describe("the terminal's background list across sessions and turns: #282 review 
         }
     });
 
+    test("/new and /resume start over with the Mac apps: the apps given before are asked for again", async () => {
+        const { DesktopSession } = await import("../src/desktop/session");
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "use TextEdit" }], meta: { kind: "prompt" } });
+            const give = () => (app.toolState.desktop ??= new DesktopSession()).grants.add({ name: "TextEdit", bundleId: "com.apple.TextEdit" });
+            give();
+            const pathA = app.session.path;
+            app.newSession();
+            expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
+            give();
+            app.resume(pathA);
+            expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
     test("back in the session (/resume) while its shell still runs: the agent isn't told it stopped, and it's listed running (A3)", async () => {
         const { app } = tui();
         try {

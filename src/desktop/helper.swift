@@ -60,13 +60,11 @@ disclaim()
 /// already running as the person could still imitate Cavvy.
 func admitted() -> Bool {
     guard fcntl(3, F_GETFD) != -1 else { return false }
-    var buf = [UInt8](repeating: 0, count: 256)
-    var got = 0
-    while got < buf.count {
-        let n = buf.withUnsafeMutableBytes { read(3, $0.baseAddress! + got, $0.count - got) }
-        if n <= 0 { break }
-        got += n
-    }
+    // One line: Cavvy keeps its end open (it's closed when the helper ends), so it's read to the newline, not the end.
+    var buf = [UInt8]()
+    var byte: UInt8 = 0
+    while buf.count < 256, read(3, &byte, 1) == 1, byte != 0x0A { buf.append(byte) }
+    let got = buf.count
     close(3)
     let secret = Array(String(decoding: buf[0..<got], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).utf8)
     guard secret.count >= 32, let line = readLine(strippingNewline: true), let data = line.data(using: .utf8),

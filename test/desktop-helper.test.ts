@@ -2,7 +2,8 @@
 // Built with swiftc, so on a Mac only. What it's asked here (the status, finding an app) shows no macOS prompt,
 // opens nothing and sends no input.
 import { describe, expect, test } from "bun:test";
-import { spawn, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
+import { writeSync } from "fs";
 import { isolate } from "./helpers/isolate";
 
 isolate();
@@ -10,17 +11,22 @@ const { DesktopHelper, helperBinary } = await import("../src/desktop/helper");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
 
-/** Runs the helper with what's given; resolves with how it ended and what it wrote. */
-function run(bin: string, o: { fd3?: string; lines: string[] }): Promise<{ code: number | null; out: string; err: string }> {
-    const child = spawn(bin, [], { stdio: o.fd3 === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout!.on("data", (d) => (out += d));
-    child.stderr!.on("data", (d) => (err += d));
-    if (o.fd3 !== undefined) (child.stdio[3] as NodeJS.WritableStream).end(o.fd3);
-    for (const l of o.lines) child.stdin!.write(`${l}\n`);
-    child.stdin!.end();
-    return new Promise((resolve) => child.on("exit", (code) => resolve({ code, out, err })));
+/** Runs the helper with what's given (fd 3: a pipe holding that, as Cavvy hands its secret over); resolves with how it ended and what it wrote. */
+async function run(bin: string, o: { fd3?: string; lines: string[] }): Promise<{ code: number | null; out: string; err: string }> {
+    const proc = Bun.spawn([bin], { stdio: o.fd3 === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"] } as never) as unknown as {
+        stdin: { write(s: string): void; end(): void };
+        stdout: ReadableStream<Uint8Array>;
+        stderr: ReadableStream<Uint8Array>;
+        stdio: (number | null)[];
+        exited: Promise<number>;
+    };
+    const fd = proc.stdio[3];
+    // As Cavvy does: a line, the pipe left for Bun to close.
+    if (o.fd3 !== undefined && typeof fd === "number") writeSync(fd, `${o.fd3}\n`);
+    for (const l of o.lines) proc.stdin.write(`${l}\n`);
+    proc.stdin.end();
+    const [code, out, err] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code, out, err };
 }
 
 describe.skipIf(!swift)("who may drive the helper", () => {

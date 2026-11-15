@@ -4,10 +4,8 @@
 // out the same (measured: the same code hash), so a grant lasts until the helper's source changes.
 
 import { createHash, randomBytes } from "crypto";
-import { spawn, type ChildProcessByStdio } from "child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { join } from "path";
-import type { Readable, Writable } from "stream";
 import { paths } from "../config/paths";
 import { run } from "../simulator/simctl";
 import { NEVER_OFFERED, NEVER_OFFERED_NAME_PATTERNS } from "./apps";
@@ -115,6 +113,16 @@ export function resetHelperBuild() {
 
 // ---------------------------------------------------------------------------
 
+/** The helper's process as Bun.spawn gives it: stdin to write, stdout to read, and fd 3, a pipe this process holds. */
+interface HelperProcess {
+    readonly pid: number;
+    readonly stdin: { write(s: string): unknown; flush(): unknown; end(): unknown };
+    readonly stdout: ReadableStream<Uint8Array>;
+    readonly stdio: (number | null | undefined)[];
+    readonly exited: Promise<number>;
+    kill(signal?: string): void;
+}
+
 export type Reply = Record<string, unknown> & { error?: string; code?: string; human?: number };
 
 /** What a helper (or a fake one, in tests) does. */
@@ -150,32 +158,32 @@ export class DesktopHelper implements DesktopHelperLike {
     human = 0;
     readonly ready: Promise<Reply>;
 
-    private constructor(private child: ChildProcessByStdio<Writable, Readable, Readable>) {
+    private constructor(private proc: HelperProcess) {
         let readyResolve!: (r: Reply) => void;
         let readyReject!: (e: Error) => void;
         this.ready = new Promise((res, rej) => ((readyResolve = res), (readyReject = rej)));
         this.ready.catch(() => undefined);
-        child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (d: string) => {
-            this.buffered += d;
-            let nl: number;
-            while ((nl = this.buffered.indexOf("\n")) >= 0) {
-                const line = this.buffered.slice(0, nl);
-                this.buffered = this.buffered.slice(nl + 1);
-                let msg: Reply & { id?: number; event?: string };
-                try {
-                    msg = JSON.parse(line);
-                } catch {
-                    continue;
+        const read = async () => {
+            const decoder = new TextDecoder();
+            for await (const chunk of proc.stdout) {
+                this.buffered += decoder.decode(chunk, { stream: true });
+                let nl: number;
+                while ((nl = this.buffered.indexOf("\n")) >= 0) {
+                    const line = this.buffered.slice(0, nl);
+                    this.buffered = this.buffered.slice(nl + 1);
+                    let msg: Reply & { id?: number; event?: string };
+                    try {
+                        msg = JSON.parse(line);
+                    } catch {
+                        continue;
+                    }
+                    if (typeof msg.human === "number") this.human = Math.max(this.human, msg.human);
+                    if (msg.event === "ready") readyResolve(msg);
+                    else if (typeof msg.id === "number") this.settle(msg.id, msg);
                 }
-                if (typeof msg.human === "number") this.human = Math.max(this.human, msg.human);
-                if (msg.event === "ready") readyResolve(msg);
-                else if (typeof msg.id === "number") this.settle(msg.id, msg);
             }
-        });
-        child.stderr.on("data", () => undefined);
-        child.stdin.on("error", () => undefined);
-        // A helper that couldn't start says so with "error" and "close", never "exit": each ends it.
+        };
+        void read().catch(() => undefined);
         const ended = () => {
             if (this.exited) return;
             this.exited = true;
@@ -187,9 +195,7 @@ export class DesktopHelper implements DesktopHelperLike {
             this.pending.clear();
             for (const fn of this.exits) fn();
         };
-        child.on("error", ended);
-        child.on("exit", ended);
-        child.on("close", ended);
+        void proc.exited.then(ended, ended);
     }
 
     /**
@@ -198,12 +204,23 @@ export class DesktopHelper implements DesktopHelperLike {
      */
     static start(bin: string): DesktopHelper {
         const secret = randomBytes(32).toString("hex");
-        const child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe", "pipe"] });
-        const handover = child.stdio[3] as Writable | null;
-        handover?.on("error", () => undefined);
-        handover?.end(secret);
-        child.stdin.write(`${JSON.stringify({ op: "hello", secret })}\n`);
-        return new DesktopHelper(child as unknown as ChildProcessByStdio<Writable, Readable, Readable>);
+        const proc = Bun.spawn([bin], { stdio: ["pipe", "pipe", "ignore", "pipe"] }) as unknown as HelperProcess;
+        // A line on fd 3, left open: Bun closes its end when the helper ends (closing it here too would close
+        // whatever reuses its number by then).
+        const handover = proc.stdio[3];
+        if (typeof handover === "number") writeSync(handover, `${secret}\n`);
+        const helper = new DesktopHelper(proc);
+        helper.write(`${JSON.stringify({ op: "hello", secret })}\n`);
+        return helper;
+    }
+
+    private write(line: string) {
+        try {
+            this.proc.stdin.write(line);
+            void this.proc.stdin.flush();
+        } catch {
+            // Gone: its exit settles what waits.
+        }
     }
 
     get running(): boolean {
@@ -211,7 +228,7 @@ export class DesktopHelper implements DesktopHelperLike {
     }
 
     get pid(): number {
-        return this.child.pid ?? 0;
+        return this.proc.pid;
     }
 
     onExit(fn: () => void) {
@@ -236,20 +253,24 @@ export class DesktopHelper implements DesktopHelperLike {
                 reject(new DesktopError("The Mac didn't answer in time.", "timeout"));
             }, timeoutMs);
             this.pending.set(id, { resolve, reject, timer });
-            this.child.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+            this.write(`${JSON.stringify({ ...command, id })}\n`);
         });
     }
 
     cancel(token: string) {
-        if (!this.exited) this.child.stdin.write(`${JSON.stringify({ op: "cancel", token })}\n`);
+        if (!this.exited) this.write(`${JSON.stringify({ op: "cancel", token })}\n`);
     }
 
     stop() {
         if (this.exited) return;
-        this.child.stdin.end();
-        const child = this.child;
+        try {
+            void this.proc.stdin.end();
+        } catch {
+            // already closed
+        }
+        const proc = this.proc;
         setTimeout(() => {
-            if (!this.exited) child.kill("SIGKILL");
+            if (!this.exited) proc.kill("SIGKILL");
         }, 2000).unref?.();
     }
 }
