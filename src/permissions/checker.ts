@@ -474,6 +474,9 @@ export class PermissionChecker {
         if (isShellTool(tool.name)) {
             const server = this.server();
             dangerous = dangerousReason(t.command ?? "", 0, false, server);
+            // Cavvy's helper for Mac apps holds the person's macOS grants: run by hand, it skips asking them for each
+            // app (it still refuses the apps never offered). Asked about in every mode, bypass too.
+            if (!dangerous && /Cavvy Desktop Control|\.cavvy\/desktop\b/i.test(judged)) dangerous = "runs Cavvy's helper for Mac apps directly, which skips asking you for each app";
             // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
             // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
             const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;

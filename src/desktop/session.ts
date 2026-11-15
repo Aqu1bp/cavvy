@@ -5,6 +5,7 @@
 // What may be touched is decided here (the pids of the session's approved apps, never one that's never offered) and
 // checked by the helper right before each event goes out, against what's on the screen then.
 
+import { randomBytes } from "crypto";
 import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
 import { DesktopError, DesktopHelper, HELPER_NAME, helperBinary, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
@@ -18,6 +19,8 @@ const PANE = "System Settings → Privacy & Security";
 export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${PANE} → Accessibility, then try again.`;
 export const ACCESSIBILITY_STALE_LINE = `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${PANE} → Accessibility, remove it with −, then try again.`;
 export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${PANE} → Screen & System Audio Recording, then try again.`;
+const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
+export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility and Input Monitoring, then try again.`;
 export const USED_NOTE = "The user used the Mac since you last looked: the screen may not be where you left it.";
 const STOPPED = "Stopped: the user used the Mac (the mouse or keyboard) during this action, so it's unfinished. Take a new snapshot before going on.";
 
@@ -144,6 +147,20 @@ export interface DesktopSessionOptions {
     settleMs?: number;
 }
 
+/** An app just read: what's running, which app, and what the helper said. */
+interface Read {
+    r: Running;
+    app: AppInfo;
+    reply: Reply;
+}
+
+/** An action under way: its commands go through `send`, which checks the signal first and adds the action's token. */
+interface Acting {
+    h: DesktopHelperLike;
+    r: Running;
+    send: (command: Record<string, unknown>, timeoutMs?: number) => Promise<Reply>;
+}
+
 export interface Target {
     ref?: string;
     x?: number;
@@ -157,8 +174,8 @@ export class DesktopSession {
     readonly grants = new DesktopGrants();
     private refs = new Map<string, DesktopRef>();
     private lastRef = 0;
-    /** Where the person's input stood when the agent last looked: the helper it was counted by, and the count. */
-    private seen?: { helper: number; human: number };
+    /** Where the person's use of the Mac stood when the agent last looked: the helper it was counted by, and the count. */
+    private seen?: { helper: number; used: number };
     /** Names the agent asked for, found (validate, then the prompt and the run, look them up once). */
     private found = new Map<string, { app?: AppInfo; error?: string; at: number }>();
 
@@ -186,18 +203,22 @@ export class DesktopSession {
      * An app by the name the agent gave, as it's installed: undefined and why not, when it isn't there or is never
      * offered. Looked up once a minute at most for the same name (validating a call, then asking, then running it).
      */
-    async find(name: string): Promise<{ app?: AppInfo; error?: string }> {
+    async find(name: string, o: { asked?: boolean } = {}): Promise<{ app?: AppInfo; error?: string }> {
         const key = name.trim().toLowerCase();
         const known = this.found.get(key);
-        if (known && Date.now() - known.at < 60_000) return known;
+        // `asked`: the app the person was asked about, however long they took (not one found by that name since).
+        if (known && (o.asked || Date.now() - known.at < 60_000)) return known;
         const byName = neverOffered({ name });
         if (byName) return this.remember(key, { error: neverOfferedMessage(name, byName) });
         const r = await withHelper((h) => call(h, { op: "find", name }));
         if (r.found !== true) return this.remember(key, { error: `There's no app called ${name} on this Mac.` });
         const app = r.app as AppInfo;
+        // Grants are kept by bundle id: an app without one can't be given.
+        if (!app.bundleId) return this.remember(key, { error: `${app.name} can't be used.` });
         const ancestors = Array.isArray(r.ancestors) ? (r.ancestors as number[]) : [];
-        const why = neverOffered({ name: app.name, bundleId: app.bundleId, own: app.pid !== undefined && ancestors.includes(app.pid) });
-        return this.remember(key, why ? { error: neverOfferedMessage(app.name, why) } : { app });
+        const own = app.pid !== undefined && ancestors.includes(app.pid);
+        const why = neverOffered({ name: app.name, bundleId: app.bundleId, own });
+        return this.remember(key, why ? { error: neverOfferedMessage(app.name, why, own) } : { app });
     }
 
     private remember(key: string, v: { app?: AppInfo; error?: string }) {
@@ -207,7 +228,7 @@ export class DesktopSession {
 
     /** The person said yes: the app may be used until the session ends. Says what's missing for it to work, if anything. */
     async grant(name: string): Promise<string> {
-        const { app, error } = await this.find(name);
+        const { app, error } = await this.find(name, { asked: true });
         if (!app) throw new DesktopError(error!);
         this.grants.add({ name: app.name, bundleId: app.bundleId });
         const ready = `You can use ${app.name} until this session ends.`;
@@ -242,14 +263,27 @@ export class DesktopSession {
         });
     }
 
-    /** Whether the person has used the Mac since the agent last looked (as the helper counts, which `h.human` has from its last answer). */
-    private touched(h: DesktopHelperLike): boolean {
-        return this.seen !== undefined && this.seen.helper === h.pid && this.seen.human !== h.human;
+    /**
+     * Whether the person has used the Mac since the agent last looked: clicked, typed or scrolled anywhere but Cavvy
+     * (answering its prompts doesn't count), as the helper counts. A helper started since couldn't count: undefined.
+     */
+    private touched(h: DesktopHelperLike): boolean | undefined {
+        if (!this.seen) return false;
+        if (this.seen.helper !== h.pid) return undefined;
+        return this.seen.used !== h.used;
+    }
+
+    /** What a ref stands for, as the person is asked about it ("button \"Bold\""), if the last outline had it. */
+    refName(ref: string): string | undefined {
+        const r = this.refs.get(ref.replace(/^\[|\]$/g, ""));
+        if (!r) return undefined;
+        const role = r.role.replace(/^AX/, "").toLowerCase() || "element";
+        return r.name && r.name.toLowerCase() !== role ? `${role} ${JSON.stringify(r.name.length > 60 ? `${r.name.slice(0, 60)}…` : r.name)}` : role;
     }
 
     /** The app to read: the one named, else the approved app in front, else the first running. */
     private pick(r: Running, name?: string): AppInfo {
-        if (!this.grants.size) throw new DesktopError("No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.");
+        if (!this.grants.size) throw new DesktopError(NO_APPS);
         if (name) {
             const want = name.trim().replace(/\.app\/?$/i, "").toLowerCase();
             const app = r.apps.find((a) => a.name.toLowerCase() === want || a.bundleId.toLowerCase() === want);
@@ -267,16 +301,17 @@ export class DesktopSession {
         return withHelper((h) => this.look(h, name));
     }
 
-    private async look(h: DesktopHelperLike, name?: string): Promise<string> {
-        const r = await this.running(h);
-        const app = this.pick(r, name);
-        const reply = await call(h, { op: "look", pid: app.pid, pids: r.pids });
+    /** The app as an outline. `read`: what was just read (settle's last look), used rather than read again. */
+    private async look(h: DesktopHelperLike, name?: string, read?: Read): Promise<string> {
+        const r = read?.r ?? (await this.running(h));
+        const app = read?.app ?? this.pick(r, name);
+        const reply = read?.reply ?? (await call(h, { op: "look", pid: app.pid, pids: r.pids }));
         const tree = (reply.tree ?? {}) as DesktopNode & { truncated?: boolean };
         const o = outlineApp(tree, app.pid!, this.lastRef);
         const note = this.touched(h) ? `\n${USED_NOTE}` : "";
         this.refs = o.refs;
         this.lastRef = o.lastRef;
-        this.seen = { helper: h.pid, human: h.human };
+        this.seen = { helper: h.pid, used: h.used };
         const front = typeof reply.front === "number" ? reply.front : r.front;
         const head = `Apps you may use: ${appList(r.apps, front)}${r.apps.length < this.grants.size ? `; not running: ${this.approved().filter((g) => !r.apps.some((a) => a.bundleId.toLowerCase() === g.bundleId.toLowerCase())).map((g) => g.name).join(", ")}` : ""}.`;
         const away = r.pids.includes(front ?? -1) ? "" : "\nAnother app is in front: keys reach only an app you may use, so bring one to the front first (DesktopControl action=open), and clicks reach only what isn't covered.";
@@ -284,59 +319,77 @@ export class DesktopSession {
         return `${head}${note}${away}${big}\n${o.text}`;
     }
 
-    /** Waits for the app's tree to stop changing (an animation, a page loading), at most `ms`. */
-    private async settle(h: DesktopHelperLike, ms = this.o.settleMs ?? 1500, signal?: AbortSignal): Promise<void> {
+    /**
+     * Waits for the app's tree to stop changing (an animation, a page loading), at most `ms`. Returns the last read
+     * once it's still, for the outline after an action.
+     */
+    private async settle(h: DesktopHelperLike, ms = this.o.settleMs ?? 1500, signal?: AbortSignal): Promise<Read | undefined> {
         const end = Date.now() + ms;
         let before: string | undefined;
         await pause(Math.min(250, ms), signal);
         while (Date.now() < end) {
             const r = await this.running(h).catch(() => undefined);
             const app = r?.apps.find((a) => a.pid === r.front) ?? r?.apps[0];
-            if (!app) return;
-            const tree = JSON.stringify((await call(h, { op: "look", pid: app.pid, pids: r!.pids }).catch(() => ({ tree: undefined }))).tree ?? null);
-            if (tree === before) return;
+            if (!r || !app) return undefined;
+            const reply = await call(h, { op: "look", pid: app.pid, pids: r.pids }).catch(() => undefined);
+            if (!reply) return undefined;
+            const tree = JSON.stringify(reply.tree ?? null);
+            if (tree === before) return { r, app, reply };
             before = tree;
             await pause(200, signal);
         }
+        return undefined;
     }
 
     /**
-     * Runs an action: the helper is told to stop if the turn is (Esc), and what it says when the person took over
-     * becomes the result. Returns what was done and the app's outline after it.
+     * Runs an action. Every command it sends carries a token of its own, and the signal is checked before each: Esc
+     * stops what hasn't gone yet, and the helper stops what's under way with that token (another session's goes on).
+     * What the helper says when the person took over becomes the result. Returns what was done and the app after it.
      */
-    private act(signal: AbortSignal | undefined, fn: (h: DesktopHelperLike, r: Running) => Promise<string>): Promise<string> {
+    private act(signal: AbortSignal | undefined, fn: (a: Acting) => Promise<string>): Promise<string> {
         return withHelper(async (h) => {
-            stopped(signal);
-            const r = await this.running(h);
-            if (!this.grants.size) throw new DesktopError("No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.");
-            if (!r.pids.length) throw new DesktopError(`None of the apps you may use is running (${this.approved().map((g) => g.name).join(", ")}). DesktopControl action=open starts one.`);
-            const cancel = () => h.cancel();
+            const token = randomBytes(8).toString("hex");
+            const cancel = () => h.cancel(token);
             signal?.addEventListener("abort", cancel, { once: true });
             let done: string;
             try {
-                done = await fn(h, r);
+                stopped(signal);
+                const r = await this.running(h);
+                if (!this.grants.size) throw new DesktopError(NO_APPS);
+                if (!r.pids.length) throw new DesktopError(`None of the apps you may use is running (${this.approved().map((g) => g.name).join(", ")}). DesktopControl action=open starts one.`);
+                const send = (command: Record<string, unknown>, timeoutMs?: number) => {
+                    stopped(signal);
+                    return call(h, { ...command, token }, timeoutMs);
+                };
+                done = await fn({ h, r, send });
             } catch (e) {
-                if (signal?.aborted || (e instanceof DesktopError && e.code === "cancelled")) throw new DesktopError("Interrupted by user.", "cancelled");
-                if (e instanceof DesktopError && e.code?.startsWith("human")) {
+                const code = e instanceof DesktopError ? (e.code ?? "") : "";
+                const [kind, count] = code.split(":");
+                if (signal?.aborted || kind === "cancelled") throw new DesktopError("Interrupted by user.", "cancelled");
+                const typed = count ? ` (${count} characters were typed.)` : "";
+                if (kind === "human") {
                     // What it saw, so the agent knows where things are; the refs are new, the person's use is said.
                     const screen = await this.look(h).catch(() => "");
-                    throw new DesktopError(`${STOPPED}${e.code.includes(":") ? ` (${e.code.split(":")[1]} characters were typed.)` : ""}${screen ? `\n\n${screen}` : ""}`, "human");
+                    throw new DesktopError(`${STOPPED}${typed}${screen ? `\n\n${screen}` : ""}`, "human");
                 }
+                if (kind === "watch") throw new DesktopError(`${(e as Error).message} ${WATCH_LINE}`, kind);
+                if (typed) throw new DesktopError(`${(e as Error).message}${typed}`, kind);
                 throw e;
             } finally {
                 signal?.removeEventListener("abort", cancel);
             }
-            await this.settle(h, undefined, signal).catch(() => undefined);
-            const screen = await this.look(h).catch((e) => `The app couldn't be read: ${(e as Error).message}`);
+            const read = await this.settle(h, undefined, signal).catch(() => undefined);
+            const screen = await this.look(h, undefined, read).catch((e) => `The app couldn't be read: ${(e as Error).message}`);
             return `${done}\n\n${screen}`;
         });
     }
 
     /**
-     * Where a ref or a point is. A ref is used up by its use; it's refused, with the app as it is now, when the
-     * person used the Mac since the agent looked, or what it stood for isn't there any more.
+     * Where a ref or a point is. A ref is used up by its use, and looked for again first: it's refused, with the app as
+     * it is now, when what it stood for isn't there any more, or the person clicked, typed or scrolled since the agent
+     * looked. (A helper started since couldn't watch: what's there decides alone.)
      */
-    private async at(h: DesktopHelperLike, r: Running, target: Target): Promise<{ x: number; y: number; name: string; ref?: DesktopRef }> {
+    private async at(a: Acting, target: Target): Promise<{ x: number; y: number; name: string; ref?: DesktopRef }> {
         if (target.ref === undefined) {
             if (typeof target.x !== "number" || typeof target.y !== "number") throw new DesktopError("Give a ref, or both x and y.");
             return { x: target.x, y: target.y, name: `${Math.round(target.x)},${Math.round(target.y)}` };
@@ -345,38 +398,40 @@ export class DesktopSession {
         const ref = this.refs.get(key);
         if (!ref) throw new DesktopError(`There's no ref ${target.ref} in the last snapshot. Take a new one with DesktopSnapshot.`);
         this.refs = new Map();
-        // Read again now: what's there, and the person's use since.
-        const now = await call(h, { op: "look", pid: ref.pid, pids: r.pids }).catch(() => undefined);
-        if (!this.seen || this.seen.helper !== h.pid || this.touched(h)) throw new DesktopError(`Not done: ${target.ref} may not be what it was.\n\n${await this.look(h)}`);
+        const now = await a.send({ op: "look", pid: ref.pid, pids: a.r.pids }).catch((e: Error) => {
+            if (e instanceof DesktopError && e.code === "cancelled") throw e;
+            return undefined;
+        });
+        if (this.touched(a.h)) throw new DesktopError(`Not done: ${target.ref} may not be what it was.\n\n${await this.look(a.h)}`);
         const still = now?.tree ? refStill(ref, now.tree as DesktopNode) : undefined;
-        if (still === undefined) throw new DesktopError(`Not done: ${target.ref} isn't there any more: the app has changed.\n\n${await this.look(h)}`);
+        if (still === undefined) throw new DesktopError(`Not done: ${target.ref} isn't there any more: the app has changed.\n\n${await this.look(a.h)}`);
         return { x: ref.x, y: ref.y, name: `${JSON.stringify(still)} [${target.ref}]`, ref };
     }
 
     async click(target: Target, o: { button?: "left" | "right"; count?: number } = {}, signal?: AbortSignal): Promise<string> {
-        return this.act(signal, async (h, r) => {
-            const p = await this.at(h, r, target);
-            await call(h, { op: "click", x: p.x, y: p.y, button: o.button ?? "left", count: o.count ?? 1, pids: r.pids });
+        return this.act(signal, async (a) => {
+            const p = await this.at(a, target);
+            await a.send({ op: "click", x: p.x, y: p.y, button: o.button ?? "left", count: o.count ?? 1, pids: a.r.pids });
             return `${o.button === "right" ? "Right-clicked" : o.count === 2 ? "Double-clicked" : "Clicked"} ${p.name}.`;
         });
     }
 
     async drag(from: Target, to: { x: number; y: number }, durationMs = 300, signal?: AbortSignal): Promise<string> {
-        return this.act(signal, async (h, r) => {
-            const p = await this.at(h, r, from);
-            await call(h, { op: "drag", x: p.x, y: p.y, toX: to.x, toY: to.y, durationMs, pids: r.pids }, durationMs + 10_000);
+        return this.act(signal, async (a) => {
+            const p = await this.at(a, from);
+            await a.send({ op: "drag", x: p.x, y: p.y, toX: to.x, toY: to.y, durationMs, pids: a.r.pids }, durationMs + 10_000);
             return `Dragged from ${p.name} to ${Math.round(to.x)},${Math.round(to.y)}.`;
         });
     }
 
     async scroll(target: Target, direction: "up" | "down" | "left" | "right", amount = 5, signal?: AbortSignal): Promise<string> {
-        return this.act(signal, async (h, r) => {
+        return this.act(signal, async (a) => {
             let p: { x: number; y: number; name: string };
-            if (target.ref !== undefined || typeof target.x === "number") p = await this.at(h, r, target);
+            if (target.ref !== undefined || typeof target.x === "number") p = await this.at(a, target);
             else {
                 // The middle of the approved app's front window.
-                const look = await call(h, { op: "look", pids: r.pids });
-                const w = (look.windows as { pid: number; frame: number[] }[] | undefined)?.find((x) => x.pid === r.front) ?? (look.windows as { frame: number[] }[] | undefined)?.[0];
+                const look = await a.send({ op: "look", pids: a.r.pids });
+                const w = (look.windows as { pid: number; frame: number[] }[] | undefined)?.find((x) => x.pid === a.r.front) ?? (look.windows as { frame: number[] }[] | undefined)?.[0];
                 if (!w) throw new DesktopError("No window of an app you may use is on the screen.");
                 p = { x: w.frame[0]! + w.frame[2]! / 2, y: w.frame[1]! + w.frame[3]! / 2, name: "the window" };
             }
@@ -384,28 +439,28 @@ export class DesktopSession {
             // Wheel lines: positive moves the content down (shows what's above).
             const dy = direction === "up" ? lines : direction === "down" ? -lines : 0;
             const dx = direction === "left" ? lines : direction === "right" ? -lines : 0;
-            await call(h, { op: "scroll", x: p.x, y: p.y, dx, dy, pids: r.pids });
+            await a.send({ op: "scroll", x: p.x, y: p.y, dx, dy, pids: a.r.pids });
             return `Scrolled ${direction} ${lines} lines at ${p.name}.`;
         });
     }
 
     async type(text: string, o: { ref?: string; submit?: boolean; clear?: boolean } = {}, signal?: AbortSignal): Promise<string> {
-        return this.act(signal, async (h, r) => {
+        return this.act(signal, async (a) => {
             let into = "";
             let secure = false;
             if (o.ref !== undefined) {
-                const p = await this.at(h, r, { ref: o.ref });
+                const p = await this.at(a, { ref: o.ref });
                 secure = Boolean(p.ref?.secure);
-                await call(h, { op: "click", x: p.x, y: p.y, button: "left", count: 1, pids: r.pids });
+                await a.send({ op: "click", x: p.x, y: p.y, button: "left", count: 1, pids: a.r.pids });
                 await pause(150, signal);
                 into = ` into ${p.name}`;
             }
             if (o.clear) {
-                await call(h, { op: "press", key: "a", modifiers: ["cmd"], pids: r.pids });
-                await call(h, { op: "press", key: "backspace", modifiers: [], pids: r.pids });
+                await a.send({ op: "press", key: "a", modifiers: ["cmd"], pids: a.r.pids });
+                await a.send({ op: "press", key: "backspace", modifiers: [], pids: a.r.pids });
             }
-            if (text) await call(h, { op: "type", text, pids: r.pids }, 20_000 + text.length * 60);
-            if (o.submit) await call(h, { op: "press", key: "enter", modifiers: [], pids: r.pids });
+            if (text) await a.send({ op: "type", text, pids: a.r.pids }, 20_000 + text.length * 60);
+            if (o.submit) await a.send({ op: "press", key: "enter", modifiers: [], pids: a.r.pids });
             const what = secure ? `${[...text].length} characters` : JSON.stringify(text.length > 200 ? `${text.slice(0, 200)}…` : text);
             return !text && o.clear ? `Cleared${into || " the field"}.` : `Typed ${what}${into}${o.submit ? " and pressed Enter" : ""}.`;
         });
@@ -414,8 +469,8 @@ export class DesktopSession {
     async press(key: string, modifiers: string[] = [], signal?: AbortSignal): Promise<string> {
         const k = parseKey(key, modifiers);
         if (typeof k === "string") throw new DesktopError(k);
-        return this.act(signal, async (h, r) => {
-            await call(h, { op: "press", key: k.key, modifiers: k.modifiers, pids: r.pids });
+        return this.act(signal, async (a) => {
+            await a.send({ op: "press", key: k.key, modifiers: k.modifiers, pids: a.r.pids });
             return `Pressed ${key}${modifiers.length ? ` with ${modifiers.join("+")}` : ""}.`;
         });
     }
@@ -446,7 +501,7 @@ export class DesktopSession {
     async screenshot(): Promise<{ png: Uint8Array; x: number; y: number; width: number; height: number; apps: string }> {
         return withHelper(async (h) => {
             const r = await this.running(h);
-            if (!this.grants.size) throw new DesktopError("No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.");
+            if (!this.grants.size) throw new DesktopError(NO_APPS);
             if (!r.pids.length) throw new DesktopError("None of the apps you may use is running.");
             const shot = await call(h, { op: "screenshot", pids: r.pids }, 20_000);
             return { png: new Uint8Array(Buffer.from(String(shot.png), "base64")), x: Number(shot.x), y: Number(shot.y), width: Number(shot.width), height: Number(shot.height), apps: appList(r.apps, r.front) };

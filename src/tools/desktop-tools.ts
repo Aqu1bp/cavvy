@@ -75,11 +75,12 @@ export const DesktopControlTool: Tool<ControlInput> = {
         if (!CONTROLS.includes(input.action)) return `Unknown action "${String(input.action)}"`;
         if (input.action === "list") return undefined;
         if (typeof input.app !== "string" || !input.app.trim()) return `${input.action} needs app, the app's name`;
-        // Found (or not) before the user is asked about it.
-        const { error } = await desktopOf(ctx)
-            .find(input.app)
-            .catch((e: Error) => ({ error: e.message }));
-        return error;
+        // Found (or not) before the user is asked about it; one to open, given already.
+        const s = desktopOf(ctx);
+        const { app, error } = await s.find(input.app).catch((e: Error) => ({ app: undefined, error: e.message }));
+        if (error || !app) return error;
+        if (input.action === "open" && !s.isApproved(app.bundleId)) return `${app.name} isn't an app you may use: ask with DesktopControl action=request_access app=${app.name}.`;
+        return undefined;
     },
     async preview(input, ctx) {
         const found = input.app ? await desktopOf(ctx).find(input.app).catch(() => undefined) : undefined;
@@ -202,16 +203,19 @@ Returns the app once it's still, as a new outline. If the user moves the mouse o
         }
     },
     async preview(input, ctx) {
-        // What it does, as one would say it ("Click e12 in TextEdit"): it heads the prompt.
-        const apps = desktopOf(ctx)
-            .approved()
-            .map((a) => a.name);
+        // What it does to what, as one would say it ('Click button "Bold" (e12) in TextEdit'): it heads the prompt.
+        const s = desktopOf(ctx);
+        const apps = s.approved().map((a) => a.name);
         const where = apps.length === 1 ? ` in ${apps[0]}` : "";
-        const at = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
+        const named = (ref: string) => {
+            const what = s.refName(ref);
+            return what ? `${what} (${ref})` : ref;
+        };
+        const at = input.ref ? ` ${named(input.ref)}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
         switch (input.action) {
             case "type":
-                if (!input.text && input.clear) return { summary: `Clear ${input.ref ?? "the field"}${where}` };
-                return { summary: `Type ${JSON.stringify(short(input.text ?? "", 120))}${input.ref ? ` into ${input.ref}` : ""}${where}` };
+                if (!input.text && input.clear) return { summary: `Clear ${input.ref ? named(input.ref) : "the field"}${where}` };
+                return { summary: `Type ${JSON.stringify(short(input.text ?? "", 120))}${input.ref ? ` into ${named(input.ref)}` : ""}${where}` };
             case "press":
                 return { summary: `Press ${[...(input.modifiers ?? []), input.key].join("+")}${where}` };
             case "scroll":

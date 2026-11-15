@@ -9,7 +9,8 @@ import { isolate, tempDir } from "./helpers/isolate";
 isolate();
 const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable, desktopServerTools, nativeDesktopCall, servedDesktopName, servedDesktopTool } = await import("../src/tools/desktop-tools");
 const { stopServer } = await import("../src/mcp/server");
-const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE } = await import("../src/desktop/session");
+const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
+const { helperSource } = await import("../src/desktop/helper");
 const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -42,24 +43,34 @@ class FakeHelper implements DesktopHelperLike {
     running = true;
     pid = 9999;
     human = 0;
+    /** The person's clicks, keys and scrolls aimed at anything but Cavvy. */
+    used = 0;
     ready = Promise.resolve({ accessibility: true } as Reply);
     calls: Record<string, unknown>[] = [];
-    cancelled = 0;
+    cancelled: string[] = [];
     front = 100;
     accessibility = true;
     screen = true;
     tree = tree();
     /** What the next call of an op answers, instead of what it would. */
     answers: Record<string, Reply | ((c: Record<string, unknown>) => Reply)> = {};
-    /** The person's input, as the helper would count it by the time it answers the next call. */
+    /** The person's input, as the helper would count it by the time it answers the next call (all of it, and what was aimed elsewhere than Cavvy). */
     humanNext?: number;
+    usedNext?: number;
+    /** Each answer is this much later (ms). */
+    delay = 0;
     private exits: (() => void)[] = [];
 
     async call(c: Record<string, unknown>): Promise<Reply> {
         this.calls.push(c);
+        if (this.delay) await Bun.sleep(this.delay);
         if (this.humanNext !== undefined) {
             this.human = this.humanNext;
             this.humanNext = undefined;
+        }
+        if (this.usedNext !== undefined) {
+            this.used = this.usedNext;
+            this.usedNext = undefined;
         }
         const op = String(c.op);
         const given = this.answers[op];
@@ -67,32 +78,32 @@ class FakeHelper implements DesktopHelperLike {
             delete this.answers[op];
             const r = typeof given === "function" ? given(c) : given;
             if (r.error) throw Object.assign(new (await import("../src/desktop/helper")).DesktopError(String(r.error), r.code as string | undefined));
-            return { ...r, human: this.human };
+            return { ...r, human: this.human, used: this.used };
         }
         const needAx = ["look", "open", "click", "drag", "scroll", "press", "type"].includes(op);
         const { DesktopError } = await import("../src/desktop/helper");
         if (needAx && !this.accessibility) throw new DesktopError("Accessibility isn't on.", "accessibility");
         switch (op) {
             case "status":
-                return { accessibility: this.accessibility, screen: this.screen, human: this.human };
+                return { accessibility: this.accessibility, screen: this.screen, human: this.human, used: this.used };
             case "apps":
-                return { apps: APPS.map((a) => ({ ...a, front: a.pid === this.front })), ancestors: [300, 1234], human: this.human };
+                return { apps: APPS.map((a) => ({ ...a, front: a.pid === this.front })), ancestors: [300, 1234], human: this.human, used: this.used };
             case "find": {
                 const want = String(c.name).toLowerCase();
                 const app = APPS.find((a) => a.name.toLowerCase() === want || a.bundleId.toLowerCase() === want) ?? (want === "calculator" ? { name: "Calculator", bundleId: "com.apple.calculator", path: "/System/Applications/Calculator.app" } : want === "shellapp" ? APPS[1] : undefined);
-                return app ? { found: true, app: { ...app, running: "pid" in app }, ancestors: [300, 1234], human: this.human } : { found: false, ancestors: [], human: this.human };
+                return app ? { found: true, app: { ...app, running: "pid" in app }, ancestors: [300, 1234], human: this.human, used: this.used } : { found: false, ancestors: [], human: this.human, used: this.used };
             }
             case "look":
-                return { front: this.front, windows: [{ pid: 100, frame: [0, 0, 800, 600] }], ...(c.pid !== undefined ? { tree: this.tree } : {}), human: this.human };
+                return { front: this.front, windows: [{ pid: 100, frame: [0, 0, 800, 600] }], ...(c.pid !== undefined ? { tree: this.tree } : {}), human: this.human, used: this.used };
             case "screenshot":
                 if (!this.screen) throw new DesktopError("Screen Recording isn't on.", "screen");
-                return { png: Buffer.from("png").toString("base64"), x: 0, y: 0, width: 800, height: 600, human: this.human };
+                return { png: Buffer.from("png").toString("base64"), x: 0, y: 0, width: 800, height: 600, human: this.human, used: this.used };
             default:
-                return { human: this.human };
+                return { human: this.human, used: this.used };
         }
     }
-    cancel() {
-        this.cancelled++;
+    cancel(token: string) {
+        this.cancelled.push(token);
     }
     stop() {
         this.running = false;
@@ -164,6 +175,27 @@ describe("asking for an app", () => {
         expect(await DesktopControlTool.validate!({ action: "request_access", app: "textedit" }, ctx)).toBeUndefined();
         expect(await DesktopControlTool.preview!({ action: "request_access", app: "textedit" }, ctx)).toEqual({ summary: "Use TextEdit" });
         expect(await DesktopControlTool.validate!({ action: "request_access" }, ctx)).toMatch(/needs app/);
+    });
+
+    test("an app without a bundle id, or one Cavvy runs in, is refused before asking; opening an app not given too", async () => {
+        const ctx = ctxWith();
+        helper.answers.find = { found: true, app: { pid: 700, name: "TkApp", running: true }, ancestors: [] };
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "TkApp" }, ctx)).toBe("TkApp can't be used.");
+        helper.answers.find = { found: true, app: { pid: 1234, name: "Visual Studio Code", bundleId: "com.microsoft.VSCode", running: true }, ancestors: [300, 1234] };
+        expect(await DesktopControlTool.validate!({ action: "request_access", app: "Visual Studio Code" }, ctx)).toMatch(/^Visual Studio Code can't be used: it's where Cavvy runs\./);
+        expect(await DesktopControlTool.validate!({ action: "open", app: "Notes" }, ctx)).toBe("Notes isn't an app you may use: ask with DesktopControl action=request_access app=Notes.");
+        expect(helper.sent("open")).toHaveLength(0);
+    });
+
+    test("the app given is the one the person was asked about, however long they took", async () => {
+        const s = session();
+        const ctx = ctxWith(s);
+        expect(await DesktopControlTool.preview!({ action: "request_access", app: "TextEdit" }, ctx)).toEqual({ summary: "Use TextEdit" });
+        // Two minutes later, the name finds another app.
+        (s as any).found.get("textedit").at -= 120_000;
+        helper.answers.find = { found: true, app: { pid: 400, name: "TextEdit", bundleId: "com.apple.Notes", running: true }, ancestors: [] };
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctx);
+        expect(s.approved()).toEqual([{ name: "TextEdit", bundleId: "com.apple.TextEdit" }]);
     });
 
     test("a yes lasts the session; an app that isn't running says how to start it", async () => {
@@ -260,7 +292,8 @@ describe("what reaches the Mac", () => {
         };
         const r = await DesktopActTool.run({ action: "type", text: "hello" }, ctxWith(s, ac.signal));
         expect(r).toMatchObject({ isError: true, content: "Interrupted by user" });
-        expect(helper.cancelled).toBe(1);
+        expect(helper.cancelled).toHaveLength(1);
+        expect(helper.sent("type")[0]!.token).toBe(helper.cancelled[0]);
     });
 
     test("a ref is refused, with nothing sent, when the user used the Mac since the agent looked", async () => {
@@ -268,11 +301,81 @@ describe("what reaches the Mac", () => {
         const snap = await s.snapshot();
         const ref = /"Bold" \[(e\d+)\]/.exec(snap)![1]!;
         helper.humanNext = 2;
+        helper.usedNext = 2;
         const r = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
         expect(r.isError).toBe(true);
         expect(r.content).toStartWith(`Not done: ${ref} may not be what it was.`);
         expect(r.content).toContain(USED_NOTE);
         expect(helper.sent("click")).toHaveLength(0);
+    });
+
+    test("answering Cavvy's own prompt isn't using the Mac: an approved ref goes", async () => {
+        const s = await granted("TextEdit");
+        const ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        // The person moved the mouse to Cavvy and clicked Allow: input, but none of it aimed elsewhere.
+        helper.humanNext = 5;
+        const r = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
+        expect(r.content).toStartWith(`Clicked "Bold" [${ref}].`);
+        expect(helper.sent("click")).toHaveLength(1);
+    });
+
+    test("after the helper restarted (idle), a ref goes when what it stood for is still there", async () => {
+        const s = await granted("TextEdit");
+        const ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        helper.pid = 4242;
+        helper.used = 0;
+        const r = await DesktopActTool.run({ action: "click", ref }, ctxWith(s));
+        expect(r.content).toStartWith(`Clicked "Bold" [${ref}].`);
+    });
+
+    test("Esc before anything is sent: nothing is sent, and the helper is told to stop that action", async () => {
+        const s = await granted("TextEdit");
+        const ac = new AbortController();
+        helper.delay = 30;
+        setTimeout(() => ac.abort(), 10);
+        const r = await DesktopActTool.run({ action: "click", x: 20, y: 20 }, ctxWith(s, ac.signal));
+        expect(r).toMatchObject({ isError: true, content: "Interrupted by user" });
+        expect(helper.sent("click")).toHaveLength(0);
+        expect(helper.cancelled).toHaveLength(1);
+    });
+
+    test("Esc partway through clear, type and submit: nothing after it is sent", async () => {
+        const s = await granted("TextEdit");
+        const ac = new AbortController();
+        helper.answers.press = () => {
+            ac.abort();
+            return {};
+        };
+        const r = await DesktopActTool.run({ action: "type", text: "hello", clear: true, submit: true }, ctxWith(s, ac.signal));
+        expect(r.content).toBe("Interrupted by user");
+        expect(helper.sent("press")).toHaveLength(1);
+        expect(helper.sent("type")).toHaveLength(0);
+    });
+
+    test("each action's commands carry a token of its own; a stop with a count is still a stop", async () => {
+        const s = await granted("TextEdit");
+        await DesktopActTool.run({ action: "type", text: "a", clear: true }, ctxWith(s));
+        const tokens = new Set([...helper.sent("press"), ...helper.sent("type")].map((c) => c.token));
+        expect(tokens.size).toBe(1);
+        await DesktopActTool.run({ action: "press", key: "Enter" }, ctxWith(s));
+        expect(helper.sent("press").at(-1)!.token).not.toBe([...tokens][0]);
+        helper.answers.type = { error: "Stopped.", code: "cancelled:4" };
+        expect((await DesktopActTool.run({ action: "type", text: "hello" }, ctxWith(s))).content).toBe("Interrupted by user.");
+    });
+
+    test("a refusal partway through typing says how much went; one that can't watch says what to check", async () => {
+        const s = await granted("TextEdit");
+        helper.answers.type = { error: "Not done: an app you may use isn't in front, so keys would go elsewhere.", code: "front:3" };
+        expect((await DesktopActTool.run({ action: "type", text: "hello" }, ctxWith(s))).content).toBe("Not done: an app you may use isn't in front, so keys would go elsewhere. (3 characters were typed.)");
+        helper.answers.click = { error: "Not done: Cavvy Desktop Control can't watch for the user's mouse and keyboard, so it won't act.", code: "watch" };
+        expect((await DesktopActTool.run({ action: "click", x: 1, y: 1 }, ctxWith(s))).content).toBe(`Not done: Cavvy Desktop Control can't watch for the user's mouse and keyboard, so it won't act. ${WATCH_LINE}`);
+    });
+
+    test("an action's prompt names what its ref stands for", async () => {
+        const s = await granted("TextEdit");
+        const ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        expect(await DesktopActTool.preview!({ action: "click", ref }, ctxWith(s))).toEqual({ summary: `Click button "Bold" (${ref}) in TextEdit` });
+        expect(await DesktopActTool.preview!({ action: "click", ref: "e999" }, ctxWith(s))).toEqual({ summary: "Click e999 in TextEdit" });
     });
 
     test("a ref is refused, with nothing sent, when what it stood for has gone; and is good for one action", async () => {
@@ -430,6 +533,10 @@ describe("the agent", () => {
         const allowAll = `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'`;
         const hooked = await run({ ...on, hooks: { PreToolUse: [{ matcher: "DesktopControl", command: allowAll }] } }, "default", DesktopControlTool, { action: "request_access", app: "TextEdit" });
         expect(hooked.asked).toHaveLength(1);
+        // Nor one that answers permission requests.
+        const answers = `echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`;
+        const answered = await run({ ...on, hooks: { PermissionRequest: [{ matcher: "DesktopControl", command: answers }] } }, "default", DesktopControlTool, { action: "request_access", app: "TextEdit" });
+        expect(answered.asked).toHaveLength(1);
         // Never offered: refused before the user is asked.
         const terminal = await run(on, "bypassPermissions", DesktopControlTool, { action: "request_access", app: "Terminal" });
         expect(terminal.asked).toHaveLength(0);
@@ -453,9 +560,13 @@ describe("Claude Code", () => {
     });
 
     test("Cavvy's MCP server offers them to Claude Code with the setting on; never to Codex, and not with it off", async () => {
+        // As on a Mac, wherever the test runs (CI runs on Linux, where the tools are never offered).
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        afterEach(() => Object.defineProperty(process, "platform", platform));
         const served = async (provider: string, settings: object) => ((await makeAgent(settings, "default", provider)).agent as any).orchestrator()?.tools ?? [];
         const names = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
-        if (process.platform === "darwin") expect(await served("claude-code", on)).toEqual(expect.arrayContaining(names));
+        expect(await served("claude-code", on)).toEqual(expect.arrayContaining(names));
         for (const [provider, settings] of [
             ["claude-code", {}],
             ["codex", on],
@@ -493,6 +604,22 @@ describe("for other agents' computer use", () => {
         for (const id of ["com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.apple.Passwords", "com.apple.keychainaccess", "com.1password.1password", "com.bitwarden.desktop", "dev.cavvy.desktop"]) expect(ids).toContain(id);
         expect(new Set(ids).size).toBe(ids.length);
         for (const a of NEVER_OFFERED) expect(neverOffered({ name: "Anything", bundleId: a.bundleId }), a.bundleId).toBe(a.reason);
+    });
+
+    test("the helper is built with the list, so it refuses those apps whatever it's sent", () => {
+        const src = helperSource();
+        for (const a of NEVER_OFFERED) expect(src).toContain(JSON.stringify(a.bundleId.toLowerCase()));
+        expect(src).toStartWith("let NEVER_IDS: Set<String> = [");
+        expect(src).toContain("let NEVER_NAME_PATTERNS: [String] = [");
+    });
+
+    test("a shell command that runs the helper itself asks, in every mode", () => {
+        const { BashTool } = require("../src/tools/bash");
+        const c = new PermissionChecker(() => ({}), W);
+        for (const command of [`printf '{}' | ~/.cavvy/desktop/"Cavvy Desktop Control"`, `"$HOME/.cavvy/desktop/Cavvy Desktop Control" < cmds`]) {
+            const d = c.check(BashTool, { command }, "bypassPermissions", W);
+            expect(d, command).toMatchObject({ behavior: "ask", dangerous: true });
+        }
     });
 
     test("the grants are kept by bundle id, and can't hold an app that's never offered", () => {
@@ -536,4 +663,35 @@ test("off unless the user's own settings turn it on; any settings file turns it 
     expect(desktopAvailable({ desktop: { enabled: true } })).toBe(process.platform === "darwin");
     expect(desktopAvailable({})).toBe(false);
     expect(DESKTOP_TOOLS.every((t) => t.enabled!({ settings: {} }) === false)).toBe(true);
+});
+
+test("in the terminal app, /clear and /resume start over: the apps given before are asked for again", async () => {
+    const { App } = await import("../src/ui/app");
+    const { Session } = await import("../src/agent/session");
+    const trust = await import("../src/config/trust");
+    trust.trustForSession(W);
+    const app = new App({ cwd: W, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+    (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+    app.notice = () => {};
+    (app as any).makeAgent = () => {};
+    (app as any).replayTranscript = () => {};
+    (app as any).sessionSwitched = () => {};
+    try {
+        app.session = Session.create(W, { system: "sys" });
+        app.session.push({ role: "user", content: [{ type: "text", text: "use TextEdit" }], meta: { kind: "prompt" } });
+        const given = () => {
+            const s = (app.toolState.desktop ??= new DesktopSession());
+            s.grants.add({ name: "TextEdit", bundleId: "com.apple.TextEdit" });
+        };
+        given();
+        const pathA = app.session.path;
+        app.newSession();
+        expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
+        given();
+        app.resume(pathA);
+        expect(app.toolState.desktop?.approved() ?? []).toEqual([]);
+    } finally {
+        const t = (app as any).backgroundTimer;
+        if (t) clearInterval(t);
+    }
 });

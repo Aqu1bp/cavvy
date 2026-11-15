@@ -990,6 +990,12 @@ export class App {
         void browser?.dispose().catch(() => undefined);
     }
 
+    /** The apps the person gave were for that session: the next asks again. */
+    private leaveDesktop() {
+        this.toolState.desktop?.dispose();
+        this.toolState.desktop = undefined;
+    }
+
     newSession() {
         const prev = this.session;
         this.leaveHeld();
@@ -1004,6 +1010,7 @@ export class App {
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
         this.leaveBrowser();
+        this.leaveDesktop();
         this.checker.resetSession();
         this.makeAgent();
         this.schedules.switchSession();
@@ -1034,6 +1041,7 @@ export class App {
         resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
         this.leaveBrowser();
+        this.leaveDesktop();
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();

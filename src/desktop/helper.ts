@@ -10,6 +10,7 @@ import { join } from "path";
 import type { Readable, Writable } from "stream";
 import { paths } from "../config/paths";
 import { run } from "../simulator/simctl";
+import { NEVER_OFFERED, NEVER_OFFERED_NAME_PATTERNS } from "./apps";
 import SOURCE from "./helper.swift" with { type: "text" };
 
 export class DesktopError extends Error {
@@ -26,7 +27,17 @@ export class DesktopError extends Error {
 export const HELPER_NAME = "Cavvy Desktop Control";
 const BUILD_MS = 180_000;
 
-export const sourceHash = () => createHash("sha256").update(SOURCE).digest("hex").slice(0, 16);
+/**
+ * The helper's source, with the never-offered list compiled in: it refuses those apps itself, whatever it's sent
+ * (another process running it can't give it one).
+ */
+export function helperSource(): string {
+    const ids = NEVER_OFFERED.map((a) => JSON.stringify(a.bundleId.toLowerCase())).join(", ");
+    const names = NEVER_OFFERED_NAME_PATTERNS.map((r) => JSON.stringify(r.source)).join(", ");
+    return `let NEVER_IDS: Set<String> = [${ids}]\nlet NEVER_NAME_PATTERNS: [String] = [${names}]\n\n${SOURCE}`;
+}
+
+export const sourceHash = () => createHash("sha256").update(helperSource()).digest("hex").slice(0, 16);
 
 const dir = () => join(paths.home(), "desktop");
 const recordFile = () => join(dir(), "build.json");
@@ -79,7 +90,7 @@ async function build(bin: string): Promise<string> {
     const tmpDir = join(dir(), `.build-${tag}`);
     const tmp = join(tmpDir, HELPER_NAME);
     mkdirSync(tmpDir, { mode: 0o700 });
-    writeFileSync(src, SOURCE, { mode: 0o600 });
+    writeFileSync(src, helperSource(), { mode: 0o600 });
     try {
         const r = await run(["xcrun", "swiftc", "-O", "-swift-version", "5", "-suppress-warnings", "-o", tmp, src], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
         if (r.code !== 0) {
@@ -113,10 +124,12 @@ export interface DesktopHelperLike {
     readonly pid: number;
     /** How many times the person has used the mouse or keyboard since it started (as last heard). */
     readonly human: number;
+    /** How many of those were clicks, keys or scrolls aimed at anything but Cavvy (as last heard). */
+    readonly used: number;
     readonly ready: Promise<Reply>;
     call(command: Record<string, unknown>, timeoutMs?: number): Promise<Reply>;
-    /** Stops the action under way. */
-    cancel(): void;
+    /** Stops the actions sent with this token, under way or still to come. */
+    cancel(token: string): void;
     stop(): void;
     onExit(fn: () => void): void;
 }
@@ -137,6 +150,7 @@ export class DesktopHelper implements DesktopHelperLike {
     private exited = false;
     private exits: (() => void)[] = [];
     human = 0;
+    used = 0;
     readonly ready: Promise<Reply>;
 
     private constructor(private child: ChildProcessByStdio<Writable, Readable, Readable>) {
@@ -158,14 +172,16 @@ export class DesktopHelper implements DesktopHelperLike {
                     continue;
                 }
                 if (typeof msg.human === "number") this.human = Math.max(this.human, msg.human);
+                if (typeof msg.used === "number") this.used = Math.max(this.used, msg.used);
                 if (msg.event === "ready") readyResolve(msg);
                 else if (typeof msg.id === "number") this.settle(msg.id, msg);
             }
         });
         child.stderr.on("data", () => undefined);
         child.stdin.on("error", () => undefined);
-        child.on("error", () => undefined);
-        child.on("exit", () => {
+        // A helper that couldn't start says so with "error" and "close", never "exit": each ends it.
+        const ended = () => {
+            if (this.exited) return;
             this.exited = true;
             readyReject(new DesktopError(`${HELPER_NAME} stopped.`));
             for (const p of this.pending.values()) {
@@ -174,7 +190,10 @@ export class DesktopHelper implements DesktopHelperLike {
             }
             this.pending.clear();
             for (const fn of this.exits) fn();
-        });
+        };
+        child.on("error", ended);
+        child.on("exit", ended);
+        child.on("close", ended);
     }
 
     static start(bin: string): DesktopHelper {
@@ -215,8 +234,8 @@ export class DesktopHelper implements DesktopHelperLike {
         });
     }
 
-    cancel() {
-        if (!this.exited) this.child.stdin.write(`${JSON.stringify({ op: "cancel" })}\n`);
+    cancel(token: string) {
+        if (!this.exited) this.child.stdin.write(`${JSON.stringify({ op: "cancel", token })}\n`);
     }
 
     stop() {
