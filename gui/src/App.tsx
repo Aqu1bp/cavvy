@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
@@ -26,7 +26,6 @@ import { TerminalPanel } from "./components/TerminalPanel";
 import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
 import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
@@ -278,7 +277,26 @@ function Reconnecting() {
     );
 }
 
+/**
+ * Settings and what only it shows (plugins, usage, accounts): a chunk of their own, not loaded before anything is on
+ * screen. Fetched once the window is idle after it opens (App), so opening Settings is as quick as when it came with it.
+ */
+const settingsModule = () => import("./components/Settings");
+const SettingsNav = lazy(() => settingsModule().then((m) => ({ default: m.SettingsNav })));
+const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.SettingsPage })));
+
 export function App() {
+    // Settings' chunk (above), once nothing more pressing is left to do after the window opened.
+    onMount(() => {
+        const fetch = () => void settingsModule().catch(() => undefined);
+        if (typeof requestIdleCallback === "function") {
+            const idle = requestIdleCallback(fetch, { timeout: 4000 });
+            onCleanup(() => cancelIdleCallback(idle));
+        } else {
+            const t = setTimeout(fetch, 2000);
+            onCleanup(() => clearTimeout(t));
+        }
+    });
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
