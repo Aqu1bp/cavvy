@@ -21,13 +21,14 @@ import { modelRef, parseModelRef } from "../providers/types";
 import { getProvider, type ProviderDef } from "../providers/registry";
 import { cachedListings, listAllModels, type ProviderListing } from "../providers/models";
 import { formatPrice, formatTokens, formatUsd } from "../providers/pricing";
-import { APP_NAME, APP_TITLE } from "../config/paths";
+import { APP_TITLE } from "../config/paths";
 import { redact } from "../util/redact";
 import { loadAgents, type AgentDef } from "./agents";
+import { MCP_SERVER_NAME } from "../mcp/server-name";
 import type { ServerTool } from "../mcp/server";
 
 /** Cavvy's MCP server, as Claude Code and Codex name it (their tools are mcp__cavvy__…). */
-export const MCP_SERVER_NAME = APP_NAME;
+export { MCP_SERVER_NAME };
 export const DELEGATE_TOOL = `mcp__${MCP_SERVER_NAME}__delegate`;
 
 /** What an agent backend runs with its own sub-agents: those providers' models aren't offered to it. */
