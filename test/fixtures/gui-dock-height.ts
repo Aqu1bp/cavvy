@@ -18,7 +18,7 @@ test("the composer dock's measured height is the transcript's dock prop, and the
     let transcript: { dock?: number } | undefined;
     const windowDock: number[] = [];
     const SessionView = component(between("../../gui/src/components/Panes.tsx", "function SessionView(", "/** A pane whose session isn't open"), "SessionView", {
-        usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
+        usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         Header: () => node("header"),
         Transcript: (p: { dock?: number }) => { transcript = p; return node("transcript"); },
         FloatingBrowser: () => node("floating-browser"),
