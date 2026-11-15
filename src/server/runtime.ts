@@ -119,7 +119,7 @@ import type {
     NoticeData,
     StoppedTask,
 } from "./protocol";
-import type { PeerBlock } from "./protocol";
+import type { PeerBlock, SessionFindMatch } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
@@ -128,6 +128,7 @@ import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
+import { findBefore } from "./find";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
@@ -1018,6 +1019,12 @@ export class Runtime {
         }
         const turns = from ? all.slice(from) : all;
         return { state: structuredClone(this.view.state), turns: structuredClone(turns), agents: agentsFor(this.view.agents, turns, !from), seq: this.batch, ...(from ? { earlier: from } : {}) };
+    }
+
+    /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
+    find(query: string, before?: string): SessionFindMatch[] {
+        this.flush();
+        return findBefore(this.view.turns, query, before);
     }
 
     /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */

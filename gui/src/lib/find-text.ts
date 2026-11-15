@@ -117,14 +117,23 @@ export function findParts(turn: Turn): { part: string; text: string }[] {
 
 /** Every place `query` (literal, any case) appears, in order. */
 export function findMatches(turns: readonly Turn[], query: string): FindMatch[] {
+    return matchesIn(turns, (t) => foldedParts(t), query);
+}
+
+/** A turn's parts with their text case-folded: what's searched (findMatches; the server keeps them: src/server/find.ts). */
+export function foldedParts(turn: Turn): { part: string; folded: string }[] {
+    return findParts(turn).map((p) => ({ part: p.part, folded: foldCase(p.text) }));
+}
+
+/** Every place `query` appears in these turns' parts (`parts`), in order, at most MAX_MATCHES. */
+export function matchesIn(turns: readonly Turn[], parts: (t: Turn) => readonly { part: string; folded: string }[], query: string): FindMatch[] {
     const q = foldCase(query);
     const out: FindMatch[] = [];
     if (!q) return out;
     for (const t of turns) {
-        for (const p of findParts(t)) {
-            const f = foldCase(p.text);
+        for (const p of parts(t)) {
             let n = 0;
-            for (let i = f.indexOf(q); i >= 0; i = f.indexOf(q, i + q.length)) {
+            for (let i = p.folded.indexOf(q); i >= 0; i = p.folded.indexOf(q, i + q.length)) {
                 out.push({ turnId: t.id, part: p.part, n: n++ });
                 if (out.length >= MAX_MATCHES) return out;
             }

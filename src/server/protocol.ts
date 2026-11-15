@@ -861,6 +861,14 @@ export interface SessionSnapshot {
 }
 
 /** Turns before one a window has (session.turns), as they are when sent: later ops apply to them too. */
+/** Where Find found a query in a turn (session.find): the turn, the part ("prompt", or a block's id), which match in it, and where the turn is. */
+export interface SessionFindMatch {
+    turnId: string;
+    part: string;
+    n: number;
+    pos?: { seg: number; index: number };
+}
+
 export interface SessionTurnsPage {
     turns: Turn[];
     /** Turns before these, still not sent. */
@@ -2129,6 +2137,11 @@ export interface Methods {
     "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
     /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
     "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
+    /**
+     * Find, in the turns before `before` (the first the window has): where `query` appears, counted as the window
+     * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`.
+     */
+    "session.find": { params: { id: string; query: string; before?: string }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };

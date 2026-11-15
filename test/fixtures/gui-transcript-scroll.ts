@@ -146,6 +146,7 @@ const renews = new Map<string, () => (() => void) | void>();
 const workOpen = new Map<string, boolean>();
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
+    rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
     keyed, placedAgain,
@@ -1014,13 +1015,15 @@ for (const mode of ["prose", "tool"] as const) {
         assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
         assert.equal(workOpen.get("turn-20"), true, "its work log open, as it was");
         assert.equal(workOpen.get("turn-22"), false, "not the one that has its old id");
-        // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
+        // Find open, and a reconnect comes with fewer turns than it had: no turns are asked for. Those the window
+        // hasn't are searched where they are (FindBar's `elsewhere`, session.find), and brought in as it steps to them.
         const more: unknown[] = [];
         loadMore = async (_h, how) => (more.push(how), true);
         setFindShown(true);
         assert.deepEqual(more, [], "all there: nothing to ask for");
         setEarlier(3);
-        assert.deepEqual(more, [{ all: true }], "find counts every turn again");
+        assert.deepEqual(more, [], "find asks for no turns: it counts those it hasn't where they are");
+        assert.equal(findProps.earlier(), 3, "find knows how many it hasn't");
         setFindShown(false);
     } finally { dispose(); loadTo = () => undefined; loadMore = async () => false; }
 

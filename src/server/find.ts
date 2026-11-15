@@ -1,0 +1,53 @@
+// Find in a conversation, for the turns a window hasn't been sent: a long session's window has its last turns, and
+// Find loaded all the rest into it to count them (98 MB of a 100,000-item session). Here they're counted where they
+// are, by the window's own code (gui/src/lib/find-text.ts: the text each part shows, as the page shows it), so the
+// count is the one the window would make, and only the matches go to it.
+
+import { foldedParts, matchesIn, MAX_MATCHES } from "../../gui/src/lib/find-text";
+import type { SessionFindMatch, Turn } from "./protocol";
+
+export { MAX_MATCHES };
+
+/**
+ * Each turn's parts as Find searches them, kept with what they were worked out from: a long session has thousands of
+ * replies, each rendered to be searched, and that's done again only for a turn that's changed since.
+ */
+const searched = new WeakMap<Turn, { stamp: string; parts: { part: string; folded: string }[] }>();
+
+/** What a turn's parts depend on, cheaply: a turn that changed (a block added, text streamed in, a status) differs. */
+function stampOf(t: Turn): string {
+    let s = `${t.status}:${t.prompt?.text.length ?? -1}:${t.blocks.length}`;
+    for (const b of t.blocks) {
+        const r = b as { text?: string; status?: string; summary?: string; output?: string; title?: string; command?: string };
+        s += `|${b.id}:${r.status ?? ""}:${r.text?.length ?? 0}:${r.summary?.length ?? 0}:${r.output?.length ?? 0}:${r.title?.length ?? 0}:${r.command?.length ?? 0}`;
+        // A notice can read by the time ("resets in 2h": lib/notices.ts noticeReads): worked out again each minute.
+        if (b.t === "notice") s += `@${Math.floor(Date.now() / 60_000)}`;
+    }
+    return s;
+}
+
+function partsOf(t: Turn) {
+    const stamp = stampOf(t);
+    const had = searched.get(t);
+    if (had?.stamp === stamp) return had.parts;
+    const parts = foldedParts(t);
+    searched.set(t, { stamp, parts });
+    return parts;
+}
+
+/**
+ * Where `query` appears in `turns` before the one with id `before` (all of them without it), in order, at most
+ * MAX_MATCHES. An empty query finds nothing, but works out what's searched: Find asks it as it opens, so the first
+ * words typed don't wait for every reply of a long session to be rendered (0.6-1.1 s for 100,000 items; 34-64 ms after).
+ */
+export function findBefore(turns: readonly Turn[], query: string, before?: string): SessionFindMatch[] {
+    const end = before === undefined ? turns.length : turns.findIndex((t) => t.id === before);
+    if (end < 0) return [];
+    const scope = turns.slice(0, end);
+    if (!query) {
+        for (const t of scope) partsOf(t);
+        return [];
+    }
+    const pos = new Map(scope.map((t) => [t.id, t.pos]));
+    return matchesIn(scope, partsOf, query).map((m) => ({ ...m, ...(pos.get(m.turnId) ? { pos: pos.get(m.turnId)! } : {}) }));
+}

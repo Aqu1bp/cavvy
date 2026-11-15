@@ -61,8 +61,9 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const read1 = readSoFar();
     const kept = heap() - before;
     expect(open.msg.result.earlier).toBeGreaterThan(0);
-    // Find asks for every turn the window doesn't have (Transcript.tsx: loadEarlier all).
-    const find = await ok("session.turns", { id: t.id, before: open.msg.result.turns[0].id, all: true });
+    // Find, in the turns the window doesn't have (session.find): a query found once, whatever the session's size.
+    const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
+    expect(find.msg.result.matches).toHaveLength(1);
     let rewindSent: number | undefined;
     if (kind === "native") {
         // Back to before the last prompt.
@@ -124,8 +125,7 @@ describe("a session of one of Cavvy's own models", () => {
         if (small.readOnOpen !== undefined) expect(within(small.readOnOpen, large.readOnOpen!)).toBe(true);
         expect(within(Math.max(small.keptAfterOpen, 1), large.keptAfterOpen)).toBe(true);
     });
-    // Find loads every turn into the window: the server answers it.
-    test.failing("finding in it sends what's found, not every turn", () => {
+    test("finding in it sends what's found, not every turn", () => {
         const { small, large } = measured.native!;
         expect(within(small.findSent, large.findSent)).toBe(true);
     });
@@ -144,7 +144,7 @@ describe("a Claude Code session", () => {
         if (small.readOnOpen !== undefined) expect(within(small.readOnOpen, large.readOnOpen!)).toBe(true);
         expect(within(Math.max(small.keptAfterOpen, 1), large.keptAfterOpen)).toBe(true);
     });
-    test.failing("finding in it sends what's found, not every turn", () => {
+    test("finding in it sends what's found, not every turn", () => {
         const { small, large } = measured.cli!;
         expect(within(small.findSent, large.findSent)).toBe(true);
     });

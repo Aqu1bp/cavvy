@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, loadEarlier, loadEarlierTo, onRenew, rpc, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -953,11 +953,6 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         return () => void placeAgain(was);
     }));
 
-    // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
-    // reconnect that came with fewer).
-    createEffect(on([finding, () => p.handle.view.earlier], ([open, earlier]) => {
-        if (open && earlier) void loadEarlier(p.handle, { all: true });
-    }));
 
     // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.
     const [anchor, setAnchor] = createSignal<FindAnchor>();
@@ -1093,7 +1088,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             </div>
             </div>
             <Show when={finding()}>
-                <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
+                <FindBar turns={turns} earlier={() => p.handle.view.earlier ?? 0} elsewhere={(query, before) => rpc.call("session.find", { id: p.handle.id, query, before }).then((r) => r.matches)} bring={(m) => loadEarlier(p.handle, m.pos ? { through: m.pos } : { all: true }).then(() => undefined)} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
                 {/* It has the dock's height itself (it isn't inherited). */}

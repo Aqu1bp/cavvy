@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
-import type { Turn } from "@shared/protocol";
+import type { SessionFindMatch, Turn } from "@shared/protocol";
 import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
 import { FAR } from "../lib/transcript-scroll";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
@@ -17,6 +17,12 @@ export interface FindAnchor {
 /** Find in the conversation: "3 of 12", Enter / Shift+Enter to step, Esc to close. */
 export function FindBar(p: {
     turns: () => readonly Turn[];
+    /** How many of the session's turns the window hasn't been sent: those are searched where they are (`elsewhere`). */
+    earlier: () => number;
+    /** Where `query` appears in the turns before `before`, the first the window has (session.find). */
+    elsewhere: (query: string, before: string) => Promise<SessionFindMatch[]>;
+    /** Brings a match's turn into the window (one of those it hadn't been sent), back through it. */
+    bring: (m: SessionFindMatch) => Promise<void>;
     scroller: () => HTMLElement | undefined;
     col: () => HTMLElement | undefined;
     /** The composer dock's height: a match is shown above it. */
@@ -58,10 +64,25 @@ export function FindBar(p: {
             { defer: true },
         ),
     );
+    // In the turns the window hasn't been sent: found where they are (counted the same way), asked again when the
+    // query changes or turns come in. Asked with no query as the bar opens, so what's searched is ready by the time
+    // something's typed.
+    const [elsewhere, setElsewhere] = createSignal<SessionFindMatch[]>([]);
+    let asking = 0;
+    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id], ([q, earlier, first]) => {
+        const ask = ++asking;
+        if (!earlier || !first) return setElsewhere([]);
+        void p.elsewhere(q, first).then((ms) => ask === asking && setElsewhere(ms), () => ask === asking && setElsewhere([]));
+    }));
     const matches = createMemo(() => {
         const q = findQuery();
         edits();
-        return untrack(() => findMatches(p.turns(), q));
+        const here = untrack(() => findMatches(p.turns(), q));
+        const there = elsewhere();
+        if (!there.length) return here;
+        // Those of turns that have come in since are counted here.
+        const ids = new Set(untrack(p.turns).map((t) => t.id));
+        return [...there.filter((m) => !ids.has(m.turnId)), ...here].slice(0, MAX_MATCHES);
     });
 
     const onInput = (v: string) => {
@@ -119,9 +140,15 @@ export function FindBar(p: {
         setCur(k);
         shownMatch = m;
         setFindReveal({ turnId: m.turnId, part: m.part });
-        p.show(m.turnId);
-        // Once the page and the rows opened for it are drawn.
-        requestAnimationFrame(() => requestAnimationFrame(() => shownMatch === m && focusMatch(m, true)));
+        const reveal = () => {
+            if (shownMatch !== m) return;
+            p.show(m.turnId);
+            // Once the page and the rows opened for it are drawn.
+            requestAnimationFrame(() => requestAnimationFrame(() => shownMatch === m && focusMatch(m, true)));
+        };
+        // One the window hasn't been sent: brought in first, back through its turn.
+        if (untrack(p.turns).some((t) => t.id === m.turnId)) reveal();
+        else void p.bring(m).then(reveal);
     };
 
     /** The first match in or after the turn at the top of the view; the last one when all are above. */
