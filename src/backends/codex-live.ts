@@ -49,7 +49,9 @@ import {
     answerOf,
     clientMessageId,
     codexGoalCommand,
+    codexHookEvents,
     codexPolicy,
+    guardsDesktopHelper,
     hookServerConfig,
     liveCodexRpcs,
     modeNote,
@@ -370,7 +372,8 @@ export class CodexLiveConnection extends CodexTurn {
         const t = this.t;
         await this.readAccount();
         this.accountReadFor = this.adapter.run;
-        this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
+        this.guardsHelper = guardsDesktopHelper(t);
+        this.nativeEvents = codexHookEvents((e) => this.hooked(e), this.guardsHelper);
         if (this.nativeEvents.length) {
             this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
             this.nativeHooks = await this.hooksTaken(t.cwd);
@@ -392,7 +395,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way in this session${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
             this.nativeHooks = false;
         }
-        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
         if (orch && overrides.collisions.includes(orch.name)) {
             this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
@@ -801,7 +804,7 @@ export class CodexLiveConnection extends CodexTurn {
         // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
         if (this.goalPausedForMode) activate = true;
         const mode = this.host.mode();
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
         const note = modeNote(mode, Boolean(t.readOnly));
         const asked = run.skills ? codexInput(text, request, run.skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
         const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, seg.images), ...asked.items];
@@ -1348,7 +1351,7 @@ export class CodexLiveConnection extends CodexTurn {
         const leaves = this.goalLeaves;
         const text = [notes.length ? `<system-reminder>\n${notes.map((n) => n.text).join("\n\n")}\n</system-reminder>` : "", goalGoesOn ? modeSwitched(mode) : ""].filter(Boolean).join("\n\n");
         const label = notes.length === 1 ? notes[0]!.label : notes.length ? `${notes.length} background commands finished` : "Codex goes on with the goal under the new mode";
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
         const note = modeNote(mode, Boolean(t.readOnly));
         const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
         const model = t.model.id === "default" ? undefined : t.model.id;
@@ -1483,7 +1486,7 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     spawn(cfg: SpawnConfig): SpawnSpec {
         const id = this.live.providerDef.id;
         const bin = requireCli(id, CODEX_CLI);
-        const hooks = CODEX_HOOK_EVENTS.filter((e) => cfg.hooks?.[e]?.length);
+        const hooks = codexHookEvents((e) => Boolean(cfg.hooks?.[e]?.length), guardsDesktopHelper(cfg));
         const args = ["app-server", ...extraArgs(id), ...(cfg.trusted === false ? untrustedArgs(cfg.cwd) : []), ...(hooks.length ? codexHookArgs(hooks) : [])];
         const env = accountEnv(id, cfg.accountId, cfg.cwd);
         const o = cfg.orchestrator;

@@ -88,7 +88,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE", "FAKE_CU_UNKNOWN"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE", "FAKE_CU_UNKNOWN", "FAKE_NO_HOOKS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -4849,3 +4849,77 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(notices(events).filter((n) => n.includes("ChatGPT app"))).toEqual(["info: To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app."]);
     });
 });
+
+describe("Codex: a command naming Cavvy's helper for Mac apps goes to the person", () => {
+    // Codex 0.167 runs commands without asking Cavvy in auto and bypass, but runs Cavvy's PreToolUse hook before each
+    // one in every mode, and a deny from it stops the command (measured with a stand-in hook server).
+    const HELPER = "ls ~/.cavvy/desktop";
+    const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+    const ran = () => logLines().filter((l) => "ran" in l);
+    const bashAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "Bash");
+    const on = { desktop: { enabled: true } };
+    const helperDir = () => join(process.env.CAVVY_HOME!, "desktop");
+    afterEach(() => rmSync(helperDir(), { recursive: true, force: true }));
+
+    test.each(["bypassPermissions", "auto", "default"] as const)("in %s mode, past allow rules, and asked once", async (mode) => {
+        process.env.FAKE_COMMAND = HELPER;
+        const settings = { ...on, permissions: { allow: ["Bash(ls:*)", "Bash"] } };
+        const no = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: false }) });
+        await no.run("go");
+        expect(bashAsks(no.asked)).toHaveLength(1);
+        expect(bashAsks(no.asked)[0]!.decision).toMatchObject({ personOnly: true });
+        expect(ran()).toEqual([expect.objectContaining({ ran: false })]);
+
+        rmSync(LOG, { force: true });
+        const yes = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: true }) });
+        await yes.run("go");
+        // The hook asked; Codex's own approval of the same call (default mode asks) isn't asked again.
+        expect(bashAsks(yes.asked)).toHaveLength(1);
+        expect(ran()).toEqual([expect.objectContaining({ ran: true })]);
+    });
+
+    test("other commands go as before; with neither the setting nor the helper built, there's no hook", async () => {
+        process.env.FAKE_COMMAND = "ls";
+        const other = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings: on, ask: () => ({ allow: false }) });
+        await other.run("go");
+        expect(bashAsks(other.asked)).toEqual([]);
+        expect(ran()).toEqual([expect.objectContaining({ ran: true })]);
+        expect(starts()[0].argv.join(" ")).toContain("hooks=");
+
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = HELPER;
+        const none = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: false }) });
+        await none.run("go");
+        expect(starts()[0].argv.join(" ")).not.toContain("hooks=");
+        expect(bashAsks(none.asked)).toEqual([]);
+    });
+
+    test("the helper built, with the setting off since: still guarded", async () => {
+        mkdirSync(helperDir(), { recursive: true });
+        process.env.FAKE_COMMAND = HELPER;
+        const { run, asked } = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: false }) });
+        await run("go");
+        expect(bashAsks(asked)).toHaveLength(1);
+        expect(ran()).toEqual([expect.objectContaining({ ran: false })]);
+    });
+
+    test("a Codex that doesn't run Cavvy's hooks asks about every command in bypass: the mode answers, the helper goes to the person", async () => {
+        process.env.FAKE_NO_HOOKS = "1";
+        process.env.FAKE_COMMAND = "touch x";
+        const other = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings: on, ask: () => ({ allow: false }) });
+        await other.run("go");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "untrusted" });
+        expect(bashAsks(other.asked)).toEqual([]);
+        expect(ran()).toEqual([expect.objectContaining({ ran: true })]);
+        // Nothing said about hooks the person hasn't got.
+        expect(notices(other.events).join("\n")).not.toContain("hooks itself");
+
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = HELPER;
+        const helper = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings: on, ask: () => ({ allow: false }) });
+        await helper.run("go");
+        expect(bashAsks(helper.asked)).toHaveLength(1);
+        expect(ran()).toEqual([expect.objectContaining({ ran: false })]);
+    });
+});
+

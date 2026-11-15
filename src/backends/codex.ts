@@ -23,7 +23,8 @@ import { cliNotice } from "./notice-data";
 import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
-import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
+import { APP_NAME, APP_TITLE, APP_VERSION, cavvyHome } from "../config/paths";
+import { namesDesktopHelper } from "../permissions/checker";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
@@ -605,6 +606,10 @@ export class CodexTurn {
     protected rpc!: Rpc;
     /** Codex may use the Mac's apps in this thread, through the ChatGPT app's computer use (codex-computer-use.ts). */
     protected computerUse = false;
+    /** Commands naming Cavvy's helper for Mac apps go to the person (guardsDesktopHelper): Codex's PreToolUse hook asks. */
+    protected guardsHelper = false;
+    /** Calls the person allowed from that hook: Codex's own approval of the same call isn't asked again. */
+    protected personAllowed = new Set<string>();
     /** The apps its computer use asked for, by bundle id (lower case): their names, for its calls' titles. */
     protected appNames = new Map<string, string>();
     /** Running the compaction Cavvy asked for. */
@@ -850,7 +855,8 @@ export class CodexTurn {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to Cavvy, which runs them.
-        this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
+        this.guardsHelper = guardsDesktopHelper(t);
+        this.nativeEvents = codexHookEvents((e) => this.hooked(e), this.guardsHelper);
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
         this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
@@ -896,7 +902,7 @@ export class CodexTurn {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
             }
-            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
+            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
             if (o && overrides.collisions.includes(o.name)) {
                 this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this turn runs without Cavvy delegation to avoid merging server configurations." });
                 o = undefined;
@@ -979,7 +985,7 @@ export class CodexTurn {
                     if (this.goalPausedForMode && !adopt) activate = true;
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.cliSession.mode();
-                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks, this.computerUse);
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
                     const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
@@ -1895,8 +1901,9 @@ export class CodexTurn {
         } catch (e) {
             if (this.aborted) throw e;
         }
-        if (!saidNoNativeHooks) this.sink.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
-        saidNoNativeHooks = true;
+        // Taken only for the helper's guard, it falls back to Codex asking about every command, which needs no word.
+        if (!saidNoNativeHooks && this.nativeEvents.some((e) => this.hooked(e))) this.sink.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") && this.hooked("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
+        if (this.nativeEvents.some((e) => this.hooked(e))) saidNoNativeHooks = true;
         return false;
     }
 
@@ -1967,7 +1974,7 @@ export class CodexTurn {
         const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         const id = typeof args.tool_use_id === "string" ? args.tool_use_id : undefined;
         const call = nativeCall(String(args.tool_name ?? ""), args.tool_input, this.t.cwd);
-        const h = await this.cliSession.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) });
+        const h = this.hooked("PreToolUse") ? await this.cliSession.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) }) : undefined;
         const context = h?.additionalContext;
         const deny = (reason: string) => {
             this.refusedCall(id, call, reason, from);
@@ -1998,10 +2005,27 @@ export class CodexTurn {
             const run = a.updatedInput ?? h?.updatedInput;
             if (run && !runnable(run)) return deny(CANT_REWRITE_NATIVE);
             if (id) this.hookAnswers.set(id, "allow");
+            // Asked of the person already (the helper named): Codex's own approval of it isn't asked again.
+            if (id && this.namesHelper(call.toolName, input) && !a.updatedInput) this.personAllowed.add(id);
             return preToolUseAnswer({ updatedInput: run, context });
+        }
+        // Cavvy's helper for Mac apps, named in a command: the person answers it, in every mode. Codex runs some
+        // commands without asking (auto, bypass): this hook runs before each of them all the same.
+        if (this.namesHelper(call.toolName, call.input)) {
+            const a = await this.cliSession.permission({ toolName: call.toolName, input: call.input, callId: id, agentLabel, ...this.subAsk(from) });
+            if (!a.allow) {
+                if (a.stop) this.interrupt(from);
+                return deny(a.message || "Denied.");
+            }
+            if (id) this.personAllowed.add(id);
         }
         if (hookDecision && id) this.hookAnswers.set(id, "allow");
         return preToolUseAnswer({ context });
+    }
+
+    /** A shell command naming Cavvy's helper for Mac apps, while the guard is on. */
+    protected namesHelper(toolName: string, input: Record<string, unknown>): boolean {
+        return this.guardsHelper && toolName === "Bash" && typeof input.command === "string" && namesDesktopHelper(input.command);
     }
 
     /**
@@ -2018,8 +2042,11 @@ export class CodexTurn {
      * mode Codex asks only so they see it, and the mode decides as before.
      */
     protected async ask(req: BackendPermission): Promise<PermissionAnswer> {
-        // In bypass with computer use, Codex runs on-request so that app approvals reach the person: what else it asks, the mode decides.
-        if (this.computerUse && (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions") req = { ...req, hooksOnly: true };
+        // The person allowed this very call from the PreToolUse hook (it names Cavvy's helper): not asked twice.
+        if (req.callId && this.personAllowed.delete(req.callId)) return { allow: true };
+        // In bypass Codex asks only so app approvals reach the person (computer use, on-request), or so commands naming the
+        // helper do (its guard without Codex's own hooks, untrusted): what else it asks, the mode decides.
+        if ((this.computerUse || (this.guardsHelper && !this.nativeHooks)) && (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions") req = { ...req, hooksOnly: true };
         if (!this.hooked("PreToolUse")) return this.cliSession.permission(req);
         // Codex ran them already, before the call: what they said of it goes with the ask.
         if (this.nativeHooks) {
@@ -2512,6 +2539,19 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
 
 /** Said once: a Codex that doesn't run Cavvy's hooks itself doesn't start to. */
 let saidNoNativeHooks = false;
+/**
+ * Whether commands naming Cavvy's helper for Mac apps need guarding in Codex's threads: the Mac apps setting is on, or
+ * the helper has been built (its folder exists), whatever the setting says now.
+ */
+export function guardsDesktopHelper(t: { desktop?: boolean }): boolean {
+    return t.desktop === true || existsSync(join(cavvyHome(), "desktop"));
+}
+
+/** The events Codex runs Cavvy's hooks for: those with hooks of the person's, and PreToolUse for the helper's guard. */
+export function codexHookEvents(hooked: (e: CodexHookEvent) => boolean, guardsHelper: boolean): CodexHookEvent[] {
+    return CODEX_HOOK_EVENTS.filter((e) => hooked(e) || (e === "PreToolUse" && guardsHelper));
+}
+
 /** The sessions told once that Codex's computer use is set up in the ChatGPT app. */
 const notSetUpSaid = new Set<string>();
 /**
