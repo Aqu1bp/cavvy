@@ -2670,12 +2670,17 @@ export class Engine {
                 } catch (e) {
                     // A turn of its store turned out damaged as it was sent (TurnStore.get): when no other window has it,
                     // it's let go of and opened again, built from its logs (its store isn't read or indexed again).
-                    if (!rt.storeDamaged || this.runtimes.get(id) !== rt || [...this.clients].some((c) => c !== client && c.subs.has(id))) throw e;
+                    // Not one at work (letting it go would stop that), nor as the server stops: the error, as before.
+                    const idle = rt.idle && !rt.scheduled && !rt.watching && !this.stopping;
+                    if (!rt.storeDamaged || !idle || this.runtimes.get(id) !== rt || [...this.clients].some((c) => c !== client && c.subs.has(id))) throw e;
                     client.subs.delete(id);
                     await this.unload(rt);
+                    if (this.stopping) throw e;
                     const again = this.openSession(id);
                     this.watch(client, again.id);
-                    await again.ready.catch(() => undefined);
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    await Promise.race([again.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
+                    clearTimeout(timer);
                     return await again.snapshotSoon(last, budget, p.fold === true);
                 }
             }
