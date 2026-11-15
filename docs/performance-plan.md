@@ -48,6 +48,10 @@ A session's files are append-only logs: its transcript (`~/.cavvy/projects/<proj
 - The store is used only if both logs are byte for byte as they were when it was written. A session written to elsewhere since (a terminal, another copy of Cavvy), or one that crashed, is built from its logs again. Deleting a session moves its store to the trash with its other files.
 - What a turn is sent with leaves out what its rows don't show until they're opened. A finished turn's work comes folded: each call's name, status and summary, not its output or diff (the turn comes whole as its work is opened or found in), unless Settings → Expand tool activity is on. Its thoughts come without their text, fetched as a row is pointed at or opened. An edit's change comes once, in its diff. Finished sub-agents of turns not sent are counted, and the Agents list's Finished fold fetches them as it's shown.
 - Find works through turns the window hasn't been sent in slices of 8 ms, so other sessions keep streaming meanwhile.
+- Opened for the first time (or after its logs changed), a session's turns are sent first and stored after, 8 ms at a time.
+- A rewind builds again only the turns since the last compaction (it can't reach past one); those before stay as they are.
+- Back at the end of a session for 5 s after reading far up, with nothing coming, the window draws its first page again and keeps only those turns; scrolling up brings the rest back as "Show earlier" does.
+- A remote window's SSH tunnel is compressed: a reply's messages are mostly the same few ids each time.
 - A transcript read more than 1 MB past its last checkpoint gets a new one (`state/<session>.json`): what reading it came to, and how far it read. Next time only what's after is read, if the file still ends there as it did. Kept only when it's under half what it replaces, so a session never compacted gets none.
 
 Not yet:
