@@ -27,8 +27,8 @@ import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
-import { forkSession } from "../agent/fork";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, type Line } from "../agent/session";
+import { forkSessionSoon, readForkSource } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
@@ -64,7 +64,7 @@ import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
-import { forkUiLogSoon, readSegments, readUiLogSoon } from "./history";
+import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
@@ -1142,22 +1142,29 @@ export class Engine {
     async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
         // Only to find a turn the window hasn't been sent: all of a 100,000-item Claude Code session's took 3 s.
         if (!original.hasTurn(turnId)) await original.allTurns();
-        // Its log, a slice at a time, before anything's made (what's written meanwhile is read with the rest).
-        const log = await readUiLogSoon(original.session.path, original.id);
+        // Its records and its log, a slice at a time, before anything's made (what's written meanwhile is read with the rest).
+        let log: UiLog | undefined;
+        let source: Line[];
+        try {
+            [log, source] = await Promise.all([readUiLogSoon(original.session.path, original.id), readForkSource(original.session.path)]);
+        } catch (e) {
+            throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
+        }
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
         const effort = original.effort;
         let session: Session;
+        let keep: () => void;
         try {
-            session = forkSession(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy });
+            ({ session, keep } = await forkSessionSoon(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy, source }));
         } catch (e) {
             throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
         }
+        // The lines it was just loaded from, for its runtime (Session.takeLoadedLines): not read from the file again.
+        keep();
         if (log) {
-            // From the lines just read, kept for the runtime (Session.takeLoadedLines): not read from the file again.
             const segments = readSegments(session.path, { takeLoadedLines: () => session.peekLoadedLines() });
-            const lines = session.keepLoadedLines();
             // Not opened elsewhere meanwhile (its file is in the folder's list now): it's opened here, once it has its log.
             this.forking.add(session.meta.id);
             try {
@@ -1165,7 +1172,7 @@ export class Engine {
             } finally {
                 this.forking.delete(session.meta.id);
             }
-            lines();
+            keep();
         }
         // Made now, by the person: it goes to the top of the sidebar, and stays there until something else works.
         session.worked(Date.now(), true);
