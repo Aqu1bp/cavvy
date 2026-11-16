@@ -39,6 +39,10 @@ test("incremental Markdown agrees with a fresh parse at every streamed character
         "Done.\n\nStreams **every event** and `inline` code, *em* and ~~gone~~.\n\n1. **Prompt** — `Composer`\n2. **Model call** — opens a stream\n   - text deltas\n   - tool calls\n\nAfter.",
         "Intro.\n\n## What each side owns\n\n| Part | Owns |\n| --- | --- |\n| Server | sessions |\n| GUI | scroll |\n\nThe end.",
         "Para.\n\n```ts\nconst a = `x`;\n```\n\n---\n\nSee docs and snake_case_names.",
+        // A fence in a list item ends with the item: what's after isn't read as code still open.
+        "- ```\n  code\n  ```\n\nAfter.\n\n- b",
+        "1. ```ts\n  open\n\n- b",
+        "- a\n  ```\n  open\n- b\n\nAfter.\n\n-",
     ];
     for (const sample of cases) {
         const incremental = new MarkdownRenderer();
@@ -141,6 +145,56 @@ test("incremental Markdown agrees with a fresh parse on replies made of every ki
         expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
     }
 });
+
+test("a long list written a character at a time renders as a fresh parse would, however its items read", () => {
+    // Only a list's last item is lexed again as it grows (markdown.ts listTail): what's before it, its looseness and
+    // where it ends must come out as the whole list lexed again would.
+    const items = [
+        "- a", "- **bold** item with `code`", "- [ ] task", "- [x] done task", "* star", "+ plus", "1. one", "2) paren", "10. ten",
+        "- a\n  continued", "- a\nlazy line", "- a\n\n  second para", "- a\n  - nested\n  - more", "- a\n    - deep",
+        "- a\n\n      indented code", "- ```\n  code\n  ```", "- ```ts\n  open fence", "- a\n  > quote", "- a\n  | t | u |\n  | - | - |\n  | 1 | 2 |",
+        "- a\n  ```\n  open", "- a\n  ~~~\n  x\n  ~~~", "- a\n  - ```sh\n    nested", "- - -", "* * *", "-", "1.", "- # heading", "-   wide", "- a\n---", "- a\n===", "- <div>", "- see [x](https://example.com)",
+    ];
+    const joins = ["\n", "\n", "\n", "\n\n", "\n\n\n", "\n  ", "\n\nAfter.\n\n"];
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)]!;
+    for (let n = 0; n < 300; n++) {
+        // Mostly one kind of marker, as a list is written; sometimes another.
+        const kind = pick(["- ", "* ", "1. ", "2) "]);
+        const parts = Array.from({ length: 3 + Math.floor(rand() * 8) }, () => {
+            const item = pick(items);
+            return rand() < 0.7 ? item.replace(/^(?:[-*+]|\d+[.)]) /, kind) : item;
+        });
+        const sample = (rand() < 0.5 ? "Intro.\n\n" : "") + parts.map((p, i) => p + (i < parts.length - 1 ? (rand() < 0.75 ? "\n" : pick(joins)) : "")).join("");
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+}, 120_000);
+
+test("a table written a character at a time renders as a fresh parse would, whatever its rows", () => {
+    // Only a table's last row is lexed again as it grows, with its header (markdown.ts tableTail).
+    const heads = ["| a | b |\n| --- | --- |", "| a | b | c |\n|:--|:-:|--:|", "a | b\n--- | ---", "| a |\n|---|", "| a | b |\n| - |"];
+    const rows = ["| 1 | 2 |", "| **x** | `y` |", "| 1 | 2 | 3 | 4 |", "| 1 |", "1 | 2", "|  |  |", "| a \\| b | c |", "| [l](https://e.com) | x |", "| - | - |", "|", "| ``` | x |", "- item", "> q", "```", "# h", "    code"];
+    const joins = ["\n", "\n", "\n", "\n", "\n\n", "\n\nAfter.\n\n"];
+    let seed = 11;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)]!;
+    for (let n = 0; n < 200; n++) {
+        const parts = [pick(heads), ...Array.from({ length: 2 + Math.floor(rand() * 8) }, () => (rand() < 0.75 ? pick(rows.slice(0, 9)) : pick(rows)))];
+        const sample = pick(["", "Intro.\n\n", "Intro.\n", "| x |\n\n", "- a\n\n"]) + parts.map((p, i) => p + (i < parts.length - 1 ? (i === 0 || rand() < 0.8 ? "\n" : pick(joins)) : "")).join("") + pick(["", "\n", "\n\nEnd."]);
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+}, 120_000);
 
 test("a long paragraph written a word at a time renders as a fresh parse would, whatever its inline marks", () => {
     // What a line of a reply or of reasoning holds: a paragraph's words before the last space are rendered once, so
