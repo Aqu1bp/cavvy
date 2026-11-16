@@ -416,7 +416,13 @@ interface StatusPrep {
 /** What Git's index records (index-scan.ts), the tree Git worked out for it, and its .gitattributes files. */
 interface IndexPrep {
     contentKey: string;
-    cacheRoot: string;
+    /** The tree Git worked out for its index (its cache-tree), when it's whole. */
+    cacheRoot?: string;
+    /**
+     * Without one (something staged since Git last worked it out): HEAD's tree, which `git status` compares the index
+     * with: what it says is staged is put in from the index.
+     */
+    headTree?: string;
     attributes: string[];
 }
 const locations = new Map<string, Located>();
@@ -1538,7 +1544,7 @@ export class TurnSnapshots {
      * attributes file or Git's config changed, the watch missed something or saw too much, or it's been a while
      * (NARROW_MAX, NARROW_FULL_EVERY_MS). The whole folder is looked at then.
      */
-    private async captureNarrowed(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean, given?: { paths: string[]; gen: number; dirty: ReadonlySet<string> }): Promise<boolean> {
+    private async captureNarrowed(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean, given?: { paths: string[]; gen: number; dirty: ReadonlySet<string>; moved?: ReadonlySet<string> }): Promise<boolean> {
         const base = this.indexedBase, w = this.watch, root = this.root!;
         if (!base || !w?.healthy || base.watch !== w || (!given && base.fullMs < (this.options.narrowFromMs ?? NARROW_FROM_MS))) return false;
         if (base.narrowed >= NARROW_MAX || Date.now() - base.fullAt > NARROW_FULL_EVERY_MS) return false;
@@ -1571,7 +1577,7 @@ export class TurnSnapshots {
         // differ are looked at too, as the trees Git worked out for both say (their cache-trees); without both, everything.
         let contentKey = base.contentKey, cacheRoot = base.cacheRoot;
         /** Paths whose entries in Git's index changed: as the last tree has them, they're the old entries. */
-        const moved = new Set<string>();
+        const moved = new Set<string>(given?.moved);
         /** What to look up in Git's index for `changed` (and what the last capture had under them). */
         const wantedFor = (changed: string[]) => {
             const changedSet = new Set(changed), wanted = new Set(changed);
@@ -1723,8 +1729,12 @@ export class TurnSnapshots {
         const refusedLast = indexRefused.has(root);
         const index = (async (): Promise<IndexPrep | undefined> => {
             const scan = await scanIndexPaths(root, indexPath, this.algo === "sha1" ? 20 : 32, [], true, deadline).catch(() => undefined);
-            if (!scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return undefined;
-            if (!treesFound.has(scan.cacheRoot)) {
+            if (!scan || scan.unusable || !scan.contentKey || scan.specials !== 0) return undefined;
+            let headTree: string | undefined;
+            if (!scan.cacheRoot) {
+                headTree = await this.headTree(root, deadline);
+                if (!headTree) return undefined;
+            } else if (!treesFound.has(scan.cacheRoot)) {
                 const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: `${scan.cacheRoot}\n`, privateEnv: this.readEnv(), deadline });
                 if (check.code || check.cut || check.out.toString().trim() !== "tree") return undefined;
                 if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
@@ -1734,7 +1744,7 @@ export class TurnSnapshots {
             if (attributesSeen.size >= 64 && !attributesSeen.has(root)) attributesSeen.delete(attributesSeen.keys().next().value!);
             attributesSeen.set(root, attributes);
             if (await this.converts(root, indexPath, attributes, deadline)) return undefined;
-            return { contentKey: scan.contentKey, cacheRoot: scan.cacheRoot, attributes };
+            return { contentKey: scan.contentKey, ...(scan.cacheRoot ? { cacheRoot: scan.cacheRoot } : { headTree }), attributes };
         })();
         index.then(
             (ok) => {
@@ -1750,13 +1760,20 @@ export class TurnSnapshots {
         return { before, index, indexFirst: () => indexDone || refusedLast, ignoreKey: ignoreKeyOf(root, indexPath) };
     }
 
+    /** HEAD's tree, as Git resolves it for `git status` (no replacement objects); undefined before the first commit. */
+    private async headTree(root: string, deadline: number): Promise<string | undefined> {
+        const r = await git(root, ["rev-parse", "--verify", "-q", "HEAD^{tree}"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        const oid = r.out.toString().trim();
+        return r.code || r.cut || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(oid) ? undefined : oid;
+    }
+
     /**
      * A capture from what `git status` says differs from Git's index, on the tree Git last worked out for the index (its
-     * cache-tree): what a later capture does with the watch's paths (captureNarrowed), with git's list instead. `git status`
+     * cache-tree), or, something staged since, on HEAD's with what's staged put in from the index: what a later capture does with the watch's paths (captureNarrowed), with git's list instead. `git status`
      * is a process of its own, as the agents' are (on a busy machine it isn't queued behind every session's work here),
      * and it compares a hundred thousand files in less CPU than a scan here does. False, having kept nothing, where it
      * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
-     * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
+     * skip-worktree, intent-to-add), no tree worked out for the index nor a HEAD, the index or HEAD changed meanwhile, more than
      * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then, as it
      * is where `git status` can't be kept from running a program (statusGuard, asked just before it runs). What it needs
      * first, but the folder's files, is read while the folder's watch is set up (statusPrep, `prepared`).
@@ -1793,20 +1810,27 @@ export class TurnSnapshots {
         if (!after || stampKey(after) !== stampKey(prep.before)) return false;
         // Untracked (a nested repository's folder ends in a slash).
         const paths = others.out.toString("utf-8").split("\0").filter(Boolean).map((p) => p.replace(/\/$/, ""));
-        const dirty = new Set<string>();
+        const dirty = new Set<string>(), staged = new Set<string>();
         for (const record of status.out.toString("utf-8").split("\0")) {
             if (!record) continue;
             if (record.startsWith("1 ")) {
-                // "1 XY sub mH mI mW hH hI path": only what differs on disk from the index (Y); staged alone, the index's tree has it.
+                // "1 XY sub mH mI mW hH hI path": what differs on disk from the index (Y); and what's staged (X), where
+                // the base is HEAD's tree (the index's tree has it otherwise).
                 const fields = record.split(" ");
                 if (fields.length < 9 || fields[1]!.length !== 2) return false;
-                if (fields[1]![1] === ".") continue;
+                const isStaged = !index.cacheRoot && fields[1]![0] !== ".", isDirty = fields[1]![1] !== ".";
+                if (!isStaged && !isDirty) continue;
                 const path = fields.slice(8).join(" ");
                 paths.push(path);
-                dirty.add(path);
+                if (isDirty) dirty.add(path);
+                if (isStaged) staged.add(path);
             } else return false;
         }
         if (paths.length > NARROW_MAX_PATHS) return false;
+        const tree = index.cacheRoot ?? index.headTree;
+        if (!tree) return false;
+        // HEAD moved meanwhile (a soft reset leaves the index as it was): what's staged was against another tree.
+        if (!index.cacheRoot && (await this.headTree(root, deadline)) !== index.headTree) return false;
         const base: NonNullable<TurnSnapshots["indexedBase"]> = {
             watch: w,
             gen,
@@ -1817,7 +1841,7 @@ export class TurnSnapshots {
             attributes: index.attributes,
             differs: new Map(),
             gone: new Set(),
-            tree: index.cacheRoot,
+            tree,
             skipped: pathMap(),
             narrowed: 0,
             fullAt: Date.now(),
@@ -1829,8 +1853,8 @@ export class TurnSnapshots {
         this.folders = undefined;
         this.scan = undefined;
         this.index = undefined;
-        this.lastTree = index.cacheRoot;
-        if (await this.captureNarrowed(result, read, indexPath, deadline, inTime, ending, { paths, gen, dirty })) {
+        this.lastTree = tree;
+        if (await this.captureNarrowed(result, read, indexPath, deadline, inTime, ending, { paths, gen, dirty, moved: staged })) {
             Object.assign(base, { narrowed: 0, fullMs: Date.now() - started });
             this.statusCount++;
             return true;
