@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
-import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
+import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
 import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
@@ -22,6 +22,10 @@ import { activate, app, handleFor, loadTurn } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
+
+/** A work log opened by a click: segments drawn at once, then in each frame after. */
+const WORK_FIRST = 24;
+const WORK_MORE = 8;
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
@@ -638,6 +642,26 @@ function TurnViewContent(p: TurnViewProps) {
         setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
+    // Opened by a click, a long log goes in a screenful at a time: the first rows at once, the rest in the frames after,
+    // below them (200 calls drawn in the click took 160 ms). Opened any other way (Find, put back as it was), all at once.
+    const [drawnSegs, setDrawnSegs] = createSignal(Infinity);
+    let staging = 0;
+    const openByClick = () => {
+        if (staging) cancelAnimationFrame(staging);
+        const total = segs().length;
+        if (total <= WORK_FIRST) return unfold(true);
+        setDrawnSegs(WORK_FIRST);
+        unfold(true);
+        const more = () => {
+            const next = untrack(drawnSegs) + WORK_MORE;
+            if (next >= segs().length || !untrack(unfolded)) return void setDrawnSegs(Infinity);
+            setDrawnSegs(next);
+            staging = requestAnimationFrame(more);
+        };
+        staging = requestAnimationFrame(more);
+    };
+    onCleanup(() => staging && cancelAnimationFrame(staging));
+    const drawn = (i: number) => i < drawnSegs();
     // Sent with its work folded (Turn.folded): its rows are there, what they show opened comes whole (session.turn).
     // Asked for as the pointer or focus comes to "Worked for", so it's usually here by the click (a round trip and up to
     // 760 KB over a remote link); else as the work is shown, its rows at once and the rest filled in as it comes.
@@ -652,7 +676,7 @@ function TurnViewContent(p: TurnViewProps) {
         on(findReveal, (r) => {
             if (r?.turnId !== p.turn.id || r.part === "prompt") return;
             const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
-            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) unfold(true);
+            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) (setDrawnSegs(Infinity), unfold(true));
         }),
     );
     // A prompt stopped before anything came still says how it ended (its line is in the reply's place).
@@ -697,16 +721,16 @@ function TurnViewContent(p: TurnViewProps) {
         </Switch>
     );
 
-    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never)) => (
+    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never), i: number) => (
         <Show
             when={seg().kind === "work"}
             fallback={
-                <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
+                <Show when={!(seg() as { interim: boolean }).interim || (showWork() && drawn(i))}>
                     {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
                 </Show>
             }
         >
-            <Show when={showWork()}>
+            <Show when={showWork() && drawn(i)}>
                 <div class={`worklog ${folding() ? "leaving" : ""}`}>
                     {/* One quiet line for the run, opening into its steps' rows. */}
                     <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>
@@ -732,10 +756,10 @@ function TurnViewContent(p: TurnViewProps) {
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Cavvy is working" : "Cavvy replied"}</h2>
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
-                    <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
+                    <Index each={segs().slice(0, lead())}>{(seg, i) => renderSeg(seg, i)}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
                         <button class="fold acts-h worked" classList={{ arrived: arrived() }} aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
-                            const toggle = () => unfold(!unfolded());
+                            const toggle = () => (unfolded() ? unfold(false) : openByClick());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
                         }}>
@@ -743,7 +767,7 @@ function TurnViewContent(p: TurnViewProps) {
                             <span class="num">{worked() ?? "Work log"}</span>
                         </button>
                     </Show>
-                    <Index each={segs().slice(lead())}>{renderSeg}</Index>
+                    <Index each={segs().slice(lead())}>{(seg, i) => renderSeg(seg, lead() + i)}</Index>
                     <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} agents={p.agents} provider={p.state.model?.provider} />
                     </Show>
