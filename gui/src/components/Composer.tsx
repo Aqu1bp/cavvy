@@ -208,8 +208,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             cancelAnimationFrame(frame);
         });
     });
-    // A message being written means the user is back: the server holds off compacting while idle.
-    const writing = () => Boolean(text().trim() || attachments().length);
+    // A message being written means the user is back: the server holds off compacting while idle. Told when that
+    // changes, not at each key: read through the text, it was told twice a key (61 requests for 31 keys).
+    const writing = createMemo(() => Boolean(text().trim() || attachments().length));
     createEffect(on([() => p.sessionId, writing, () => h()?.ready?.()], ([id, present, ready]) => {
         if (!id || !ready) return;
         void rpc.call("session.draft", { id, present }).catch(() => undefined);
