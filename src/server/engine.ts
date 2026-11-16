@@ -27,8 +27,8 @@ import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, type Line } from "../agent/session";
-import { forkSessionSoon, readForkSource } from "../agent/fork";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
+import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
@@ -405,8 +405,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
-    /** Forks being made (forkSession): opened once they have their log. */
-    private forking = new Set<string>();
+    /** Forks being made (forkSession): a call on one waits until it's made, and fails as making it did. */
+    private forking = new Map<string, Promise<Runtime>>();
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
@@ -1139,7 +1139,19 @@ export class Engine {
      * (src/agent/fork.ts), and open the fork with the original's model,
      * speed, mode and effort.
      */
-    async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+    forkSession(original: Runtime, index: unknown, text: string, turnId: string, id = newSessionId(), createdAt?: number): Promise<Runtime> {
+        // Begun after this call's reply is on its way: before it, its first steps held the reply 12 ms (100,000 items).
+        const made = new Promise<void>((r) => setImmediate(r)).then(() => this.makeFork(original, index, text, turnId, id, createdAt));
+        this.forking.set(id, made);
+        made.then(
+            () => this.forking.delete(id),
+            // What's asked of it a while after says why it isn't there.
+            () => setTimeout(() => this.forking.delete(id), 60_000).unref?.(),
+        );
+        return made;
+    }
+
+    private async makeFork(original: Runtime, index: unknown, text: string, turnId: string, id: string, createdAt?: number): Promise<Runtime> {
         // Only to find a turn the window hasn't been sent: all of a 100,000-item Claude Code session's took 3 s.
         if (!original.hasTurn(turnId)) await original.allTurns();
         // Its records and its log, a slice at a time, before anything's made (what's written meanwhile is read with the rest).
@@ -1157,7 +1169,7 @@ export class Engine {
         let session: Session;
         let keep: () => void;
         try {
-            ({ session, keep } = await forkSessionSoon(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy, source }));
+            ({ session, keep } = await forkSessionSoon(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy, source, id, createdAt }));
         } catch (e) {
             throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
         }
@@ -1165,13 +1177,8 @@ export class Engine {
         keep();
         if (log) {
             const segments = readSegments(session.path, { takeLoadedLines: () => session.peekLoadedLines() });
-            // Not opened elsewhere meanwhile (its file is in the folder's list now): it's opened here, once it has its log.
-            this.forking.add(session.meta.id);
-            try {
-                await forkUiLogSoon({ file: session.path, id: session.meta.id }, log, segments);
-            } finally {
-                this.forking.delete(session.meta.id);
-            }
+            // Not opened elsewhere meanwhile (its file is in the folder's list now: openSession waits): opened here, once it has its log.
+            await forkUiLogSoon({ file: session.path, id: session.meta.id }, log, segments);
             keep();
         }
         // Made now, by the person: it goes to the top of the sidebar, and stays there until something else works.
@@ -2512,6 +2519,9 @@ export class Engine {
     async handle<M extends Method>(client: EngineClient, method: M, raw: unknown): Promise<Methods[M]["result"]> {
         if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
         const p = (raw ?? {}) as Record<string, any>;
+        // A fork shown before it's made (session.fork's `soon`): what's asked of it, once it is.
+        const making = typeof p.id === "string" ? this.forking.get(p.id) : undefined;
+        if (making) await making;
         const r = await this.dispatch(client, method, p);
         return r as Methods[M]["result"];
     }
@@ -2912,11 +2922,28 @@ export class Engine {
                 await this.runtime(p.id).allTurns();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
-                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
-                this.watch(client, rt.id);
+                const original = this.runtime(p.id);
+                const text = str(p.text, "text");
+                const turn = str(p.turn, "turn");
                 // As much as an open asks for: all of a long conversation's turns was 4,949 sent at once.
                 const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
                 const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                // Shown at once (`soon`), from the turns the window was sent, while it's made: a 100,000-item session's
+                // copy takes 1.5-3 s. Checked first, so what can't be forked is said now; the window opens it, which
+                // waits until it's made (handle).
+                if (p.soon === true && original.hasTurn(turn)) {
+                    original.canFork(p.index, text, turn, true);
+                    const id = newSessionId();
+                    const named = original.title ?? original.firstPrompt() ?? "";
+                    const createdAt = Date.now();
+                    const preview = original.forkPreview(turn, { id, title: forkTitle(named), named: redact(named).replace(/\s+/g, " ").trim().slice(0, 120) || "(untitled)", createdAt }, last, budget, p.fold === true);
+                    if (preview) {
+                        this.forkSession(original, p.index, text, turn, id, createdAt).catch(() => undefined);
+                        return preview;
+                    }
+                }
+                const rt = await this.forkSession(original, p.index, text, turn);
+                this.watch(client, rt.id);
                 return await rt.snapshotSoon(last, budget, p.fold === true);
             }
             case "session.changes":

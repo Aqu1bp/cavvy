@@ -3,7 +3,7 @@
 // server's ops, applied once per frame).
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
-import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
+import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
@@ -396,8 +396,13 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         existing.epoch = snap.epoch;
         existing.queue = [];
         const after = [...(renewing.get(id) ?? [])].map((fn) => fn());
+        // A message shown as sent stays until its turn comes, unless the snapshot has it (working, or queued).
+        const shown = sending.get(id);
+        // (A fork shown before it was made, that is: what it had shown was this window's own.)
+        const kept = shown && forksMaking.has(id) && !state.busy && !state.queued?.length ? existing.view.turns.find((t) => t.id === shown) : undefined;
+        if (shown && !kept) sending.delete(id);
         batch(() => {
-            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: kept ? [...snap.turns, { ...unwrap(kept) }] : snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         for (const fn of after) fn?.();
@@ -901,10 +906,34 @@ createRoot(() => createEffect(() => {
 
 /** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
 export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
-    const snap = await rpc.call("session.fork", { ...opening(id), id, ...at });
+    const snap = await rpc.call("session.fork", { ...opening(id), id, ...at, soon: true });
     const h = adopt(snap);
     await activate(h.id);
-    return h;
+    if (!snap.making) return h;
+    // Shown as it will be while it's made; opened (watched) once it is, its turns taking the place of those shown.
+    // Returns then, so what says it's forked says so once it is. Failing, the window goes back to the original.
+    forksMaking.set(h.id, id);
+    try {
+        const made = await openFresh(h.id);
+        if (handles.get(h.id) === h) adopt(made);
+        return h;
+    } catch (e) {
+        if (handles.get(h.id) === h) {
+            dropHandle(h.id);
+            if (app.activeId === h.id) void activate(id);
+        }
+        throw e;
+    } finally {
+        forksMaking.delete(h.id);
+    }
+}
+
+/** Forks shown before they're made (forkSession), by the session each is a fork of: a message sent to one that fails goes back there. */
+const forksMaking = new Map<string, string>();
+
+/** The session `id` is a fork of, while that fork is being made. */
+export function forkMakingOf(id: string): string | undefined {
+    return forksMaking.get(id);
 }
 
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
