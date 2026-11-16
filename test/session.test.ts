@@ -1,11 +1,12 @@
-import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, describe, expect, onTestFinished, spyOn, test } from "bun:test";
 import * as fs from "fs";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const iso = isolate();
-const { Session, listSessions, findSession, takeOver } = await import("../src/agent/session");
+const { Session, listSessions, findSession, savingRetry, takeOver } = await import("../src/agent/session");
+const { UiLog } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { projectStateDir } = await import("../src/config/paths");
 import type { AssistantMessage, Message, UserMessage } from "../src/providers/types";
@@ -112,6 +113,70 @@ describe("Session persistence", () => {
         s.release();
         const said = Session.load(s.path, { persist: false }).messages.map((m) => (m.content[0] as { text: string }).text);
         expect(said).toEqual(["before", "while full 1", "while full 2", "while full 3", "after"]);
+    });
+
+    /** A disk that's full until `room()`: each append writes a few bytes, then fails. */
+    function fullDisk() {
+        const spy = spyOn(fs, "appendFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, opts?: fs.WriteFileOptions) => {
+            realAppend(file, String(data).slice(0, 7), opts);
+            throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        }) as typeof fs.appendFileSync);
+        return { room: () => spy.mockRestore() };
+    }
+    const said = (path: string) => Session.load(path, { persist: false }).messages.map((m) => (m.content[0] as { text: string }).text);
+
+    test("what a full disk kept from being saved is saved once there's room, with nothing more written", async () => {
+        const was = savingRetry.ms;
+        savingRetry.ms = 50;
+        onTestFinished(() => void (savingRetry.ms = was));
+        const s = Session.create(project());
+        const told: (string | undefined)[] = [];
+        s.onSaving = (e) => told.push(e?.message);
+        s.push(user("before"));
+        const disk = fullDisk();
+        try {
+            s.push(assistant("while full"));
+        } finally {
+            disk.room();
+        }
+        // Idle from here: it's tried again on its own.
+        for (let i = 0; i < 80 && told.length < 2; i++) await Bun.sleep(25);
+        expect(told).toEqual(["ENOSPC: no space left on device", undefined]);
+        expect(said(s.path)).toEqual(["before", "while full"]);
+        s.release();
+    });
+
+    test("what a full disk kept from being saved is saved as the session is let go, if there's room by then", () => {
+        const s = Session.create(project());
+        s.push(user("before"));
+        const disk = fullDisk();
+        try {
+            s.push(assistant("while full"));
+        } finally {
+            disk.room();
+        }
+        s.release();
+        expect(said(s.path)).toEqual(["before", "while full"]);
+    });
+
+    test("a Claude Code session's steps a full disk kept from its GUI log are written once there's room, in order", () => {
+        const s = Session.create(project());
+        s.push(user("go"));
+        const ui = new UiLog(s.path, s.meta.id, false);
+        const step = (id: string) => ({ t: "step" as const, seg: 0, index: 0, prompt: "go", block: { t: "text" as const, id, text: id } });
+        ui.write(step("one"));
+        const disk = fullDisk();
+        try {
+            ui.write(step("two"));
+            ui.write(step("three"));
+        } finally {
+            disk.room();
+        }
+        // Let go of with nothing more to write: what waited goes now.
+        ui.close();
+        s.release();
+        const again = new UiLog(s.path, s.meta.id, true);
+        expect(again.steps.get("0:0")?.blocks.map((b) => (b as { id: string }).id)).toEqual(["one", "two", "three"]);
     });
 
     test("background tasks are kept as bgtask lines: the last for an id wins, bad ones are skipped, and a fork doesn't take them", () => {
