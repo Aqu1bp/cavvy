@@ -18,8 +18,9 @@ const { writeThread } = await import("../scripts/perf-thread");
 // work shown folded (the default: gui/src/state/app.ts opening).
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
 const { findKeeping } = await import("../src/server/runtime");
-const { Session, checkpointing } = await import("../src/agent/session");
+const { Session, checkpointing, findSessionAnywhere } = await import("../src/agent/session");
 const { uiLogFile } = await import("../src/server/history");
+const { imageKey, readKept, toolImagesDir } = await import("../src/server/tool-images");
 // What Find searches, let go of soon after it was used (as it is a while after: runtime.ts findKeeping).
 const keptFor = findKeeping.ms;
 findKeeping.ms = 300;
@@ -288,6 +289,22 @@ describe("a Claude Code session", () => {
             }
         });
     }
+    // A prompt's images, kept as it's sent: shown again in a session opened from a digest of its messages, they're
+    // read from where they're kept (as an earlier prompt's are above, once read), not from every message.
+    test("a prompt's images sent from the window are kept beside the session", async () => {
+        const cwd = join(tempDir("cavvy-perf-size-sent-"), "project");
+        mkdirSync(cwd, { recursive: true });
+        const created = await ok("session.create", { cwd });
+        const id = created.msg.result.state.id as string;
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        await ok("session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: png }] });
+        let file: string | undefined;
+        for (let i = 0; i < 500 && !(file = findSessionAnywhere(id)); i++) await Bun.sleep(10);
+        const key = imageKey({ mediaType: "image/png", data: png })!;
+        for (let i = 0; i < 500 && !readKept(toolImagesDir(file!, id), key); i++) await Bun.sleep(10);
+        expect(readKept(toolImagesDir(file!, id), key)).toEqual({ mediaType: "image/png", data: png });
+        await ok("session.close", { id });
+    });
     // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
     test("open, the server keeps what's on screen", () => {
         const { small, large } = measured.cli!;

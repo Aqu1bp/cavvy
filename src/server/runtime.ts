@@ -4336,6 +4336,8 @@ export class Runtime {
                 // The images as they'll be kept, mentioned ones too: what promptImages returns, so what the key is of.
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
+                // Kept beside the session as it's sent: shown again (promptImages), they're read from there.
+                if (images.length) this.keepToolImages(images as ImagePart[]);
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
             }
@@ -5277,10 +5279,10 @@ export class Runtime {
     promptImages(seg: number, index: number): { mediaType: string; data: string }[] {
         // Opened from a digest of its messages (Session.read), an earlier prompt's from where they're kept, by the keys
         // the digest has of them; not kept yet (from before, or the terminal), each prompt's are kept as they're read.
+        if (!Number.isInteger(index) || index < 0) throw new RpcError("That prompt is no longer in the conversation.", "not_found");
         const digest = seg === this.segment ? this.session.historyDigest : undefined;
-        if (digest && index >= 0 && index < digest.from) {
-            const keys = digest.images?.find(([i]) => i === index)?.[1];
-            if (!keys) return [];
+        const keys = digest && index < digest.from ? digest.images?.find(([i]) => i === index)?.[1] : undefined;
+        if (keys) {
             const dir = toolImagesDir(this.session.path, this.id);
             const kept = keys.map((k) => readKept(dir, k));
             if (kept.every((k) => k !== undefined)) return kept as { mediaType: string; data: string }[];
@@ -5288,6 +5290,8 @@ export class Runtime {
         }
         // The last turn's prompt without reading the rest.
         const m = seg === this.segment ? this.session.messageAt(index) : readSegments(this.session.path)[seg]?.messages[index];
+        // Kept for next time (a prompt sent before they were kept as it was, or from the terminal).
+        if (seg === this.segment && m?.role === "user") this.keepToolImages(m.content.filter((p): p is ImagePart => p.type === "image"));
         const pending = this.pendingPrompt;
         const parts = m?.role === "user" ? m.content : pending && pending.seg === seg && pending.index === index ? (pending.attachments ?? []) : undefined;
         if (!parts) throw new RpcError("That prompt is no longer in the conversation.", "not_found");
