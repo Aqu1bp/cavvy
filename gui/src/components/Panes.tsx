@@ -3,7 +3,7 @@
 // While a session is dragged from the rail, the stage shows where it would go. The one shown before stays, out of sight
 // (parked): switched back to, it's there as it was, nothing built or laid out again.
 
-import { batch, createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
 import { activate, app, handleFor, type SessionHandle } from "../state/app";
 import { paneDock, shellLayout } from "../state/ui";
 import { canDrop, draggedSession, dropSession, endPaneOpen, focusPane, openPane, paneOpening, paneAgent, PaneContext, saveSplitRatio, setDraggedSession, setSplitDrag, split, splitDrag, splitIds, splitRatio, usePane, SESSION_DRAG, type Side } from "../state/split";
@@ -117,6 +117,26 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number; par
         const active = document.activeElement;
         if (active instanceof HTMLElement && section?.contains(active)) active.blur();
     });
+    // Shown again: what content-visibility skips (a reply's code, rows far up) was counted out of view while put away,
+    // and stayed skipped in the frame that showed it again: the end of a reply was blank for a frame. What's in view is
+    // drawn in that frame, and left to the page again after it.
+    createEffect(
+        on(
+            () => p.parked,
+            (parked, was) => {
+                if (parked || !was || !section) return;
+                const held: HTMLElement[] = [];
+                for (const el of section.querySelectorAll<HTMLElement>(".turn[data-far], [data-work-far], .md .code > pre.code-body")) {
+                    const r = el.getBoundingClientRect();
+                    if (!r.height || r.bottom <= 0 || r.top >= innerHeight) continue;
+                    el.style.contentVisibility = "visible";
+                    held.push(el);
+                }
+                if (held.length) requestAnimationFrame(() => requestAnimationFrame(() => held.forEach((el) => el.style.removeProperty("content-visibility"))));
+            },
+            { defer: true },
+        ),
+    );
     const ctx = { id: p.id, focused, parked: () => p.parked, split: inSplit, rightmost: () => p.last, share: () => p.share, wasFocused: () => wasFocused };
     // In a split each pane has the steps of its own width (shell.css, lib/layout.ts); alone, the column's are on .main.
     const narrow = createMemo(() => (inSplit() && shellLayout().sheet.w ? columnSteps(shellLayout().column.w * p.share, PANE_NARROW) : undefined));
