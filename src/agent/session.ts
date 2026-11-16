@@ -1041,6 +1041,24 @@ export class Session {
     /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
     private loadedLines?: readonly Line[];
 
+    /** Those lines, left for takeLoadedLines (the runtime opening it): to look at without reading the file again. */
+    peekLoadedLines(): readonly Line[] | undefined {
+        return this.loadedLines;
+    }
+
+    /**
+     * Those lines, kept for takeLoadedLines past this task (a fork's log written a slice at a time before the runtime
+     * opens it): the function puts them back for the task it's called in.
+     */
+    keepLoadedLines(): () => void {
+        const lines = this.loadedLines;
+        return () => {
+            if (!lines) return;
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        };
+    }
+
     /** The lines this session was just loaded from, once, while that's still the task that loaded it. */
     takeLoadedLines(): readonly Line[] | undefined {
         const lines = this.loadedLines;
