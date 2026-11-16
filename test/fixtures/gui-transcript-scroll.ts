@@ -31,6 +31,11 @@ const mutate = () => mutations.forEach((fn) => fn());
 /** Window listeners (a pointer's lift); pointerUp() lifts it. */
 const lifts = new Map<string, Set<() => void>>();
 const pointerUp = () => [...(lifts.get("pointerup") ?? [])].forEach((fn) => fn());
+/** The page's own: a press (on `target`), a key with nothing focused (its target the body). */
+const windowEvent = (type: string, e: Record<string, unknown>) => [...(lifts.get(type) ?? [])].forEach((fn) => (fn as (e: unknown) => void)({ ...e }));
+const body = { tag: "body" };
+/** Whether this conversation's pane is the one shown (not parked under another). */
+let paneFocused = true;
 let restoredOpen = false;
 let root = node("root");
 let top = 0;
@@ -195,14 +200,14 @@ const scope = {
     },
     observeWorkRendering: () => () => {},
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => paneFocused, parked: () => !paneFocused, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
     takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
     setTimeout(fn: () => void) { tasks.push(fn); return 0; },
     // What's at a point of the view: the row of the column laid out there.
-    document: { elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
+    document: { body, elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
     HTMLElement: { [Symbol.hasInstance]: (x: any) => !!x?.props },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
@@ -923,6 +928,38 @@ try {
     assert.ok(turn("turn-399"), "End shows the last turn");
     assert.ok(articles().length <= 40, `and only the end's page (${articles().length})`);
     assert.equal(button("jump"), undefined, "following the end");
+    // A click in the conversation focuses nothing: End comes to the page, and goes to the end the same.
+    readUp("held-page-end");
+    windowEvent("pointerdown", { target: turn("turn-60") });
+    windowEvent("keydown", { key: "End", target: body });
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "End pressed with nothing focused shows the last turn");
+    assert.ok(articles().length <= 40, `and only the end's page (${articles().length})`);
+    // Not while it's parked under another conversation: that one is what End is for.
+    readUp("held-parked");
+    windowEvent("pointerdown", { target: turn("turn-60") });
+    paneFocused = false;
+    windowEvent("keydown", { key: "End", target: body });
+    paneFocused = true;
+    settle();
+    assert.equal(lastDrawn(), 119, "a parked conversation stays where it was read");
+    // Just after a jump near the end, with its last turns still going in: End goes to the end, not to what's drawn.
+    readUp("held-late");
+    findProps.show("turn-310");
+    flush(); tasks.splice(0).forEach((fn) => fn());
+    scroller().props.onKeyDown({ key: "End" });
+    flush(); tasks.splice(0).forEach((fn) => fn());
+    assert.ok(turn("turn-399"), "End while the end's turns are going in shows the last turn");
+    // Find's next hit while the turns below the last are going in: a few go in each frame, not all of them at once.
+    readUp("held-next");
+    findProps.show("turn-150");
+    for (let i = 0; i < 3; i++) { flush(); tasks.splice(0).forEach((fn) => fn()); }
+    const drawnBefore = articles().length;
+    findProps.show("turn-155");
+    assert.ok(turn("turn-155"), "the next hit is drawn");
+    assert.ok(articles().length - drawnBefore <= 4, `and no more than a few turns go in with it (${articles().length - drawnBefore})`);
+    settle();
+    assert.ok(articles().length <= 160, `nor more than four pages after (${articles().length})`);
     readUp("held-cmd-down");
     scroller().props.onKeyDown({ key: "ArrowDown", metaKey: true });
     settle();

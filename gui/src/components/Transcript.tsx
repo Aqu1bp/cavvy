@@ -1048,7 +1048,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         const top = scroller.scrollTop;
         const gap = scroller.scrollHeight - scroller.clientHeight - top;
         // The scrollbar dragged to the bottom with turns held there: to the end, as Latest goes, not a page more.
-        if (onBar && heldBelow > 0 && gap <= 1) return toEnd();
+        if (onBar && below() && gap <= 1) return toEnd();
         if (gap <= 1) smoothScroll = false;
         const size = sizeOf(scroller);
         const resized = size !== lastSize;
@@ -1173,6 +1173,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             if (e.deltaY > 0) downAtEnd(e.target);
         }
     };
+    /** Turns not drawn below: held there, or still going in. */
+    const below = () => heldBelow > 0 || trimmed() > 0;
     /** To the end and following it, as Latest goes (not smoothly: a key's or the scrollbar's move isn't). */
     const toEnd = () => {
         unholdForEnd();
@@ -1184,7 +1186,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let pressedHere = false;
     const notePress = (e: Event) => void (pressedHere = !!scroller && scroller.contains(e.target as Node));
     const pageKey = (e: KeyboardEvent) => {
-        if (!pressedHere || heldBelow <= 0 || e.defaultPrevented || e.target !== document.body) return;
+        // Pressed last in this conversation, and it's still the one shown (not parked under another since).
+        if (!pressedHere || !pane.focused() || !below() || e.defaultPrevented || e.target !== document.body) return;
         if (e.key === "End" || (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey))) {
             interruptJump();
             toEnd();
@@ -1202,7 +1205,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         toggledRow();
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
         // To the end with turns held there: all the way, as before they were held, not a page more each time.
-        else if (heldBelow > 0 && (e.key === "End" || (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey))) && !innerTakes(e.target)) {
+        else if (below() && (e.key === "End" || (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey))) && !innerTakes(e.target)) {
             interruptJump();
             toEnd();
         } else {
@@ -1239,8 +1242,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             growMore?.();
         } else {
             heldBelow = Math.min(heldBelow, Math.max(0, need - 1 - PAGE));
-            setTrimmed(heldBelow);
+            // Down to it at once if it isn't drawn yet; those below it go in a few at a time after, as they were (a
+            // Find's next hit among them put them all in at once).
+            if (trimmed() >= need) setTrimmed(need - 1);
             if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+            growMore?.();
         }
         smoothScroll = false;
         setStick(false);
