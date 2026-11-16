@@ -479,6 +479,8 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
     // A second launch focuses the window that's already open, even before the page has asked (it may never).
     app.on("second-instance", () => raiseWindow());
+    // Started now, not once Electron is ready: the window waits on it first, and it doesn't need Electron.
+    startServer();
     app.whenReady().then(() => {
         mark("ready");
         testWindowCommands();
@@ -495,7 +497,6 @@ else {
         app.setAboutPanelOptions({ applicationName: "Cavvy", applicationVersion: app.getVersion(), copyright: "MIT License", website: "https://cavvy.dev" });
         appMenu();
         bridge();
-        startServer();
         createWindow();
     });
     app.on("window-all-closed", () => app.quit());
