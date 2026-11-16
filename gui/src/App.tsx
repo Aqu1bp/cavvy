@@ -23,7 +23,7 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { RewindDialog } from "./components/RewindDialog";
@@ -32,7 +32,6 @@ import { TrustDialog } from "./components/TrustDialog";
 import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
-import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
@@ -291,6 +290,7 @@ const mcpModule = () => import("./components/McpDialog");
 const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
 const planModule = () => import("./components/PlanDialogs");
 const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
+const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
 
 export function App() {
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
@@ -298,7 +298,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -312,6 +312,7 @@ export function App() {
     // Put in the first time each opens, and kept (to close as it closes).
     const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
     const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
+    const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -647,7 +648,7 @@ export function App() {
             <ArchiveDialog />
             <RecentlyDeleted />
             <RunSheet />
-            <CommitDialog />
+            <Show when={commitShown()}><CommitDialog /></Show>
             <ImageViewer />
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
