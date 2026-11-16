@@ -2158,7 +2158,9 @@ describe("forking", () => {
         const c = await client();
         const { id, dir } = await threeTurns(c);
         const [first, demo] = prompted(c.view(id));
-        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, text: "demo", index: demo!.prompt!.index, turn: demo!.id, ...p });
+        // As shown now: a compaction below takes the shown turn's prompt index away (the turn patched in place).
+        const shown = { text: "demo", index: demo!.prompt!.index, turn: demo!.id };
+        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, ...shown, ...p });
         await expect(fork({ id: "20200101-000000-abcdef" })).rejects.toThrow(/isn't open/);
         await expect(fork({ index: "3" })).rejects.toThrow(/must be an integer/);
         await expect(fork({ index: 1.5 })).rejects.toThrow(/must be an integer/);
