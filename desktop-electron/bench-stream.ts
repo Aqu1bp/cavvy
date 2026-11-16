@@ -206,9 +206,26 @@ try {
     }
     if (arg("--css")) await js(`(() => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(arg("--css"))}; document.head.append(s); })()`);
     if (arg("--js")) await js(arg("--js")!);
+    // --touch: a touch of the window every 30 s, as someone reading it would, so a theme's scene doesn't stop for nobody
+    // being there (gui/src/lib/away.ts) partway through.
+    if (args.includes("--touch")) await js(`setInterval(() => dispatchEvent(new PointerEvent("pointermove")), 30000), 1`);
+    // --window focus|unfocus|cover|minimize|hide: the window's state while it's measured (gui/src/lib/loops.ts pauses
+    // what loops by it). focus, the default: Cavvy in front with the window focused. unfocus: Finder in front, the
+    // window beside it. cover: a Finder window over it.
+    const windowState = arg("--window") ?? "focus";
+    const inMain = async (code: string) => main && (await main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows()[0]; ${code} })()`, returnByValue: true })).result?.result?.value;
+    const osa = (script: string) => Bun.spawnSync(["osascript", "-e", script]);
+    const putWindow = async () => {
+        if (windowState === "minimize") return void (await inMain("w.minimize()"));
+        if (windowState === "hide") return void (await inMain("app.hide()"));
+        await inMain("app.focus({ steal: true }); w.show(); w.focus()");
+        if (windowState === "unfocus") osa(`tell application "Finder" to activate`);
+        if (windowState === "cover") osa(`tell application "Finder"\nactivate\nmake new Finder window\nset bounds of front window to {0, 0, 4000, 3000}\nend tell`);
+    };
+    const gate = () => js(`(() => { const r = document.documentElement; const b = document.querySelector('.theme-backdrop'); return { inputs: window.__inputs ?? 0, visibility: document.visibilityState, focus: document.hasFocus(), loopsOff: r.hasAttribute('data-loops-off'), decorOff: r.hasAttribute('data-decor-off'), away: !!(b && b.hasAttribute('data-away')), sceneRunning: b ? b.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length : 0 }; })()`);
     // Whether Chromium keeps an accessibility tree for the page (it does while anything on the Mac reads the screen through accessibility).
     const ax = main ? (await main.cdp("Runtime.evaluate", { expression: "process.mainModule.require(\"electron\").app.isAccessibilitySupportEnabled()", returnByValue: true })).result?.result?.value : undefined;
-    report.experiment = { css: arg("--css"), js: arg("--js"), theme: arg("--theme"), reducedMotion: args.includes("--reduced-motion"), chromium: arg("--chromium"), accessibility: ax };
+    report.experiment = { window: windowState, touch: args.includes("--touch"), css: arg("--css"), js: arg("--js"), theme: arg("--theme"), reducedMotion: args.includes("--reduced-motion"), chromium: arg("--chromium"), accessibility: ax };
 
     // ---- Sessions, through the app's own server.
     let server: { pid?: number; port?: number; token?: string } = {};
@@ -302,8 +319,10 @@ try {
      */
     const phase = async (name: string, seconds: number, opts: { perSecond?: string } = {}) => {
         if (only && !only.includes(name)) return;
+        await putWindow();
+        await sleep(1000);
         const roles = await pids();
-        await js(`(() => { window.__hiddenAt = []; window.__onVis = () => document.visibilityState !== 'visible' && __hiddenAt.push(performance.now()); document.addEventListener('visibilitychange', __onVis); })()`);
+        await js(`(() => { window.__hiddenAt = []; window.__onVis = () => document.visibilityState !== 'visible' && __hiddenAt.push(performance.now()); document.addEventListener('visibilitychange', __onVis); window.__inputs = 0; if (!window.__onInput) { window.__onInput = (e) => e.isTrusted && window.__inputs++; for (const k of ['pointermove', 'pointerdown', 'keydown', 'wheel']) addEventListener(k, __onInput, true); } })()`);
         const visibleAtStart = await js(`document.visibilityState`);
         // Experiments: BENCH_SAMPLE=<dir>, macOS's `sample` of the UI process through the stretch, by thread.
         if (process.env.BENCH_SAMPLE) {
@@ -341,6 +360,7 @@ try {
         const memoryMB = rss([...roles]);
         const footprintMB = footprint([...roles]);
         measuring = false;
+        const gateAtEnd = await gate();
         const heap = await js(`(() => { const m = performance.memory; return m ? { usedMB: Math.round(m.usedJSHeapSize / 1048576), totalMB: Math.round(m.totalJSHeapSize / 1048576) } : null; })()`);
         // What's animating: by animation (CSS name, or a script's), its element and its state.
         const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length, farTurns: document.querySelectorAll('.transcript:not([data-parked] *) [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, busyTurns: document.querySelectorAll('.turn[aria-busy="true"]').length, layered: [...document.querySelectorAll('.transcript:not([data-parked] *) .turn')].filter((t) => getComputedStyle(t).willChange === 'transform').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
@@ -384,6 +404,7 @@ try {
             memoryMB,
             footprintMB,
             heap,
+            gate: gateAtEnd,
             dom,
             wsKBPerSecond: wsKB,
             ...(visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
@@ -478,6 +499,8 @@ try {
     report.footprintAfterGcMB = footprint([...(await pids())]);
     clearInterval(approver);
     seed.ws.close();
+    // The Finder window put over it.
+    if (windowState === "cover") osa(`tell application "Finder" to close front window`);
 } catch (e) {
     report.error = String((e as Error)?.stack ?? e);
     report.appLog = (await Bun.file(join(dir, "app.log")).text().catch(() => "")).split("\n").slice(-15).join("\n");
