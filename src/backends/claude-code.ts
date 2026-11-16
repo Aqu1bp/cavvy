@@ -311,7 +311,10 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const model = req.model.id === "default" ? [] : ["--model", req.model.id];
         const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
-        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env: accountEnv(this.def.id, req.account ?? defaultAccount(this.def.id)) });
+        // Without the CLI's own telemetry, update and flag requests: a title cost 0.77 -> 0.42 CPU-s to its answer (measured,
+        // Linux, the bench's stand-in API), the same model answering. Only here: a session's CLI and the model list keep them.
+        const env = { ...accountEnv(this.def.id, req.account ?? defaultAccount(this.def.id)), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env });
         const kill = () => void proc.kill();
         req.signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, ONE_OFF_TIMEOUT_MS);

@@ -155,7 +155,7 @@ function pluginSkills(): string[] {
 const cwd = process.cwd();
 /** Where its session works: cwd, until EnterWorktree moves it (system/init says, as Claude Code's does). */
 let here = cwd;
-log({ pid: process.pid, argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
+log({ pid: process.pid, argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN), quiet: process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 // What --agents gave it (a file under -p), read at start as Claude Code does.
 if (argv.includes("--agents")) {

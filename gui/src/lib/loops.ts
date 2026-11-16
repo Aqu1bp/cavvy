@@ -24,7 +24,19 @@ function restart(anims: Animation[]) {
     for (const a of anims) if (endless(a) && a.playState === "running") a.startTime = at;
 }
 
+/** Told whether the window can be seen and has the focus, each time either may have changed (the clock, lib/clock.ts). */
+const sightWatchers = new Set<(s: { seen: boolean; focused: boolean }) => void>();
+const sightNow = () => ({ seen: seen && (typeof document === "undefined" || document.visibilityState !== "hidden"), focused });
+
+/** Calls `fn` now and each time the window's being seen or focused may have changed. Returns the cleanup. */
+export function onSight(fn: (s: { seen: boolean; focused: boolean }) => void): () => void {
+    sightWatchers.add(fn);
+    fn(sightNow());
+    return () => sightWatchers.delete(fn);
+}
+
 function apply() {
+    for (const fn of sightWatchers) fn(sightNow());
     const root = document.documentElement;
     const loops = seen && document.visibilityState !== "hidden";
     const decor = loops && focused;

@@ -204,6 +204,8 @@ describe("agent providers", () => {
         const argv = starts()[0].argv as string[];
         for (const f of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) expect(argv).toContain(f);
         expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+        // Without the CLI's own telemetry and update requests.
+        expect(starts()[0].quiet).toBe("1");
     });
 
     test("Codex answers a one-off in an ephemeral read-only thread with no shell", async () => {
