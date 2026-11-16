@@ -10,18 +10,17 @@ import { onSight } from "./loops";
 
 const [tick, setTick] = createRoot(() => createSignal(Date.now()));
 
-let timer: ReturnType<typeof setInterval> | undefined;
+let timer: ReturnType<typeof setInterval> | 0 = 0;
 let every = 0;
+const set = () => setTick(Date.now());
 
-function pace(ms: number) {
+onSight((seen, focused) => {
+    const ms = seen ? (focused ? 1000 : 60_000) : 0;
     if (ms === every) return;
-    const sooner = ms > 0 && (every === 0 || ms < every);
     clearInterval(timer);
+    if (ms && (!every || ms < every)) set();
     every = ms;
-    timer = ms ? setInterval(() => setTick(Date.now()), ms) : undefined;
-    if (sooner) setTick(Date.now());
-}
-
-onSight((s) => pace(!s.seen ? 0 : s.focused ? 1000 : 60_000));
+    timer = ms && setInterval(set, ms);
+});
 
 export const now = tick;

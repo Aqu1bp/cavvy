@@ -25,20 +25,19 @@ function restart(anims: Animation[]) {
 }
 
 /** Told whether the window can be seen and has the focus, each time either may have changed (the clock, lib/clock.ts). */
-const sightWatchers = new Set<(s: { seen: boolean; focused: boolean }) => void>();
-const sightNow = () => ({ seen: seen && (typeof document === "undefined" || document.visibilityState !== "hidden"), focused });
+const sightWatchers: ((seen: boolean, focused: boolean) => void)[] = [];
+const visible = () => seen && document.visibilityState !== "hidden";
 
-/** Calls `fn` now and each time the window's being seen or focused may have changed. Returns the cleanup. */
-export function onSight(fn: (s: { seen: boolean; focused: boolean }) => void): () => void {
-    sightWatchers.add(fn);
-    fn(sightNow());
-    return () => sightWatchers.delete(fn);
+/** Calls `fn` now and each time the window's being seen or focused may have changed. */
+export function onSight(fn: (seen: boolean, focused: boolean) => void) {
+    sightWatchers.push(fn);
+    fn(visible(), focused);
 }
 
 function apply() {
-    for (const fn of sightWatchers) fn(sightNow());
+    const loops = visible();
+    for (const fn of sightWatchers) fn(loops, focused);
     const root = document.documentElement;
-    const loops = seen && document.visibilityState !== "hidden";
     const decor = loops && focused;
     const back = (loops && root.hasAttribute("data-loops-off")) || (decor && root.hasAttribute("data-decor-off"));
     root.toggleAttribute("data-loops-off", !loops);
