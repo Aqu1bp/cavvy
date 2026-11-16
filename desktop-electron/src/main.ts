@@ -4,7 +4,7 @@
 // (Contents/MacOS/cavvy, where the Tauri app kept it); run from the repo (`bun run desktop:dev`), it's the TypeScript
 // source with `bun`, so server changes need no rebuild.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, screen, shell, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -145,6 +145,30 @@ const goneAt: number[] = [];
 let opened: WindowState | undefined;
 const host = new BrowserHost(() => win);
 
+/** Whether the screen is locked, the Mac asleep or another user switched in: nothing of the window can be seen. */
+let screenAway = false;
+const awayListeners = new Set<() => void>();
+let watchingAway = false;
+function watchScreenAway() {
+    if (watchingAway) return;
+    watchingAway = true;
+    // Each on its own: waking from sleep doesn't unlock the screen.
+    const why = { locked: false, asleep: false, switchedOut: false };
+    const set = (k: keyof typeof why, v: boolean) => () => {
+        why[k] = v;
+        const away = why.locked || why.asleep || why.switchedOut;
+        if (screenAway === away) return;
+        screenAway = away;
+        for (const fn of awayListeners) fn();
+    };
+    powerMonitor.on("lock-screen", set("locked", true));
+    powerMonitor.on("unlock-screen", set("locked", false));
+    powerMonitor.on("suspend", set("asleep", true));
+    powerMonitor.on("resume", set("asleep", false));
+    powerMonitor.on("user-did-resign-active", set("switchedOut", true));
+    powerMonitor.on("user-did-become-active", set("switchedOut", false));
+}
+
 function createWindow() {
     const glass = liquidGlass();
     const state = restorable(readWindowState(), screen.getAllDisplays().map((d) => d.workArea));
@@ -178,14 +202,19 @@ function createWindow() {
     });
     host.watch(win.webContents);
     // Whether the window can be seen and has the focus, for the page's looping motion (gui/src/lib/loops.ts): macOS
-    // keeps drawing a minimized window.
+    // keeps drawing a minimized window, and a window behind a locked screen, still "visible" and focused.
     {
         const w = win;
         const tell = () => {
-            if (!w.isDestroyed()) w.webContents.send("window_state", { seen: w.isVisible() && !w.isMinimized(), focused: w.isFocused() });
+            if (w.isDestroyed()) return;
+            const seen = !screenAway && w.isVisible() && !w.isMinimized();
+            w.webContents.send("window_state", { seen, focused: seen && w.isFocused() });
         };
         for (const e of ["minimize", "restore", "hide", "show", "focus", "blur"] as const) w.on(e as "focus", tell);
         w.webContents.on("did-finish-load", tell);
+        watchScreenAway();
+        awayListeners.add(tell);
+        w.on("closed", () => awayListeners.delete(tell));
     }
     opened = state;
     keepWindowState(win);
