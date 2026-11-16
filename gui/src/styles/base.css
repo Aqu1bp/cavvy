@@ -7,6 +7,8 @@
 html {
     font-size: calc(14px * var(--font-scale));
     -webkit-text-size-adjust: 100%;
+    /* The page never bounces (body's doesn't reach the page), so a view that scrolls needn't stop its scroll here. */
+    overscroll-behavior: none;
 }
 
 html,
