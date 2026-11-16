@@ -262,6 +262,10 @@ function keep(kept: Map<string, Rendered>, text: string, r: Rendered) {
         doneChars -= had.chars;
     }
     if (r.chars > DONE_CHARS / 4) return;
+    // Its HTML in one piece: built up a piece at a time, V8 keeps each piece and a node joining it to the rest (20-32
+    // bytes each), and DONE_CHARS of it held about 10 MB (a long session read up through and back, Chromium heap
+    // snapshot). Asked for a character, it joins them into one string in place.
+    for (const seg of r.out) if (seg.kind === "html") seg.html.charCodeAt(0);
     kept.set(text, r);
     doneChars += r.chars;
     order.set(r, ++used);
