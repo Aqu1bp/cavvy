@@ -10,7 +10,7 @@ import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, key
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
+import { BuiltFromEnd, DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { KeyedList } from "../lib/keyed-list";
@@ -116,6 +116,34 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         ? { shown: target, trimmed: 0 }
         : firstWindow(lazyHeights(p.handle.view.turns), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
     const [shown, setShown] = createSignal(first.shown);
+    // Opened at its end with nothing to find in it: a long reply builds its end first (lib/reveal.ts BuiltFromEnd).
+    const jumpingHere = () => jumpTarget()?.sessionId === p.handle.id;
+    /** The reader is leaving the end (finishAtEnd): what's above in a reply built from its end goes in now, all of it. */
+    const [allIn, setAllIn] = createSignal(false);
+    const builtFromEnd = {
+        fromEnd: () => settling && opensAtEnd && !untrack(jumpingHere) && !untrack(findOpen),
+        // All of it once Find or a jump needs it, or the reader leaves the end (allIn).
+        whole: () => findOpen() || jumpingHere() || allIn() || !stick(),
+        // Following the end, the end stays (as the conversation grows): nothing to measure. Read higher up, what's read
+        // stays, the scroll position taking what went in above it.
+        keep: (el: Element | null | undefined, put: () => void) => {
+            if (!el || !scroller || untrack(stick)) return put();
+            const was = el.getBoundingClientRect().top;
+            put();
+            queueMicrotask(() => {
+                if (!scroller || !el.isConnected) return;
+                const moved = el.getBoundingClientRect().top - was;
+                if (Math.abs(moved) > 0.5) {
+                    scroller.scrollTop += moved;
+                    // The place read, as it is now: it's measured from the top of its turn, which this moved, and it's
+                    // put back after (the column changed size). Following the end too: a wheel that moved the view
+                    // may not have told it yet.
+                    reading = capture();
+                    wrote();
+                }
+            });
+        },
+    };
     /** How many turns go in, counted from the end: the first page, then a page more each "Show earlier", put in a few at a time (grow). */
     const [goal, setGoal] = createSignal(target);
     /** A page going in a few turns at a time ("Show earlier"): those of it in so far, staged (stage, below). */
@@ -1008,16 +1036,31 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         setStick(false);
         reading = capture();
     };
+    /**
+     * The reader about to leave the end: a reply still building from its end (BuiltFromEnd) is put in whole first, and
+     * the end kept, while it's followed. Put in as they read up instead, it moved what they read (and each step was
+     * taken for theirs, measured: a jump of thousands of px).
+     */
+    const finishAtEnd = () => {
+        if (allIn() || !scroller) return;
+        setAllIn(true);
+        if (stick()) {
+            scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+            wrote();
+        }
+    };
     /** The reader scrolling up (wheel, touch, keys): it stops following at once, however near the end. */
     const scrollUp = () => {
         // Following an end it can't scroll up from (the whole conversation fits), there's nothing to stop.
         if (!smoothScroll && (!stick() || !scroller || scroller.scrollTop <= 0)) return;
+        finishAtEnd();
         smoothScroll = false;
         setStick(false);
         reading = capture();
     };
     /** A pointer or finger down on the conversation: until it's lifted, scrolls up are the reader's even as it grows. */
     const press = () => {
+        finishAtEnd();
         interruptJump();
         if (pressed) return;
         pressed = true;
@@ -1240,11 +1283,13 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                         </button>
                     </Show>
                     <DrawnAgain.Provider value={() => settling}>
+                    <BuiltFromEnd.Provider value={builtFromEnd}>
                     <CardFoldsProvider sessionId={id}>
                         {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
                         <KeyedList each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
                             workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</KeyedList>
                     </CardFoldsProvider>
+                    </BuiltFromEnd.Provider>
                     </DrawnAgain.Provider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>
