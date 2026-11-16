@@ -403,7 +403,10 @@ export class MarkdownRenderer {
                 let closable = false;
                 let last = tokens.length - 1;
                 while (last > 0 && tokens[last]?.type === "space") last--;
-                for (let i = tailIndex; exact && i < last; i++) {
+                // A fence closed in what's written (not by settle()), then a blank line: nothing after it can change it,
+                // so it's frozen now rather than lexed again with the block after it.
+                const upto = closedFence(tokens[last]) && text.startsWith(source, from) ? tokens.length : last;
+                for (let i = tailIndex; exact && i < upto; i++) {
                     const t = tokens[i]!;
                     offset += t.raw.length;
                     if (t.type !== "space") {
@@ -856,6 +859,14 @@ export function openFence(source: string): (Token[] & { links: Record<string, ne
 /** A fence line, after any quote and list markers ("- ```ts" opens one in a list item). */
 const FENCE = /^\s*(?:>\s?\s*)*(?:((?:[-*+]|\d{1,9}[.)])\s+)\s*(?:>\s?\s*)*)?(?:(`{3,})[^`]*|(~{3,}).*)$/;
 /** A line that's only a marker so far: a list item, heading, quote or rule that hasn't said what it is yet. */
+/** A fenced code block closed by its own fence (as long as its opening one, of the same character). */
+function closedFence(t: Token | undefined): boolean {
+    if (t?.type !== "code" || (t as Tokens.Code).codeBlockStyle === "indented") return false;
+    const lines = t.raw.replace(/\n+$/, "").split("\n");
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(lines[0]!)?.[1];
+    const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lines.at(-1)!)?.[1];
+    return lines.length > 1 && open !== undefined && close !== undefined && close[0] === open[0] && close.length >= open.length;
+}
 const BARE = /^\s*(?:[-*+]|\d{1,9}[.)]?|#{1,6}|>|[-=_*][-=_* ]*|`{1,2}|~{1,2})\s*$/;
 const TABLE_ROW = /^\s*\|/;
 const DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;

@@ -123,6 +123,27 @@ test("code that reads like a link definition, an open code block, and the end of
     }
 });
 
+test("a code block once closed isn't lexed again with what's written after it", () => {
+    // Lexed with the block after it, a closed block was read once more for each block that followed a code block.
+    let code = 0;
+    const lexer = Marked.prototype.lexer;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) {
+        if (src.startsWith("```")) code += src.indexOf("```\n\n", 3) + 5;
+        return (lexer as any).call(this, src, ...rest);
+    } as any;
+    try {
+        const block = (i: number) => "```ts\n" + Array.from({ length: 8 }, (_, k) => `const part${i}_${k} = input.slice(${k}).trim();\n`).join("") + "```\n\n";
+        const after = ["| a | b |\n| --- | --- |\n| 1 | 2 |\n\n", "Text after it, a sentence or two long.\n\n", "- an item\n- another\n\n", "## A heading\n\n"];
+        const text = Array.from({ length: 20 }, (_, i) => block(i) + after[i % after.length]).join("");
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        const written = Array.from({ length: 20 }, (_, i) => block(i).length).reduce((a, b) => a + b, 0);
+        expect(code / written).toBeLessThan(1.1);
+    } finally {
+        Marked.prototype.lexer = lexer;
+    }
+});
+
 test("incremental Markdown agrees with a fresh parse on replies made of every kind of block", () => {
     const pieces = [
         "Para one.", "Para with *em* and `code`.", "# H1", "Setext\n===", "Setext two\n---", "---",
