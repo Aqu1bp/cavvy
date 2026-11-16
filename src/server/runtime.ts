@@ -3802,9 +3802,15 @@ export class Runtime {
         if (pending?.kind === "plan") return { id: pending.toolId ?? pending.id, text: pending.plan, at: Date.now(), interactionId: pending.id };
         const stored = this.session.plans.at(-1);
         if (stored) return stored;
-        const calls = this.session.messages.flatMap((m) => (m.role === "assistant" ? toolCallsOf(m) : [])).filter((c) => c.name === "ExitPlanMode" && typeof c.input?.plan === "string");
-        const last = calls.at(-1);
-        return last && { id: last.id, text: redact(String(last.input.plan)), at: 0 };
+        // From the end: the first found is the last.
+        const messages = this.session.messages;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i]!;
+            if (m.role !== "assistant") continue;
+            const last = toolCallsOf(m).findLast((c) => c.name === "ExitPlanMode" && typeof c.input?.plan === "string");
+            if (last) return { id: last.id, text: redact(String(last.input.plan)), at: 0 };
+        }
+        return undefined;
     }
 
     /**

@@ -112,6 +112,31 @@ test("a long session's checkpoint is read in place of what its compactions clear
     expect(fromCheckpoint).toEqual(whole);
 });
 
+// One never compacted (a Claude Code session's) keeps all its messages: no checkpoint would be smaller than what it's read
+// in place of, so none is made only to be thrown away (18 ms of opening one of 100,000 items).
+test("a long session never compacted makes no checkpoint", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cli-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 2 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    const stringify = JSON.stringify;
+    let longest = 0;
+    JSON.stringify = ((...args: Parameters<typeof stringify>) => {
+        const out = stringify(...args);
+        longest = Math.max(longest, out?.length ?? 0);
+        return out;
+    }) as typeof stringify;
+    try {
+        Session.load(t.file).release();
+    } finally {
+        JSON.stringify = stringify;
+        Object.assign(checkpointing, was);
+    }
+    expect(existsSync(checkpointFile(t.file))).toBe(false);
+    expect(longest).toBeLessThan(statSync(t.file).size * 0.1);
+});
+
 // It's checked as the session heads' cache is (sessionHead): a file that's only ever appended to is the same file, with
 // the same bytes up to where it was read, if it's the same inode, at least that long, and ends there as it did then.
 test("a checkpoint of a file since changed where it was read to, cut shorter, or replaced, isn't used", () => {
