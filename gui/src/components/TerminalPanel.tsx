@@ -18,6 +18,11 @@ const TerminalScreen = lazy(() => {
     const since = performance.now();
     return import("./TerminalScreen").then((m) => (terminalScreenCame(since), m));
 });
+/**
+ * Fetched once the window is idle (App): there by the first open. Fetched only then, what was typed in the moment
+ * after the click (before it came) went to the composer, and Enter sent it as a message (measured on a Mac).
+ */
+export const preloadTerminal = () => TerminalScreen.preload();
 
 const MAX_TABS = 12;
 

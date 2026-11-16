@@ -22,7 +22,7 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
 import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
@@ -290,12 +290,13 @@ const reviewModule = () => import("./components/ReviewPane");
 const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
 
 export function App() {
-    // Settings' and the diff reader's chunks (above), once nothing more pressing is left to do after the window opened:
+    // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {
         const fetch = () => {
             void settingsModule().catch(() => undefined);
             void reviewModule().catch(() => undefined);
+            void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
             const idle = requestIdleCallback(fetch, { timeout: 4000 });
