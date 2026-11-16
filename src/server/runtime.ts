@@ -322,6 +322,17 @@ const FLUSH_MS = 24;
 
 /** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
 const HIDDEN_FLUSH_MS = 500;
+
+/**
+ * How soon an op must be out: text can wait a little (more where no window shows it), anything else hardly, and what
+ * the person waits for (a question for them, a turn starting or ending, one stopped by Esc) not at all, going with what
+ * else the same task sends.
+ */
+export function opDelay(o: SessionOp, shown: () => boolean): number {
+    if ((o.op === "state" && ("interactions" in o.patch || "status" in o.patch)) || (o.op === "turn.patch" && "status" in o.patch) || o.op === "turn") return 0;
+    if (o.op === "append" || o.op === "agent.append") return shown() ? FLUSH_MS : HIDDEN_FLUSH_MS;
+    return FLUSH_MS;
+}
 /** A tool call still under way is written to the UI log this often at most (its end at once): ops come every flush. */
 const LIVE_STEP_MS = 2000;
 
@@ -1780,8 +1791,7 @@ export class Runtime {
         }
         this.noteStep(o);
         this.outbox.push(sent ?? o);
-        // Out by when the soonest of what's waiting needs to be: text can wait a little, anything else hardly.
-        const delay = o.op === "append" || o.op === "agent.append" ? (this.engine.sessionShown(this.id) ? FLUSH_MS : HIDDEN_FLUSH_MS) : FLUSH_MS;
+        const delay = opDelay(o, () => this.engine.sessionShown(this.id));
         const due = performance.now() + delay;
         if (this.flushTimer && this.flushDue <= due) return;
         clearTimeout(this.flushTimer);
