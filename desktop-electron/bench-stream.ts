@@ -11,7 +11,7 @@
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
 // streaming fast, sampled each second (does the cost grow with the reply?).
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
@@ -60,6 +60,18 @@ async function rpcTo(port: number, token: string) {
 /** Cumulative CPU seconds of each pid (ps's TIME: user + system). */
 function cpuTimes(pids: number[]): Map<number, number> {
     const out = new Map<number, number>();
+    // Linux: /proc's clock ticks (10 ms), not ps's whole seconds.
+    if (!MAC) {
+        for (const pid of pids) {
+            try {
+                const f = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ");
+                out.set(pid, (Number(f[11]) + Number(f[12])) / 100);
+            } catch {
+                // gone
+            }
+        }
+        return out;
+    }
     const r = Bun.spawnSync(["ps", "-o", "pid=,time=", "-p", pids.join(",")]);
     for (const line of r.stdout.toString().trim().split("\n")) {
         const [pid, t] = line.trim().split(/\s+/);
