@@ -668,34 +668,52 @@ describe("per-turn snapshots", () => {
         }
     });
 
-    test("a big repository with something staged since its last commit starts no git status it would throw away", async () => {
-        const { cwd, dir } = setup({ "a.txt": `a ${crypto.randomUUID()}\n` });
-        const log = join(dirname(cwd), "git-calls"), bin = join(dirname(cwd), "bin");
+    test("a big repository with something staged since its last commit takes its first capture from git status", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n", "c/d.txt": "d\n" });
+        write(cwd, "staged.txt", "new\n");
+        write(cwd, "a.txt", "a staged\n");
+        git(cwd, ["add", "staged.txt", "a.txt"]);
+        git(cwd, ["rm", "-q", "--cached", "b.txt"]);
+        write(cwd, "c/d.txt", "d on disk\n");
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        const whole = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
+        try {
+            await snapshots.begin(1, "Look");
+            await whole.begin(1, "Look");
+            expect(snapshots.statusCount).toBe(1);
+            expect(snapshots.list()[0]!.start.tree).toBe(whole.list()[0]!.start.tree);
+        } finally {
+            await snapshots.stop();
+            await whole.stop();
+        }
+    });
+
+    test("HEAD moved while git status ran (a soft reset): the whole capture is taken", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        write(cwd, "a.txt", "a two\n");
+        git(cwd, ["commit", "-q", "-am", "Two"]);
+        write(cwd, "b.txt", "b staged\n");
+        git(cwd, ["add", "b.txt"]);
+        // A git that moves HEAD back one commit just before `git status` runs, leaving the index as it was.
+        const bin = join(dirname(cwd), "bin"), real = Bun.which("git")!;
         mkdirSync(bin);
-        writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o755 });
-        const statuses = () => (existsSync(log) ? readFileSync(log, "utf-8").split("\n").filter((l) => / status /.test(l)).length : 0);
+        writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" status "*) '${real}' reset -q --soft HEAD~1 ;; esac\nexec '${real}' "$@"\n`, { mode: 0o755 });
         const path = process.env.PATH;
         process.env.PATH = `${bin}:${path}`;
         const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
         try {
-            // Each turn stages a file: Git's index has no tree for it then, and git's list can't be used. The first capture
-            // may ask before its index has said (it's read alongside); those after know it refused.
-            write(cwd, "staged0.txt", "0\n");
-            git(cwd, ["add", "staged0.txt"]);
-            await snapshots.begin(1, "Stage a file");
-            const first = statuses();
-            for (let turn = 1; turn <= 3; turn++) {
-                if (turn > 1) await snapshots.begin(turn, "Stage another");
-                write(cwd, `staged${turn}.txt`, `${turn}\n`);
-                git(cwd, ["add", `staged${turn}.txt`]);
-                await snapshots.end();
-            }
-            expect(statuses()).toBe(first);
-            expect(snapshots.statusCount).toBe(0);
-            expect(snapshots.list()).toHaveLength(3);
+            await snapshots.begin(1, "Look");
         } finally {
             process.env.PATH = path;
+        }
+        const whole = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
+        try {
+            await whole.begin(1, "Look");
+            expect(snapshots.statusCount).toBe(0);
+            expect(snapshots.list()[0]!.start.tree).toBe(whole.list()[0]!.start.tree);
+        } finally {
             await snapshots.stop();
+            await whole.stop();
         }
     });
 
@@ -1456,6 +1474,8 @@ describe("per-turn snapshots", () => {
             ["inside the nested one", () => write(cwd, "nest/inner.txt", "inner again\n")],
             ["staged", () => { write(cwd, "k.txt", "k staged\n"); git(cwd, ["add", "k.txt"]); }],
             ["after staging", () => write(cwd, "k.txt", "k again\n")],
+            ["staged: added, removed, untracked again", () => { write(cwd, "added.txt", "new\n"); git(cwd, ["add", "added.txt"]); git(cwd, ["rm", "-q", "--cached", "h/i/j.txt", "e.txt", "run.sh"]); }],
+            ["staged: back with another mode, and reverted on disk", () => { chmodSync(join(cwd, "run.sh"), 0o644); git(cwd, ["add", "run.sh"]); write(cwd, "added.txt", "new, then not\n"); git(cwd, ["add", "added.txt"]); write(cwd, "added.txt", "new\n"); }],
             ["git status rewrites the index", () => { utimesSync(join(cwd, "h2/i/j.txt"), new Date(), new Date()); git(cwd, ["status", "--porcelain"]); }],
             ["committed", () => git(cwd, ["commit", "-q", "-m", "Two"])],
             ["after the commit", () => write(cwd, "a/d.txt", "d at last\n")],
@@ -1491,9 +1511,9 @@ describe("per-turn snapshots", () => {
         await snapshots.end();
         // The rest looked only at what changed. Staged with no tree Git worked out for it, Git's index is looked at
         // whole; rewritten as it was (git status), or committed (both trees there to compare), it isn't.
-        expect(whole).toEqual(["staged"]);
-        // Staged, Git has no tree worked out for its index until the commit: there's none to start from till then.
-        expect(notFromStatus).toEqual(["staged", "after staging", "git status rewrites the index"]);
+        expect(whole).toEqual(["staged", "staged: added, removed, untracked again", "staged: back with another mode, and reverted on disk"]);
+        // Staged, Git has no tree worked out for its index until the commit: HEAD's, with what's staged, is started from.
+        expect(notFromStatus).toEqual([]);
         await snapshots.stop();
     }, 60_000);
 
