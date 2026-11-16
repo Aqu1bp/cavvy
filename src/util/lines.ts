@@ -70,13 +70,15 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
 const TAIL_CHUNK = 64 * 1024;
 
 /**
- * Calls `fn` with each line of `file`, last first (an empty last line after a final newline isn't one), until `fn`
- * returns false: what's before is never read. For the end of a file that only grows (a history kept for good).
+ * Calls `fn` with each line of `file`, last first (an empty last line after a final newline isn't one), and where it
+ * starts in the file, until `fn` returns false: what's before is never read. For the end of a file that only grows (a
+ * history kept for good). `file` may be a descriptor open for reading: it's left open. `before`: from there back, not
+ * from the file's end (where a line starts: what's after is never read).
  */
-export function linesFromEnd(file: string, fn: (line: string) => boolean | void, chunkSize = TAIL_CHUNK) {
-    const fd = openSync(file, "r");
+export function linesFromEnd(file: string | number, fn: (line: string, at: number) => boolean | void, chunkSize = TAIL_CHUNK, before?: number) {
+    const fd = typeof file === "number" ? file : openSync(file, "r");
     try {
-        let pos = fstatSync(fd).size;
+        let pos = before ?? fstatSync(fd).size;
         // The start of a line whose beginning is in a chunk not read yet.
         let rest: Buffer = Buffer.alloc(0);
         let first = true;
@@ -92,13 +94,14 @@ export function linesFromEnd(file: string, fn: (line: string) => boolean | void,
             let end = buf.length;
             // Each whole line in it (a newline never falls inside a character's bytes), last first.
             for (let nl = buf.lastIndexOf(10, end - 1); nl >= 0; nl = end > 0 ? buf.lastIndexOf(10, end - 1) : -1) {
-                if (fn(buf.subarray(nl + 1, end).toString("utf-8")) === false) return;
+                // The chunk starts at `pos` (what's left of the one after follows it).
+                if (fn(buf.subarray(nl + 1, end).toString("utf-8"), pos + nl + 1) === false) return;
                 end = nl;
             }
             rest = Buffer.from(buf.subarray(0, end));
         }
-        if (rest.length || !first) fn(rest.toString("utf-8"));
+        if (rest.length || !first) fn(rest.toString("utf-8"), 0);
     } finally {
-        closeSync(fd);
+        if (typeof file !== "number") closeSync(fd);
     }
 }
