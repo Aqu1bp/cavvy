@@ -5327,7 +5327,21 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Background shells
 
-    private syncShells() {
+    /** What the 2 s look at the background last saw: the shells' and delegated tasks' states (see syncShells). */
+    private shellsSeen?: string;
+
+    /**
+     * The shells as the views show them, and the background list. `tick`: the 2 s look while one runs, which only has to
+     * catch what nothing announces (a shell ending, a monitor's events): with none of that changed, it stops there.
+     * In full each time, it was 12% of the server's CPU with 150 sessions each running a command (profiled).
+     */
+    private syncShells(tick = false) {
+        const seen =
+            [...this.toolState.shells.values()].map((s) => `${s.id}:${s.exitCode}:${s.monitor ? `${s.monitor.events}:${s.monitor.expiresAt}` : ""}`).join(",") +
+            "|" +
+            (this.agent?.delegatedTasks ?? []).map((t) => `${t.id}:${t.status}:${t.delivered}`).join(",");
+        if (tick && seen === this.shellsSeen) return;
+        this.shellsSeen = seen;
         const shells = [...this.toolState.shells.values()].map((s) => ({
             id: s.id,
             command: redact(s.command).slice(0, 300),
@@ -5340,7 +5354,7 @@ export class Runtime {
         if (!same) this.setState({ shells });
         this.syncBackground();
         const running = shells.some((s) => s.running);
-        if (running && !this.shellTimer) this.shellTimer = setInterval(() => this.syncShells(), 2000);
+        if (running && !this.shellTimer) this.shellTimer = setInterval(() => this.syncShells(true), 2000);
         else if (!running && this.shellTimer) {
             clearInterval(this.shellTimer);
             this.shellTimer = undefined;
