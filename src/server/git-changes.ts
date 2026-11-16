@@ -37,6 +37,8 @@ const MAX_BASES = 300;
 const MAX_REPLY_LINES = 20_000;
 /** File contents read for one reply's diffs. */
 const MAX_REPLY_BYTES = 64 * 1024 * 1024;
+/** Working files read at once while a reply's diffs are made (each at most MAX_DIFF_INPUT). */
+const READ_AHEAD = 16;
 /** Submodules whose checked-out commit is looked up (each is a git call). */
 const MAX_SUBMODULES = 20;
 const GIT_TIMEOUT_MS = 10_000;
@@ -1122,9 +1124,24 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         if (e instanceof RpcError && e.code === "timeout") return new Map<string, Buffer>();
         throw e;
     });
+    // Working files are read a few ahead of the one being diffed: one at a time, 300 small files took ~90 ms.
+    // A read asked ahead had at least the budget left now, so it's held to what's left when its turn comes.
+    const reads = new Map<Change, Promise<Side | null>>();
+    const readAhead = (from: number) => {
+        for (let j = from; j < Math.min(listed.length, from + READ_AHEAD); j++) {
+            const c = listed[j]!;
+            if (reads.has(c) || c.note || c.kind || c.change === "deleted" || c.indexed) continue;
+            const r = current(c, wt, budget);
+            // One left unread (past the deadline) mustn't fail unhandled; the one read rethrows.
+            r.catch(() => {});
+            reads.set(c, r);
+        }
+    };
     let lines = 0;
     const files: GitFileDiff[] = [];
-    for (const c of listed) {
+    for (let i = 0; i < listed.length; i++) {
+        const c = listed[i]!;
+        readAhead(i);
         const path = shown(c.path);
         const base: GitFileDiff = { path, status: statusOf(c), change: c.change, added: 0, removed: 0, hunks: [] };
         if (c.from) base.from = shown(c.from);
@@ -1154,7 +1171,9 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
             continue;
         }
         const before = c.old ? oldSide(c.old, olds) : null;
-        const after = c.change === "deleted" ? null : c.indexed ? oldSide(c.now!, olds) : await current(c, wt, budget);
+        let after = c.change === "deleted" ? null : c.indexed ? oldSide(c.now!, olds) : await (reads.get(c) ?? current(c, wt, budget));
+        reads.delete(c);
+        if (after && "bytes" in after && !("link" in after) && after.bytes > budget) after = { later: true };
         if (after && "bytes" in after) budget -= after.bytes;
         if (after && "link" in after) base.kind = "link";
         if ((before && "note" in before) || (after && "note" in after)) {
