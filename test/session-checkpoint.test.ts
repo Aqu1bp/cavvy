@@ -194,6 +194,18 @@ test("a session opened from a digest of its messages and written to since reads 
         again.release();
         const after = bothWays(t.file);
         expect(after.fromCheckpoint).toEqual(after.whole);
+        // A message taken out, then more added after it: read whole, each once.
+        Session.load(t.file).release();
+        const steered = Session.load(t.file);
+        expect(steered.historyDigest).toBeDefined();
+        steered.push(prompt("steer"));
+        steered.withdraw(steered.messageCount - 1);
+        work(steered, 2);
+        const count = steered.messageCount;
+        steered.release();
+        const withdrawn = bothWays(t.file);
+        expect(withdrawn.fromCheckpoint).toEqual(withdrawn.whole);
+        expect(withdrawn.whole.messages as unknown[]).toHaveLength(count);
     } finally {
         Object.assign(checkpointing, was);
     }
@@ -233,6 +245,72 @@ test("a checkpoint of a file since changed where it was read to, cut shorter, or
         rmSync(file);
         renameSync(copy, file);
         expect(title(file)).toBe("Title C");
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// Its messages read from the file on demand are the file's: a tool call it ends with is answered once, by the session
+// that was opened (repairTail), not again by the read; and a read that fails leaves the session as it was.
+test("a session opened from a digest answers a dangling tool call once, and keeps its messages if reading them fails", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-dangling-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 2 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        Session.load(t.file).release();
+        const running = Session.load(t.file);
+        expect(running.historyDigest).toBeDefined();
+        running.push(prompt("go"));
+        running.push(reply("calling", "call-x"));
+        // A peer looks in mid-tool, opened from the digest: its repair is in memory only, so it reads them.
+        const p = Session.peek(t.file);
+        const answers = (m: Message[]) => m.filter((x) => x.content.some((c) => c.type === "tool_result" && (c as { toolCallId: string }).toolCallId === "call-x")).length;
+        expect(answers(p.messages)).toBe(1);
+        expect(p.messageCount).toBe(running.messageCount + 1);
+        running.push(result("call-x"));
+        running.push(reply("done"));
+        running.release();
+
+        const s = Session.peek(t.file);
+        expect(s.historyDigest).toBeDefined();
+        const count = s.messageCount;
+        renameSync(t.file, t.file + ".aside");
+        try {
+            expect(() => s.messages).toThrow();
+        } finally {
+            renameSync(t.file + ".aside", t.file);
+        }
+        expect(s.historyDigest).toBeDefined();
+        expect(s.messageCount).toBe(count);
+        expect(s.messages.length).toBe(count);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// Its messages' size is set against the file's in the same unit: text that's more bytes than characters still digests.
+test("a long session in a language of many bytes per character is opened from a digest too", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cjk-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        const s = Session.create(cwd);
+        const text = "日本語のテキストです。".repeat(40);
+        for (let i = 0; i < 400; i++) {
+            s.push(prompt(`${i} ${text}`));
+            s.push(reply(`${i} ${text}`));
+        }
+        const file = s.file;
+        s.release();
+        Session.load(file).release();
+        const opened = Session.peek(file);
+        expect(opened.historyDigest).toBeDefined();
+        expect(statSync(checkpointFile(file)).size).toBeLessThan(statSync(file).size * 0.1);
+        const { fromCheckpoint, whole } = bothWays(file);
+        expect(fromCheckpoint).toEqual(whole);
     } finally {
         Object.assign(checkpointing, was);
     }

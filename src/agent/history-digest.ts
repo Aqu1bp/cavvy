@@ -96,14 +96,17 @@ export function digestOf(messages: readonly Message[]): MessagesDigest {
     return { count: messages.length, from, tail: messages.slice(from), before: toolStateOf(messages.slice(0, from)), ...(plan ? { plan } : {}), checkpoint: lastCheckpointOf(messages), ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}) };
 }
 
-/** The digest of its messages and `m` after them: as digestOf them all makes. */
+/** The digest of its messages and `m` after them: as digestOf them all makes. `d` is used up (its tail is this one's). */
 export function digestWith(d: MessagesDigest, m: Message): MessagesDigest {
     const plan = lastPlanCall([m]) ?? d.plan;
     const checkpoint = Math.max(d.checkpoint, lastCheckpointOf([m]));
     const latestCheckpoint = latestCheckpointOf([m]) ?? d.latestCheckpoint;
     const marks = { ...(plan ? { plan } : {}), checkpoint, ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}) };
     if (isPromptMessage(m)) return { count: d.count + 1, from: d.count, tail: [m], before: toolStateOf(d.tail, d.before), ...marks };
-    return { ...d, count: d.count + 1, tail: [...d.tail, m], ...marks };
+    // Its tail grows in place (copied at each message, a long turn read after a digest cost the square of its length):
+    // the digest it was made from is the session's, replaced by this one.
+    d.tail.push(m);
+    return { ...d, count: d.count + 1, ...marks };
 }
 
 /** The tool state its messages leave (toolStateOf them all). */

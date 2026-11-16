@@ -302,9 +302,11 @@ export class Session {
     private readMessages() {
         const count = this.digest?.count;
         const pushed = this.pushedUnread;
+        // As the file has them: no repair of its own (this session made its own when it was read, or is making it).
+        // Read first: a read that fails leaves the session as it was.
+        const read = Session.read(this.file, false, true, false).loadedMessages;
         this.digest = undefined;
         this.pushedUnread = [];
-        const read = Session.read(this.file, false, true).loadedMessages;
         if (read.length === count && pushed.length) read.splice(read.length - pushed.length, pushed.length, ...pushed);
         this.loadedMessages = read;
     }
@@ -1018,8 +1020,8 @@ export class Session {
         return lines;
     }
 
-    /** `whole`: all of it, not from a checkpoint. */
-    private static read(file: string, persist = true, whole = false): Session {
+    /** `whole`: all of it, not from a checkpoint. `repair`: answer a tool call left without results (repairTail). */
+    private static read(file: string, persist = true, whole = false, repair = true): Session {
         const writtenAt = statSync(file).mtimeMs;
         // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
         const cp = whole ? undefined : readCheckpoint(file);
@@ -1029,9 +1031,12 @@ export class Session {
         const lineSizes = new WeakMap<Line, number>();
         const kept = new WeakMap<Message, number>();
         let empty = !cp;
+        // Characters read, to set against bytes (a line's length is in characters: non-ASCII text is more bytes).
+        let chars = 0;
         // A line at a time (lib eachLine): a session of any size, never all of it as one string.
         const { endsWithNewline, end } = eachLine(file, (raw) => {
             empty = false;
+            chars += raw.length + 1;
             if (!raw.trim()) return;
             // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
             if (raw.startsWith(MSG_LINE)) {
@@ -1049,7 +1054,7 @@ export class Session {
         }, undefined, cp?.offset ?? 0);
         if (!meta) throw new Error(`Not a session file: ${file}`);
         // Read from a digest of its messages, and some changed since other than by adding one: all of it, as without one.
-        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true);
+        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true, repair);
         const s = new Session(meta, { file, persist });
         s.started = true;
         if (cp) s.restoreState(cp.state);
@@ -1172,13 +1177,14 @@ export class Session {
         // has all of them, and making that checkpoint to throw it away was 18 ms of opening one of 100,000 items.
         // Where they are most of it, a digest of them in their place (toState): opened from it, they're read only when
         // they're asked for.
-        if (!s.digest && s.loadedMessages.reduce((n, m) => n + (kept.get(m) ?? 0), 0) * 0.9 > end * checkpointing.most) s.digestible = true;
+        const bytesPerChar = chars ? (end - (cp?.offset ?? 0)) / chars : 1;
+        if (!s.digest && s.loadedMessages.reduce((n, m) => n + (kept.get(m) ?? 0), 0) * bytesPerChar * 0.9 > end * checkpointing.most) s.digestible = true;
         if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState(s.digestible));
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
         for (const p of s.parked.filter((p) => s.backends.get(p.provider)?.id === p.session.id)) s.dropParked(p);
-        repairTail(s);
+        if (repair) repairTail(s);
         return s;
     }
 }

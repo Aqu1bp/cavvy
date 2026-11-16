@@ -763,7 +763,11 @@ export class Runtime {
         // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
         // Its turns are built again then (the store has it running).
         const started = this.ui.lastStarted ? this.ui.turns.get(this.ui.lastStarted) : undefined;
-        const since = opts.resumed ? session.messagesFrom(started?.index ?? 0) : undefined;
+        // Its messages only where a turn of this segment started and never ended (cutOffPrompt), and none was prompted
+        // after it (a digest's tail starts at its last prompt): otherwise there's nothing to look at, and they're not read.
+        const open = started && started.seg === this.segment && started.end === undefined && started.status === undefined;
+        const digest = session.historyDigest;
+        const since = opts.resumed && open && !(digest && started.index < digest.from) ? session.messagesFrom(started.index) : undefined;
         if (since && cutOffPrompt(this.ui, this.segment, since.messages, session.notices, since.at) !== undefined) {
             session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
             if (stored) store!.close();

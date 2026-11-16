@@ -6,7 +6,7 @@
 // test.failing: a target the app doesn't meet yet, with what will meet it. It fails once it's met: make it a test then.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { heapStats } from "bun:jsc";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -18,6 +18,8 @@ const { writeThread } = await import("../scripts/perf-thread");
 // work shown folded (the default: gui/src/state/app.ts opening).
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
 const { findKeeping } = await import("../src/server/runtime");
+const { Session, checkpointing } = await import("../src/agent/session");
+const { uiLogFile } = await import("../src/server/history");
 // What Find searches, let go of soon after it was used (as it is a while after: runtime.ts findKeeping).
 const keptFor = findKeeping.ms;
 findKeeping.ms = 300;
@@ -216,6 +218,40 @@ describe("a Claude Code session", () => {
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
         expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
+    });
+    // Imported (src/server/cli-import.ts writes its turns done, never started): nothing was left running, so its
+    // messages aren't read to see whether a turn was cut off. They were, at every open.
+    test("opening an imported one again doesn't read its messages", async () => {
+        const cwd = join(tempDir("cavvy-perf-size-imported-"), "project");
+        mkdirSync(cwd, { recursive: true });
+        const t = writeThread({ cwd, items: SMALL, kind: "cli", seed: 9 });
+        const log = uiLogFile(t.file, t.id);
+        writeFileSync(log, readFileSync(log, "utf8").split("\n").filter((l) => !l.startsWith('{"t":"turn"') || JSON.parse(l).status !== undefined).join("\n"));
+        // Read from a checkpoint (one this short has none).
+        const was = checkpointing.after;
+        checkpointing.after = 1;
+        try {
+            await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+            await ok("session.close", { id: t.id });
+        } finally {
+            checkpointing.after = was;
+        }
+        const store = join(dirname(t.file), "turns", `${t.id}.json`);
+        for (let i = 0; i < 200 && !existsSync(store); i++) await Bun.sleep(10);
+        const proto = Session.prototype as unknown as { readMessages(): void };
+        const read = proto.readMessages;
+        let reads = 0;
+        proto.readMessages = function (this: unknown) {
+            reads++;
+            return read.call(this);
+        };
+        try {
+            await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+            await ok("session.close", { id: t.id });
+        } finally {
+            proto.readMessages = read;
+        }
+        expect(reads).toBe(0);
     });
     // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
     test("open, the server keeps what's on screen", () => {
