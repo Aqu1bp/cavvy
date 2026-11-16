@@ -1913,33 +1913,9 @@ export function heldSessionFolders(): string[] {
 export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number; capped?: () => void } = {}): SessionSummary[] {
     const root = paths.projectsDir();
     if (!existsSync(root)) return [];
-    const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
-    let dirs: string[] = [];
-    try {
-        dirs = readdirSync(root);
-    } catch {
-        return [];
-    }
-    for (const d of dirs) {
-        const dir = join(root, d);
-        let names: string[];
-        try {
-            names = readdirSync(dir);
-        } catch {
-            continue;
-        }
-        for (const f of names) {
-            if (!f.endsWith(".jsonl")) continue;
-            const file = join(dir, f);
-            try {
-                const st = statSync(file);
-                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, createdAt: st.birthtimeMs || st.ctimeMs });
-            } catch {
-                // vanished or unreadable
-            }
-        }
-    }
-    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+    const files = sessionFiles(root);
+    if (!files) return [];
+    const out = newestByWork(files.slice(), limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
         const s: SessionSummary = {
@@ -1956,6 +1932,134 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
     }, o.maxRead, o.capped);
     saveSessionHeads();
     return out;
+}
+
+type ListedFile = { f: string; file: string; mtimeMs: number; size: number; createdAt: number };
+/** Every session file as last listed whole, newest first, with each project folder's mtime then and when. */
+let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, number>; at: number } | undefined;
+/**
+ * Listed whole more than this long ago, it's listed whole again after the call, for the next. Until then, only the
+ * newest RELISTED_RECENT files are looked at again (what's being written to is among them; a file put in or taken out
+ * changes its folder's mtime). Statted whole at each call, 10,000 sessions held the server 22-34 ms each time a window
+ * opened or the sidebar was listed (measured): as long as history grows.
+ */
+const RELIST_MS = 1000;
+const RELISTED_RECENT = 64;
+let relistTimer: ReturnType<typeof setTimeout> | undefined;
+
+const folderTime = (dir: string) => {
+    try {
+        return statSync(dir).mtimeMs;
+    } catch {
+        return -1;
+    }
+};
+
+/** The session files under `root`, newest first (undefined: it couldn't be read). */
+function sessionFiles(root: string): ListedFile[] | undefined {
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return undefined;
+    }
+    const was = listedFiles;
+    if (was && was.root === root && dirs.length === was.folders.size && dirs.every((d) => was.folders.get(d) === folderTime(join(root, d)))) {
+        if (performance.now() - was.at >= RELIST_MS && !relistTimer) {
+            relistStarted = performance.now();
+            relistTimer = setTimeout(() => {
+                void listWholeLater(root).finally(() => (relistTimer = undefined));
+            }, 0);
+            relistTimer.unref?.();
+        }
+        let changed = false;
+        const files = was.files.map((x, i): ListedFile | undefined => {
+            if (i >= RELISTED_RECENT) return x;
+            try {
+                const st = statSync(x.file);
+                if (st.mtimeMs === x.mtimeMs && st.size === x.size) return x;
+                changed = true;
+                return st.isFile() ? { ...x, mtimeMs: st.mtimeMs, size: st.size } : undefined;
+            } catch {
+                changed = true;
+                return undefined;
+            }
+        });
+        if (changed) listedFiles = { ...was, files: files.filter((x): x is ListedFile => x !== undefined).sort((a, b) => b.mtimeMs - a.mtimeMs) };
+        return listedFiles!.files;
+    }
+    return listWhole(root, dirs);
+}
+
+/** As listWhole, letting the server's other work run every RELIST_SLICE files (what's listed is the same). */
+const RELIST_SLICE = 500;
+async function listWholeLater(root: string): Promise<void> {
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return;
+    }
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    let since = 0;
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            if (++since >= RELIST_SLICE) {
+                since = 0;
+                await new Promise((r) => setImmediate(r));
+            }
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // Listed whole meanwhile (a folder changed, say): that's the newer.
+    if (listedFiles && listedFiles.root === root && listedFiles.at > relistStarted) return;
+    listedFiles = { root, files, folders, at: performance.now() };
+}
+let relistStarted = 0;
+
+function listWhole(root: string, dirs: string[]): ListedFile[] {
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    listedFiles = { root, files, folders, at: performance.now() };
+    return files;
 }
 
 /** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */
