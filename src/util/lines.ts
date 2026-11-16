@@ -79,28 +79,31 @@ export function linesFromEnd(file: string | number, fn: (line: string, at: numbe
     const fd = typeof file === "number" ? file : openSync(file, "r");
     try {
         let pos = before ?? fstatSync(fd).size;
-        // The start of a line whose beginning is in a chunk not read yet.
-        let rest: Buffer = Buffer.alloc(0);
+        // What's been read of a line whose beginning is in a chunk not read yet, last read first: joined once its
+        // beginning is found (joined at each chunk, a long line cost the square of its length).
+        let tail: Buffer[] = [];
         let first = true;
         while (pos > 0) {
             const n = Math.min(chunkSize, pos);
             pos -= n;
-            const b = Buffer.allocUnsafe(n);
+            let b = Buffer.allocUnsafe(n);
             readSync(fd, b, 0, n, pos);
-            let buf = rest.length ? Buffer.concat([b, rest]) : b;
             // A final newline ends the last line.
-            if (first && buf.length && buf[buf.length - 1] === 10) buf = buf.subarray(0, buf.length - 1);
+            if (first && b[b.length - 1] === 10) b = b.subarray(0, b.length - 1);
             first = false;
-            let end = buf.length;
-            // Each whole line in it (a newline never falls inside a character's bytes), last first.
-            for (let nl = buf.lastIndexOf(10, end - 1); nl >= 0; nl = end > 0 ? buf.lastIndexOf(10, end - 1) : -1) {
-                // The chunk starts at `pos` (what's left of the one after follows it).
-                if (fn(buf.subarray(nl + 1, end).toString("utf-8"), pos + nl + 1) === false) return;
+            let end = b.length;
+            // Each line that ends in it (a newline never falls inside a character's bytes), last first.
+            for (let nl = end > 0 ? b.lastIndexOf(10, end - 1) : -1; nl >= 0; nl = end > 0 ? b.lastIndexOf(10, end - 1) : -1) {
+                const piece = b.subarray(nl + 1, end);
+                const line = tail.length ? Buffer.concat([piece, ...tail.reverse()]) : piece;
+                tail = [];
+                // The chunk starts at `pos`.
+                if (fn(line.toString("utf-8"), pos + nl + 1) === false) return;
                 end = nl;
             }
-            rest = Buffer.from(buf.subarray(0, end));
+            if (end > 0) tail.push(b.subarray(0, end));
         }
-        if (rest.length || !first) fn(rest.toString("utf-8"), 0);
+        if (tail.length || !first) fn(Buffer.concat(tail.reverse()).toString("utf-8"), 0);
     } finally {
         if (typeof file !== "number") closeSync(fd);
     }

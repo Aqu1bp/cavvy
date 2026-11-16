@@ -177,8 +177,9 @@ export class TurnStore {
         let end = 0;
         try {
             // One of an older version is a single line of JSON: told by its first bytes, not read back from its end.
-            const b = Buffer.alloc(5);
-            if (readSync(fd, b, 0, 5, 0) === 5 && b.toString("latin1") === '{"v":') throw new Error("Another version.");
+            const b = Buffer.alloc(12);
+            const v = /^\{"v":(\d+)[,}]/.exec(b.toString("latin1", 0, readSync(fd, b, 0, 12, 0)));
+            if (v && Number(v[1]) !== VERSION) throw new Error("Another version.");
             linesFromEnd(fd, (line, at) => {
                 if (!meta) {
                     const m = JSON.parse(line) as Meta;

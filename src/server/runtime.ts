@@ -314,6 +314,8 @@ const EXTRA_BUILT = 50;
  * opens with at most (gui/src/state/app.ts OPEN_TURNS); the rest as they're asked for (readStored). (Tests set it low.)
  */
 export const storedFirst = { turns: 100 };
+/** What of the first prompt the index keeps: titles take 120 characters of it, and every open reads it. */
+const FIRST_KEPT = 4000;
 
 /**
  * How much of what was last sent each session keeps for a window whose connection dropped (Runtime.resume), about: past
@@ -894,8 +896,8 @@ export class Runtime {
 
     /** The first prompt, for sessions without a title. */
     firstPrompt(): string | undefined {
-        // Its first turns not read from its store yet: the store says (as this said when it was written).
-        if (this.unread && this.storedFirst !== undefined) return this.storedFirst;
+        // Its first turns not read from its store (yet, or ever: its index couldn't be read): the store says.
+        if (this.storedFirst !== undefined) return this.storedFirst;
         const text = this.view.turns.find((t) => t.prompt)?.prompt?.text;
         return text === undefined ? undefined : reviewGist(text);
     }
@@ -949,7 +951,7 @@ export class Runtime {
             got = this.store!.readEarlier(count);
         } catch {
             this.unread = undefined;
-            throw new RpcError("This session's earlier turns couldn't be read. Open it again to see them.", "damaged");
+            throw new RpcError("Couldn't load earlier turns.", "damaged");
         }
         const turns = got.heads.map((x) => this.storedTurn(x));
         this.view.turns.splice(0, 0, ...turns);
@@ -1230,7 +1232,7 @@ export class Runtime {
             // Mostly versions since replaced: without them.
             const moved = await this.store.compact([...heads, ...agents]);
             if (moved) for (const x of [...heads, ...agents]) x.at = moved.get(x.at)!;
-            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState(), logs, this.firstPrompt());
+            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState(), logs, this.firstPrompt()?.slice(0, FIRST_KEPT));
         } catch {
             // Not kept: it's built from the logs next time, as before there was a store.
             this.store.forget();

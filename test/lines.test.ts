@@ -55,6 +55,15 @@ test("from the end: the same lines, last first, whatever the chunks; stopping re
             expect([out, chunk, text]).toEqual([split(text).reverse(), chunk, text]);
         }
     }
+    // A line over many chunks (a long prompt) is joined once: as fast per byte as many short lines.
+    const long = join(dir, "long");
+    writeFileSync(long, "head\n" + "y".repeat(16 << 20) + "\ntail\n");
+    const t0 = performance.now();
+    const lines: number[] = [];
+    linesFromEnd(long, (l) => void lines.push(l.length), 16 * 1024);
+    expect(lines).toEqual([4, 16 << 20, 4]);
+    // 16 MB joined at each 16 KB chunk took 3.3 s; once, 20 ms.
+    expect(performance.now() - t0).toBeLessThan(1000);
     // Stopped after two: the rest isn't read (a chunk at a time from the end).
     const big = join(dir, "big");
     writeFileSync(big, Array.from({ length: 10_000 }, (_, i) => `line ${i}`).join("\n") + "\n");

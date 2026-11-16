@@ -385,6 +385,11 @@ test("a store not written whole, or of another version, isn't read", async () =>
     store.close();
     const read = TurnStore.of(log, "s", [log]).read();
     expect(read?.heads).toHaveLength(1);
+    // One with no turns left (rewound to its first prompt) starts with its details, of this version: read.
+    const empty = TurnStore.of(log, "s", [log]);
+    await empty.writeIndex([], [], 3, { state: {}, created: true });
+    empty.close();
+    expect(TurnStore.of(log, "s", [log]).read()).toMatchObject({ heads: [], agents: [], ids: 3 });
     // The log changed since: nothing.
     appendFileSync(log, '{"t":"title","title":"x"}\n');
     expect(TurnStore.of(log, "s", [log]).read()).toBeUndefined();
