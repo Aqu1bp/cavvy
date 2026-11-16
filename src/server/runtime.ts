@@ -123,7 +123,7 @@ import type {
     StoppedTask,
 } from "./protocol";
 import type { PeerBlock, SessionFindMatch } from "./protocol";
-import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
+import { applyOp, coalesce, findBlock, findTurn, lastProgress, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
@@ -1839,7 +1839,7 @@ export class Runtime {
         // Into the log as it's shown (while it's being closed too, until the log is let go of).
         this.syncSteps();
         if (!this.outbox.length || this.closed) return;
-        const ops = coalesce(this.outbox);
+        const ops = coalesce(this.outbox).map(lastProgress);
         this.outbox = [];
         this.batch++;
         this.engine.sendOps(this.id, this.batch, ops);

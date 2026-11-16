@@ -267,3 +267,15 @@ export function coalesce(ops: SessionOp[]): SessionOp[] {
 export function isTool(b: Block | undefined): b is ToolBlock {
     return b?.t === "tool";
 }
+
+/**
+ * A running call's progress as the windows keep it: its last PROGRESS_LIMIT characters (timeline.ts applyOp), the same
+ * whatever came before them, so only those are sent. Sent whole, 50 MB of output was 5.6 MB to each window, in pieces
+ * of up to 612 KB that took it 22-37 ms each to read (headless). Cut after it's redacted: never through a secret.
+ */
+export function lastProgress(op: SessionOp): SessionOp {
+    // One more than is kept: what it's appended to is then cut where the whole would have been (tail: at a line).
+    if ((op.op === "append" || op.op === "agent.append") && op.field === "progress" && op.text.length > PROGRESS_LIMIT + 1) return { ...op, text: op.text.slice(-(PROGRESS_LIMIT + 1)) };
+    return op;
+}
+
