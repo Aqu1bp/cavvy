@@ -91,10 +91,15 @@ test("actual Shiki worker produces HTML and diff lines while the UI event loop r
         expect(response.error).toBeUndefined();
         expect(response.result).toContain("value1999");
         expect(response.result).toContain("<span");
+        // Colored by classes the spans share, not a style on each (each is parsed and kept for its span alone).
+        expect(response.result).toContain('class="sk-keyword"');
+        expect(response.result).not.toContain("style=");
         expect(ticks).toBeGreaterThan(0);
         console.log(JSON.stringify({ highlightChars: code.length, elapsedMs: performance.now() - start, uiTicks: ticks }));
         const lines = await send("lines", "const x = 1;\nconst y = 2;");
         expect(lines.result).toHaveLength(2);
+        expect(lines.result.join("")).toContain('class="sk-keyword"');
+        expect(lines.result.join("")).not.toContain("style=");
     } finally { worker.terminate(); }
 }, 15_000);
 
