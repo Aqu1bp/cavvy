@@ -142,6 +142,43 @@ test("incremental Markdown agrees with a fresh parse on replies made of every ki
     }
 });
 
+test("a long paragraph written a word at a time renders as a fresh parse would, whatever its inline marks", () => {
+    // What a line of a reply or of reasoning holds: a paragraph's words before the last space are rendered once, so
+    // nothing written after may change how they read.
+    const words = [
+        "word", "another", "x", "1", "2024", "a.b", "end.", "(aside)", "—", "naïve", "日本語",
+        "`code`", "``co`de``", "`a b`", "`open", "```", "``", "**bold**", "**two words**", "*em*", "_em_", "__strong__", "*", "**", "_", "__",
+        "a*b*c", "snake_case_name", "_init_", "**open", "*open", "close**", "close*", "~~gone~~", "~single~", "~", "~~",
+        "src/lib/markdown.ts:42", "./x.ts", "~/notes.md", "missing/file.ts", "https://example.com/a_b_c", "www.example.com", "me@example.com",
+        "[link](https://example.com)", "[text]", "]", "[", "<b>", "<", ">", "a<b", "\\*", "\\", "&amp;", "&", "|", "a|b", "#", "1.", "-", "+",
+        "!", "![img](x.png)", "\"quoted\"", "'single'",
+    ];
+    // Marks alone, densely: code spans of every length against each other, and emphasis of every kind.
+    const marks = ["`", "``", "```", "`a", "a`", "``a", "a``", "`a b`", "*", "**", "***", "_", "__", "*a", "a*", "**a", "a**", "_a", "a_", "a", "b", "a*b", "a_b"];
+    const known = new Set(["src/lib/markdown.ts", "./x.ts"]);
+    const look = (p: string) => (known.has(p) ? `/repo/${p.replace(/^\.\//, "")}` : p.startsWith("missing/") ? null : undefined);
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)]!;
+    for (let n = 0; n < 400; n++) {
+        const line = () => {
+            const first = pick(["Then", "The", "Now", "**Note:**", "*Aside*", "`x`", "_why_", "2 things", "Ok"]);
+            const from = n % 2 ? marks : words;
+            return [first, ...Array.from({ length: 4 + Math.floor(rand() * 30) }, () => pick(from))].join(pick([" ", " ", " ", "  "]));
+        };
+        const sample = Array.from({ length: 1 + Math.floor(rand() * 3) }, line).join(pick(["\n\n", "\n\n", "\n"])) + pick(["", " ", "  ", "*", "`"]);
+        for (const l of [undefined, look]) {
+            const incremental = new MarkdownRenderer();
+            const fresh = (text: string, streaming = true) => new MarkdownRenderer().segments(text, streaming, l).map((s) => (s.kind === "html" ? s.html : s.code));
+            for (let i = 0; i <= sample.length; i += 1 + Math.floor(rand() * 3)) {
+                const text = sample.slice(0, i);
+                expect({ text, seen: incremental.segments(text, true, l).map((s) => (s.kind === "html" ? s.html : s.code)) }).toEqual({ text, seen: fresh(text) });
+            }
+            expect({ sample, seen: incremental.segments(sample, false, l).map((s) => (s.kind === "html" ? s.html : s.code)) }).toEqual({ sample, seen: fresh(sample, false) });
+        }
+    }
+}, 60_000);
+
 /** What a reader would see of the non-code blocks: text with the tags taken out. */
 const prose = (r: MarkdownRenderer, text: string) => r.segments(text, true).filter((s) => s.kind === "html").map((s) => (s as { html: string }).html.replace(/<code>[^<]*<\/code>/g, "").replace(/<[^>]+>/g, "")).join("\n");
 

@@ -5,7 +5,7 @@ import { withinBudget } from "./helpers/perf-budget";
 import { MarkdownRenderer } from "../gui/src/lib/markdown";
 import { offStep, onStep } from "../gui/src/lib/stream-clock";
 import { STREAM_DEMO } from "../scripts/mock-llm";
-import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
+import { Lexer, Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
 test("a turn in a real server stays within its budgets", async () => {
     const fixture = fileURLToPath(new URL("./fixtures/perf-server.ts", import.meta.url));
@@ -18,6 +18,9 @@ test("a streaming reply's Markdown is parsed about once, not again with each chu
     let parsed = 0;
     const lexer = Marked.prototype.lexer;
     Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { parsed += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    // A line's words are parsed inline, on their own (parseInline): counted too.
+    const lexInline = (Lexer as any).lexInline;
+    (Lexer as any).lexInline = (src: string, options: unknown) => { parsed += src.length; return lexInline(src, options); };
     try {
         const text = Array.from({ length: 4 }, () => STREAM_DEMO).join("\n\n");
         const renderer = new MarkdownRenderer();
@@ -27,6 +30,7 @@ test("a streaming reply's Markdown is parsed about once, not again with each chu
         withinBudget("markdownParsedPerCharacter", Math.round((parsed / text.length) * 10) / 10);
     } finally {
         Marked.prototype.lexer = lexer;
+        (Lexer as any).lexInline = lexInline;
     }
 });
 
