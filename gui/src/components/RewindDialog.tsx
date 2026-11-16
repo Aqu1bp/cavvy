@@ -3,7 +3,7 @@ import { promptPreview } from "../lib/review-comments";
 import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
-import { rewindOpen, setRewindOpen } from "../state/ui";
+import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
@@ -21,9 +21,6 @@ function changedLabel(t: RewindTargetInfo): string {
     return untracked ?? "no file changes";
 }
 
-/** A prompt to preselect when the dialog opens (from a message's rewind button). */
-const [target, setTarget] = createSignal<number | undefined>();
-export const rewindTarget = { set: setTarget };
 
 export function RewindDialog() {
     /** The session the dialog was opened for; it closes if another one is shown. */
@@ -54,8 +51,8 @@ export function RewindDialog() {
             setPlan(undefined);
             // Through undefined, so the plan is fetched again even for the prompt chosen last time.
             setChosen(undefined);
-            setChosen(target());
-            setTarget(undefined);
+            setChosen(rewindTarget.get());
+            rewindTarget.set(undefined);
             void refetch();
         }),
     );
