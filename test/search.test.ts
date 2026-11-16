@@ -85,6 +85,20 @@ describe("searching session files", () => {
         expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
     });
 
+    test("an old session another program wrote to is found a search later, the listing renewed after a search", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-relist-"), "proj");
+        const old = write([prompt("the oldest one"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("quetzalcoatl")).hits).toEqual([]);
+        await Bun.sleep(1100);
+        appendFileSync(old.file, JSON.stringify(reply("a quetzalcoatl")) + "\n");
+        // Answered from the listing it had (renewed after, for the next search).
+        await searchSessions("quetzalcoatl");
+        await Bun.sleep(50);
+        expect((await searchSessions("quetzalcoatl")).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
     test("an old session open here, written to just after a search, is found by the next one at once", async () => {
         clearSearchCache();
         const cwd = join(tempDir("cavvy-search-open-"), "proj");
@@ -112,7 +126,7 @@ describe("searching session files", () => {
         }
         for (let k = 0; k < 60; k++) {
             const { id, text } = said[Math.floor(rnd() * said.length)]!;
-            const len = 3 + Math.floor(rnd() * 6);
+            const len = 2 + Math.floor(rnd() * 7);
             if (text.length < len) continue;
             const at = Math.floor(rnd() * (text.length - len));
             const q = text.slice(at, at + len);

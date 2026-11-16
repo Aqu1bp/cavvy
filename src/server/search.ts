@@ -51,38 +51,52 @@ const GRAM_MIN_BITS = 1 << 9;
 const GRAM_MAX_BITS = 1 << 20;
 const gram = (a: number, b: number, c: number) => (Math.imul(a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca77) ^ Math.imul(c, 0xc2b2ae3d)) >>> 0;
 /**
+ * Its pairs of characters, each a bit of PAIR_BITS, for what's searched before it's three characters long (the second
+ * key typed). Without them, two characters found nowhere looked through every session (10,000 sessions: 37-46 ms of
+ * that keystroke's search, measured). A long session sets most of them, and is looked through, as before.
+ */
+const PAIR_BITS = 4096;
+const pair = (a: number, b: number) => (Math.imul(a, 0x27d4eb2f) ^ Math.imul(b, 0x165667b1)) >>> 20;
+/**
  * `entries`' runs. `had`, the set of a session read before and grown since (`added`, its entries since): only those are
  * worked out, into a copy of it, while the set's size stays what the whole would have. A message gone since leaves its
  * runs set: that only costs looking through the session when a search has one.
  */
-function gramsOf(entries: readonly Entry[], had?: { grams: Uint32Array; added: readonly Entry[] }): Uint32Array {
+function gramsOf(entries: readonly Entry[], had?: { grams: Uint32Array; pairs?: Uint32Array; added: readonly Entry[] }): { grams: Uint32Array; pairs: Uint32Array } {
     const chars = entries.reduce((n, e) => n + e.folded.length, 0);
     let bits = GRAM_MIN_BITS;
     while (bits < chars * GRAM_BITS_PER_CHAR && bits < GRAM_MAX_BITS) bits <<= 1;
-    const grow = had && had.grams.length === bits >>> 5;
+    const grow = had && had.pairs && had.grams.length === bits >>> 5;
     const set = grow ? had.grams.slice() : new Uint32Array(bits >>> 5);
+    const pairs = grow ? had.pairs!.slice() : new Uint32Array(PAIR_BITS >>> 5);
     const mask = bits - 1;
     for (const e of grow ? had.added : entries) {
         const t = e.folded;
-        for (let i = 0; i + 2 < t.length; i++) {
-            const h = gram(t.charCodeAt(i), t.charCodeAt(i + 1), t.charCodeAt(i + 2)) & mask;
+        for (let i = 0; i + 1 < t.length; i++) {
+            const a = t.charCodeAt(i);
+            const b = t.charCodeAt(i + 1);
+            const p = pair(a, b);
+            pairs[p >>> 5]! |= 1 << (p & 31);
+            if (i + 2 >= t.length) continue;
+            const h = gram(a, b, t.charCodeAt(i + 2)) & mask;
             set[h >>> 5]! |= 1 << (h & 31);
         }
     }
-    return set;
+    return { grams: set, pairs };
 }
-/** The query's runs of three characters (none under three characters: then every session is looked through). */
-function gramsOfQuery(fq: string): number[] {
-    const out: number[] = [];
-    for (let i = 0; i + 2 < fq.length; i++) out.push(gram(fq.charCodeAt(i), fq.charCodeAt(i + 1), fq.charCodeAt(i + 2)));
-    return out;
+/** The query's runs of three characters, or for two characters their pair (one character: every session is looked through). */
+function gramsOfQuery(fq: string): { grams: number[]; pair?: number } {
+    const grams: number[] = [];
+    for (let i = 0; i + 2 < fq.length; i++) grams.push(gram(fq.charCodeAt(i), fq.charCodeAt(i + 1), fq.charCodeAt(i + 2)));
+    return fq.length === 2 ? { grams, pair: pair(fq.charCodeAt(0), fq.charCodeAt(1)) } : { grams };
 }
 /** Whether `doc` may have all of them (false: it can't). */
-function mayHave(doc: Doc, wanted: readonly number[]): boolean {
+function mayHave(doc: Doc, wanted: { grams: readonly number[]; pair?: number }): boolean {
+    if (wanted.pair !== undefined && doc.pairs && !(doc.pairs[wanted.pair >>> 5]! & (1 << (wanted.pair & 31)))) return false;
     const set = doc.grams;
-    if (!set || !wanted.length) return true;
+    if (!set || !wanted.grams.length) return true;
     const mask = set.length * 32 - 1;
-    for (const w of wanted) {
+    for (const w of wanted.grams) {
         const h = w & mask;
         if (!(set[h >>> 5]! & (1 << (h & 31)))) return false;
     }
@@ -117,6 +131,8 @@ interface Doc {
     chars: number;
     /** Which runs of three characters its messages have (gramsOf): a search for something it can't have skips it. */
     grams?: Uint32Array;
+    /** Which pairs of characters its messages have (gramsOf). */
+    pairs?: Uint32Array;
     /**
      * Where its reading ended, for the next read of the file once it's grown (a session being written to grows all
      * the time, and searching while ten stream read each of them whole on every keystroke): from there, if what's
@@ -422,8 +438,10 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
     if (!done) return undefined;
     if (!ended.torn && ino) doc.resume = { at: ended.at, ino, tail: tailAt(file, ended.at), seg, count, first, titleLine: doc.title };
     if (!doc.title) doc.title = first ?? doc.entries.find((e) => e.role === "user")?.text;
-    doc.grams = gramsOf(doc.entries, from && had?.grams ? { grams: had.grams, added } : undefined);
-    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0) + doc.grams.length * 2;
+    const found = gramsOf(doc.entries, from && had?.grams ? { grams: had.grams, pairs: had.pairs, added } : undefined);
+    doc.grams = found.grams;
+    doc.pairs = found.pairs;
+    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0) + (doc.grams.length + doc.pairs.length) * 2;
     return doc;
 }
 
@@ -577,12 +595,15 @@ let listing: Listed[] | undefined;
 let listedAt = -Infinity;
 let folders: Map<string, number> | undefined;
 /**
- * Typed into, a search a keystroke: within this of the last whole listing, only the newest RECENT files and those of
- * sessions open here are looked at again (what's being written to is among them), not each one of thousands (10,000
- * sessions: 23 of a search's 26 ms). One older than those, written to meanwhile by another process, is seen at the
- * next whole listing.
+ * Typed into, a search a keystroke: only the newest RECENT files and those of sessions open here are looked at again
+ * (what's being written to is among them), not each one of thousands (10,000 sessions: 23 of a search's 26 ms). Listed
+ * whole more than this long ago, it's listed whole again after the search, for the next: one older than those, written
+ * to meanwhile by another process, is seen a search later. Listed whole in the search instead, a keystroke a second
+ * or so after the last paid for it (25-41 ms of the palette's, with 10,000 sessions, measured).
  */
 const LIST_FRESH_MS = 1000;
+/** The whole listing under way after a search, if any. */
+let relisting: Promise<unknown> | undefined;
 const RECENT = 64;
 
 function foldersAsListed(): boolean {
@@ -606,7 +627,8 @@ function stampOf(path: string): number {
 /** The session files, newest first. The list from before when every one is as it was then. */
 async function sessionFiles(ctl: Control, open?: ReadonlySet<string>): Promise<Listed[] | undefined> {
     const was = listing;
-    if (was && performance.now() - listedAt < LIST_FRESH_MS && foldersAsListed()) {
+    if (was && foldersAsListed()) {
+        if (performance.now() - listedAt >= LIST_FRESH_MS) relistSoon();
         let changed = false;
         const now = was.map((f, i) => {
             if (i >= RECENT && !open?.has(f.id)) return f;
@@ -624,12 +646,27 @@ async function sessionFiles(ctl: Control, open?: ReadonlySet<string>): Promise<L
         listing = now.filter((f): f is Listed => f !== undefined).sort((x, y) => y.mtimeMs - x.mtimeMs);
         return listing;
     }
+    return relist(ctl);
+}
+
+/** Every session file, listed whole: the listing from now on (the same array where nothing changed). */
+async function relist(ctl: Control): Promise<Listed[] | undefined> {
+    const was = listing;
     const files = await listSessionFiles(ctl);
     if (!files) return undefined;
     listedAt = performance.now();
     if (was && was.length === files.length && files.every((f, i) => f.file === was[i]!.file && f.size === was[i]!.size && f.mtimeMs === was[i]!.mtimeMs && f.ino === was[i]!.ino)) return was;
     listing = files;
     return files;
+}
+
+/** Listed whole once the search under way is answered (a task later), letting others run as it goes. */
+function relistSoon() {
+    if (relisting) return;
+    relisting = new Promise((r) => setTimeout(r, 0))
+        .then(() => relist(new Control(() => false, SEARCH_LIMITS.budgetMs, SEARCH_LIMITS.budgetBytes)))
+        .catch(() => undefined)
+        .finally(() => (relisting = undefined));
 }
 
 async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
