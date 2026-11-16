@@ -9,14 +9,17 @@ import type { Message } from "../src/providers/types";
 const iso = isolate();
 const { Session, checkpointFile, checkpointing } = await import("../src/agent/session");
 const { writeThread } = await import("../scripts/perf-thread");
+const { digestToolState, lastCheckpointOf, lastPlanCall, latestCheckpointOf, toolStateOf } = await import("../src/agent/history-digest");
 afterAll(() => iso.cleanup());
 
 /** In memory only, or how it's held: not what it is. */
-const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords"]);
+const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords", "loadedMessages", "digest", "digestible", "pushedUnread"]);
 /** Every field of it, as data. */
 function fields(s: InstanceType<typeof Session>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(s)) if (!RUNTIME.has(k) && typeof v !== "function") out[k] = v instanceof Map ? [...v] : v;
+    // Its messages as they're asked for (read then, where a checkpoint has a digest of them in their place).
+    out.messages = s.messages;
     return JSON.parse(JSON.stringify(out));
 }
 /** Read whole (its checkpoint put aside), and read from its checkpoint. */
@@ -112,9 +115,10 @@ test("a long session's checkpoint is read in place of what its compactions clear
     expect(fromCheckpoint).toEqual(whole);
 });
 
-// One never compacted (a Claude Code session's) keeps all its messages: no checkpoint would be smaller than what it's read
-// in place of, so none is made only to be thrown away (18 ms of opening one of 100,000 items).
-test("a long session never compacted makes no checkpoint", () => {
+// One never compacted (a Claude Code session's) keeps all its messages: its checkpoint has a digest of them in their
+// place, made without a checkpoint of them all to throw away (18 ms of opening one of 100,000 items), and opened from it
+// they aren't read until they're asked for; then they're what reading all of it makes.
+test("a long session never compacted is opened from a digest of its messages, read as they're asked for", () => {
     const cwd = join(tempDir("cavvy-checkpoint-cli-"), "project");
     mkdirSync(cwd, { recursive: true });
     const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 2 });
@@ -131,10 +135,68 @@ test("a long session never compacted makes no checkpoint", () => {
         Session.load(t.file).release();
     } finally {
         JSON.stringify = stringify;
+    }
+    try {
+        expect(longest).toBeLessThan(statSync(t.file).size * 0.1);
+        expect(statSync(checkpointFile(t.file)).size).toBeLessThan(statSync(t.file).size * 0.1);
+        const s = Session.peek(t.file);
+        expect(s.historyDigest).toBeDefined();
+        const count = s.messageCount;
+        const { fromCheckpoint, whole } = bothWays(t.file);
+        expect(fromCheckpoint).toEqual(whole);
+        expect(count).toBe((whole.messages as unknown[]).length);
+    } finally {
         Object.assign(checkpointing, was);
     }
-    expect(existsSync(checkpointFile(t.file))).toBe(false);
-    expect(longest).toBeLessThan(statSync(t.file).size * 0.1);
+});
+
+// Messages added since its digest was made are put on it as they're read (digestWith); any other change to them (a
+// rewind, images refused) and it's read whole. Either way, what reading all of it makes.
+test("a session opened from a digest of its messages and written to since reads as reading all of it makes", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cli-since-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 4 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    // What a digest says, and what the same from its messages says.
+    const said = (s: InstanceType<typeof Session>) => {
+        const d = s.historyDigest!;
+        return { count: d.count, tools: digestToolState(d), plan: d.plan, checkpoint: d.checkpoint, latest: d.latestCheckpoint, last: s.lastMessage };
+    };
+    const truth = (messages: Message[]) => ({ count: messages.length, tools: toolStateOf(messages), plan: lastPlanCall(messages), checkpoint: lastCheckpointOf(messages), latest: latestCheckpointOf(messages), last: messages.at(-1) });
+    try {
+        Session.load(t.file).release();
+        // Only added to: a turn with its todos and a plan, then the next prompt.
+        const s = Session.load(t.file);
+        expect(s.historyDigest).toBeDefined();
+        s.push(prompt("plan it"));
+        s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "tool_use", content: [{ type: "tool_call", id: "todo-1", name: "TodoWrite", input: { todos: [{ content: "one", status: "pending", activeForm: "Doing one" }] } }, { type: "tool_call", id: "plan-1", name: "ExitPlanMode", input: { plan: "The plan" } }] } as Message);
+        s.push({ role: "user", content: [{ type: "tool_result", toolCallId: "todo-1", content: "ok" }, { type: "tool_result", toolCallId: "plan-1", content: "ok" }], meta: { kind: "tool_results", checkpoint: 7 } } as Message);
+        s.push(reply("done"));
+        const next = s.push(prompt("next"));
+        // Put on its digest, not read.
+        expect(s.historyDigest?.count).toBe(s.messageCount);
+        expect(s.lastMessage).toBe(next);
+        // Asked for, they're read: the ones pushed are the objects pushed.
+        expect(s.messages.at(-1)).toBe(next);
+        expect(s.historyDigest).toBeUndefined();
+        s.release();
+        const added = Session.peek(t.file);
+        expect(added.historyDigest).toBeDefined();
+        const whole = bothWays(t.file);
+        expect(said(added)).toEqual(truth(whole.whole.messages as Message[]));
+        expect(said(added).tools.todos).toHaveLength(1);
+        expect(whole.fromCheckpoint).toEqual(whole.whole);
+        // Changed otherwise: read whole.
+        const again = Session.load(t.file);
+        work(again, 1);
+        again.rewind(again.messageCount - 2);
+        again.release();
+        const after = bothWays(t.file);
+        expect(after.fromCheckpoint).toEqual(after.whole);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
 });
 
 // It's checked as the session heads' cache is (sessionHead): a file that's only ever appended to is the same file, with

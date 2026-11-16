@@ -696,15 +696,15 @@ const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.
  * or died before the turn could say. Not when the history went on after it
  * (in a terminal, which keeps no log), was rewound past it, or compacted.
  */
-export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notices: TurnNotice[] = []): number | undefined {
+export function cutOffPrompt(ui: UiLog, seg: number, messages: readonly Message[], notices: TurnNotice[] = [], base = 0): number | undefined {
     const rec = ui.lastStarted ? ui.turns.get(ui.lastStarted) : undefined;
-    if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
-    const prompt = messages[rec.index];
-    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
+    if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined || rec.index < base) return undefined;
+    const prompt = messages[rec.index - base];
+    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index - base + 1).some(startsTurn)) return undefined;
     // Another prompt there (that one was rewound in a terminal, this one sent there).
     if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
     // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
-    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
+    const wentOn = (from: number) => messages.slice(from - base).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
     if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;

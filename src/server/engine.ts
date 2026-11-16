@@ -627,7 +627,7 @@ export class Engine {
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
+        if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -943,7 +943,7 @@ export class Engine {
             createdAt: rt.session.meta.createdAt,
             // Its file's time can be a moment later (a turn's end, saved once the turn is put away).
             updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
-            messages: rt.session.messages.length,
+            messages: rt.session.messageCount,
             status: rt.status,
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
@@ -967,7 +967,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messages.length && !rt.busy)) continue;
+            if (rt.guest || (!rt.session.messageCount && !rt.busy)) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt));
         }

@@ -208,10 +208,10 @@ describe("a Claude Code session", () => {
         const { small, large } = measured.cli!;
         expect(within(small.openSent, large.openSent)).toBe(true);
     });
-    // Opened again, its turns and sub-agents come from its store, but its log is read whole and its history kept (a
-    // Claude Code session's isn't compacted here: every reply's text): 1 MB read and 2 MB kept at 3,000 items, 4.7 and
-    // 6.7 at 30,000. The session's state kept with the store, and its messages read as they're needed, would do it.
-    test.failing("opening it again reads, and keeps in the server, what's on screen", () => {
+    // Opened again, its turns and sub-agents come from its store, and its messages (a Claude Code session's aren't
+    // compacted here: every reply's text) from its checkpoint's digest of them, read only as they're asked for. Its log
+    // was read whole and its history kept: 1 MB read and 2 MB kept at 3,000 items, 4.7 and 6.7 at 30,000.
+    test("opening it again reads, and keeps in the server, what's on screen", () => {
         const { small, large } = measured.cli!;
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);

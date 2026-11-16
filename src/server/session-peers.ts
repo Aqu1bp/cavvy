@@ -123,7 +123,7 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
             for (const s of listed.rows) out.set(s.id, s);
             // Open here: as they are now (a session with nothing said yet isn't listed).
             for (const rt of host.live()) {
-                if (!rt.session.messages.length && !rt.busy) continue;
+                if (!rt.session.messageCount && !rt.busy) continue;
                 const s = runtimeSummary(rt);
                 if (!match || match(s)) out.set(rt.id, s);
                 // On disk it matched, as it is now it doesn't (renamed since): not listed.

@@ -23,6 +23,7 @@ import type { Message, TextPart, UserMessage } from "../providers/types";
 import type { TodoItem, ToolState } from "../tools/types";
 import type { Session } from "./session";
 import { holdsGivenSecret } from "./secrets";
+import { lastCheckpointOf, toolStateOf } from "./history-digest";
 
 /** Bigger files aren't saved, so they can't be restored. */
 export const MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024;
@@ -114,7 +115,7 @@ export class FileHistory {
         let h = open.get(dir);
         if (!h) open.set(dir, (h = new FileHistory(dir)));
         // Checkpoints without file changes are only on the messages; keep ids increasing past them.
-        for (const m of session.messages) if (m.role === "user" && m.meta?.checkpoint) h.last = Math.max(h.last, m.meta.checkpoint);
+        h.last = Math.max(h.last, session.historyDigest?.checkpoint ?? lastCheckpointOf(session.messages));
         // A fork's own checkpoints come after the ones it was forked with (src/agent/fork.ts beforeFork).
         if (session.meta.forkOf) h.last = Math.max(h.last, session.meta.forkOf.at - 1);
         return h;
@@ -468,28 +469,14 @@ export function promptNotes(m: UserMessage): string[] {
  * files counted as read (the model must read them again before editing).
  */
 export function resetToolState(state: ToolState, messages: Message[]) {
+    resetToolStateTo(state, toolStateOf(messages));
+}
+
+/** As resetToolState, from what the history says of it (toolStateOf, or a session's digest of its history). */
+export function resetToolStateTo(state: ToolState, from: { todos: TodoItem[]; approvedPlan?: string }) {
     state.fileState.clear();
-    const ok = new Set<string>();
-    for (const m of messages) {
-        if (m.role === "user") for (const p of m.content) if (p.type === "tool_result" && !p.isError) ok.add(p.toolCallId);
-    }
-    let todos: TodoItem[] = [];
-    let plan: string | undefined;
-    for (const m of messages) {
-        if (m.role === "user" && m.meta?.kind === "summary" && m.meta.compactedState) {
-            todos = m.meta.compactedState.todos.map((t) => ({ ...t }));
-            plan = m.meta.compactedState.approvedPlan;
-        }
-        if (m.role !== "assistant") continue;
-        for (const p of m.content) {
-            if (p.type !== "tool_call" || !ok.has(p.id)) continue;
-            if (p.name === "TodoWrite" && Array.isArray(p.input.todos)) {
-                todos = (p.input.todos as TodoItem[]).map((t) => ({ content: t.content, status: t.status, activeForm: t.activeForm }));
-            } else if (p.name === "ExitPlanMode" && typeof p.input.plan === "string") plan = p.input.plan;
-        }
-    }
-    state.todos = todos;
-    state.approvedPlan = plan;
+    state.todos = from.todos.map((t) => ({ ...t }));
+    state.approvedPlan = from.approvedPlan;
 }
 
 // ---------------------------------------------------------------------------
