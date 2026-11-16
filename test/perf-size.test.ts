@@ -52,6 +52,21 @@ const heap = () => {
     Bun.gc(true);
     return heapStats().heapSize;
 };
+/**
+ * The heap once it's steady: within 64 KB for a second, at most 8 s (as keptOpen waits, below). Read at once, the
+ * session before was still letting go of what it kept (closed, its turns stored): the next one's baseline was high by
+ * that, and what it kept read 4 MB less than nothing.
+ */
+const settledHeap = async () => {
+    let last = heap();
+    for (let i = 0, steady = 0; i < 80 && steady < 10; i++) {
+        await Bun.sleep(100);
+        const now = heap();
+        steady = Math.abs(now - last) < 64 * 1024 ? steady + 1 : 0;
+        last = now;
+    }
+    return last;
+};
 
 interface Cost { openSent: number; findSent: number; rewindSent?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
 
@@ -59,7 +74,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const cwd = join(tempDir(`cavvy-perf-size-${kind}-`), "project");
     mkdirSync(cwd, { recursive: true });
     const t = writeThread({ cwd, items, kind, seed: 7 });
-    const before = heap();
+    const before = await settledHeap();
     const read0 = readSoFar();
     // As the window opens one (gui/src/state/app.ts: OPEN_TURNS, OPEN_BYTES).
     let at = performance.now();
