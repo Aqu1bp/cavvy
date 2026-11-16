@@ -128,6 +128,8 @@ import { TitleQueue } from "./title-queue";
 import { WorkingIndex } from "./working";
 
 export interface EngineOptions {
+    /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
+    shrinkIdleMs?: number;
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
     allowBypass?: boolean;
     /** The folder the server was started in. */
@@ -180,6 +182,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 const UNLOAD_AFTER_MS = 30_000;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
+/** How long without a turn running before the server hands memory back (idleNow). */
+const SHRINK_IDLE_MS = 5 * 60_000;
 /** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
 const OPEN_MODEL_WAIT_MS = 2_000;
 
@@ -475,8 +479,32 @@ export class Engine {
     /** Which sessions have a turn running, when this Cavvy keeps that (EngineOptions.working). */
     private working?: WorkingIndex;
 
+    /** Sessions with a turn running now (turnRunning), for handing memory back once none has for a while. */
+    private turnsRunning = new Set<string>();
+    private shrinkTimer?: ReturnType<typeof setTimeout>;
+
+    /**
+     * No turn has run for SHRINK_IDLE_MS: the runtime hands back what the work left it holding (compiled code not run
+     * since, freed pages). Linux, 5 sessions after 55-205 mock turns and closed: 76-80 -> 55-58 MB private, about what
+     * it held with them open after a turn each. The next turn compiles again: about 70 ms of CPU more, once.
+     */
+    private idleNow(id: string) {
+        this.turnsRunning.delete(id);
+        if (this.turnsRunning.size || this.stopping || this.shrinkTimer) return;
+        this.shrinkTimer = setTimeout(() => {
+            this.shrinkTimer = undefined;
+            if (!this.turnsRunning.size && !this.stopping) Bun.shrink();
+        }, this.o.shrinkIdleMs ?? SHRINK_IDLE_MS);
+        this.shrinkTimer.unref?.();
+    }
+
     /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
     turnRunning(rt: Runtime, running: boolean) {
+        if (running) {
+            this.turnsRunning.add(rt.id);
+            clearTimeout(this.shrinkTimer);
+            this.shrinkTimer = undefined;
+        } else this.idleNow(rt.id);
         if (!this.working || this.stopping) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
@@ -523,6 +551,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
@@ -1289,6 +1318,7 @@ export class Engine {
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
         this.summarySent.delete(id);
+        if (this.turnsRunning.has(id)) this.idleNow(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
@@ -1389,6 +1419,7 @@ export class Engine {
                 if (rt) {
                     this.runtimes.delete(id);
                     this.summarySent.delete(id);
+                    if (this.turnsRunning.has(id)) this.idleNow(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
