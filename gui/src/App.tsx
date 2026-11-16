@@ -23,12 +23,11 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest, rewindOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest, rewindOpen, archiveRequest } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
-import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
 import { ImageViewer } from "./components/ImageViewer";
@@ -289,6 +288,7 @@ const mcpModule = () => import("./components/McpDialog");
 const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
 const planModule = () => import("./components/PlanDialogs");
 const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
+const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) => ({ default: m.ArchiveDialog })));
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
 
@@ -298,7 +298,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog, RewindDialog]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog, RewindDialog, ArchiveDialog]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -313,6 +313,7 @@ export function App() {
     const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
     const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
     const rewindShown = createMemo<boolean>((was) => was || Boolean(rewindOpen()), false);
+    const archiveShown = createMemo<boolean>((was) => was || Boolean(archiveRequest()), false);
     const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
@@ -646,7 +647,7 @@ export function App() {
             <FolderPicker />
             <TrustDialog />
             <Show when={planShown()}><PlanDialogs /></Show>
-            <ArchiveDialog />
+            <Show when={archiveShown()}><ArchiveDialog /></Show>
             <RecentlyDeleted />
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
