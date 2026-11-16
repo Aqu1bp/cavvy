@@ -540,6 +540,7 @@ export class Engine {
     // Sending
 
     broadcast(ev: ServerEvent) {
+        if (ev.type === "sessions.remove") this.summarySent.delete(ev.id);
         for (const c of this.clients) c.send(ev);
     }
 
@@ -633,8 +634,15 @@ export class Engine {
             const saved = s.runs?.flatMap((r) => r.sessions).find((m) => m.id === rt.id);
             if (saved) saved.outcome = outcome;
         });
-        this.broadcast({ type: "sessions.upsert", session: this.summaryOf(rt) });
+        // Not again as it was last sent (a turn's end told twice: its status, then its notice).
+        const session = this.summaryOf(rt);
+        const said = JSON.stringify(session);
+        if (this.summarySent.get(rt.id) === said) return;
+        this.summarySent.set(rt.id, said);
+        this.broadcast({ type: "sessions.upsert", session });
     }
+    /** Each open session's row as last sent to the windows (sessionChanged): forgotten as it's closed or removed. */
+    private summarySent = new Map<string, string>();
 
     workspaceChanged(ws: Workspace) {
         for (const r of this.runtimes.values()) if (r.ws === ws) r.workspaceChanged();
@@ -1280,6 +1288,7 @@ export class Engine {
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        this.summarySent.delete(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
@@ -1379,6 +1388,7 @@ export class Engine {
             try {
                 if (rt) {
                     this.runtimes.delete(id);
+                    this.summarySent.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
@@ -2692,7 +2702,7 @@ export class Engine {
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
                 // The turns asked for are earlier ones: there, once a first open has built them (Runtime.allTurns).
                 await rt.allTurns();
-                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true });
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true, upTo: typeof p.upTo === "number" && p.upTo > 0 ? Math.min(Math.floor(p.upTo), 1000) : undefined, after: typeof p.after === "string" ? p.after : undefined });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
             }
@@ -2700,8 +2710,10 @@ export class Engine {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const also = Array.isArray(p.turns) ? (p.turns as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 10_000) : undefined;
+                const g = p.gap as { after?: unknown; before?: unknown } | undefined;
+                const gap = g && typeof g === "object" && typeof g.after === "string" && typeof g.before === "string" ? { after: g.after, before: g.before } : undefined;
                 await rt.allTurns();
-                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also) };
+                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also, gap) };
             }
             case "session.agentList": {
                 const rt = this.runtimes.get(str(p.id, "id"));

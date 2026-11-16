@@ -25,7 +25,7 @@ const FindBar = componentCode("FindBar", {
     requestAnimationFrame: (f: () => void) => setTimeout(f, 0),
 });
 createRoot(() => FindBar({
-    turns: () => turns, earlier: () => 0,
+    turns: () => turns, earlier: () => 0, gap: () => undefined,
     elsewhere: (q: string) => new Promise((answer) => asked.push({ q, answer })),
     bring: async () => {}, whole: async () => {}, scroller: () => undefined, col: () => undefined, dock: () => 0, show() {},
     anchor, clearAnchor: () => (cleared++, setAnchor(undefined)),

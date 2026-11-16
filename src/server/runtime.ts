@@ -123,7 +123,7 @@ import type {
     StoppedTask,
 } from "./protocol";
 import type { PeerBlock, SessionFindMatch } from "./protocol";
-import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
+import { applyOp, coalesce, findBlock, findTurn, lastProgress, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
@@ -1672,13 +1672,14 @@ export class Runtime {
         void this.ready.then(() => this.agent?.warmSnapshots(), () => undefined);
     }
 
-    /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
-    async find(query: string, before?: string, also?: readonly string[]): Promise<SessionFindMatch[]> {
+    /** Find in the turns before `before` and in its `gap` (those the window hasn't been sent): src/server/find.ts. */
+    async find(query: string, before?: string, also?: readonly string[], gap?: { after: string; before: string }): Promise<SessionFindMatch[]> {
         this.flush();
         // The latest asked: one asked before it stops (the window counts only the latest).
         const asked = ++this.finding;
         const found = await findBefore(this.view.turns, query, {
             before,
+            gap,
             also: also?.length ? new Set(also) : undefined,
             whole: (t) => this.whole(t),
             stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
@@ -1708,11 +1709,18 @@ export class Runtime {
      * Turns before `before` (session.turns), as they are now: what's been sent of them so far is in them (flushed first),
      * and what changes after goes as ops, in order after this. Undefined when the window's turns aren't this view's.
      */
-    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean }): SessionTurnsPage | undefined {
+    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean; upTo?: number; after?: string }): SessionTurnsPage | undefined {
         this.flush();
         const all = this.view.turns;
         const at = all.findIndex((t) => t.id === before);
         if (at < 0) return undefined;
+        // The turns of a gap the window has, after `after` (the last before it): the next `count` of them.
+        if (o.after !== undefined) {
+            const start = all.findIndex((t) => t.id === o.after) + 1;
+            if (start <= 0 || start > at) return undefined;
+            const end = Math.min(at, start + Math.max(1, Math.min(o.count ?? 40, 1000)));
+            return { ...this.page(all.slice(start, end), start, o.fold), skipped: at - end };
+        }
         let from = Math.max(0, at - Math.max(1, Math.min(o.count ?? 40, 1000)));
         if (o.all) from = 0;
         else if (o.through) {
@@ -1725,12 +1733,19 @@ export class Runtime {
             }
             if (holder >= 0) from = Math.min(from, holder);
         }
-        const turns = all.slice(from, at);
+        // Back to a turn far before those the window has: a page from it, not every turn down to them (a find at the
+        // start of a 100,000-item session sent 21.7 MB): the rest is a gap the window fills as it's read down to.
+        const end = o.upTo !== undefined && !o.all ? Math.min(at, from + Math.max(1, o.upTo)) : at;
+        return { ...this.page(all.slice(from, end), from, o.fold), ...(end < at ? { skipped: at - end } : {}) };
+    }
+
+    /** `turns` as they're sent, with their sub-agents: what's earlier counted (`earlier`). */
+    private page(turns: Turn[], earlier: number, fold?: boolean): SessionTurnsPage {
         const ids = new Set(turns.map((t) => t.id));
-        const sent = turns.map((t) => this.sent(t, o.fold));
+        const sent = turns.map((t) => this.sent(t, fold));
         const folded = foldedIds(sent);
         const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => (folded?.has(a.turnId) ? listedAgent(a) : sentAgent(this.agentFull(a))));
-        return { turns: sent, earlier: from, seq: this.batch, ...(agents.length ? { agents } : {}) };
+        return { turns: sent, earlier, seq: this.batch, ...(agents.length ? { agents } : {}) };
     }
 
     /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */
@@ -1825,7 +1840,7 @@ export class Runtime {
         // Into the log as it's shown (while it's being closed too, until the log is let go of).
         this.syncSteps();
         if (!this.outbox.length || this.closed) return;
-        const ops = coalesce(this.outbox);
+        const ops = coalesce(this.outbox).map(lastProgress);
         this.outbox = [];
         this.batch++;
         this.engine.sendOps(this.id, this.batch, ops);

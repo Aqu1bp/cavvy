@@ -95,6 +95,17 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         // Successful sends must be removed even if the window closes before the debounce.
         composerStorage.flush();
     };
+    /**
+     * What was sent put back, its send having failed: in its box if that's still empty, else (typed in since) on top of
+     * its stashed drafts, past their limit if need be. Its session's, shown or not.
+     */
+    const putBack = (submitted: ReturnType<typeof capture>) => {
+        const k = submitted.key;
+        if (wasDeleted(k)) return;
+        const now = shows(k) ? draft() : composerDrafts.get(k);
+        if (!now || !filled(now)) return putDraft(k, submitted.draft);
+        putStashes(k, [submitted.draft, ...stashesOf(k)]);
+    };
     const setText = (value: string | ((text: string) => string)) => {
         if (disposed) return;
         setDraft((d) => ({ ...d, text: typeof value === "function" ? value(d.text) : value }));
@@ -140,5 +151,5 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
             if (!list.includes(which)) putStashes(k, [...list.slice(0, at), which, ...list.slice(at)]);
         };
     };
-    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent, holds, stashes, pushStash, takeStash, dropStash };
+    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent, putBack, holds, stashes, pushStash, takeStash, dropStash };
 }

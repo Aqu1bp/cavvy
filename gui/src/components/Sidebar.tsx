@@ -210,7 +210,8 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
  * pinned. Otherwise nothing, so a glyph there always means something: the titles still start at one edge.
  */
 function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
-    const word = () => sessionStatus(p.s, now())?.text;
+    // Set again only when it changes, not at each tick of the clock it's worked out from.
+    const word = createMemo(() => sessionStatus(p.s, now())?.text);
     return (
         <span class="lead" aria-hidden="true">
             <Switch>

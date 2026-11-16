@@ -7,9 +7,10 @@ export function linesOf(code: string): number {
 }
 
 /**
- * How a reply's code block is drawn here, measured from one drawn with the page's own styles, as custom properties on
- * <html> (transcript.css: a block out of sight is skipped at exactly the size it's drawn at, as the conversation keeps
- * the reader's place itself and a block above them drawn at another size would move what they read):
+ * How a reply's code block is drawn here, measured from one drawn with the page's own styles, as custom properties of
+ * the code blocks alone (a rule of their own: set on <html>, a change would style the whole window again), for
+ * transcript.css: a block out of sight is skipped at exactly the size it's drawn at, as the conversation keeps the
+ * reader's place itself and a block above them drawn at another size would move what they read:
  * - `--code-line`: a line's height. Not 1lh: each line is laid out on Chrome's 1/64 px grid, by the font's own
  *   measures, and 1lh was 1/64 px short at text sizes 12, 13, 17 and 18 (a 300-line block: 4.7 px).
  * - `--hbar`: what a horizontal scrollbar takes from its height: 0 where scrollbars overlay the content (macOS, by
@@ -29,9 +30,14 @@ export function noteCodeMetrics() {
     const bar = probe.lastElementChild as HTMLElement;
     const hbar = bar.offsetHeight - bar.clientHeight;
     probe.remove();
-    const root = document.documentElement.style;
-    if (line > 0) root.setProperty("--code-line", `${line}px`);
-    root.setProperty("--hbar", `${Math.max(0, hbar)}px`);
+    let rule = document.head.querySelector<HTMLStyleElement>("style[data-code-metrics]");
+    if (!rule) {
+        rule = document.createElement("style");
+        rule.dataset.codeMetrics = "";
+        document.head.append(rule);
+    }
+    const text = `.md .code { ${line > 0 ? `--code-line: ${line}px; ` : ""}--hbar: ${Math.max(0, hbar)}px; }`;
+    if (rule.textContent !== text) rule.textContent = text;
 }
 
 /** Measured now, and again whenever the pixel ratio changes (zoom, another display). */

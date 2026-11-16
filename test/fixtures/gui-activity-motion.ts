@@ -15,7 +15,8 @@ import * as turnPlaces from "../../gui/src/lib/turn-places";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
 import * as cards from "../../gui/src/lib/cards";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
-import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { linesOf } from "../../gui/src/lib/code-metrics";
 import { applyOp } from "../../src/server/timeline";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -300,7 +301,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     let mounts = 0, highlights = 0, trailed = 0;
     const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++,
+        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++, linesOf,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
         highlightMore: async (_writing: number, lines: string) => { highlights++; highlighted.push(lines); return "highlighted\n"; },
         newWriting: () => 1, endWriting() {}, growing: (el: Node) => (html: string) => { el.props.innerHTML = html; },
@@ -308,7 +309,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
     const painted: { html: string; live: boolean }[] = [];
     const Markdown = component(source("blocks/Markdown"), "Markdown", {
-        RenderBoundary: boundary(), MarkdownRenderer, createReveal, DrawnAgain,
+        RenderBoundary: boundary(), MarkdownRenderer, createReveal, DrawnAgain, BuiltFromEnd,
         paint: (el: Node, html: string, live: boolean) => { el.props.innerHTML = html; painted.push({ html, live }); },
         CodeBlock: (p: any) => { mounts++; return Code(p); },
     });

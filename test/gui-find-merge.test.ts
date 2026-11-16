@@ -31,3 +31,17 @@ test("matches come in the turns' order, folded ones' from the server, the window
     // Nothing from the server: the window's own.
     expect(allMatches(turns, "apple", []).map((m) => m.turnId)).toEqual(["t2", "t4", "t4"]);
 });
+
+test("a gap's matches (turns between a page fetched far up and the later ones) come after the page", () => {
+    // The window has t5, t6 (a page far up), a gap for t7-t8, then t9.
+    const turns = [turn("t5", "apple"), turn("t6", "pear"), turn("t9", "apple")];
+    const there = [
+        { turnId: "t1", part: "prompt", n: 0 },
+        { turnId: "t7", part: "prompt", n: 0, gap: true as const },
+        { turnId: "t8", part: "prompt", n: 0, gap: true as const },
+    ];
+    expect(allMatches(turns, "apple", there, "t6").map((m) => m.turnId)).toEqual(["t1", "t5", "t7", "t8", "t9"]);
+    // The gap's turns come in since (filled): counted here, not twice.
+    const filled = [turns[0]!, turns[1]!, turn("t7", "apple"), turn("t8", "apple"), turns[2]!];
+    expect(allMatches(filled, "apple", there, undefined).map((m) => m.turnId)).toEqual(["t1", "t5", "t7", "t8", "t9"]);
+});

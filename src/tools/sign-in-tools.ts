@@ -6,7 +6,7 @@
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { offeredCommandError, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
 import { signedOutIn, type SignInRecipe } from "../agent/sign-in-recipes";
-import { MCP_SERVER_NAME } from "../mcp/server-name";
+import { MCP_SERVER_NAME } from "../config/name";
 import type { Tool } from "./types";
 
 type Input = { target: string; machine?: string; command?: string };

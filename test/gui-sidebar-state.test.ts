@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { app, refreshSessions, rpc, setApp, start } from "../gui/src/state/app";
+import { app, refreshSessions, rpc, setApp, start, upsertsFirst } from "../gui/src/state/app";
 import type { ServerEvent, SessionSummary } from "../src/server/protocol";
 
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -25,16 +25,24 @@ const s = (id: string, patch: Partial<SessionSummary> = {}): SessionSummary => (
     createdAt: 1, updatedAt: 1, messages: 2, status: "idle", pinned: false, settled: false, archived: false, live: true, ...patch });
 
 test("real upserts sort activity/status, clear omitted optional fields, and move between lists", () => {
+    // Those that come together go in together, at the next frame (here: when asked to).
     event({ type: "sessions.upsert", session: s("new", { updatedAt: 10 }) });
     event({ type: "sessions.upsert", session: s("old") });
+    expect(app.sessions.map((s) => s.id)).toEqual([]);
+    upsertsFirst();
     expect(app.sessions.map((s) => s.id)).toEqual(["new", "old"]);
     event({ type: "sessions.upsert", session: s("old", { status: "waiting", waitingKind: "plan", turnStartedAt: 50 }) });
+    upsertsFirst();
     expect(app.sessions.map((s) => s.id)).toEqual(["old", "new"]);
+    // The later of two for the same one is what goes in.
+    event({ type: "sessions.upsert", session: s("old", { status: "running" }) });
     event({ type: "sessions.upsert", session: s("old") });
+    upsertsFirst();
     expect(app.sessions.map((s) => s.id)).toEqual(["new", "old"]);
     expect(app.sessions[1]!.waitingKind).toBeUndefined();
     expect(app.sessions[1]!.turnStartedAt).toBeUndefined();
     event({ type: "sessions.upsert", session: s("old", { archived: true }) });
+    upsertsFirst();
     expect(app.sessions.map((s) => s.id)).toEqual(["new"]);
     expect(app.archived.map((s) => s.id)).toEqual(["old"]);
 });

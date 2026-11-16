@@ -1120,6 +1120,11 @@ button.att-card:hover {
     font-size: 0.929rem;
 }
 
+/* Its text's height, up to the modest one (Composer.tsx sizes it where the engine can't). */
+.composer:not(.expanded) textarea {
+    field-sizing: content;
+}
+
 /* Large: as tall as Composer.tsx makes it. */
 .composer.expanded textarea {
     max-height: none;

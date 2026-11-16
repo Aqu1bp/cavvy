@@ -211,6 +211,9 @@ export class Rpc {
     /** The desktop app asks the sidecar for credentials each time, so a stale token is never the problem there. */
     retriesCredentials = false;
 
+    /** Run before an answer is handed over. */
+    beforeAnswer?: () => void;
+
     private receive(raw: string) {
         let msg: ServerMessage;
         try {
@@ -233,6 +236,8 @@ export class Rpc {
         this.pending.delete(msg.id);
         this.ages.remove(msg.id);
         this.updateNotice();
+        // Events put off a moment (state/app.ts upsertSoon) are in before what an answer is awaited for reads.
+        this.beforeAnswer?.();
         if ("error" in msg) p.reject(new RpcError(msg.error.message, msg.error.code, msg.error.folder));
         else p.resolve(msg.result);
     }

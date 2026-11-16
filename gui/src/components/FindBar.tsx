@@ -19,11 +19,13 @@ export function FindBar(p: {
     turns: () => readonly Turn[];
     /** How many of the session's turns the window hasn't been sent: those are searched where they are (`elsewhere`). */
     earlier: () => number;
+    /** The turns the window holds a gap for (SessionView.gap): between `after` and `before`, both of its turns. */
+    gap: () => { after: string; before: string } | undefined;
     /**
-     * Where `query` appears in the turns before `before`, the first the window has, and in `folded` (those it has with
-     * their work folded: Turn.folded, without what it would count in them), in order (session.find).
+     * Where `query` appears in the turns before `before`, the first the window has, in its `gap`, and in `folded`
+     * (those it has with their work folded: Turn.folded, without what it would count in them), in order (session.find).
      */
-    elsewhere: (query: string, before: string, folded: string[]) => Promise<SessionFindMatch[]>;
+    elsewhere: (query: string, before: string, folded: string[], gap?: { after: string; before: string }) => Promise<SessionFindMatch[]>;
     /** Brings a match's turn into the window (one of those it hadn't been sent), back through it. */
     bring: (m: SessionFindMatch) => Promise<void>;
     /** A turn the window has folded, whole (loadTurn): a match in its work is shown once it is. */
@@ -73,17 +75,25 @@ export function FindBar(p: {
     // query changes or turns come in. Asked with no query as the bar opens, so what's searched is ready by the time
     // something's typed.
     // Tagged with the query they're for: until the answer for this one is in, the last query's aren't this one's.
-    const [elsewhere, setElsewhere] = createSignal<{ q: string; ms: SessionFindMatch[] }>({ q: "", ms: [] });
+    const [elsewhere, setElsewhere] = createSignal<{ q: string; ms: SessionFindMatch[]; asked?: string }>({ q: "", ms: [] });
     let asking = 0;
     // The turns the window has folded, by id, changing only as one comes whole or another comes folded.
     const folded = createMemo(() => p.turns().filter((t) => t.folded).map((t) => t.id).join("\n"));
-    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded], ([q, earlier, first, ids]) => {
+    const gapKey = createMemo(() => {
+        const g = p.gap();
+        return g ? `${g.after}\n${g.before}` : "";
+    });
+    /** What the server is asked about besides the query: the turns the window doesn't have, as it is now. */
+    const askedAbout = createMemo(() => `${p.earlier()}\n${p.turns()[0]?.id ?? ""}\n${folded()}\n${gapKey()}`);
+    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded, gapKey], ([q, earlier, first, ids, gap]) => {
         const ask = ++asking;
-        if ((!earlier && !ids) || !first) return setElsewhere({ q, ms: [] });
-        void p.elsewhere(q, first, ids ? ids.split("\n") : []).then((ms) => ask === asking && setElsewhere({ q, ms }), () => ask === asking && setElsewhere({ q, ms: [] }));
+        const asked = untrack(askedAbout);
+        if ((!earlier && !ids && !gap) || !first) return setElsewhere({ q, ms: [], asked });
+        const [after, before] = gap.split("\n");
+        void p.elsewhere(q, first, ids ? ids.split("\n") : [], gap ? { after: after!, before: before! } : undefined).then((ms) => ask === asking && setElsewhere({ q, ms, asked }), () => ask === asking && setElsewhere({ q, ms: [], asked }));
     }));
-    /** What the server found for this query is in (or there's nothing it has that the window doesn't). */
-    const answered = () => elsewhere().q === findQuery();
+    /** What the server found for this query, in the turns as the window has them now, is in (or there's nothing it has that the window doesn't). */
+    const answered = () => elsewhere().q === findQuery() && elsewhere().asked === askedAbout();
     /** A jump's turn is one whose matches only the server has (one the window hasn't been sent, or has folded). */
     const waitsFor = (a: FindAnchor) => {
         const t = untrack(p.turns).find((x) => x.id === a.turnId);
@@ -95,7 +105,7 @@ export function FindBar(p: {
         folded();
         const e = elsewhere();
         const there = e.q === q ? e.ms : [];
-        return untrack(() => allMatches(p.turns(), q, there));
+        return untrack(() => allMatches(p.turns(), q, there, p.gap()?.after));
     });
 
     const onInput = (v: string) => {
@@ -175,7 +185,10 @@ export function FindBar(p: {
         const first = [...col.querySelectorAll<HTMLElement>("[data-turn]")].find((a) => a.getBoundingClientRect().bottom > top + BAR_ROOM);
         const order = new Map(p.turns().map((t, i) => [t.id, i]));
         const from = first ? (order.get(first.dataset.turn!) ?? 0) : p.turns().length;
-        const k = ms.findIndex((m) => (order.get(m.turnId) ?? 0) >= from);
+        // Those the window hasn't: the gap's just after the turn before it, the rest before them all.
+        const gapAt = order.get(p.gap()?.after ?? "");
+        const at = (m: FindMatch & { gap?: true }) => order.get(m.turnId) ?? (m.gap && gapAt !== undefined ? gapAt + 0.5 : -1);
+        const k = ms.findIndex((m) => at(m) >= from);
         return k >= 0 ? k : ms.length - 1;
     };
 
@@ -203,6 +216,8 @@ export function FindBar(p: {
             const a = untrack(p.anchor);
             if (a && waitsFor(a) && !untrack(answered)) return;
             const again = q === counted;
+            // With a gap, where to start is known once the server's said what's in it.
+            if (q && !again && untrack(p.gap) && !untrack(answered)) return void setCur(-1);
             counted = q;
             if (takeAnchor(ms)) return;
             if (!q) {
@@ -215,6 +230,8 @@ export function FindBar(p: {
                 const was = shownMatch;
                 const k = ms.findIndex((m) => m.turnId === was.turnId && m.part === was.part && m.n === was.n);
                 if (k >= 0) return void setCur(k);
+                // Not among them till the server's said again (its turn just brought in, the window's turns changed).
+                if (!untrack(answered)) return;
             }
             go(fromView(ms));
         }),

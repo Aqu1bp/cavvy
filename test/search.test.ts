@@ -15,6 +15,7 @@ const { registerSecret, unregisterSecret, knownSecrets } = await import("../src/
 const { SecretStore } = await import("../src/agent/secrets");
 const { Engine } = await import("../src/server/engine");
 const { writeImportedSession } = await import("../src/server/cli-import");
+const { noteSessionWrite } = await import("../src/agent/session-writes");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
 import type { UserMessage } from "../src/providers/types";
 
@@ -85,6 +86,20 @@ describe("searching session files", () => {
         expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
     });
 
+    test("an old session another program wrote to is found a search later, the listing renewed after a search", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-relist-"), "proj");
+        const old = write([prompt("the oldest one"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("quetzalcoatl")).hits).toEqual([]);
+        await Bun.sleep(1100);
+        appendFileSync(old.file, JSON.stringify(reply("a quetzalcoatl")) + "\n");
+        // Answered from the listing it had (renewed after, for the next search).
+        await searchSessions("quetzalcoatl");
+        await Bun.sleep(50);
+        expect((await searchSessions("quetzalcoatl")).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
     test("an old session open here, written to just after a search, is found by the next one at once", async () => {
         clearSearchCache();
         const cwd = join(tempDir("cavvy-search-open-"), "proj");
@@ -93,6 +108,18 @@ describe("searching session files", () => {
         expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits).toEqual([]);
         appendFileSync(old.file, JSON.stringify(reply("a platypus")) + "\n");
         expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
+    test("an old session this server wrote to and let go of is found by the next search at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-written-"), "proj");
+        const old = write([prompt("the oldest session"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("echidna")).hits).toEqual([]);
+        // Written by a Session of this process (not open any more: no `open`).
+        appendFileSync(old.file, JSON.stringify(reply("an echidna")) + "\n");
+        noteSessionWrite(old.file);
+        expect((await searchSessions("echidna")).hits.map((h) => h.id)).toEqual([old.id]);
     });
 
     // Each session's runs of three characters (search.ts gramsOf) let a search skip those that can't have it: never one
@@ -112,7 +139,7 @@ describe("searching session files", () => {
         }
         for (let k = 0; k < 60; k++) {
             const { id, text } = said[Math.floor(rnd() * said.length)]!;
-            const len = 3 + Math.floor(rnd() * 6);
+            const len = 2 + Math.floor(rnd() * 7);
             if (text.length < len) continue;
             const at = Math.floor(rnd() * (text.length - len));
             const q = text.slice(at, at + len);

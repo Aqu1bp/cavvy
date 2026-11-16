@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, rpc, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, rpc, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -50,6 +50,11 @@ const turnHeights = new Map<string, Map<string, number>>();
 const TURN_HEIGHTS_KEPT = 8;
 /** What a turn put in again went in skipped with is let go of this long after it first comes near (as work-rendering's rows). */
 const AGAIN_MS = 2000;
+/**
+ * Turns fetched for a jump far up (Find, ⌘K): about a screen from the one jumped to; those after come as they're read
+ * down to (LaterTurns). A page of 40 there took the server 52 ms of the jump's 124 (a 100,000-item session, Linux).
+ */
+const JUMP_PAGE = 12;
 /** An element's padding and border, above and below it (px). */
 function outside(el: Element): number {
     if (typeof getComputedStyle !== "function") return 0;
@@ -201,6 +206,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         });
     };
     const turns = () => p.handle.view.turns;
+    /** The turns the window holds a gap for, between two of its own (Find searches them where they are). */
+    const findGap = createMemo(() => {
+        const g = p.handle.view.gap;
+        if (!g) return undefined;
+        const t = turns();
+        const at = t.findIndex((x) => x.id === g.after);
+        const next = at >= 0 ? t[at + 1]?.id : undefined;
+        return next ? { after: g.after, before: next } : undefined;
+    }, undefined, { equals: (a, b) => a?.after === b?.after && a?.before === b?.before });
     const visible = createMemo(() => {
         const t = turns();
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
@@ -1199,9 +1213,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         untrack(() => {
             setJumpTarget(undefined);
             const found = turnAt(turns(), j.seg, j.index);
-            if (found || !p.handle.view.earlier) return jump(j, found);
+            // The last before a gap may be it, or one of those the gap stands for: the page is fetched again from it.
+            const gap = p.handle.view.gap;
+            if (gap ? found && found.id !== gap.after : found || !p.handle.view.earlier) return jump(j, found);
             // Before the turns the session opened with: those back to it come first.
-            void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index } }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
+            void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index }, upTo: JUMP_PAGE }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
         });
     });
 
@@ -1286,8 +1302,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     <BuiltFromEnd.Provider value={builtFromEnd}>
                     <CardFoldsProvider sessionId={id}>
                         {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
-                        <KeyedList each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</KeyedList>
+                        <KeyedList each={visible()}>{(t) => <>
+                            <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
+                                workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />
+                            <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n))} root={() => scroller} />}</Show>
+                        </>}</KeyedList>
                     </CardFoldsProvider>
                     </BuiltFromEnd.Provider>
                     </DrawnAgain.Provider>
@@ -1310,7 +1329,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             </div>
             </div>
             <Show when={finding()}>
-                <FindBar turns={turns} earlier={() => p.handle.view.earlier ?? 0} elsewhere={(query, before, folded) => rpc.call("session.find", { id: p.handle.id, query, before, ...(folded.length ? { turns: folded } : {}) }).then((r) => r.matches)} bring={(m) => loadEarlier(p.handle, m.pos ? { through: m.pos } : { all: true }).then(() => undefined)} whole={(turnId) => loadTurn(p.handle, turnId)} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
+                <FindBar turns={turns} earlier={() => p.handle.view.earlier ?? 0} gap={findGap} elsewhere={(query, before, folded, gap) => rpc.call("session.find", { id: p.handle.id, query, before, ...(folded.length ? { turns: folded } : {}), ...(gap ? { gap } : {}) }).then((r) => r.matches)} bring={(m) => loadEarlier(p.handle, m.pos ? { through: m.pos, upTo: JUMP_PAGE } : { all: true }).then(() => undefined)} whole={(turnId) => loadTurn(p.handle, turnId)} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
                 {/* It has the dock's height itself (it isn't inherited). */}
@@ -1325,3 +1344,70 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         </div>
     );
 }
+
+/**
+ * The turns between a page fetched far up (a jump to a turn there) and those after it the window has: put in a page at a
+ * time as they're read down to, a screen before they're in sight, or at the click. Not on their own while this is in
+ * sight: they'd push the turns below it away from the reader (2 runs in 3 moved them 530-2,380 px, headless).
+ */
+function LaterTurns(p: { count: number; fill: () => Promise<boolean | "moved">; root: () => HTMLElement | undefined }) {
+    let el: HTMLButtonElement | undefined;
+    const [busy, setBusy] = createSignal(false);
+    let near = false;
+    /** Asks the observers where it is now (observing again reports at once): more, if it's still a screen away. */
+    let lookAgain = () => {};
+    const go = (clicked?: boolean) => {
+        if (busy()) return;
+        setBusy(true);
+        const failed = () => {
+            setBusy(false);
+            if (clicked) toast("Couldn't load later turns.");
+        };
+        void p.fill().then(
+            (ok) => {
+                if (ok === false) return failed();
+                setBusy(false);
+                // Its gap went meanwhile (another jump, the session renewed): nothing to say or do.
+                if (ok === "moved") return;
+                // The page that came may be short of the screen. One that didn't come waits to be read down to again,
+                // or a click: asked again at once, a dropped connection's at-once refusal would never let go.
+                lookAgain();
+            },
+            failed,
+        );
+    };
+    onMount(() => {
+        const root = p.root();
+        if (!el || !root || typeof IntersectionObserver === "undefined") return;
+        // A screen away and out of sight, where it is now: the observers report one at a time, each with its own news.
+        const auto = () => {
+            if (!near || busy() || !el) return;
+            const r = el.getBoundingClientRect(), v = root.getBoundingClientRect();
+            if (r.bottom > v.top && r.top < v.bottom) return;
+            go();
+        };
+        const close = new IntersectionObserver((entries) => {
+            for (const e of entries) near = e.isIntersecting;
+            auto();
+        }, { root, rootMargin: "100% 0px" });
+        // Leaving sight while still near (read back up from it).
+        const sight = new IntersectionObserver(auto, { root });
+        lookAgain = () => {
+            if (!el?.isConnected) return;
+            close.unobserve(el);
+            close.observe(el);
+        };
+        close.observe(el);
+        sight.observe(el);
+        onCleanup(() => {
+            close.disconnect();
+            sight.disconnect();
+        });
+    });
+    return (
+        <button ref={el} class="earlier later" onClick={() => go(true)} disabled={busy()}>
+            Show {Math.min(40, p.count)} later {p.count === 1 ? "turn" : "turns"}
+        </button>
+    );
+}
+

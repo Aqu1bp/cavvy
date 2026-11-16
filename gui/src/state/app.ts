@@ -648,11 +648,56 @@ function trim(opened: string) {
     }
 }
 
+/**
+ * A message shown as sent before the server has it (showSending): its turn, by session, until the server's own comes.
+ * Shown only once the server's turn came, the prompt was on screen a round trip after Enter (13-16 ms here; a remote
+ * link's round trip there).
+ */
+const sending = new Map<string, string>();
+let sendingIds = 0;
+
+/** `text`, sent to session `id` that isn't working, shown at once as its turn: undone by what's returned. */
+export function showSending(id: string, text: string): (taken: boolean) => void {
+    const h = handles.get(id);
+    if (!h) return () => undefined;
+    const turnId = `sending-${++sendingIds}`;
+    // One still shown (taken, its turn not here yet) gives way: two at once would leave the first for good.
+    const was = sending.get(id);
+    if (was) dropSending(h, was);
+    sending.set(id, turnId);
+    h.set(produce((v) => {
+        v.turns.push({ id: turnId, status: "running", prompt: { text }, blocks: [], startedAt: Date.now() });
+    }));
+    // Answered: what came before the answer (its turn, as a rule) is applied first, so no frame has neither. Taken but
+    // its turn not here yet (a session still starting answers first): it stays until its turn or its place in the
+    // queue comes (flush), for a moment at most.
+    return (taken) => {
+        if (h.queue.length) flush(h);
+        if (!taken) return dropSending(h, turnId);
+        if (sending.get(h.id) === turnId) setTimeout(() => dropSending(h, turnId), SENDING_WAIT_MS);
+    };
+}
+
+/** How long a message shown as sent waits for its turn after the server took it. */
+const SENDING_WAIT_MS = 15_000;
+
+function dropSending(h: SessionHandle, turnId: string) {
+    if (sending.get(h.id) !== turnId) return;
+    sending.delete(h.id);
+    h.set(produce((v) => {
+        const i = v.turns.findIndex((t) => t.id === turnId);
+        if (i >= 0) v.turns.splice(i, 1);
+    }));
+}
+
 function flush(h: SessionHandle) {
     h.scheduled = false;
     if (!h.queue.length) return;
     const ops = h.queue;
     h.queue = [];
+    // The server's turn for a message shown as sent takes its place, in the same update.
+    const shown = sending.get(h.id);
+    if (shown && ops.some((op) => op.op === "turn" || op.op === "reset" || (op.op === "state" && "queued" in op.patch))) batch(() => dropSending(h, shown));
     batch(() =>
         h.set(
             produce((v) => {
@@ -666,8 +711,11 @@ function schedule(h: SessionHandle) {
     if (h.scheduled) return;
     h.scheduled = true;
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
-    if (document.visibilityState === "visible") onStep(() => flush(h));
-    else setTimeout(() => flush(h), 200);
+    if (document.visibilityState !== "visible") setTimeout(() => flush(h), 200);
+    // On screen: in step with the frames. Not on screen: at once, asking for no frame (10 streaming out of sight drew
+    // 20 frames a second that showed nothing).
+    else if (h.id === app.activeId || onScreen.beside().includes(h.id)) onStep(() => flush(h));
+    else setTimeout(() => flush(h), 0);
 }
 
 /** At the next frame, with whatever came before it (in order). */
@@ -740,10 +788,12 @@ function openAhead() {
  * the turn holding message `through`, or `all` of them. False when they couldn't be had (the session's turns were
  * replaced meanwhile, as by a rewind: then it has them all already) or the server didn't answer.
  */
-export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean } = {}): Promise<boolean> {
+export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean; upTo?: number } = {}): Promise<boolean> {
     const going = loadingEarlier.get(h.id);
     // One at a time: the next asks from where that one left off.
     const run = (going ?? Promise.resolve(true)).then(async () => {
+        // A page far up asked for while one is here already (with its gap): that one goes back into the gap first.
+        if (how.upTo !== undefined && h.view.gap) dropPage(h);
         if (!h.view.earlier) return true;
         const first = h.view.turns[0]?.id;
         if (!first) return false;
@@ -754,6 +804,7 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
         batch(() => h.set(produce((v) => {
             v.turns.unshift(...page.turns);
             v.earlier = page.earlier;
+            if (page.skipped && page.turns.length) v.gap = { after: page.turns.at(-1)!.id, count: page.skipped };
             // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial), or only
             // counted them (agentsMore).
             for (const a of page.agents ?? []) {
@@ -775,6 +826,57 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
     return settled;
 }
 
+/** The page before a gap let go of: its turns are the gap's (earlier than them, `earlier`'s), and no gap is left. */
+function dropPage(h: SessionHandle) {
+    const gap = h.view.gap;
+    if (!gap) return;
+    const at = h.view.turns.findIndex((t) => t.id === gap.after);
+    batch(() => h.set(produce((v) => {
+        v.turns.splice(0, at + 1);
+        v.earlier = (v.earlier ?? 0) + at + 1 + gap.count;
+        v.gap = undefined;
+    })));
+}
+
+/** The gap's next page (those after the page fetched far up), in one request: false when it couldn't be had, "moved" when the gap changed meanwhile. */
+const fillingGap = new Map<string, Promise<boolean | "moved">>();
+/** `put`: told, in the same update, how many turns went in (a view counting what it shows from the end shows them too). */
+export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void): Promise<boolean | "moved"> {
+    const going = fillingGap.get(h.id);
+    if (going) return going;
+    const run = (async () => {
+        const gap = h.view.gap;
+        if (!gap) return true;
+        const at = h.view.turns.findIndex((t) => t.id === gap.after);
+        const next = h.view.turns[at + 1]?.id;
+        if (at < 0 || !next) return "moved";
+        const page = await rpc.call("session.turns", { id: h.id, before: next, after: gap.after, count, fold: !prefs.expandActivity });
+        flush(h);
+        const now = h.view.gap;
+        if (!now || now.after !== gap.after || h.view.turns[at + 1]?.id !== next) return "moved";
+        batch(() => {
+            put?.(page.turns.length);
+            h.set(produce((v) => {
+            v.turns.splice(at + 1, 0, ...page.turns);
+            v.gap = page.skipped && page.turns.length ? { after: page.turns.at(-1)!.id, count: page.skipped } : undefined;
+            for (const a of page.agents ?? []) {
+                const i = v.agents.findIndex((x) => x.id === a.id);
+                if (i >= 0) {
+                    if (!a.partial || v.agents[i]!.partial) v.agents[i] = a;
+                } else {
+                    v.agents.push(a);
+                    if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
+                }
+            }
+            }));
+        });
+        return true;
+    })().catch(() => false);
+    fillingGap.set(h.id, run);
+    void run.finally(() => { if (fillingGap.get(h.id) === run) fillingGap.delete(h.id); });
+    return run;
+}
+
 /** Whole before its view opens (a sub-agent of a turn the window doesn't have): the view's first frame is all of it. */
 export function agentReady(agentId: string): Promise<void> {
     for (const h of handles.values()) {
@@ -794,8 +896,14 @@ export function forgetEarlier(h: SessionHandle, keep: number) {
     // Not while a page of them is coming: it's put in before the first it has.
     if (drop <= 0 || loadingEarlier.has(h.id)) return;
     batch(() => h.set(produce((v) => {
+        // Past a gap: what's let go of before it, and the gap with it, are earlier ones now.
+        const gapAt = v.gap ? v.turns.findIndex((t) => t.id === v.gap!.after) : -1;
         const gone = new Set(v.turns.splice(0, drop).map((t) => t.id));
         v.earlier = (v.earlier ?? 0) + drop;
+        if (v.gap && gapAt >= 0 && drop > gapAt) {
+            v.earlier += v.gap.count;
+            v.gap = undefined;
+        }
         v.agents = v.agents.map((a) => {
             if (!gone.has(a.turnId) || a.partial || a.status === "running" || a.status === "waiting") return a;
             const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
@@ -933,7 +1041,7 @@ export function loadEarlierTo(h: SessionHandle, key: TurnKey): Promise<boolean> 
     if (!near || !h.view.earlier || keyedTurn(h.view.turns, key)) return undefined;
     const first = h.view.turns.find((t) => t.pos)?.pos;
     if (first && !placeBefore(near, first)) return undefined;
-    return loadEarlier(h, { through: near, count: 1 });
+    return loadEarlier(h, { through: near, count: 1, upTo: 40 });
 }
 
 /** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */
@@ -1107,6 +1215,8 @@ export async function refreshSessions() {
     // The other machines' sessions go on being listed: none in the place of one of this machine's own.
     const mine = new Set([...list, ...archived].map((s) => s.id));
     for (const s of others.list?.() ?? []) if (!mine.has(s.id)) (s.archived ? archived : list).push(s);
+    // (What came before the list is in it.)
+    upsertsFirst();
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -1252,6 +1362,8 @@ const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 export function forgetSession(id: string) {
+    // One due to be put in (changed just before) goes in first, so it doesn't come back after.
+    upsertsFirst();
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
@@ -1281,25 +1393,64 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 export function upsertSession(s: SessionSummary) {
-    sessionPresent(s.id);
-    const seen = seenBeforeDelete.get(s.id);
-    if (seen !== undefined) {
-        seenBeforeDelete.delete(s.id);
-        if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    upsertsFirst();
+}
+
+/** Into the lists in one update: the sidebar and the palette are worked out again once, not once each. */
+function upsertSessions(all: readonly SessionSummary[]) {
+    if (!all.length) return;
+    for (const s of all) {
+        sessionPresent(s.id);
+        const seen = seenBeforeDelete.get(s.id);
+        if (seen !== undefined) {
+            seenBeforeDelete.delete(s.id);
+            if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+        }
     }
-    const key = s.archived ? "archived" : "sessions";
-    const other = s.archived ? "sessions" : "archived";
-    batch(() => {
-        setApp(other, (list) => list.filter((x) => x.id !== s.id));
+    const put = (key: "sessions" | "archived", these: readonly SessionSummary[], gone: ReadonlySet<string>) =>
         setApp(key, (list) => {
-            const i = list.findIndex((x) => x.id === s.id);
-            if (i < 0) return orderSessions([s, ...list]);
-            const next = list.slice();
-            next[i] = s;
-            return orderSessions(next);
+            const by = new Map(these.map((s) => [s.id, s]));
+            if (!by.size && !list.some((x) => gone.has(x.id))) return list;
+            const next = list.flatMap((x) => (by.has(x.id) ? [by.get(x.id)!] : gone.has(x.id) ? [] : [x]));
+            const have = new Set(list.map((x) => x.id));
+            return orderSessions([...these.filter((s) => !have.has(s.id)), ...next]);
         });
+    const archived = all.filter((s) => s.archived);
+    const live = all.filter((s) => !s.archived);
+    batch(() => {
+        put("sessions", live, new Set(archived.map((s) => s.id)));
+        put("archived", archived, new Set(live.map((s) => s.id)));
     });
-    if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+    for (const s of all) if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+}
+
+/**
+ * Sessions the server changed, put in at the next frame together (or a moment on, in a hidden window): 30 finishing in
+ * the same second each worked the sidebar out again, 6 ms a time (headless), so the last showed done 400-700 ms late.
+ */
+const upsertsDue = new Map<string, SessionSummary>();
+let upsertFrame: number | undefined;
+let upsertTimer: ReturnType<typeof setTimeout> | undefined;
+rpc.beforeAnswer = () => upsertsDue.size && upsertsFirst();
+function upsertSoon(s: SessionSummary) {
+    // Back, if it was deleted (an Undo): at once, as what's asked of it next goes by that.
+    sessionPresent(s.id);
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    if (upsertTimer !== undefined) return;
+    upsertTimer = setTimeout(upsertsFirst, 100);
+    if (typeof requestAnimationFrame === "function") upsertFrame = requestAnimationFrame(upsertsFirst);
+}
+/** What's due goes in now (first, where what follows reads or changes the lists). */
+export function upsertsFirst() {
+    if (upsertFrame !== undefined) cancelAnimationFrame(upsertFrame);
+    clearTimeout(upsertTimer);
+    upsertFrame = upsertTimer = undefined;
+    const due = [...upsertsDue.values()];
+    upsertsDue.clear();
+    upsertSessions(due);
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,7 +1470,7 @@ function onEvent(ev: ServerEvent) {
             return;
         }
         case "sessions.upsert":
-            upsertSession(own(ev.session));
+            upsertSoon(own(ev.session));
             return;
         case "sessions.remove":
             forgetSession(ev.id);

@@ -895,12 +895,19 @@ export interface SessionFindMatch {
     part: string;
     n: number;
     pos?: { seg: number; index: number };
+    /** In the turns the window holds a gap for (SessionView.gap), after its turn `after`: not before the window's first. */
+    gap?: true;
 }
 
 export interface SessionTurnsPage {
     turns: Turn[];
     /** Turns before these, still not sent. */
     earlier: number;
+    /**
+     * Turns between the last of these and `before` not sent (`upTo` kept to a page around the one asked for): the
+     * window has a gap there, filled a page at a time (`after`).
+     */
+    skipped?: number;
     seq: number;
     /** The sub-agents of these turns, whole (the window had only what its list shows of them: AgentRun.partial). */
     agents?: AgentRun[];
@@ -2169,7 +2176,7 @@ export interface Methods {
      * The turns before `before` (a turn the window has): `count` of them (40 by default), or all back to the one holding
      * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).
      */
-    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean }; result: SessionTurnsPage };
+    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean; upTo?: number; after?: string }; result: SessionTurnsPage };
     /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
     "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
     /** Every sub-agent, as its row in the Agents list shows it (AgentRun.partial): those a window wasn't sent (agentsMore). */
@@ -2179,7 +2186,7 @@ export interface Methods {
      * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`. And in `turns` (those
      * it was sent folded: it can't count them itself), in order with the rest.
      */
-    "session.find": { params: { id: string; query: string; before?: string; turns?: string[] }; result: { matches: SessionFindMatch[] } };
+    "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };

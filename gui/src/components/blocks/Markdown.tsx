@@ -2,7 +2,6 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 import { createEffect, createMemo, createRenderEffect, createSignal, For, Index, Match, onCleanup, Switch, untrack, useContext, type Accessor } from "solid-js";
 import { MarkdownRenderer, type Segment } from "../../lib/markdown";
 import { BuiltFromEnd, createReveal, DrawnAgain } from "../../lib/reveal";
-import { offStep, onStep } from "../../lib/stream-clock";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -149,27 +148,30 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     const cut = untrack(() => (built.fromEnd() && !live() ? endOf(segments(), BUILT_AT_ONCE) : 0));
     const [above, setAbove] = createSignal(cut);
     if (cut) {
-        // In the page's idle time, as many steps as fit (each a few ms), so what's above is in within a few frames.
-        let idle: number | undefined;
-        const step = (deadline?: IdleDeadline) => {
-            idle = undefined;
-            const started = performance.now();
+        // A step a frame (about 4 ms of building at most), so what's above is in within a few frames: done in the page's
+        // idle time, a Mac had it in only after 2 s (idle periods came seldom), and a reader who scrolled up meanwhile
+        // had the rest put in at once under their wheel.
+        let frame: number | undefined;
+        const step = (now?: number) => {
+            frame = undefined;
+            // The frame's budget is shared by every reply building at once; a step isn't begun that it wouldn't fit.
+            if (now === undefined || building.frame !== now) Object.assign(building, { frame: now, from: performance.now() });
+            else if (performance.now() - building.from + building.step > FRAME_BUSY_MS) {
+                frame = requestAnimationFrame(step);
+                return;
+            }
             do {
+                const began = performance.now();
                 const at = built.whole() ? 0 : endOf(segments().slice(0, untrack(above)), BUILT_A_STEP);
                 // The first block in so far stays where it's seen (the end, while it's followed).
                 built.keep(root?.firstElementChild, () => setAbove(at));
-            } while (untrack(above) && deadline && deadline.timeRemaining() > IDLE_LEFT_MS && performance.now() - started < IDLE_BUSY_MS);
-            if (untrack(above)) later();
+                building.step = performance.now() - began;
+            } while (untrack(above) && performance.now() - building.from + building.step <= FRAME_BUSY_MS);
+            if (untrack(above)) frame = requestAnimationFrame(step);
         };
-        const stepNow = () => step();
-        const later = () => {
-            if (typeof requestIdleCallback === "function") idle = requestIdleCallback(step, { timeout: 200 });
-            else onStep(stepNow);
-        };
-        later();
+        frame = requestAnimationFrame(step);
         onCleanup(() => {
-            if (idle !== undefined) cancelIdleCallback(idle);
-            offStep(stepNow);
+            if (frame !== undefined) cancelAnimationFrame(frame);
         });
         createEffect(() => {
             if (built.whole() && untrack(above)) built.keep(root?.firstElementChild, () => setAbove(0));
@@ -193,12 +195,10 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
 /** What's built of a long reply first (its HTML and code, in characters), and of what's above it at each step after. */
 const BUILT_AT_ONCE = 16_000;
 const BUILT_A_STEP = 6_000;
-/**
- * A step more in an idle period only with this much of it left (ms), and only so long into it: a key pressed meanwhile
- * waits for the step under way. A step is about 3-6 ms (measured, headless).
- */
-const IDLE_LEFT_MS = 8;
-const IDLE_BUSY_MS = 8;
+/** Building in a frame stops once it's taken this long (ms): a step is about 3-6 ms (measured, headless). */
+const FRAME_BUSY_MS = 4;
+/** The frame being built in (its requestAnimationFrame time), since when, and how long the last step took. */
+const building = { frame: -1, from: 0, step: 0 };
 /** Where the last `chars` characters of blocks start, in `segs` (0: all of it, as it's no more than that, or hardly more). */
 function endOf(segs: readonly Segment[], chars: number): number {
     let n = 0;

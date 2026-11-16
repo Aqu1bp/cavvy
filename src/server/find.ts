@@ -57,7 +57,7 @@ const SLICE_MS = 8;
 export async function findBefore(
     turns: readonly Turn[],
     query: string,
-    o: { before?: string; also?: ReadonlySet<string>; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean; cache?: FindCache } = {},
+    o: { before?: string; gap?: { after: string; before: string }; also?: ReadonlySet<string>; whole?: (t: Turn) => Turn; stamped?: (t: Turn) => string | undefined; stale?: () => boolean; cache?: FindCache } = {},
 ): Promise<SessionFindMatch[] | undefined> {
     // `whole`: a turn kept as its head, whole (the session's store has its blocks); `stamped`: what it is, for it.
     const parts = (t: Turn) => partsOf(t, o.whole, o.stamped, o.cache);
@@ -65,10 +65,19 @@ export async function findBefore(
     if (end < 0) return [];
     // As they are now: turns that come in meanwhile are the window's to count. And `also`, after them (those a window
     // was sent folded: it hasn't what it would count in them).
-    const scope = o.also?.size ? turns.filter((t, i) => i < end || o.also!.has(t.id)) : turns.slice(0, end);
+    // And those between a page the window fetched far up and its later turns (its gap), told apart.
+    let from = -1, to = -1;
+    if (o.gap) {
+        from = turns.findIndex((t) => t.id === o.gap!.after);
+        to = from < 0 ? -1 : turns.findIndex((t, i) => i > from && t.id === o.gap!.before);
+        if (to < 0) from = -1;
+    }
+    const inGap = (i: number) => i > from && i < to;
+    const scope = o.also?.size || from >= 0 ? turns.flatMap((t, i) => (i < end || inGap(i) || o.also?.has(t.id) ? [i] : [])) : turns.slice(0, end).map((_, i) => i);
     const out: SessionFindMatch[] = [];
     let since = performance.now();
-    for (const t of scope) {
+    for (const i of scope) {
+        const t = turns[i]!;
         if (performance.now() - since > SLICE_MS) {
             await nextSlice();
             if (o.stale?.()) return undefined;
@@ -79,7 +88,7 @@ export async function findBefore(
             continue;
         }
         for (const m of matchesIn([t], parts, query)) {
-            out.push(t.pos ? { ...m, pos: t.pos } : m);
+            out.push({ ...m, ...(t.pos ? { pos: t.pos } : {}), ...(inGap(i) ? { gap: true as const } : {}) });
             if (out.length >= MAX_MATCHES) return out;
         }
     }
