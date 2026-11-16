@@ -424,6 +424,22 @@ try {
         await streamWhile([[short, "hangforever"]], () => phase("waitingOnScreen", SECONDS));
     }
 
+    // The same with the window visible but another app in front (on a Mac, Finder): what still draws without the focus.
+    if (want("waitingUnfocused") && main) {
+        await show(short);
+        const win = (expression: string) => main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows().find((w) => w.isVisible()); ${expression}; return !!w; })()`, returnByValue: true });
+        await streamWhile([[short, "hangforever"]], async () => {
+            if (MAC) Bun.spawnSync(["open", "-a", "Finder"]);
+            else await win("w?.blur()");
+            await sleep(2000);
+            const focus = await js(`({ page: document.hasFocus(), decorOff: document.documentElement.hasAttribute('data-decor-off'), loopsOff: document.documentElement.hasAttribute('data-loops-off') })`);
+            await phase("waitingUnfocused", SECONDS);
+            report.phases.waitingUnfocused.focus = focus;
+            await win(MAC ? "app.focus({ steal: true }); w?.focus()" : "w?.focus()");
+            await sleep(1000);
+        });
+    }
+
     // Idle, the long session on screen.
     await show(long);
     await sleep(3000);
@@ -523,22 +539,42 @@ try {
         await sleep(1500);
     }
     if (MAC && want("terminalAppFlood")) {
-        const osa = (script: string) => Bun.spawnSync(["osascript", "-e", script]);
-        osa(`tell application "Terminal" to activate`);
-        await sleep(2000);
-        const roles = new Map<number, string>();
-        for (const pid of Bun.spawnSync(["pgrep", "-x", "Terminal"]).stdout.toString().trim().split("\n").filter(Boolean)) roles.set(Number(pid), "terminalApp");
-        const ws = Bun.spawnSync(["pgrep", "-x", "WindowServer"]).stdout.toString().trim();
-        if (ws) roles.set(Number(ws), "WindowServer");
-        let started = false;
-        const done = () => (flooding() ? ((started = true), false) : started);
-        const run = until(roles, done);
-        osa(`tell application "Terminal" to do script "${FLOOD.replace(/"/g, '\\"')}"`);
-        const r = await run;
-        report.phases.terminalAppFlood = { ...r, note: "Terminal.app, the same command in a window of its own; Cavvy idle behind it" };
-        console.error(`terminalAppFlood: ${JSON.stringify(r)}`);
-        await sleep(1000);
-        osa(`tell application "Terminal" to close front window saving no`);
+        // Bounded: until Terminal may be controlled (System Settings, Privacy & Security, Automation), macOS holds the
+        // script on a prompt, and the phase is skipped rather than waited on.
+        const osa = (script: string) => {
+            const r = Bun.spawnSync(["osascript", "-e", script], { timeout: 20_000 });
+            return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
+        };
+        const windows = () => osa(`tell application "Terminal" to get id of every window`)?.split(/,\s*/).filter(Boolean);
+        const before = windows();
+        if (!before) {
+            report.phases.terminalAppFlood = { skipped: "Terminal.app didn't answer: allow controlling it under Privacy & Security, Automation" };
+            console.error("terminalAppFlood: skipped, Terminal.app didn't answer");
+        } else {
+            osa(`tell application "Terminal" to activate`);
+            await sleep(2000);
+            const roles = new Map<number, string>();
+            for (const pid of Bun.spawnSync(["pgrep", "-x", "Terminal"]).stdout.toString().trim().split("\n").filter(Boolean)) roles.set(Number(pid), "terminalApp");
+            const ws = Bun.spawnSync(["pgrep", "-x", "WindowServer"]).stdout.toString().trim();
+            if (ws) roles.set(Number(ws), "WindowServer");
+            let started = false;
+            let failed = false;
+            const done = () => failed || (flooding() ? ((started = true), false) : started);
+            const run = until(roles, done);
+            if (osa(`tell application "Terminal" to do script "${FLOOD.replace(/"/g, '\\"')}"`) === undefined) failed = true;
+            const r = await run;
+            // Only the window this opened is closed: never one of the person's own.
+            const opened = (windows() ?? []).filter((id) => !before.includes(id));
+            if (failed || !started) {
+                report.phases.terminalAppFlood = { skipped: "the command didn't start in Terminal.app" };
+                console.error("terminalAppFlood: skipped, the command didn't start");
+            } else {
+                report.phases.terminalAppFlood = { ...r, note: "Terminal.app, the same command in a window of its own; Cavvy idle behind it" };
+                console.error(`terminalAppFlood: ${JSON.stringify(r)}`);
+            }
+            await sleep(1000);
+            if (opened.length === 1) osa(`tell application "Terminal" to close window id ${Number(opened[0])} saving no`);
+        }
     }
 
     // Memory once it's all over and settled.
