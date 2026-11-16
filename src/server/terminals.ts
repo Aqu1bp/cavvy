@@ -200,8 +200,8 @@ export function terminalEnv(inheritSelectors = true): Record<string, string> {
 }
 
 /** Parser state at a buffer boundary; control strings can span reads and contain newlines. */
-type EscapeState = "ground" | "escape" | "csi" | "osc" | "string";
-function advanceEscape(state: EscapeState, char: string): EscapeState {
+export type EscapeState = "ground" | "escape" | "csi" | "osc" | "string";
+export function advanceEscape(state: EscapeState, char: string): EscapeState {
     if (char === "\x18" || char === "\x1a" || char === "\x9c") return "ground";
     // Like xterm, ESC ends a control string and starts an escape. A following
     // backslash completes ST; any other character belongs to the new escape.
@@ -221,25 +221,70 @@ function advanceEscape(state: EscapeState, char: string): EscapeState {
     return "ground";
 }
 
-/** Prefer a line boundary, but never cut inside ANSI controls or a surrogate pair. */
-function cleanCut(text: string, from: number, state: EscapeState = "ground") {
+/** What can take the parser out of "ground": ESC and the C1 introducers. Everything else leaves it there. */
+const LEAVES_GROUND = /[\x1b\x90\x98\x9b\x9d\x9e\x9f]/g;
+/** Where the next character that can leave "ground" is, at or after `from` and before `until` (`until` if none). */
+function nextLeaving(text: string, from: number, until: number) {
+    // Searched in the part asked about only: a regex runs on to the end of the string, here the whole scrollback.
+    LEAVES_GROUND.lastIndex = 0;
+    const found = LEAVES_GROUND.exec(text.substring(from, until))?.index;
+    return found === undefined ? until : from + found;
+}
+const lowSurrogate = (text: string, at: number) => {
+    const c = text.charCodeAt(at);
+    return c >= 0xdc00 && c <= 0xdfff;
+};
+
+/**
+ * Prefer a line boundary, but never cut inside ANSI controls or a surrogate pair. Plain text is passed over a run at
+ * a time (it can't change the parser's state), not a character at a time: in a flood this ran over the whole
+ * scrollback for each read, and kept the server from everything else (a request took 11-89 ms; measured).
+ */
+export function cleanCut(text: string, from: number, state: EscapeState = "ground") {
     if (from === 0 && state === "ground") return { at: 0, state };
     const line = text.indexOf("\n", from);
     // Continuing a discarded string only needs its end, not the next text line.
     const target = from > 0 && line !== -1 && line - from < 4096 ? line + 1 : from;
-    for (let at = 0; at < text.length; at++) {
-        if (at >= target && state === "ground" && !/[\uDC00-\uDFFF]/.test(text[at]!)) return { at, state };
+    let at = 0;
+    while (at < text.length) {
+        if (state === "ground") {
+            if (at >= target) {
+                if (!lowSurrogate(text, at)) return { at, state };
+                at++;
+                continue;
+            }
+            const next = nextLeaving(text, at, Math.min(target, text.length));
+            if (next >= target) {
+                at = target;
+                continue;
+            }
+            if (next >= text.length) break;
+            at = next;
+        }
         state = advanceEscape(state, text[at]!);
+        at++;
     }
     return { at: text.length, state };
 }
 
 /** The last place in `text` at or before `limit` where `cleanCut` could cut (`state`: the parser's at the start of `text`), or -1. */
-function cleanCutBefore(text: string, limit: number, state: EscapeState = "ground") {
+export function cleanCutBefore(text: string, limit: number, state: EscapeState = "ground") {
     let last = -1;
-    for (let at = 0; at <= limit && at <= text.length; at++) {
-        if (state === "ground" && !(at < text.length && /[\uDC00-\uDFFF]/.test(text[at]!))) last = at;
-        if (at < text.length) state = advanceEscape(state, text[at]!);
+    const end = Math.min(limit, text.length);
+    let at = 0;
+    while (at <= end) {
+        if (state === "ground") {
+            // Every place from here to the next character that can leave "ground" is one, but a pair's second half.
+            const next = nextLeaving(text, at, end);
+            let p = next;
+            while (p >= at && p < text.length && lowSurrogate(text, p)) p--;
+            if (p >= at) last = p;
+            if (next >= end) break;
+            at = next;
+        }
+        if (at >= text.length) break;
+        state = advanceEscape(state, text[at]!);
+        at++;
     }
     return last;
 }

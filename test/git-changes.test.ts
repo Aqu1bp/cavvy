@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, indexHasCrlf, removeWhere, render } = await import("../src/server/git-changes");
+const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, indexHasCrlf, removeWhere, render, statClean } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -23,6 +23,9 @@ function repo(files: Record<string, string | Buffer> = {}): string {
     const dir = join(realpathSync(iso.home), `repo-${n++}`);
     mkdirSync(dir);
     git(dir, "init", "-q", "-b", "main");
+    // Git's defaults, whatever the machine's own config says: which stat data counts changes what's trusted.
+    git(dir, "config", "core.checkStat", "default");
+    git(dir, "config", "core.trustCtime", "true");
     for (const [path, body] of Object.entries(files)) write(dir, path, body);
     git(dir, "add", "-A");
     git(dir, "commit", "-q", "--allow-empty", "-m", "Initial commit");
@@ -687,6 +690,26 @@ describe("branch scope", () => {
             await expect(gitChanges(dir, { scope: "branch", base })).rejects.toThrow(/isn't a branch/);
         }
         expect(existsSync("/tmp/cavvy-x")).toBe(false);
+    });
+});
+
+describe("trusting the index's stat data", () => {
+    const S = 1_000_000_000n;
+    const entry = { ctime: [100n, 5n] as [bigint, bigint], mtime: [100n, 5n] as [bigint, bigint], ino: 7n, uid: 1n, gid: 1n, size: 10n };
+    const stat = (mtimeNs: bigint) => ({ size: 10n, mtimeNs, ctimeNs: mtimeNs, ino: 7n, uid: 1n, gid: 1n }) as never;
+    const full = { trustCtime: true, minimal: false };
+    const minimal = { trustCtime: true, minimal: true };
+
+    test("an entry older than the index is trusted while its stat matches", () => {
+        expect(statClean(stat(100n * S + 5n), entry, 100n * S + 9n, full)).toBe(true);
+        expect(statClean(stat(100n * S + 6n), entry, 100n * S + 9n, full)).toBe(false);
+        expect(statClean(stat(100n * S + 5n), entry, 100n * S + 3n, full)).toBe(false);
+    });
+
+    test("comparing whole seconds, an entry from the index's own second is racy", () => {
+        // A same-size rewrite later in that second has the same stat.
+        expect(statClean(stat(100n * S + 6n), entry, 100n * S + 9n, minimal)).toBe(false);
+        expect(statClean(stat(100n * S + 6n), entry, 101n * S, minimal)).toBe(true);
     });
 });
 
