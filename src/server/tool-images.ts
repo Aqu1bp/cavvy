@@ -2,22 +2,17 @@
 // session so its row can show what the model looked at. A CLI's results reach Cavvy once, as they happen, and its
 // own session files are its own: so each image is kept here, beside the session's file history, by a hash of it.
 
-import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { imageKey } from "../agent/image-key";
 import type { ImagePart } from "../providers/types";
 
-const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
 const TYPE: Record<string, string> = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
 /** A kept image's name: a hash of it and its kind. Nothing else is ever read from the folder. */
 export const IMAGE_KEY = /^[a-f0-9]{24}\.(png|jpg|gif|webp)$/;
 
-/** The same image, the same key; undefined for a kind no model takes. */
-export function imageKey(i: Pick<ImagePart, "mediaType" | "data">): string | undefined {
-    const ext = EXT[i.mediaType];
-    return ext && `${createHash("sha256").update(i.data).digest("hex").slice(0, 24)}.${ext}`;
-}
+export { imageKey };
 
 /** Where a session's are kept: in its project's folder, as its file history is (session-delete moves both). */
 export function toolImagesDir(sessionPath: string, id: string): string {

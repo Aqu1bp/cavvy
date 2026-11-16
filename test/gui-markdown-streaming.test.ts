@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
 import { LAG_MS, lagFor, MAX_LAG_MS, nextGap, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
-import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
+import { Lexer, Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
 const visible = (r: MarkdownRenderer, text: string, streaming = true) => r.segments(text, streaming).map((s) => s.kind === "html" ? { kind: s.kind, html: s.html } : { kind: s.kind, lang: s.lang, code: s.code, open: s.open });
 
@@ -118,6 +118,45 @@ test("code that reads like a link definition, an open code block, and the end of
         // A list, a quote and a table are closed by the text that starts after them.
         const blocks = Array.from({ length: 20 }, (_, i) => `- item ${i}\n- another\n\n> quoted ${i}\n\n| a | b |\n| --- | --- |\n| ${i} | x |\n\nText ${i}.\n\n`).join("");
         expect(stream(blocks)).toBeLessThan(6);
+    } finally {
+        Marked.prototype.lexer = lexer;
+    }
+});
+
+test("a list's last item, one line of text, is lexed a piece at a time as it's written", () => {
+    // Lexed whole with each chunk (as marked lexes an item), a list of long items was read 3.6 times a character.
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    const lexInline = (Lexer as any).lexInline;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    (Lexer as any).lexInline = (src: string, options: unknown) => { chars += src.length; return lexInline(src, options); };
+    try {
+        const text = "The steps:\n\n" + Array.from({ length: 40 }, (_, i) => `- **Step ${i}**: read \`src/part${i}.ts\` and say what it changes and why, in a sentence that runs to a long line.\n`).join("") + "\nDone.";
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        expect(chars / text.length).toBeLessThan(3);
+    } finally {
+        Marked.prototype.lexer = lexer;
+        (Lexer as any).lexInline = lexInline;
+    }
+});
+
+test("a code block once closed isn't lexed again with what's written after it", () => {
+    // Lexed with the block after it, a closed block was read once more for each block that followed a code block.
+    let code = 0;
+    const lexer = Marked.prototype.lexer;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) {
+        if (src.startsWith("```")) code += src.indexOf("```\n\n", 3) + 5;
+        return (lexer as any).call(this, src, ...rest);
+    } as any;
+    try {
+        const block = (i: number) => "```ts\n" + Array.from({ length: 8 }, (_, k) => `const part${i}_${k} = input.slice(${k}).trim();\n`).join("") + "```\n\n";
+        const after = ["| a | b |\n| --- | --- |\n| 1 | 2 |\n\n", "Text after it, a sentence or two long.\n\n", "- an item\n- another\n\n", "## A heading\n\n"];
+        const text = Array.from({ length: 20 }, (_, i) => block(i) + after[i % after.length]).join("");
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        const written = Array.from({ length: 20 }, (_, i) => block(i).length).reduce((a, b) => a + b, 0);
+        expect(code / written).toBeLessThan(1.1);
     } finally {
         Marked.prototype.lexer = lexer;
     }

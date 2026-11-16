@@ -605,7 +605,7 @@ export class App {
         // As the desktop's: an idle compaction planned on the earlier account's cache doesn't run on the new one.
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         const name = getProvider(provider)?.name ?? provider;
-        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // Kept as the desktop keeps it (one line, the latest of switches with no message between); the model list's
         // caveat is only said here, in the terminal, which has no picker to say it.
         const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
@@ -2659,7 +2659,7 @@ export class App {
         // A watch's events don't either: they aren't the user's.
         if (!opts.goal && opts.kind !== "wake" && this.scheduledTurn !== true) this.goal?.userTurn();
         const goal = this.goal;
-        const from = this.session.messages.length;
+        const from = this.session.messageCount;
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;

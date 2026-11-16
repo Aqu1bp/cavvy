@@ -14,16 +14,16 @@ const WHOLE_MAX = 256 * 1024 * 1024;
  * Calls `fn` with each line of `file` (without its newline), in order; a last line without a newline too. Says whether
  * the file ended with a newline (true for an empty file), and where it ended (`end`: how far it was read). Throws as
  * openSync does (no file, no access). `wholeMax`: the size up to which it's read whole (tests use 0 to read any file a
- * chunk at a time). `from`: where to start (the start of a line).
+ * chunk at a time). `from`: where to start (the start of a line). `to`: where to stop, not the file's end.
  */
-export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX, from = 0): { endsWithNewline: boolean; end: number } {
+export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX, from = 0, to?: number): { endsWithNewline: boolean; end: number } {
     const fd = openSync(file, "r");
     try {
-        const size = fstatSync(fd).size;
+        const size = Math.min(fstatSync(fd).size, to ?? Infinity);
         if (size - from <= wholeMax) {
             let text: string;
             let end: number;
-            if (from === 0) {
+            if (from === 0 && to === undefined) {
                 const b = readFileSync(fd);
                 text = b.toString("utf-8");
                 end = b.length;
@@ -46,7 +46,7 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
         let parts: Buffer[] = [];
         let last = 10;
         let pos = from;
-        for (let n: number; (n = readSync(fd, chunk, 0, CHUNK, pos)) > 0; pos += n) {
+        for (let n: number; pos < size && (n = readSync(fd, chunk, 0, Math.min(CHUNK, size - pos), pos)) > 0; pos += n) {
             last = chunk[n - 1]!;
             const nl = chunk.lastIndexOf(10, n - 1);
             if (nl < 0) {
