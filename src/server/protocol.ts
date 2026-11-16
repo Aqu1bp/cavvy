@@ -2049,6 +2049,20 @@ export interface LoopLag {
     worst: { at: number; ms: number; cpuMs?: number; waits?: number; preempted?: number }[];
 }
 
+export interface ServerMemory {
+    rssMB: number;
+    /** The JS heap as its last collection left it (0 before the first). */
+    heapMB: number;
+    /** What the allocator holds now and at most so far (the heap's own, buffers, strings' storage, the runtime's). */
+    mallocMB: number;
+    mallocPeakMB: number;
+    arrayBuffersMB: number;
+    /** With `types`: a walk of the heap. */
+    objects?: number;
+    extraMB?: number;
+    types?: [string, number][];
+}
+
 export interface Methods {
     // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
@@ -2149,6 +2163,8 @@ export interface Methods {
     "terminal.list": { params: Record<string, never>; result: TerminalInfo[] };
     /** How late the server's thread runs what's due (src/server/loop-lag.ts): measuring starts with the first call. */
     "server.lag": { params: { reset?: boolean }; result: LoopLag };
+    /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
+    "server.memory": { params: { types?: boolean }; result: ServerMemory };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)

@@ -2564,6 +2564,8 @@ export class Engine {
                 return null;
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
+            case "server.memory":
+                return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":
                 return this.terminals.list(client);
             case "terminal.attach":
