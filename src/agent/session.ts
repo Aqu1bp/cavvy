@@ -295,6 +295,8 @@ export class Session {
     get historyDigest(): Readonly<MessagesDigest> | undefined {
         return this.digest;
     }
+    /** Where its file was read to, if it doesn't write to it: its messages read later are read to there. */
+    private readTo?: number;
     /** Those pushed while its messages weren't read (push): the same objects once they are, not copies read back. */
     private pushedUnread: Message[] = [];
 
@@ -303,12 +305,20 @@ export class Session {
         const count = this.digest?.count;
         const pushed = this.pushedUnread;
         // As the file has them: no repair of its own (this session made its own when it was read, or is making it).
-        // Read first: a read that fails leaves the session as it was.
-        const read = Session.read(this.file, false, true, false).loadedMessages;
+        // Read first: a read that fails leaves the session as it was. One that doesn't write reads what it read then (a
+        // peer's look at a session another process is writing to): not what's been written since.
+        const inner = Session.read(this.file, false, true, false, this.persist ? undefined : this.readTo);
+        const read = inner.loadedMessages;
         this.digest = undefined;
         this.pushedUnread = [];
         if (read.length === count && pushed.length) read.splice(read.length - pushed.length, pushed.length, ...pushed);
         this.loadedMessages = read;
+        // Its lines, for the runtime opening it in this same task (readSegments), as a whole read leaves them.
+        const lines = inner.takeLoadedLines();
+        if (lines) {
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        }
     }
     /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
     private digestible = false;
@@ -1021,7 +1031,7 @@ export class Session {
     }
 
     /** `whole`: all of it, not from a checkpoint. `repair`: answer a tool call left without results (repairTail). */
-    private static read(file: string, persist = true, whole = false, repair = true): Session {
+    private static read(file: string, persist = true, whole = false, repair = true, upTo?: number): Session {
         const writtenAt = statSync(file).mtimeMs;
         // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
         const cp = whole ? undefined : readCheckpoint(file);
@@ -1051,13 +1061,14 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        }, undefined, cp?.offset ?? 0);
+        }, undefined, cp?.offset ?? 0, upTo);
         if (!meta) throw new Error(`Not a session file: ${file}`);
         // Read from a digest of its messages, and some changed since other than by adding one: all of it, as without one.
-        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true, repair);
+        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true, repair, upTo);
         const s = new Session(meta, { file, persist });
         s.started = true;
         if (cp) s.restoreState(cp.state);
+        if (!persist) s.readTo = end;
         // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
         // past it, or a session loaded for anything else would hold every line it ever had. (Read from a checkpoint,
         // they aren't all of them: readSegments reads the file.)
@@ -1262,7 +1273,7 @@ interface SessionState {
     workedAt?: number;
 }
 
-const CHECKPOINT_VERSION = 3;
+const CHECKPOINT_VERSION = 4;
 /** Lines that change its messages other than by adding one: read from a digest of them (Session.read), these can't be applied to it. */
 const CHANGES_MESSAGES = new Set<string>(["compact", "rewind", "withdraw", "imagesRefused"]);
 /**

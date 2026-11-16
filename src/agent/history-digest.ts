@@ -2,6 +2,7 @@
 // approved), the plan last presented, and the latest checkpoint's id. Session.read keeps these with a checkpoint of
 // a session whose messages are most of it (a Claude Code one's: never compacted here), in place of the messages.
 
+import { imageKey } from "./image-key";
 import type { Message } from "../providers/types";
 import type { TodoItem } from "../tools/types";
 
@@ -85,6 +86,21 @@ export interface MessagesDigest {
     checkpoint: number;
     /** The checkpoint the last one recording one records (latestCheckpointOf). */
     latestCheckpoint?: number;
+    /** Each message's that has images in its own parts (a prompt's attachments): where it is, and their keys (imageKey). */
+    images?: [number, string[]][];
+}
+
+/** Where `m` (at `index`) has images in its own parts, and their keys; none if it hasn't, or one has no key. */
+function imagesOf(m: Message, index: number): [number, string[]] | undefined {
+    if (m.role !== "user") return undefined;
+    const keys: string[] = [];
+    for (const p of m.content) {
+        if (p.type !== "image") continue;
+        const key = imageKey(p);
+        if (!key) return undefined;
+        keys.push(key);
+    }
+    return keys.length ? [index, keys] : undefined;
 }
 
 export function digestOf(messages: readonly Message[]): MessagesDigest {
@@ -93,7 +109,11 @@ export function digestOf(messages: readonly Message[]): MessagesDigest {
     from = Math.max(0, from);
     const plan = lastPlanCall(messages);
     const latestCheckpoint = latestCheckpointOf(messages);
-    return { count: messages.length, from, tail: messages.slice(from), before: toolStateOf(messages.slice(0, from)), ...(plan ? { plan } : {}), checkpoint: lastCheckpointOf(messages), ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}) };
+    const images = messages.flatMap((m, i) => {
+        const has = imagesOf(m, i);
+        return has ? [has] : [];
+    });
+    return { count: messages.length, from, tail: messages.slice(from), before: toolStateOf(messages.slice(0, from)), ...(plan ? { plan } : {}), checkpoint: lastCheckpointOf(messages), ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}), ...(images.length ? { images } : {}) };
 }
 
 /** The digest of its messages and `m` after them: as digestOf them all makes. `d` is used up (its tail is this one's). */
@@ -101,7 +121,11 @@ export function digestWith(d: MessagesDigest, m: Message): MessagesDigest {
     const plan = lastPlanCall([m]) ?? d.plan;
     const checkpoint = Math.max(d.checkpoint, lastCheckpointOf([m]));
     const latestCheckpoint = latestCheckpointOf([m]) ?? d.latestCheckpoint;
-    const marks = { ...(plan ? { plan } : {}), checkpoint, ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}) };
+    const added = imagesOf(m, d.count);
+    // Grown in place too, as the tail is.
+    const images = added ? (d.images ?? []) : d.images;
+    if (added) images!.push(added);
+    const marks = { ...(plan ? { plan } : {}), checkpoint, ...(latestCheckpoint !== undefined ? { latestCheckpoint } : {}), ...(images ? { images } : {}) };
     if (isPromptMessage(m)) return { count: d.count + 1, from: d.count, tail: [m], before: toolStateOf(d.tail, d.before), ...marks };
     // Its tail grows in place (copied at each message, a long turn read after a digest cost the square of its length):
     // the digest it was made from is the session's, replaced by this one.

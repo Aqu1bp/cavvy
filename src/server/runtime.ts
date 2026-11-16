@@ -5275,8 +5275,19 @@ export class Runtime {
 
     /** The images of the prompt at `pos` (Turn.pos), from before a compaction too. */
     promptImages(seg: number, index: number): { mediaType: string; data: string }[] {
-        const messages = seg === this.segment ? this.session.messages : readSegments(this.session.path)[seg]?.messages;
-        const m = messages?.[index];
+        // Opened from a digest of its messages (Session.read), an earlier prompt's from where they're kept, by the keys
+        // the digest has of them; not kept yet (from before, or the terminal), each prompt's are kept as they're read.
+        const digest = seg === this.segment ? this.session.historyDigest : undefined;
+        if (digest && index >= 0 && index < digest.from) {
+            const keys = digest.images?.find(([i]) => i === index)?.[1];
+            if (!keys) return [];
+            const dir = toolImagesDir(this.session.path, this.id);
+            const kept = keys.map((k) => readKept(dir, k));
+            if (kept.every((k) => k !== undefined)) return kept as { mediaType: string; data: string }[];
+            for (const m of this.session.messages) if (m.role === "user") this.keepToolImages(m.content.filter((p): p is ImagePart => p.type === "image"));
+        }
+        // The last turn's prompt without reading the rest.
+        const m = seg === this.segment ? this.session.messageAt(index) : readSegments(this.session.path)[seg]?.messages[index];
         const pending = this.pendingPrompt;
         const parts = m?.role === "user" ? m.content : pending && pending.seg === seg && pending.index === index ? (pending.attachments ?? []) : undefined;
         if (!parts) throw new RpcError("That prompt is no longer in the conversation.", "not_found");

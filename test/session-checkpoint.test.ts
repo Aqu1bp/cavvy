@@ -9,11 +9,11 @@ import type { Message } from "../src/providers/types";
 const iso = isolate();
 const { Session, checkpointFile, checkpointing } = await import("../src/agent/session");
 const { writeThread } = await import("../scripts/perf-thread");
-const { digestToolState, lastCheckpointOf, lastPlanCall, latestCheckpointOf, toolStateOf } = await import("../src/agent/history-digest");
+const { digestOf, digestToolState, lastCheckpointOf, lastPlanCall, latestCheckpointOf, toolStateOf } = await import("../src/agent/history-digest");
 afterAll(() => iso.cleanup());
 
 /** In memory only, or how it's held: not what it is. */
-const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords", "loadedMessages", "digest", "digestible", "pushedUnread"]);
+const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords", "loadedMessages", "digest", "digestible", "pushedUnread", "readTo"]);
 /** Every field of it, as data. */
 function fields(s: InstanceType<typeof Session>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
@@ -161,14 +161,16 @@ test("a session opened from a digest of its messages and written to since reads 
     // What a digest says, and what the same from its messages says.
     const said = (s: InstanceType<typeof Session>) => {
         const d = s.historyDigest!;
-        return { count: d.count, tools: digestToolState(d), plan: d.plan, checkpoint: d.checkpoint, latest: d.latestCheckpoint, last: s.lastMessage };
+        return { count: d.count, tools: digestToolState(d), plan: d.plan, checkpoint: d.checkpoint, latest: d.latestCheckpoint, last: s.lastMessage, images: d.images };
     };
-    const truth = (messages: Message[]) => ({ count: messages.length, tools: toolStateOf(messages), plan: lastPlanCall(messages), checkpoint: lastCheckpointOf(messages), latest: latestCheckpointOf(messages), last: messages.at(-1) });
+    const truth = (messages: Message[]) => ({ count: messages.length, tools: toolStateOf(messages), plan: lastPlanCall(messages), checkpoint: lastCheckpointOf(messages), latest: latestCheckpointOf(messages), last: messages.at(-1), images: digestOf(messages).images });
     try {
         Session.load(t.file).release();
         // Only added to: a turn with its todos and a plan, then the next prompt.
         const s = Session.load(t.file);
         expect(s.historyDigest).toBeDefined();
+        s.push({ role: "user", content: [{ type: "text", text: "look" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }], meta: { kind: "prompt" } } as Message);
+        s.push(reply("seen"));
         s.push(prompt("plan it"));
         s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "tool_use", content: [{ type: "tool_call", id: "todo-1", name: "TodoWrite", input: { todos: [{ content: "one", status: "pending", activeForm: "Doing one" }] } }, { type: "tool_call", id: "plan-1", name: "ExitPlanMode", input: { plan: "The plan" } }] } as Message);
         s.push({ role: "user", content: [{ type: "tool_result", toolCallId: "todo-1", content: "ok" }, { type: "tool_result", toolCallId: "plan-1", content: "ok" }], meta: { kind: "tool_results", checkpoint: 7 } } as Message);
@@ -186,6 +188,7 @@ test("a session opened from a digest of its messages and written to since reads 
         const whole = bothWays(t.file);
         expect(said(added)).toEqual(truth(whole.whole.messages as Message[]));
         expect(said(added).tools.todos).toHaveLength(1);
+        expect(said(added).images).toHaveLength(1);
         expect(whole.fromCheckpoint).toEqual(whole.whole);
         // Changed otherwise: read whole.
         const again = Session.load(t.file);
@@ -311,6 +314,30 @@ test("a long session in a language of many bytes per character is opened from a 
         expect(statSync(checkpointFile(file)).size).toBeLessThan(statSync(file).size * 0.1);
         const { fromCheckpoint, whole } = bothWays(file);
         expect(fromCheckpoint).toEqual(whole);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// One opened only to read (a peer's look at a session another process is writing): its messages, read when asked
+// for, are those of the file as it was read, and their lines are left for the runtime opening it (readSegments).
+test("a session opened from a digest to read reads its messages as the file was, and leaves their lines", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-peek-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 3 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        Session.load(t.file).release();
+        const running = Session.load(t.file);
+        const p = Session.peek(t.file);
+        expect(p.historyDigest).toBeDefined();
+        const count = p.messageCount;
+        running.push(prompt("later"));
+        running.push(reply("written after the look"));
+        running.release();
+        expect(p.messages).toHaveLength(count);
+        expect(p.takeLoadedLines()?.length).toBeGreaterThan(count);
     } finally {
         Object.assign(checkpointing, was);
     }

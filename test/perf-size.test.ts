@@ -219,40 +219,75 @@ describe("a Claude Code session", () => {
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
         expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
     });
-    // Imported (src/server/cli-import.ts writes its turns done, never started): nothing was left running, so its
-    // messages aren't read to see whether a turn was cut off. They were, at every open.
-    test("opening an imported one again doesn't read its messages", async () => {
-        const cwd = join(tempDir("cavvy-perf-size-imported-"), "project");
-        mkdirSync(cwd, { recursive: true });
-        const t = writeThread({ cwd, items: SMALL, kind: "cli", seed: 9 });
-        const log = uiLogFile(t.file, t.id);
-        writeFileSync(log, readFileSync(log, "utf8").split("\n").filter((l) => !l.startsWith('{"t":"turn"') || JSON.parse(l).status !== undefined).join("\n"));
-        // Read from a checkpoint (one this short has none).
-        const was = checkpointing.after;
-        checkpointing.after = 1;
-        try {
-            await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
-            await ok("session.close", { id: t.id });
-        } finally {
-            checkpointing.after = was;
-        }
-        const store = join(dirname(t.file), "turns", `${t.id}.json`);
-        for (let i = 0; i < 200 && !existsSync(store); i++) await Bun.sleep(10);
-        const proto = Session.prototype as unknown as { readMessages(): void };
-        const read = proto.readMessages;
-        let reads = 0;
-        proto.readMessages = function (this: unknown) {
-            reads++;
-            return read.call(this);
-        };
-        try {
-            await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
-            await ok("session.close", { id: t.id });
-        } finally {
-            proto.readMessages = read;
-        }
-        expect(reads).toBe(0);
-    });
+    // Opened again from its digest, its messages aren't read: not to see whether a turn was cut off where nothing was
+    // left running (imported, src/server/cli-import.ts writes its turns done, never started: they were, at every open),
+    // nor for its last prompt's images, which the window asks for as it shows it.
+    for (const imported of [false, true]) {
+        test(`opening ${imported ? "an imported one" : "one"} again doesn't read its messages`, async () => {
+            const cwd = join(tempDir("cavvy-perf-size-reopen-"), "project");
+            mkdirSync(cwd, { recursive: true });
+            const t = writeThread({ cwd, items: SMALL, kind: "cli", seed: 9 });
+            const log = uiLogFile(t.file, t.id);
+            if (imported) writeFileSync(log, readFileSync(log, "utf8").split("\n").filter((l) => !l.startsWith('{"t":"turn"') || JSON.parse(l).status !== undefined).join("\n"));
+            // A prompt with an image, a turn before the last.
+            const image = { type: "image", mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } as const;
+            const s = Session.load(t.file);
+            const imageAt = s.messageCount;
+            s.push({ role: "user", content: [{ type: "text", text: "Look at this" }, image], meta: { kind: "prompt" } } as never);
+            s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Seen." }] } as never);
+            s.push({ role: "user", content: [{ type: "text", text: "And then?" }], meta: { kind: "prompt" } } as never);
+            s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Done." }] } as never);
+            s.release();
+            // Read from a checkpoint (one this short has none).
+            const was = checkpointing.after;
+            checkpointing.after = 1;
+            const store = join(dirname(t.file), "turns", `${t.id}.json`);
+            try {
+                await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                // Its turns stored, a slice at a time after it opened, as it's let go of.
+                for (let i = 0; i < 500 && !existsSync(store); i++) {
+                    await Bun.sleep(10);
+                    if (i % 50 === 49) {
+                        await ok("session.close", { id: t.id });
+                        await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                    }
+                }
+                await ok("session.close", { id: t.id });
+            } finally {
+                checkpointing.after = was;
+            }
+            for (let i = 0; i < 200 && !existsSync(store); i++) await Bun.sleep(10);
+            expect(existsSync(store)).toBe(true);
+            const proto = Session.prototype as unknown as { readMessages(): void };
+            const read = proto.readMessages;
+            let reads = 0;
+            proto.readMessages = function (this: unknown) {
+                reads++;
+
+                return read.call(this);
+            };
+            try {
+                const opened = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                if (!imported) {
+                    const pos = opened.msg.result.turns.findLast((x: { pos?: { seg: number } }) => x.pos && x.pos.seg >= 0).pos;
+                    await ok("session.promptImages", { id: t.id, ...pos });
+                }
+                await ok("session.close", { id: t.id });
+                expect(reads).toBe(0);
+                // An earlier prompt's images: read once, and kept from then on.
+                for (const time of [1, 2]) {
+                    reads = 0;
+                    await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                    const got = await ok("session.promptImages", { id: t.id, seg: 0, index: imageAt });
+                    expect(got.msg.result.images).toEqual([{ mediaType: image.mediaType, data: image.data }]);
+                    await ok("session.close", { id: t.id });
+                    expect(reads).toBe(time === 1 ? 1 : 0);
+                }
+            } finally {
+                proto.readMessages = read;
+            }
+        });
+    }
     // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
     test("open, the server keeps what's on screen", () => {
         const { small, large } = measured.cli!;
