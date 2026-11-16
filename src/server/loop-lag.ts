@@ -2,6 +2,11 @@
 // than asked each fires. For benches (scripts/bench-ramp.ts): a round trip from another process on a busy machine also
 // counts that process's own wait for a core, this doesn't. Runs only once asked for (server.lag), and stops a while
 // after it was last read, so a server nobody measures has no timer waking it.
+//
+// Each of the worst delays says what the process did meanwhile, which a CPU profile can't: the CPU it used (`cpuMs`)
+// and how often the OS switched it out, waiting on a call (`waits`: I/O) or taken off its core (`preempted`). Close
+// to the delay in CPU: work of the server's own. Little CPU and many preemptions: the machine was busy. These are the
+// whole process's, its other threads included.
 
 import type { LoopLag } from "./protocol";
 
@@ -17,15 +22,24 @@ let due = 0;
 let lastRead = 0;
 let since = 0;
 let delays: number[] = [];
-let worst: { at: number; ms: number }[] = [];
+let worst: LoopLag["worst"] = [];
+let used = process.resourceUsage();
 
 function tick() {
     const now = performance.now();
     const late = Math.max(0, now - due);
+    const was = used;
+    used = process.resourceUsage();
     delays.push(late);
     if (delays.length > KEPT) delays = delays.slice(-KEPT / 2);
     if (worst.length < WORST || late > worst.at(-1)!.ms) {
-        worst.push({ at: Date.now(), ms: late });
+        worst.push({
+            at: Date.now(),
+            ms: late,
+            cpuMs: (used.userCPUTime + used.systemCPUTime - was.userCPUTime - was.systemCPUTime) / 1000,
+            waits: used.voluntaryContextSwitches - was.voluntaryContextSwitches,
+            preempted: used.involuntaryContextSwitches - was.involuntaryContextSwitches,
+        });
         worst.sort((a, b) => b.ms - a.ms);
         worst.length = Math.min(worst.length, WORST);
     }
@@ -46,6 +60,7 @@ export function loopLag(o: { reset?: boolean } = {}): LoopLag {
         since = Date.now();
     }
     if (timer === undefined) {
+        used = process.resourceUsage();
         due = performance.now() + TICK_MS;
         timer = setTimeout(tick, TICK_MS);
     }
@@ -58,6 +73,6 @@ export function loopLag(o: { reset?: boolean } = {}): LoopLag {
         p95: pct(0.95),
         p99: pct(0.99),
         max: pct(1),
-        worst: worst.map((w) => ({ at: w.at, ms: Math.round(w.ms * 10) / 10 })),
+        worst: worst.map((w) => ({ ...w, ms: Math.round(w.ms * 10) / 10, cpuMs: Math.round((w.cpuMs ?? 0) * 10) / 10 })),
     };
 }
