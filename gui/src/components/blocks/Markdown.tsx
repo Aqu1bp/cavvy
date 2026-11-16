@@ -195,8 +195,8 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
 }
 
 /** What's built of a long reply first (its HTML and code, in characters), and of what's above it at each step after. */
-const BUILT_AT_ONCE = 16_000;
-const BUILT_A_STEP = 6_000;
+const BUILT_AT_ONCE = 6_000;
+const BUILT_A_STEP = 3_000;
 /** Building in a frame stops once it's taken this long (ms): a step is about 3-6 ms (measured, headless). */
 const FRAME_BUSY_MS = 4;
 /** The frame being built in (its requestAnimationFrame time), since when, and how long the last step took. */
