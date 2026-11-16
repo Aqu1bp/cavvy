@@ -531,7 +531,14 @@ export async function statusGuard(root: string, algo: "sha1" | "sha256", deadlin
     if (found.cut || (found.code && found.code !== 1)) return undefined;
     const names = new Set<string>();
     // scope NUL key LF value NUL, for each.
-    const fields = found.code === 1 ? [] : found.out.toString("utf-8").split("\0");
+    // Decoded strictly: a name that isn't UTF-8 would come back as another (U+FFFD for its bytes), and be the one turned off.
+    let text = "";
+    try {
+        text = found.code === 1 ? "" : new TextDecoder("utf-8", { fatal: true }).decode(found.out);
+    } catch {
+        return undefined;
+    }
+    const fields = text ? text.split("\0") : [];
     for (let i = 0; i + 1 < fields.length; i += 2) {
         const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!, lower = key.toLowerCase();
         if (lower.startsWith("filter.")) {
@@ -1696,6 +1703,10 @@ export class TurnSnapshots {
         if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return undefined;
         const before = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!before) return undefined;
+        // Most repositories' attributes are all in the top folder's file, where it's kept (and taken again below). Asked
+        // before the index is read: where they store other bytes (git-lfs's), that read would only be thrown away.
+        const top = lstatSync(join(root, ".gitattributes"), { throwIfNoEntry: false }) ? [".gitattributes"] : [];
+        if (await this.converts(root, indexPath, top, deadline)) return undefined;
         const index = (async (): Promise<IndexPrep | undefined> => {
             const scan = await scanIndexPaths(root, indexPath, this.algo === "sha1" ? 20 : 32, [], true, deadline).catch(() => undefined);
             if (!scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return undefined;
@@ -1710,9 +1721,6 @@ export class TurnSnapshots {
             return { contentKey: scan.contentKey, cacheRoot: scan.cacheRoot, attributes };
         })();
         index.catch(() => {});
-        // Most repositories' attributes are all in the top folder's file, where it's kept (and taken again below).
-        const top = lstatSync(join(root, ".gitattributes"), { throwIfNoEntry: false }) ? [".gitattributes"] : [];
-        if (await this.converts(root, indexPath, top, deadline)) return undefined;
         return { before, index, ignoreKey: ignoreKeyOf(root, indexPath) };
     }
 

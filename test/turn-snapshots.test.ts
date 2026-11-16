@@ -590,6 +590,11 @@ describe("per-turn snapshots", () => {
             write(h.cwd, "sub/.gitattributes", "*.r filter=Repo\n*.l filter=lfs\n");
             const spelled = status((await statusGuard(h.cwd, "sha1", deadline()))!.args, {});
             expect([spelled.exitCode, h.ran()]).toEqual([0, []]);
+            // A name that isn't UTF-8 can't be spelled again as it is: refused.
+            const config = join(h.cwd, ".git", "config"), was = readFileSync(config);
+            writeFileSync(config, Buffer.concat([was, Buffer.from('[filter "'), Buffer.from([0xff]), Buffer.from(`"]\n\tclean = ${join(h.cwd, "hooks/repo-clean")}\n`)]));
+            expect(await statusGuard(h.cwd, "sha1", deadline())).toBeUndefined();
+            writeFileSync(config, was);
             // An include in the repository's config, or a filter the command's config defines: refused.
             git(h.cwd, ["config", "include.path", "../included.cfg"]);
             expect(await statusGuard(h.cwd, "sha1", deadline())).toBeUndefined();
@@ -606,7 +611,7 @@ describe("per-turn snapshots", () => {
 
     test("a big repository's first capture reads Git's own files while the folder's watch is set up, and lists none of the folder's till it's up", async () => {
         // Files no other test has: their tree isn't one an earlier capture found in Git's objects already.
-        const { cwd, dir } = setup({ "a.txt": "read once watched\n", "b.txt": "b\n" });
+        const { cwd, dir } = setup({ "a.txt": `read once watched ${crypto.randomUUID()}\n`, "b.txt": "b\n" });
         // Each git started, as it was asked.
         const log = join(dirname(cwd), "git-calls"), bin = join(dirname(cwd), "bin");
         mkdirSync(bin);
