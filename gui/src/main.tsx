@@ -28,9 +28,11 @@ import "./styles/markdown.css";
 import "./state/prefs";
 import { start } from "./state/app";
 import { alignAnimations } from "./lib/stream-clock";
+import { gateLoops } from "./lib/loops";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { App } from "./App";
 
 alignAnimations();
+gateLoops();
 start();
 render(() => <RenderBoundary app><App /></RenderBoundary>, document.getElementById("root")!);

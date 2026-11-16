@@ -735,34 +735,35 @@
     color: color-mix(in srgb, var(--fg-2) 64%, transparent);
 }
 
-.shim-win {
+/* Each step's light is a copy of the label under the window where the light is then, shown for its 50 ms: opacity alone,
+   which the compositor draws without the page. A moving light would have the page look at everything content-visibility
+   skips, on every step, as long as a session runs. */
+.lights {
     position: absolute;
     inset: 0;
-    overflow: hidden;
     pointer-events: none;
-    -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-    mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-    animation: shim-win 2.4s steps(24) infinite;
 }
 
-.shim-hi {
-    display: block;
+.lights > span {
+    --o: calc(var(--k) * 200% / 24 - 100%);
+    position: absolute;
+    inset: 0;
     color: var(--fg);
-    animation: shim-hi 2.4s steps(24) infinite;
+    opacity: 0;
+    -webkit-mask-image: linear-gradient(90deg, transparent var(--o), #000 calc(var(--o) + 50%), transparent calc(var(--o) + 100%));
+    mask-image: linear-gradient(90deg, transparent var(--o), #000 calc(var(--o) + 50%), transparent calc(var(--o) + 100%));
+    animation: light-step 2.4s steps(1) infinite;
+    animation-play-state: var(--decor);
+    animation-delay: calc(var(--k) * 50ms - 2400ms) !important;
 }
 
-@keyframes shim-win {
-    0% { transform: translateX(-100%); }
-    50%, 100% { transform: translateX(100%); }
-}
-
-@keyframes shim-hi {
-    0% { transform: translateX(100%); }
-    50%, 100% { transform: translateX(-100%); }
+@keyframes light-step {
+    0% { opacity: 1; }
+    2.08333%, 100% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .shim-win { display: none; }
+    .lights { display: none; }
     .layer .lbl.shim { color: var(--fg-2); }
 }
 
