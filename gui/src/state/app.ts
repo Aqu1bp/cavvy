@@ -67,6 +67,15 @@ function machineOf(id: string): string | undefined {
 export function awayMachine(sessionId: string | undefined): string | undefined {
     return sessionId !== undefined ? awayOn.get(sessionId) : undefined;
 }
+/** A new session from `sessionId` (its project, New session while it's shown) goes on its machine: this is it, when that isn't the window's. */
+export function machineFor(sessionId: string | undefined): { machine?: string } | undefined {
+    const on = awayMachine(sessionId);
+    return on === undefined ? undefined : { machine: on || undefined };
+}
+/** The folder Home shows once `id`, on screen, is gone: its own, unless it's another machine's (it names nothing on the window's); then the window's latest project. */
+export function homeCwdAfter(id: string): string | undefined {
+    return awayOn.has(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
+}
 /** A session made on another machine from one of its sessions opened here (a fork, a plan carried out): on there too. */
 export function sameMachine(from: string, made: string) {
     const link = away.get(from);
@@ -1377,7 +1386,10 @@ export function forgetSession(id: string) {
         setApp("seen", id, undefined!);
         saveSeen();
     }
-    if (app.activeId === id) setApp("activeId", undefined);
+    if (app.activeId === id) batch(() => {
+        setApp("homeCwd", homeCwdAfter(id));
+        setApp("activeId", undefined);
+    });
 }
 
 /** Opening it again failed: deleted meanwhile, kept while disconnected (the reconnect reopens it), or dropped. */

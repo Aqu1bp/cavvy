@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -23,11 +23,23 @@ export { forkAnchor } from "../lib/fork";
 export type { Attachment } from "../lib/attachments";
 
 /** Back to the home screen to start a new session (optionally in another project). */
-/** `on`: the session or project heading it was asked from, when the machine that's on may not be the window's. */
-export function newSession(cwd?: string, on?: { machine?: string }) {
+/**
+ * `on`: the session or project heading it was asked from, when the machine that's on may not be the window's; by
+ * default the session on screen's (a folder of another machine's names nothing on the window's own).
+ */
+export function newSession(cwd?: string, on: { machine?: string } | undefined = machineFor(app.activeId)) {
     if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
+    requestComposerFocus();
+}
+
+/** The session on screen archived: Home, on the window's own machine. */
+function toHome(id: string) {
+    batch(() => {
+        setApp("homeCwd", homeCwdAfter(id));
+        setApp("activeId", undefined);
+    });
     requestComposerFocus();
 }
 
@@ -71,7 +83,7 @@ export async function openProject(path: string) {
     try {
         const info = await rpc.call("projects.inspect", { path });
         if (!info.exists) return toast(`${path} isn't a folder`, "error");
-        newSession(info.path);
+        newSession(info.path, { machine });
         void refreshProjects();
     } catch (e) {
         reportError(e);
@@ -587,7 +599,7 @@ export async function archiveSessions(ids: readonly string[], archived: boolean)
             if (!archived) return;
             // In a split, those of its two archived close their panes; the one in view alone goes to Home.
             for (const id of done) splitActions.leave?.(id);
-            if (app.activeId && done.includes(app.activeId)) newSession(app.homeCwd);
+            if (app.activeId && done.includes(app.activeId)) toHome(app.activeId);
         },
     });
 }
@@ -652,7 +664,7 @@ export async function setArchived(id: string, archived: boolean, said = "Session
         reportError(e);
         return false;
     }
-    if (archived && !splitActions.leave?.(id) && app.activeId === id) newSession(app.homeCwd);
+    if (archived && !splitActions.leave?.(id) && app.activeId === id) toHome(id);
     toast(
         archived ? said : "Session restored",
         "info",
@@ -675,7 +687,7 @@ export function archivedWithWorktree(id: string, r: Extract<ArchiveResult, { arc
     const gone = r.removed && r.worktree;
     const inside = (p: string | undefined) => Boolean(gone && p && (p === r.worktree || p.startsWith(`${r.worktree}/`)));
     if (inside(app.homeCwd) && r.main) setApp("homeCwd", r.main);
-    if (!splitActions.leave?.(id) && app.activeId === id) newSession(app.homeCwd);
+    if (!splitActions.leave?.(id) && app.activeId === id) toHome(id);
     toast(
         r.removed ? "Session archived; worktree removed" : `Session archived; worktree kept: ${r.kept ?? "it couldn't be removed."}`,
         r.removed ? "success" : "info",

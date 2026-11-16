@@ -5,6 +5,16 @@
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 
+// The servers screen (components/Servers.tsx), which a script can't load (Solid's JSX): a stand-in that notes where
+// the window was sent (switchMachine: the machine, the session, the folder).
+const switched: unknown[][] = [];
+Object.assign(globalThis, { switched });
+Bun.plugin({
+    name: "servers-screen",
+    setup(build) {
+        build.onLoad({ filter: /components\/Servers\.tsx$/ }, () => ({ contents: "export const connected = () => {}; export const switchMachine = (...a) => void globalThis.switched.push(a); export const machineCredentials = async () => undefined;", loader: "ts" }));
+    },
+});
 let reloads = 0;
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -46,6 +56,7 @@ class ServerSocket extends Socket {
             looked.push({ url: this.url, method });
             reply(method === "fs.mentions" ? [] : {});
         } else if (method === "settings.get") reply({});
+        else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
         else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
     }
@@ -53,7 +64,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, handleFor, upsertSession, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -99,6 +110,30 @@ try {
     assert.equal(reloads, 0);
     assert.equal(app.activeId, "l1");
     assert.ok(handleFor("b1"), "box's session is kept open, for going back to it");
+
+    // New session with box's session on screen: on box, in its folder (the window goes there, as + on box's project
+    // does), not on this computer in a folder of box's. With the window's own on screen, here.
+    const { newSession, setArchived } = await import("../../gui/src/state/actions");
+    newSession(app.homeCwd);
+    assert.deepEqual(switched, [], "a new session from the window's own stays here");
+    assert.equal(app.activeId, undefined);
+    await activate("b1");
+    await settle();
+    newSession(app.homeCwd);
+    await settle();
+    assert.deepEqual(switched, [["box", undefined, "/srv/app"]], "a new session from box's goes to box");
+    assert.equal(app.activeId, "b1", "the window stays on box's session until it's there");
+    // Archived while on screen: Home here, in this computer's latest project (box's folder names nothing here).
+    assert.ok(await setArchived("b1", true));
+    assert.equal(app.activeId, undefined);
+    assert.equal(app.homeCwd, "/home/me/web");
+    assert.equal(switched.length, 1, "and the window stays where it is");
+    // Deleted while on screen (here or in another window): the same.
+    await activate("b1");
+    assert.equal(app.homeCwd, "/srv/app");
+    forgetSession("b1");
+    assert.equal(app.activeId, undefined);
+    assert.equal(app.homeCwd, "/home/me/web");
 } catch (e) {
     console.error(e);
     process.exit(1);

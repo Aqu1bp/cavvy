@@ -10,7 +10,7 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, Mat
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, awayMachine, reportError, rpc, serversUi, toast } from "../state/app";
+import { app, awayMachine, machineFor, reportError, rpc, serversUi, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
 import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
@@ -66,7 +66,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                 <button role="menuitem" class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
                     <Copy size={14} /> Copy folder path
                 </button>
-                <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd, machineFor(p.handle.id)))}>
                     <SquarePen size={14} /> New session
                 </button>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
