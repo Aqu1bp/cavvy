@@ -9,17 +9,22 @@ export { MAX_MATCHES, findMatches, findParts, plain, type FindMatch } from "./fi
 
 /**
  * Every match, in the turns' order: those the server found (`there`: in turns the window hasn't, and in those it has
- * folded, which it can't count itself), then each of the window's turns, counted here or (folded) there. Those of a
- * turn that has come in whole since it was asked are counted here. At most MAX_MATCHES.
+ * folded, which it can't count itself), then each of the window's turns, counted here or (folded) there, with those
+ * of the turns its gap stands for after `gapAfter`. Those of a turn that has come in whole since it was asked are
+ * counted here. At most MAX_MATCHES.
  */
-export function allMatches(turns: readonly Turn[], query: string, there: readonly FindMatch[]): FindMatch[] {
+export function allMatches(turns: readonly Turn[], query: string, there: readonly (FindMatch & { gap?: true })[], gapAfter?: string): FindMatch[] {
     const here = findMatches(turns.filter((t) => !t.folded), query);
     if (!there.length) return here;
     const whole = new Set(turns.filter((t) => !t.folded).map((t) => t.id));
     const has = new Set(turns.map((t) => t.id));
     const byTurn = new Map<string, FindMatch[]>();
     for (const m of [...there.filter((x) => has.has(x.turnId) && !whole.has(x.turnId)), ...here]) byTurn.set(m.turnId, [...(byTurn.get(m.turnId) ?? []), m]);
-    return [...there.filter((m) => !has.has(m.turnId)), ...turns.flatMap((t) => byTurn.get(t.id) ?? [])].slice(0, MAX_MATCHES);
+    // Those of turns that came in since it was asked (the gap filled) are counted with them; for a gap the window no
+    // longer holds, it's asked again.
+    const inGap = gapAfter && has.has(gapAfter) ? there.filter((m) => m.gap && !has.has(m.turnId)) : [];
+    const before = there.filter((m) => !has.has(m.turnId) && !m.gap);
+    return [...before, ...turns.flatMap((t) => (t.id === gapAfter ? [...(byTurn.get(t.id) ?? []), ...inGap] : byTurn.get(t.id) ?? []))].slice(0, MAX_MATCHES);
 }
 
 /**

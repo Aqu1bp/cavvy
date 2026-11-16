@@ -95,10 +95,16 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         // Successful sends must be removed even if the window closes before the debounce.
         composerStorage.flush();
     };
-    /** What was sent put back, its send having failed: if the box is still empty (nothing typed since). */
+    /**
+     * What was sent put back, its send having failed: in its box if that's still empty, else (typed in since) on top of
+     * its stashed drafts, past their limit if need be. Its session's, shown or not.
+     */
     const putBack = (submitted: ReturnType<typeof capture>) => {
-        if (!shows(submitted.key) || filled(draft())) return;
-        putDraft(submitted.key, submitted.draft);
+        const k = submitted.key;
+        if (wasDeleted(k)) return;
+        const now = shows(k) ? draft() : composerDrafts.get(k);
+        if (!now || !filled(now)) return putDraft(k, submitted.draft);
+        putStashes(k, [submitted.draft, ...stashesOf(k)]);
     };
     const setText = (value: string | ((text: string) => string)) => {
         if (disposed) return;

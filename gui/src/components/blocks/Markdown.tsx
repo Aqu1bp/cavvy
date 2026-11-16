@@ -152,14 +152,21 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         // idle time, a Mac had it in only after 2 s (idle periods came seldom), and a reader who scrolled up meanwhile
         // had the rest put in at once under their wheel.
         let frame: number | undefined;
-        const step = () => {
+        const step = (now?: number) => {
             frame = undefined;
-            const started = performance.now();
+            // The frame's budget is shared by every reply building at once; a step isn't begun that it wouldn't fit.
+            if (now === undefined || building.frame !== now) Object.assign(building, { frame: now, from: performance.now() });
+            else if (performance.now() - building.from + building.step > FRAME_BUSY_MS) {
+                frame = requestAnimationFrame(step);
+                return;
+            }
             do {
+                const began = performance.now();
                 const at = built.whole() ? 0 : endOf(segments().slice(0, untrack(above)), BUILT_A_STEP);
                 // The first block in so far stays where it's seen (the end, while it's followed).
                 built.keep(root?.firstElementChild, () => setAbove(at));
-            } while (untrack(above) && performance.now() - started < FRAME_BUSY_MS);
+                building.step = performance.now() - began;
+            } while (untrack(above) && performance.now() - building.from + building.step <= FRAME_BUSY_MS);
             if (untrack(above)) frame = requestAnimationFrame(step);
         };
         frame = requestAnimationFrame(step);
@@ -190,6 +197,8 @@ const BUILT_AT_ONCE = 16_000;
 const BUILT_A_STEP = 6_000;
 /** Building in a frame stops once it's taken this long (ms): a step is about 3-6 ms (measured, headless). */
 const FRAME_BUSY_MS = 4;
+/** The frame being built in (its requestAnimationFrame time), since when, and how long the last step took. */
+const building = { frame: -1, from: 0, step: 0 };
 /** Where the last `chars` characters of blocks start, in `segs` (0: all of it, as it's no more than that, or hardly more). */
 function endOf(segs: readonly Segment[], chars: number): number {
     let n = 0;

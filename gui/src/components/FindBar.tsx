@@ -19,11 +19,13 @@ export function FindBar(p: {
     turns: () => readonly Turn[];
     /** How many of the session's turns the window hasn't been sent: those are searched where they are (`elsewhere`). */
     earlier: () => number;
+    /** The turns the window holds a gap for (SessionView.gap): between `after` and `before`, both of its turns. */
+    gap: () => { after: string; before: string } | undefined;
     /**
-     * Where `query` appears in the turns before `before`, the first the window has, and in `folded` (those it has with
-     * their work folded: Turn.folded, without what it would count in them), in order (session.find).
+     * Where `query` appears in the turns before `before`, the first the window has, in its `gap`, and in `folded`
+     * (those it has with their work folded: Turn.folded, without what it would count in them), in order (session.find).
      */
-    elsewhere: (query: string, before: string, folded: string[]) => Promise<SessionFindMatch[]>;
+    elsewhere: (query: string, before: string, folded: string[], gap?: { after: string; before: string }) => Promise<SessionFindMatch[]>;
     /** Brings a match's turn into the window (one of those it hadn't been sent), back through it. */
     bring: (m: SessionFindMatch) => Promise<void>;
     /** A turn the window has folded, whole (loadTurn): a match in its work is shown once it is. */
@@ -77,10 +79,15 @@ export function FindBar(p: {
     let asking = 0;
     // The turns the window has folded, by id, changing only as one comes whole or another comes folded.
     const folded = createMemo(() => p.turns().filter((t) => t.folded).map((t) => t.id).join("\n"));
-    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded], ([q, earlier, first, ids]) => {
+    const gapKey = createMemo(() => {
+        const g = p.gap();
+        return g ? `${g.after}\n${g.before}` : "";
+    });
+    createEffect(on([findQuery, p.earlier, () => p.turns()[0]?.id, folded, gapKey], ([q, earlier, first, ids, gap]) => {
         const ask = ++asking;
-        if ((!earlier && !ids) || !first) return setElsewhere({ q, ms: [] });
-        void p.elsewhere(q, first, ids ? ids.split("\n") : []).then((ms) => ask === asking && setElsewhere({ q, ms }), () => ask === asking && setElsewhere({ q, ms: [] }));
+        if ((!earlier && !ids && !gap) || !first) return setElsewhere({ q, ms: [] });
+        const [after, before] = gap.split("\n");
+        void p.elsewhere(q, first, ids ? ids.split("\n") : [], gap ? { after: after!, before: before! } : undefined).then((ms) => ask === asking && setElsewhere({ q, ms }), () => ask === asking && setElsewhere({ q, ms: [] }));
     }));
     /** What the server found for this query is in (or there's nothing it has that the window doesn't). */
     const answered = () => elsewhere().q === findQuery();
@@ -95,7 +102,7 @@ export function FindBar(p: {
         folded();
         const e = elsewhere();
         const there = e.q === q ? e.ms : [];
-        return untrack(() => allMatches(p.turns(), q, there));
+        return untrack(() => allMatches(p.turns(), q, there, p.gap()?.after));
     });
 
     const onInput = (v: string) => {

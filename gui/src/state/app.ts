@@ -487,7 +487,7 @@ const sending = new Map<string, string>();
 let sendingIds = 0;
 
 /** `text`, sent to session `id` that isn't working, shown at once as its turn: undone by what's returned. */
-export function showSending(id: string, text: string): () => void {
+export function showSending(id: string, text: string): (taken: boolean) => void {
     const h = handles.get(id);
     if (!h) return () => undefined;
     const turnId = `sending-${++sendingIds}`;
@@ -495,12 +495,18 @@ export function showSending(id: string, text: string): () => void {
     h.set(produce((v) => {
         v.turns.push({ id: turnId, status: "running", prompt: { text }, blocks: [], startedAt: Date.now() });
     }));
-    // Answered: what came before the answer (its turn, as a rule) is applied first, so no frame has neither.
-    return () => {
+    // Answered: what came before the answer (its turn, as a rule) is applied first, so no frame has neither. Taken but
+    // its turn not here yet (a session still starting answers first): it stays until its turn or its place in the
+    // queue comes (flush), for a moment at most.
+    return (taken) => {
         if (h.queue.length) flush(h);
-        dropSending(h, turnId);
+        if (!taken) return dropSending(h, turnId);
+        if (sending.get(h.id) === turnId) setTimeout(() => dropSending(h, turnId), SENDING_WAIT_MS);
     };
 }
+
+/** How long a message shown as sent waits for its turn after the server took it. */
+const SENDING_WAIT_MS = 3000;
 
 function dropSending(h: SessionHandle, turnId: string) {
     if (sending.get(h.id) !== turnId) return;
@@ -518,7 +524,7 @@ function flush(h: SessionHandle) {
     h.queue = [];
     // The server's turn for a message shown as sent takes its place, in the same update.
     const shown = sending.get(h.id);
-    if (shown && ops.some((op) => op.op === "turn" || op.op === "reset")) batch(() => dropSending(h, shown));
+    if (shown && ops.some((op) => op.op === "turn" || op.op === "reset" || (op.op === "state" && "queued" in op.patch))) batch(() => dropSending(h, shown));
     batch(() =>
         h.set(
             produce((v) => {
@@ -609,9 +615,9 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
     const going = loadingEarlier.get(h.id);
     // One at a time: the next asks from where that one left off.
     const run = (going ?? Promise.resolve(true)).then(async () => {
-        if (!h.view.earlier) return true;
         // A page far up asked for while one is here already (with its gap): that one goes back into the gap first.
         if (how.upTo !== undefined && h.view.gap) dropPage(h);
+        if (!h.view.earlier) return true;
         const first = h.view.turns[0]?.id;
         if (!first) return false;
         const page = await rpc.call("session.turns", { id: h.id, before: first, fold: !prefs.expandActivity, ...how });

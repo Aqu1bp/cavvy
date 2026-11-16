@@ -206,6 +206,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         });
     };
     const turns = () => p.handle.view.turns;
+    /** The turns the window holds a gap for, between two of its own (Find searches them where they are). */
+    const findGap = createMemo(() => {
+        const g = p.handle.view.gap;
+        if (!g) return undefined;
+        const t = turns();
+        const at = t.findIndex((x) => x.id === g.after);
+        const next = at >= 0 ? t[at + 1]?.id : undefined;
+        return next ? { after: g.after, before: next } : undefined;
+    }, undefined, { equals: (a, b) => a?.after === b?.after && a?.before === b?.before });
     const visible = createMemo(() => {
         const t = turns();
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
@@ -1204,7 +1213,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         untrack(() => {
             setJumpTarget(undefined);
             const found = turnAt(turns(), j.seg, j.index);
-            if (found || !p.handle.view.earlier) return jump(j, found);
+            // The last before a gap may be it, or one of those the gap stands for: the page is fetched again from it.
+            const gap = p.handle.view.gap;
+            if (gap ? found && found.id !== gap.after : found || !p.handle.view.earlier) return jump(j, found);
             // Before the turns the session opened with: those back to it come first.
             void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index }, upTo: JUMP_PAGE }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
         });
@@ -1318,7 +1329,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             </div>
             </div>
             <Show when={finding()}>
-                <FindBar turns={turns} earlier={() => p.handle.view.earlier ?? 0} elsewhere={(query, before, folded) => rpc.call("session.find", { id: p.handle.id, query, before, ...(folded.length ? { turns: folded } : {}) }).then((r) => r.matches)} bring={(m) => loadEarlier(p.handle, m.pos ? { through: m.pos, upTo: JUMP_PAGE } : { all: true }).then(() => undefined)} whole={(turnId) => loadTurn(p.handle, turnId)} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
+                <FindBar turns={turns} earlier={() => p.handle.view.earlier ?? 0} gap={findGap} elsewhere={(query, before, folded, gap) => rpc.call("session.find", { id: p.handle.id, query, before, ...(folded.length ? { turns: folded } : {}), ...(gap ? { gap } : {}) }).then((r) => r.matches)} bring={(m) => loadEarlier(p.handle, m.pos ? { through: m.pos, upTo: JUMP_PAGE } : { all: true }).then(() => undefined)} whole={(turnId) => loadTurn(p.handle, turnId)} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
                 {/* It has the dock's height itself (it isn't inherited). */}
@@ -1343,27 +1354,42 @@ function LaterTurns(p: { count: number; fill: () => Promise<boolean>; root: () =
     let el: HTMLButtonElement | undefined;
     const [busy, setBusy] = createSignal(false);
     let near = false;
-    let seen = false;
+    /** Asks the observers where it is now (observing again reports at once): more, if it's still a screen away. */
+    let lookAgain = () => {};
     const go = () => {
         if (busy()) return;
         setBusy(true);
-        void p.fill().finally(() => {
-            setBusy(false);
-            // Still a screen away, out of sight, with more to come (the page that came was short of the screen).
-            if (near && !seen && el?.isConnected) queueMicrotask(go);
-        });
+        void p.fill().then(
+            (ok) => {
+                setBusy(false);
+                // The page that came may be short of the screen. One that didn't come waits to be read down to again,
+                // or a click: asked again at once, a dropped connection's at-once refusal would never let go.
+                if (ok) lookAgain();
+            },
+            () => setBusy(false),
+        );
     };
     onMount(() => {
         const root = p.root();
         if (!el || !root || typeof IntersectionObserver === "undefined") return;
+        // A screen away and out of sight, where it is now: the observers report one at a time, each with its own news.
+        const auto = () => {
+            if (!near || busy() || !el) return;
+            const r = el.getBoundingClientRect(), v = root.getBoundingClientRect();
+            if (r.bottom > v.top && r.top < v.bottom) return;
+            go();
+        };
         const close = new IntersectionObserver((entries) => {
             for (const e of entries) near = e.isIntersecting;
-            if (near && !seen) go();
+            auto();
         }, { root, rootMargin: "100% 0px" });
-        const sight = new IntersectionObserver((entries) => {
-            for (const e of entries) seen = e.isIntersecting;
-            if (near && !seen) go();
-        }, { root });
+        // Leaving sight while still near (read back up from it).
+        const sight = new IntersectionObserver(auto, { root });
+        lookAgain = () => {
+            if (!el?.isConnected) return;
+            close.unobserve(el);
+            close.observe(el);
+        };
         close.observe(el);
         sight.observe(el);
         onCleanup(() => {

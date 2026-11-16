@@ -477,7 +477,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         } });
         if (quick) {
             // Answered: its turn came with the answer (it's in its place now), or none will (it went in a queue).
-            quick();
+            quick(Boolean(ok));
             if (!ok) draft.putBack(submitted);
         }
         if (ok) {
