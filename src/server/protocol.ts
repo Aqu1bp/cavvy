@@ -2037,6 +2037,17 @@ export interface HelloResult {
     servers?: number;
 }
 
+/** How late the server ran what was due, in ms, since `since` (ms since the epoch): over that many ticks, and the worst. */
+export interface LoopLag {
+    since: number;
+    samples: number;
+    p50: number;
+    p95: number;
+    p99: number;
+    max: number;
+    worst: { at: number; ms: number }[];
+}
+
 export interface Methods {
     // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
@@ -2131,6 +2142,8 @@ export interface Methods {
      * with that key reaches them. They keep running for a while when it goes.
      */
     "terminal.list": { params: Record<string, never>; result: TerminalInfo[] };
+    /** How late the server's thread runs what's due (src/server/loop-lag.ts): measuring starts with the first call. */
+    "server.lag": { params: { reset?: boolean }; result: LoopLag };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
