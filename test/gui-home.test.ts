@@ -362,7 +362,8 @@ function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | un
         app: { conn: "open" }, rpc: {},
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
-        Popover: tagged("Popover"), NewWorktreeDialog: tagged("NewWorktreeDialog"), RemoveWorktreeDialog: tagged("RemoveWorktreeDialog"),
+        // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
+        Popover: tagged("Popover"), lazy: (load: () => Promise<unknown>) => tagged(/default: m\.(\w+)/.exec(String(load))?.[1] ?? "Lazy"),
     }) as (p: { cwd: string; branch?: string }) => Element;
     return { tree: WorktreePicker({ cwd, branch: "main" }), opened };
 }

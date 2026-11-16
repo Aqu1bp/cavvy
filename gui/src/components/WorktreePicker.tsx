@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Show } from "solid-js";
+import { createResource, createSignal, For, lazy, Show } from "solid-js";
 import { Check, ChevronDown, FolderGit2, GitBranch, Plus, Trash2 } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
@@ -6,7 +6,12 @@ import { openProject } from "../state/actions";
 import { requestComposerFocus } from "../state/ui";
 import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
-import { NewWorktreeDialog, RemoveWorktreeDialog, type NewWorktreeRequest, type RemoveWorktreeRequest } from "./WorktreeDialogs";
+import type { NewWorktreeRequest, RemoveWorktreeRequest } from "./WorktreeDialogs";
+
+/** Not in the startup bundle: fetched as the picker opens, before either is asked for. */
+const dialogs = () => import("./WorktreeDialogs");
+const NewWorktreeDialog = lazy(() => dialogs().then((m) => ({ default: m.NewWorktreeDialog })));
+const RemoveWorktreeDialog = lazy(() => dialogs().then((m) => ({ default: m.RemoveWorktreeDialog })));
 
 /** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
 export function WorktreePicker(p: { cwd: string; branch?: string }) {
@@ -30,6 +35,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const toggle = () => {
         // Opened, it lists them again (one may have been made or removed elsewhere since), unless that's under way.
         if (!open() && !listing.loading) void refetch();
+        if (!open()) void dialogs();
         setOpen(!open());
     };
     const startCreating = () => {
