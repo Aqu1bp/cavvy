@@ -5,11 +5,13 @@
 //
 //   bun desktop-electron/bench-stream.ts --label before [--app <packaged executable>] [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
 //
+// On Linux, under xvfb-run: CPU time, memory by RSS and the traces; no instruction counts, footprint or WindowServer.
+//
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
 // streaming fast, sampled each second (does the cost grow with the reply?).
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
@@ -58,6 +60,18 @@ async function rpcTo(port: number, token: string) {
 /** Cumulative CPU seconds of each pid (ps's TIME: user + system). */
 function cpuTimes(pids: number[]): Map<number, number> {
     const out = new Map<number, number>();
+    // Linux: /proc's clock ticks (10 ms), not ps's whole seconds.
+    if (!MAC) {
+        for (const pid of pids) {
+            try {
+                const f = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ");
+                out.set(pid, (Number(f[11]) + Number(f[12])) / 100);
+            } catch {
+                // gone
+            }
+        }
+        return out;
+    }
     const r = Bun.spawnSync(["ps", "-o", "pid=,time=", "-p", pids.join(",")]);
     for (const line of r.stdout.toString().trim().split("\n")) {
         const [pid, t] = line.trim().split(/\s+/);
@@ -70,8 +84,11 @@ function cpuTimes(pids: number[]): Map<number, number> {
 }
 
 /** Instructions a process has retired (macOS's proc_pid_rusage, RUSAGE_INFO_V4: ri_instructions, after a 16-byte uuid). */
-const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+const MAC = process.platform === "darwin";
+const libproc = MAC ? dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } }) : undefined;
+/** Elsewhere (Linux, run under xvfb-run): not counted, CPU time and the traces only. */
 function instructions(pid: number): number {
+    if (!libproc) return NaN;
     const buf = new BigUint64Array(64);
     return libproc.symbols.proc_pid_rusage(pid, 4, ptr(buf)) === 0 ? Number(buf[2 + 29]) : NaN;
 }
@@ -87,6 +104,7 @@ function rss(roles: [number, string][]): Record<string, number> {
 
 /** macOS's footprint (MB, Activity Monitor's Memory) by role: dirty and compressed memory, not shared or purgeable pages. */
 function footprint(roles: [number, string][]): Record<string, number> {
+    if (!MAC) return {};
     const want = roles.filter(([, role]) => role !== "WindowServer" && !role.startsWith("utility:tracing"));
     const r = Bun.spawnSync(["footprint", "-f", "bytes", ...want.flatMap(([p]) => ["-p", String(p)])]);
     const bytes = new Map<number, number>();
@@ -178,7 +196,7 @@ try {
 
     // ---- The app (a development build, or with --app a packaged one), its main process's Node inspector on 9345.
     const exe = arg("--app");
-    app = Bun.spawn([...(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")]), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), ...(exe ? [] : [join(repo, "desktop-electron")])], {
+    app = Bun.spawn([...(exe ? [exe] : [join(repo, MAC ? "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" : "desktop-electron/node_modules/electron/dist/electron")]), ...(MAC ? [] : ["--no-sandbox"]), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), ...(exe ? [] : [join(repo, "desktop-electron")])], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9346", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
