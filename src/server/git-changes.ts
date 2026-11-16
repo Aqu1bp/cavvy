@@ -635,7 +635,12 @@ async function attributes(root: string, paths: string[], deadline: number): Prom
     const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0", deadline });
     const recs = records(r.out);
     const out = new Map<string, Record<string, string>>();
-    for (let i = 0; i + 2 < recs.length; i += 3) out.set(recs[i]!, { ...out.get(recs[i]!), [recs[i + 1]!]: recs[i + 2]! });
+    for (let i = 0; i + 2 < recs.length; i += 3) {
+        // Filled in place: a copy for each of a path's five records cost 10 ms for 5,000 paths.
+        let a = out.get(recs[i]!);
+        if (!a) out.set(recs[i]!, (a = {}));
+        a[recs[i + 1]!] = recs[i + 2]!;
+    }
     return out;
 }
 
