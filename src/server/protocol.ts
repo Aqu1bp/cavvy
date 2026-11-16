@@ -402,6 +402,8 @@ export interface TurnPrompt {
     images?: number;
     /** A hash of the images (session.promptImages has them): the same key, the same images. Turn ids aren't kept across a reopen. */
     imagesKey?: string;
+    /** Each image's width and height as shown (0, 0 when unknown): its place is kept while it's fetched. */
+    imageSizes?: [number, number][];
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;

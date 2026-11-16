@@ -9,11 +9,12 @@ import { linesLabel, linesPhrase, splitComments } from "../../gui/src/lib/review
 const source = readFileSync(new URL("../../gui/src/components/TurnView.tsx", import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 const icon = (name: string) => () => node(`icon:${name}`);
 const rewinds: number[] = [];
+let imagesReady = false;
 const UserPrompt = component(source, "UserPrompt", {
     splitComments, linesLabel, linesPhrase, plural, promptTime, shortPrompt,
     formatSize: (n: number) => `${n} B`,
     findReveal: () => undefined,
-    imagesReady: () => false,
+    imagesReady: () => imagesReady,
     promptImages: async () => [],
     setViewedImage() {},
     openReview() {},
@@ -77,6 +78,31 @@ test("what came with it sits above the bubble: the schedule, then the attachment
     expect(text(kids(row)[1]!)).toContain("notes.txt");
     expect(classOf(kids(row)[2]!)).not.toContain("short");
     dispose();
+});
+
+test("a prompt's images keep their places, at their shapes, from the first frame; the count when they can't be had", async () => {
+    const sizes: [number, number][] = [[1280, 800], [600, 800], [0, 0]];
+    const waiting = mount({ pos: { seg: 0, index: 1 }, prompt: { text: "these", images: 3, imagesKey: "k", imageSizes: sizes, index: 1 } });
+    const places = all(waiting.row).filter((n) => classOf(n).includes("wait"));
+    expect(places.map((n) => n.props.style.width)).toEqual(["calc(121.6 * var(--sp))", "calc(57 * var(--sp))", "calc(101 * var(--sp))"]);
+    expect(places.map((n) => n.props["aria-label"])).toEqual(["Image 1 of 3", "Image 2 of 3", "Image 3 of 3"]);
+    expect(text(waiting.row)).not.toContain("3 images");
+    waiting.dispose();
+    // Sizes from before they were sent: the count, as before.
+    const unsized = mount({ prompt: { text: "these", images: 2, index: 1 } });
+    expect(text(unsized.row)).toContain("2 images");
+    unsized.dispose();
+    // Fetched and gone (promptImages gives none): the count, not empty places.
+    imagesReady = true;
+    try {
+        const gone = mount({ pos: { seg: 0, index: 1 }, prompt: { text: "these", images: 3, imagesKey: "k", imageSizes: sizes, index: 1 } });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(text(gone.row)).toContain("3 images");
+        expect(all(gone.row).some((n) => classOf(n).includes("wait"))).toBe(false);
+        gone.dispose();
+    } finally {
+        imagesReady = false;
+    }
 });
 
 test("each kind keeps its look: a shell line, a command, a long prompt clamped with Show more, review comments", () => {

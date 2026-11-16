@@ -512,6 +512,15 @@
     object-fit: contain;
 }
 
+/* Its place while it comes, at its shape. */
+.prompt-image.wait {
+    cursor: default;
+}
+
+.prompt-image.sized img {
+    width: 100%;
+}
+
 .prompt-image:hover img {
     opacity: 0.88;
 }
@@ -1818,6 +1827,12 @@
 
 .tool-thumb:hover {
     transform: scale(1.06);
+}
+
+/* Its place while it comes: nothing to see, nothing beside it moves when it's there. */
+.tool-thumb.wait {
+    box-shadow: none;
+    cursor: default;
 }
 
 .tool-thumb img {

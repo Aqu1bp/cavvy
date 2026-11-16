@@ -309,6 +309,53 @@ describe("a prompt's imagesKey", () => {
         expect(key([img("QUFBQkJC")])).not.toBe(key([img("QUFB"), img("QkJC")]));
         expect(attachedPrompt([{ type: "text" }])).toEqual({});
     });
+
+    test("each image's shown size comes with it, so its place is kept while it's fetched", () => {
+        const png = (w: number, h: number) => {
+            const b = Buffer.alloc(33);
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+            b.writeUInt32BE(13, 8);
+            b.write("IHDR", 12, "latin1");
+            b.writeUInt32BE(w, 16);
+            b.writeUInt32BE(h, 20);
+            return b.toString("base64");
+        };
+        // A JPEG with an EXIF orientation, then a 3000×4000 frame.
+        const jpeg = (orientation: number, pad = 0) => {
+            const tiff = Buffer.alloc(8 + 2 + 12 + 4);
+            tiff.write("MM", 0, "latin1");
+            tiff.writeUInt16BE(42, 2);
+            tiff.writeUInt32BE(8, 4);
+            tiff.writeUInt16BE(1, 8);
+            tiff.writeUInt16BE(0x0112, 10);
+            tiff.writeUInt16BE(3, 12);
+            tiff.writeUInt32BE(1, 14);
+            tiff.writeUInt16BE(orientation, 18);
+            const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), tiff]);
+            const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, 0]), exif]);
+            app1.writeUInt16BE(exif.length + 2, 2);
+            // Comments of up to 40 KB each: a segment's length is 16 bits.
+            const comment = Buffer.concat(
+                Array.from({ length: Math.ceil(pad / 40_000) }, (_, k) => {
+                    const n = Math.min(40_000, pad - k * 40_000);
+                    const c = Buffer.alloc(n + 4);
+                    c.set([0xff, 0xfe, ((n + 2) >> 8) & 0xff, (n + 2) & 0xff]);
+                    return c;
+                }),
+            );
+            const sof = Buffer.from([0xff, 0xc0, 0, 11, 8, 0x0f, 0xa0, 0x0b, 0xb8, 3, 0, 0, 0]);
+            return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, comment, sof]).toString("base64");
+        };
+        expect(attachedPrompt([img(png(1280, 800)), img("QUFB"), img(jpeg(1), "image/jpeg"), img(jpeg(6), "image/jpeg")]).imageSizes).toEqual([
+            [1280, 800],
+            [0, 0],
+            [3000, 4000],
+            [4000, 3000],
+        ]);
+        // Its size after 80 KB of other data: read all the same.
+        expect(attachedPrompt([img(jpeg(8, 60_000), "image/jpeg"), img(jpeg(8, 80_000), "image/jpeg")]).imageSizes).toEqual([[4000, 3000], [4000, 3000]]);
+        expect(attachedPrompt([img(png(10, 10))], false).imageSizes).toBeUndefined();
+    });
 });
 
 describe("edge cases", () => {
