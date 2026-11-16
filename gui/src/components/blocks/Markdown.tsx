@@ -171,7 +171,17 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         };
         // Not in the frame that first shows it: its first step's layout would be that frame's (a switch to a session
         // ending in a 60 KB reply: its longest task 43.7 -> 71.3 ms on a Mac). From the frame after.
-        frame = requestAnimationFrame(() => (frame = requestAnimationFrame(step)));
+        // And a task between: what's waiting once that frame is painted (a key, a click) goes before the next frame's
+        // step, rather than after it (Chromium runs a frame that's due first).
+        let task: ReturnType<typeof setTimeout> | undefined;
+        frame = requestAnimationFrame(() => {
+            frame = undefined;
+            task = setTimeout(() => {
+                task = undefined;
+                frame = requestAnimationFrame(step);
+            }, 0);
+        });
+        onCleanup(() => clearTimeout(task));
         onCleanup(() => {
             if (frame !== undefined) cancelAnimationFrame(frame);
         });
