@@ -49,6 +49,29 @@ function indexState(dir: string, status = true) {
 const summary = (r: { files: { path: string; change: string; added: number; removed: number }[] }) => r.files.map((f) => `${f.change} ${f.path} +${f.added} -${f.removed}`);
 
 describe("git changes", () => {
+    // Past the listing's limit, files git says changed, with nothing to convert them, are read only if listed: the
+    // listing and its count are what reading them all gave.
+    test("over the listing's limit: each listed file's diff, a count of the rest, and changes back or of mode alone", async () => {
+        const files: Record<string, string> = { ".gitattributes": "t*.txt text\n" };
+        for (let i = 0; i < 330; i++) files[`f${String(i).padStart(3, "0")}.txt`] = `a\nb ${i}\nc\n`;
+        for (let i = 0; i < 5; i++) files[`t${i}.txt`] = "x\ny\n";
+        const dir = repo(files);
+        for (let i = 0; i < 330; i++) {
+            const f = `f${String(i).padStart(3, "0")}.txt`;
+            if (i === 3) chmodSync(join(dir, f), 0o755);
+            else if (i === 4) write(dir, f, `a\nb ${i}\nc\n`);
+            else write(dir, f, `a\nB ${i}\nc\nd\n`);
+        }
+        // Line endings alone, where git converts them: no change.
+        for (let i = 0; i < 5; i++) write(dir, `t${i}.txt`, "x\r\ny\r\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files).toHaveLength(300);
+        expect(r.more).toBe(29);
+        expect(summary(r).slice(0, 5)).toEqual(["modified f000.txt +2 -1", "modified f001.txt +2 -1", "modified f002.txt +2 -1", "modified f003.txt +0 -0", "modified f005.txt +2 -1"]);
+        expect(r.files[3]!.note).toBe("Mode changed 100644 → 100755");
+        expect(r.files.at(-1)!.path).toBe("f300.txt");
+    });
+
     test("modified, staged, deleted and untracked files, with awkward names", async () => {
         const dir = repo({ "a.txt": "one\ntwo\n", "gone.txt": "bye\n", "with space.txt": "x\n", "-dash.txt": "d\n", "ünï.txt": "u\n", "img.bin": Buffer.from([0, 1, 2, 3]) });
         write(dir, "a.txt", "one\nTWO\nthree\n");
