@@ -1,7 +1,8 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
-import { MarkdownRenderer } from "../../lib/markdown";
-import { createReveal, DrawnAgain } from "../../lib/reveal";
+import { createEffect, createMemo, createRenderEffect, createSignal, For, Index, Match, onCleanup, Switch, untrack, useContext, type Accessor } from "solid-js";
+import { MarkdownRenderer, type Segment } from "../../lib/markdown";
+import { BuiltFromEnd, createReveal, DrawnAgain } from "../../lib/reveal";
+import { offStep, onStep } from "../../lib/stream-clock";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -132,18 +133,79 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         );
     });
     onCleanup(() => clearTimeout(timer));
+    const segment = (s: Accessor<Segment>) => {
+        const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
+        const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
+        return <Switch>
+            <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
+            <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} />}</Match>
+        </Switch>;
+    };
+    // A long finished reply in a session opened at its end: its end first (in view), and what's above it after, a step
+    // at a time (BuiltFromEnd). Built whole at once, a 60 KB reply was 6,451 elements, 6,401 of them above the view:
+    // most of a switch's 67-83 ms on a Mac. Those above go in by the block, kept as they are (<For>) as more come in
+    // above them; those from `cut` on are as any reply's (<Index>).
+    const built = useContext(BuiltFromEnd);
+    const cut = untrack(() => (built.fromEnd() && !live() ? endOf(segments(), BUILT_AT_ONCE) : 0));
+    const [above, setAbove] = createSignal(cut);
+    if (cut) {
+        // In the page's idle time, as many steps as fit (each a few ms), so what's above is in within a few frames.
+        let idle: number | undefined;
+        const step = (deadline?: IdleDeadline) => {
+            idle = undefined;
+            const started = performance.now();
+            do {
+                const at = built.whole() ? 0 : endOf(segments().slice(0, untrack(above)), BUILT_A_STEP);
+                // The first block in so far stays where it's seen (the end, while it's followed).
+                built.keep(root?.firstElementChild, () => setAbove(at));
+            } while (untrack(above) && deadline && deadline.timeRemaining() > IDLE_LEFT_MS && performance.now() - started < IDLE_BUSY_MS);
+            if (untrack(above)) later();
+        };
+        const stepNow = () => step();
+        const later = () => {
+            if (typeof requestIdleCallback === "function") idle = requestIdleCallback(step, { timeout: 200 });
+            else onStep(stepNow);
+        };
+        later();
+        onCleanup(() => {
+            if (idle !== undefined) cancelIdleCallback(idle);
+            offStep(stepNow);
+        });
+        createEffect(() => {
+            if (built.whole() && untrack(above)) built.keep(root?.firstElementChild, () => setAbove(0));
+        });
+        // Images in what's come in since are loaded with it.
+        createEffect(() => {
+            above();
+            const id = p.sessionId;
+            const load = id ? images() : undefined;
+            if (id && root && load && imagesReady(id)) loadImages(root, load);
+        });
+    }
     return (
         <div ref={root} class={`md ${live() ? "streaming" : ""} ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
-            <Index each={segments()}>
-                {(s, i) => {
-                    const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
-                    const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
-                    return <Switch>
-                        <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} />}</Match>
-                    </Switch>;
-                }}
-            </Index>
+            {cut ? <For each={segments().slice(above(), cut)}>{(s) => segment(() => s)}</For> : null}
+            <Index each={cut ? segments().slice(cut) : segments()}>{(s) => segment(s)}</Index>
         </div>
     );
+}
+
+/** What's built of a long reply first (its HTML and code, in characters), and of what's above it at each step after. */
+const BUILT_AT_ONCE = 16_000;
+const BUILT_A_STEP = 6_000;
+/**
+ * A step more in an idle period only with this much of it left (ms), and only so long into it: a key pressed meanwhile
+ * waits for the step under way. A step is about 3-6 ms (measured, headless).
+ */
+const IDLE_LEFT_MS = 8;
+const IDLE_BUSY_MS = 8;
+/** Where the last `chars` characters of blocks start, in `segs` (0: all of it, as it's no more than that, or hardly more). */
+function endOf(segs: readonly Segment[], chars: number): number {
+    let n = 0;
+    for (let i = segs.length - 1; i >= 0; i--) {
+        const s = segs[i]!;
+        n += s.kind === "html" ? s.html.length : s.code.length;
+        if (n >= chars) return i > 1 ? i : 0;
+    }
+    return 0;
 }

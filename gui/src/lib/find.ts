@@ -81,6 +81,13 @@ export function textRanges(root: Node, query: string): Range[] {
 export function revealInBoxes(r: Range, outer: Element) {
     for (let el = r.startContainer.parentElement; el && el !== outer; el = el.parentElement) {
         const cs = getComputedStyle(el);
+        // One skipped while out of sight (a reply's code block, transcript.css) measures as if it held nothing: drawn
+        // for this, and left to the page again at the next frame, once the caller has brought it into view.
+        if (cs.contentVisibility === "auto") {
+            const box = el as HTMLElement;
+            box.style.contentVisibility = "visible";
+            requestAnimationFrame(() => box.style.removeProperty("content-visibility"));
+        }
         const sy = el.scrollHeight > el.clientHeight && /auto|scroll/.test(cs.overflowY);
         const sx = el.scrollWidth > el.clientWidth && /auto|scroll/.test(cs.overflowX);
         if (!sx && !sy) continue;

@@ -235,31 +235,67 @@ md.use({
  */
 export type Segment = { kind: "html"; key: string; html: string; answers?: [string, string | null | undefined][] } | { kind: "code"; key: string; lang: string; code: string; open: boolean };
 
-type Rendered = { lexed: NonNullable<MarkdownRenderer["lexed"]>; html: Map<string, Segment>; references: string };
+/** A finished reply as rendered: its blocks, and the reference definitions they were rendered with. */
+type Rendered = { out: Segment[]; references: string; chars: number };
 /**
  * Finished replies rendered lately, by their text, the last used last: one shown again (a session switched back to, a
- * page of turns read again) starts from what it was, not lexed and rendered anew (a 60 KB reply: 12 ms of a switch's
- * 67, measured). Its blocks are still looked at again where what's known about their paths changed.
+ * page of turns read again) is what it was, not lexed and rendered anew (a 60 KB reply: 12 ms of a switch's 67,
+ * measured). Only its blocks are kept, not the lexer's tokens (four times the reply, measured): a block whose paths are
+ * known differently since is rendered again from the reply lexed anew.
  */
 const done = { linked: new Map<string, Rendered>(), plain: new Map<string, Rendered>() };
 let doneChars = 0;
-/** About what's kept, in characters of the replies (their tokens and HTML are about as much again, each). */
+/**
+ * What's kept, in characters: the replies (their keys), their blocks' HTML and code, and SEGMENT_CHARS a block. Full,
+ * about 6 MB more than none kept (forty 60 KB replies: 11.0 MB retained against 4.8, measured in V8).
+ */
 const DONE_CHARS = 2_000_000;
+const SEGMENT_CHARS = 64;
+
+const sizeOf = (text: string, out: readonly Segment[]) => out.reduce((n, s) => n + SEGMENT_CHARS + (s.kind === "html" ? s.html.length : s.code.length), text.length);
 
 /** Kept for its views that look paths up (`linked`: those that are files become links), or for those that don't. */
 function keep(kept: Map<string, Rendered>, text: string, r: Rendered) {
-    if (kept.delete(text)) kept.set(text, r);
-    else if (text.length <= DONE_CHARS / 4) {
-        kept.set(text, r);
-        doneChars += text.length;
+    const had = kept.get(text);
+    if (had) {
+        kept.delete(text);
+        doneChars -= had.chars;
     }
-    for (const map of [done.plain, done.linked]) {
-        for (const [t] of map) {
-            if (doneChars <= DONE_CHARS) return;
-            map.delete(t);
-            doneChars -= t.length;
-        }
+    if (r.chars > DONE_CHARS / 4) return;
+    kept.set(text, r);
+    doneChars += r.chars;
+    order.set(r, ++used);
+    // The least lately used first, of either.
+    while (doneChars > DONE_CHARS) {
+        const p = done.plain.entries().next().value;
+        const l = done.linked.entries().next().value;
+        const [map, entry] = !l || (p && order.get(p[1])! < order.get(l[1])!) ? [done.plain, p!] : [done.linked, l];
+        map.delete(entry[0]);
+        doneChars -= entry[1].chars;
     }
+}
+/** When each was last kept or used (for eviction across both maps). */
+const order = new WeakMap<Rendered, number>();
+let used = 0;
+
+/** Whether each of `out`'s blocks is rendered with what `lookup` knows now. */
+function fresh(out: readonly Segment[], lookup?: PathLookup): boolean {
+    if (!lookup) return true;
+    for (const s of out) if (s.kind === "html" && s.answers?.some(([p, a]) => lookup(p) !== a)) return false;
+    return true;
+}
+
+/** The blocks of `out` by what they were rendered from (as segments() keys them), with `tokens` that reply lexed. */
+function byToken(tokens: Token[], out: readonly Segment[]): Map<string, Segment> {
+    const map = new Map<string, Segment>();
+    let j = 0;
+    for (const t of tokens) {
+        if (t.type === "space" || t.type === "def") continue;
+        const s = out[j++];
+        if (!s) return new Map();
+        map.set(`${t.type}\0${t.raw}`, s);
+    }
+    return j === out.length ? map : new Map();
 }
 
 /** Renders one reply; keeps finished blocks between calls. */
@@ -289,13 +325,22 @@ export class MarkdownRenderer {
         this.paths = new Set();
         let tokens: Token[] & { links?: unknown };
         let relexedFrom = Infinity;
-        // A finished reply rendered before, by another of its views: from there.
+        // A finished reply rendered before (by this view or another): as it was, where nothing it shows is known
+        // differently since; else from its blocks, those that are rendered again.
         const kept = lookup ? done.linked : done.plain;
-        const was = !streaming && !this.lexed ? kept.get(text) : undefined;
-        if (was) {
-            this.lexed = was.lexed;
-            this.html = new Map(was.html);
-            this.references = was.references;
+        const was = streaming ? undefined : kept.get(text);
+        if (was && fresh(was.out, lookup)) {
+            for (const seg of was.out) if (seg.kind === "html") this.note(seg.answers ?? []);
+            keep(kept, text, was);
+            return was.out;
+        }
+        if (was && this.lexed?.text !== text) {
+            try {
+                const lexed = md.lexer(text);
+                this.lexed = { text, streaming: false, tokens: lexed, tailIndex: 0, tailStart: -1 };
+                this.html = byToken(lexed, was.out);
+                this.references = was.references;
+            } catch { /* lexed again below, as any other */ }
         }
         try {
             // Rendered again with the same text when answers arrive: lex it once.
@@ -416,7 +461,7 @@ export class MarkdownRenderer {
             out.push(seg);
         });
         this.html = next;
-        if (!streaming && this.lexed?.text === text) keep(kept, text, { lexed: this.lexed, html: next, references: this.references });
+        if (!streaming && this.lexed?.text === text) keep(kept, text, { out, references: this.references, chars: sizeOf(text, out) });
         return out;
     }
 }

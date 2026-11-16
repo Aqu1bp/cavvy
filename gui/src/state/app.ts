@@ -27,6 +27,7 @@ import { composerStorage } from "../lib/drafts";
 import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
+import { waitedOn } from "../lib/waited-on";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
@@ -627,15 +628,21 @@ function letGo(h: SessionHandle) {
 }
 
 /**
- * Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed
- * back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to be shown (not yet the one in view):
- * with the others all working or waiting on the user, it was the one closed, and what was typed into it went nowhere.
+ * Few sessions stay subscribed; the rest are closed (the server keeps running them). Those working or waiting on the
+ * user stay, and aren't counted: KEEP_OPEN is of the others. Counted, twelve waiting on plans had every other session
+ * closed, the one just left too, each opened afresh on the way back (another machine's: 119-137 ms, against 14-19).
+ * Not one holding a message handed back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to
+ * be shown (not yet the one in view): with the others all working or waiting on the user, it was the one closed, and
+ * what was typed into it went nowhere.
  */
 function trim(opened: string) {
-    if (handles.size <= KEEP_OPEN) return;
+    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined;
+    let idle = 0;
+    for (const h of handles.values()) if (!kept(h)) idle++;
+    if (idle <= KEEP_OPEN) return;
     const shown = onScreen.beside();
-    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
-    for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
+    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !kept(h)).sort((a, b) => a.lastUsed - b.lastUsed);
+    for (const h of old.slice(0, idle - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
     }
@@ -661,6 +668,12 @@ function schedule(h: SessionHandle) {
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
     if (document.visibilityState === "visible") onStep(() => flush(h));
     else setTimeout(() => flush(h), 200);
+}
+
+/** At the next frame, with whatever came before it (in order). */
+function flushSoon(h: SessionHandle) {
+    if (document.visibilityState !== "visible") return schedule(h);
+    requestAnimationFrame(() => flush(h));
 }
 
 /** The server closed the session (archived with its worktree): this window no longer has it open. */
@@ -1299,7 +1312,8 @@ function onEvent(ev: ServerEvent) {
             if (!h || ev.seq <= h.seq) return;
             h.seq = ev.seq;
             h.queue.push(...ev.ops);
-            schedule(h);
+            if (waitedOn(ev.ops)) flushSoon(h);
+            else schedule(h);
             // A file named before it existed becomes a link once it may (an edit landed, or the turn ended).
             if (mayCreateFiles(ev.ops)) paths.forgetMissing(ev.sessionId);
             return;

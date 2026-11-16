@@ -1,4 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
+import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
@@ -21,8 +22,7 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { ReviewPane } from "./components/ReviewPane";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
 import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
@@ -162,6 +162,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         if (saved) setInspectorWidth(saved);
     } catch { /* private mode: the default width */ }
     onMount(() => {
+        onCleanup(watchCodeMetrics());
         const resized = () => setWin(size());
         window.addEventListener("resize", resized);
         onCleanup(() => window.removeEventListener("resize", resized));
@@ -307,11 +308,19 @@ function Reconnecting() {
 const settingsModule = () => import("./components/Settings");
 const SettingsNav = lazy(() => settingsModule().then((m) => ({ default: m.SettingsNav })));
 const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.SettingsPage })));
+/** The diff reader: shown when a diff is opened, not with the window. */
+const reviewModule = () => import("./components/ReviewPane");
+const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
 
 export function App() {
-    // Settings' chunk (above), once nothing more pressing is left to do after the window opened.
+    // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
+    // there by the time either is first opened.
     onMount(() => {
-        const fetch = () => void settingsModule().catch(() => undefined);
+        const fetch = () => {
+            void settingsModule().catch(() => undefined);
+            void reviewModule().catch(() => undefined);
+            void preloadTerminal().catch(() => undefined);
+        };
         if (typeof requestIdleCallback === "function") {
             const idle = requestIdleCallback(fetch, { timeout: 4000 });
             onCleanup(() => cancelIdleCallback(idle));

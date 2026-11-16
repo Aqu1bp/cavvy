@@ -14,7 +14,7 @@ Object.assign(globalThis, {
     requestAnimationFrame: (fn: (at: number) => void) => setTimeout(() => fn(performance.now()), 0),
     cancelAnimationFrame: (n: ReturnType<typeof setTimeout>) => clearTimeout(n),
 });
-const ids = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"];
+const ids = Array.from({ length: 20 }, (_, i) => `s${i + 1}`);
 const summary = (id: string) => ({ id, title: id, cwd: "/p", projectName: "p", status: "idle", updatedAt: 1, createdAt: 1 });
 /** A session that works, or waits on the user (a plan to approve): busy. */
 const state = (id: string, busy: boolean) => ({ id, cwd: "/p", busy, interactions: [] });
@@ -57,10 +57,17 @@ for (let i = 0; i < 9; i++) {
 }
 // The window still keeps few: with all nine waiting, none is closed (each would lose what it's showing).
 assert.deepEqual(closed, []);
-// One done: the next made closes it, the oldest not working, and not the new one.
+// Those working or waiting aren't counted: eight others stay open besides them. One done, and seven more made: none closed.
 appState.handleFor("s1")!.set("state", "busy", false);
-const tenth = await appState.createSession("/p");
+for (let i = 10; i <= 16; i++) assert.equal((await appState.createSession("/p")).id, `s${i}`);
 await settle();
-assert.equal(tenth.id, "s10");
+assert.deepEqual(closed, []);
+// A ninth that isn't working: the oldest of them is closed (not the new one), then the next oldest.
+await appState.createSession("/p");
+await settle();
 assert.deepEqual(closed, ["s1"]);
+await appState.createSession("/p");
+await settle();
+assert.deepEqual(closed, ["s1", "s10"]);
+assert.ok(appState.handleFor("s18") && appState.handleFor("s2"), "the one just made, and those waiting, stay open");
 process.exit(0);

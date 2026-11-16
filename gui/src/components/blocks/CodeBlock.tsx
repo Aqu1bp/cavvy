@@ -1,7 +1,8 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createRenderEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { endWriting, highlight, highlighted, highlightMore, newWriting } from "../../lib/highlight";
 import { growing, trailBlock } from "../../lib/stream-dom";
+import { linesOf } from "../../lib/code-metrics";
 import { CopyButton } from "../ui/bits";
 
 const LABELS: Record<string, string> = { ts: "TypeScript", typescript: "TypeScript", tsx: "TSX", js: "JavaScript", javascript: "JavaScript", jsx: "JSX", py: "Python", python: "Python", rs: "Rust", rust: "Rust", go: "Go", sh: "Shell", bash: "Shell", shell: "Shell", zsh: "Shell", console: "Console", json: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", md: "Markdown", markdown: "Markdown", html: "HTML", css: "CSS", sql: "SQL", diff: "Diff", swift: "Swift", kotlin: "Kotlin", java: "Java", c: "C", cpp: "C++", ruby: "Ruby", rb: "Ruby", php: "PHP" };
@@ -9,12 +10,6 @@ const LABELS: Record<string, string> = { ts: "TypeScript", typescript: "TypeScri
 /** While code streams, its finished lines are highlighted at most this often. */
 const STREAM_HIGHLIGHT_MS = 250;
 
-/** How many lines `code` is drawn as (one it ends with starts none). */
-export function linesOf(code: string): number {
-    let n = 1;
-    for (let at = code.indexOf("\n"); at !== -1 && at < code.length - 1; at = code.indexOf("\n", at + 1)) n++;
-    return n;
-}
 
 export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean; bare?: boolean; maxHeight?: number }) {
     return <RenderBoundary raw={() => p.code}><CodeBlockContent {...p} /></RenderBoundary>;
@@ -125,6 +120,10 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
         const l = lit();
         return l && l.lang === p.lang && p.code.startsWith(l.code) ? l : undefined;
     };
+    // Its size skipped out of sight (transcript.css): once it's finished, when it may be. Its own, not a custom property
+    // its spans would inherit: each change would style all of them again (each line, while it streamed: 4.6 times the
+    // elements styled, measured).
+    const skippedAt = createMemo(() => (p.streaming ? undefined : `auto calc(${linesOf(p.code)} * var(--code-line, 1lh))`));
     const label = () => (p.lang ? (LABELS[p.lang.toLowerCase()] ?? p.lang) : "");
     return (
         <div class={`code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}`} ref={box}>
@@ -134,7 +133,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
                     <CopyButton text={() => p.code} label="Copy code" />
                 </div>
             </Show>
-            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "--lines": String(linesOf(p.code)) }}>
+            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "contain-intrinsic-block-size": skippedAt() }}>
                 <code>
                     <Show when={head()}>{(h) => <span class="code-lit" classList={{ lines: h().lines }} ref={(el) => {
                         const show = growing(el);

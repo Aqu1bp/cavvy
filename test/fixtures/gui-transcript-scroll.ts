@@ -6,7 +6,7 @@ import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstShown, firs
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
-import { DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, DrawnAgain } from "../../gui/src/lib/reveal";
 import { KeyedList } from "../../gui/src/lib/keyed-list";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -158,7 +158,7 @@ const scope = {
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, KeyedList,
+    AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, BuiltFromEnd, KeyedList,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),

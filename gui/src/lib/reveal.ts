@@ -22,6 +22,18 @@ import { offStep, onStep, STEP_MS } from "./stream-clock";
  */
 export const DrawnAgain = createContext<() => boolean>(() => false);
 
+/**
+ * `fromEnd`: true while a transcript draws a session it opens at its end (its first frame), with nothing to find in it
+ * at once: a long finished reply then builds its end first, what's in view, and the rest, above it, a step at a time
+ * after (components/blocks/Markdown.tsx). `whole`: true once something needs all of it (Find, a jump to a message, the reader leaving the end).
+ * `keep`: `el` stays where it's seen while `put` puts in what goes above it (the reader scrolled up meanwhile).
+ */
+export const BuiltFromEnd = createContext<{ fromEnd: () => boolean; whole: () => boolean; keep: (el: Element | null | undefined, put: () => void) => void }>({
+    fromEnd: () => false,
+    whole: () => true,
+    keep: (_el, put) => put(),
+});
+
 /** How far behind the stream the text runs at least: what has arrived is out this long after the last of it came. */
 export const LAG_MS = 90;
 /**

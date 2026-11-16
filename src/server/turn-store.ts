@@ -91,6 +91,11 @@ export class TurnStore {
     private end = 0;
     /** A turn in it couldn't be read: not indexed again (the session is built from its logs next time). */
     damaged = false;
+    /**
+     * What the index on the disk says, while nothing has been put since it was read or written: the session closed
+     * with nothing changed writes nothing (its index rewritten whole and synced each time, 8 ms for 4,000 turns).
+     */
+    private written?: { logs: LogStamp[]; ids: number; turns: number; agents: number };
 
     private constructor(dir: string, id: string, private readonly logs: string[]) {
         this.file = join(dir, `${id}.jsonl`);
@@ -112,13 +117,17 @@ export class TurnStore {
             return undefined;
         }
         if (index.v !== VERSION || index.logs.length !== this.logs.length || !index.ui) return undefined;
+        const stamps: LogStamp[] = [];
         for (let i = 0; i < this.logs.length; i++) {
             const now = stamp(this.logs[i]!);
+            stamps.push(now);
             // Another file in its place (restored from a backup, synced) of the same size and end: not the one it was.
             if (now.size !== index.logs[i]!.size || now.tail !== index.logs[i]!.tail || now.ino !== index.logs[i]!.ino) return undefined;
         }
         if (!existsSync(this.file)) return undefined;
         this.end = this.open();
+        // The logs as just read (the same): not the index's own, whose strings may hold on to the whole index text.
+        this.written = { logs: stamps, ids: index.ids, turns: index.turns.length, agents: index.agents.length };
         return { heads: index.turns, agents: index.agents, ids: index.ids, ui: index.ui };
     }
 
@@ -144,6 +153,7 @@ export class TurnStore {
 
     /** Put a turn (or a sub-agent) in the store (its latest): where it went. */
     put(t: Turn | AgentRun): { at: number; len: number } {
+        this.written = undefined;
         if (this.fd === undefined) this.end = this.open();
         const b = Buffer.from(JSON.stringify(t) + "\n");
         // Written whole or not at all (a full disk): an index never points at a turn half written.
@@ -214,6 +224,7 @@ export class TurnStore {
     /** Starts the store afresh (the turns were built again: nothing in it is theirs). */
     clear() {
         this.close();
+        this.written = undefined;
         rmSync(this.file, { force: true });
         rmSync(this.indexFile, { force: true });
     }
@@ -235,6 +246,10 @@ export class TurnStore {
         if (this.damaged) return;
         const logs = this.logs.map(stamp);
         if (as && logs.some((l, i) => l.size !== as[i]?.size || l.tail !== as[i]?.tail || l.ino !== as[i]?.ino)) return;
+        // Nothing put since, its logs and ids as they were, as many turns and sub-agents: it says this already. (A turn's
+        // head changes as it's put again; the GUI log's state, with that log.)
+        const was = this.written;
+        if (was && was.ids === ids && was.turns === turns.length && was.agents === agents.length && logs.every((l, i) => l.size === was.logs[i]?.size && l.tail === was.logs[i]?.tail && l.ino === was.logs[i]?.ino)) return;
         const index: Index = { v: VERSION, logs, ids, turns, agents, ui };
         // On the disk before the index that points into it is (a power cut leaves no index over turns that aren't).
         // Off the server's thread: 30-44 ms for a 30,000-item session's store, at its close (Linux).
@@ -243,10 +258,12 @@ export class TurnStore {
         const tmp = `${this.indexFile}.${process.pid}.tmp`;
         writeFileSync(tmp, JSON.stringify(index), { mode: 0o600 });
         renameSync(tmp, this.indexFile);
+        this.written = { logs, ids, turns: turns.length, agents: agents.length };
     }
 
     /** Not to be read until written again: the logs are about to change in ways it doesn't know (a rewind). */
     forget() {
+        this.written = undefined;
         rmSync(this.indexFile, { force: true });
     }
 
