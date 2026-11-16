@@ -466,6 +466,9 @@ export class Session {
      */
     release() {
         this.saveWorked();
+        // What waited for room (a full disk) goes down now if it can: no later write will take it.
+        if (this.failing) this.write();
+        this.stopRetry();
         this.released = true;
         if (!this.holding) return;
         this.holding = false;
@@ -490,21 +493,29 @@ export class Session {
     private failing = false;
     /** Told when saving stops working (and why), and when it works again (undefined). */
     onSaving?: (error: Error | undefined) => void;
+    /** While saving fails: what waits is tried again, so room made while the session is idle saves it. */
+    private retry?: ReturnType<typeof setTimeout>;
 
-    /** Whether it's on disk now. */
-    private write(line: Line): boolean {
+    private stopRetry() {
+        if (this.retry) clearTimeout(this.retry);
+        this.retry = undefined;
+    }
+
+    /** Whether it's on disk now. Without a line: what waits (saving failed) is written, if it can be now. */
+    private write(line?: Line): boolean {
         if (!this.persist || this.released) return false;
-        if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
-            this.pending.push(line);
+        if (!line && !this.pending.length) return true;
+        if (!this.started && line?.t !== "msg" && !existsSync(this.file)) {
+            if (line) this.pending.push(line);
             return false;
         }
         // One from before worked lines, written to for something else (a repair, a rename): when it last worked goes first,
         // or the sidebar would take this write's time for it.
-        if (line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
+        if (line && line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
             this.workedAt = this.savedWorkedAt = this.writtenAt;
             this.pending.push({ t: "worked", at: this.writtenAt });
         }
-        const lines = [...this.pending.splice(0), line];
+        const lines = [...this.pending.splice(0), ...(line ? [line] : [])];
         let saved = 0;
         try {
             if (!this.started) {
@@ -525,6 +536,7 @@ export class Session {
             }
             if (this.failing) {
                 this.failing = false;
+                this.stopRetry();
                 this.onSaving?.(undefined);
             }
             return true;
@@ -538,6 +550,12 @@ export class Session {
                 this.failing = true;
                 this.onSaving?.(error as Error);
             }
+            this.stopRetry();
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.write();
+            }, savingRetry.ms);
+            this.retry.unref?.();
             return false;
         }
     }
@@ -1692,6 +1710,8 @@ function repairTail(s: Session) {
 
 /** While a session works, how often at most a worked line goes down (Session.worked). */
 const WORKED_EVERY_MS = 60_000;
+/** While saving fails (a full disk), how often what waits is tried again (a test sets it lower). */
+export const savingRetry = { ms: 5_000 };
 const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
 /** Enough of a line to see its record type. */

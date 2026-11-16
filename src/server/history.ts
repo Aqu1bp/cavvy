@@ -16,7 +16,7 @@ import { attachedPrompt } from "./attachments";
 import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, EffortLevel, FileDiff, NoticeBlock, NoticeData, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
-import { addNotice, noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
+import { addNotice, noticesUpTo, savingRetry, turnNotice, type TurnNotice } from "../agent/session";
 import { eachLine, linesFromEnd } from "../util/lines";
 import { nextSlice } from "../util/slices";
 import { allProviders, getProvider } from "../providers/registry";
@@ -213,6 +213,11 @@ export class UiLog {
     private created = false;
     /** Its session was let go of: another process may be keeping this log now. */
     private closed = false;
+    /** Records a write failed for (a full disk), in order: written before the next, tried again meanwhile. */
+    private waiting: UiRecord[] = [];
+    /** An append failed, maybe half way: the next starts on a line of its own (a torn line is skipped when read). */
+    private torn = false;
+    private retry?: ReturnType<typeof setTimeout>;
 
     /**
      * `light`: only what the session needs while it runs (its turns' records and its state), not every step, tool
@@ -476,15 +481,26 @@ export class UiLog {
         return r?.blocks.length && (r.prompt === undefined || r.prompt === promptKey(prompt)) ? r.blocks : undefined;
     }
 
-    /** Nothing more is written (the session is being let go of, like Session.release). */
+    /** Nothing more is written (the session is being let go of, like Session.release): what waited, if it can be now. */
     close() {
+        if (this.waiting.length) this.write();
+        if (this.retry) clearTimeout(this.retry);
+        this.retry = undefined;
         this.closed = true;
     }
 
-    /** Best effort, like the transcript itself; redacted like everything written to disk. */
-    write(r: UiRecord) {
+    /**
+     * Redacted like everything written to disk. Where it fails (a full disk), the session keeps working: what wasn't
+     * written goes before the next record, in order and none twice, and is tried again meanwhile (Session.write too).
+     */
+    write(r?: UiRecord) {
         if (this.closed) return;
-        this.apply(r);
+        if (r) {
+            this.apply(r);
+            this.waiting.push(r);
+        }
+        if (!this.waiting.length) return;
+        let saved = 0;
         try {
             if (!this.created) {
                 mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -494,9 +510,22 @@ export class UiLog {
                 }
                 this.created = true;
             }
-            appendFileSync(this.file, redactedJson(r) + "\n");
+            for (; saved < this.waiting.length; saved++) {
+                appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(this.waiting[saved]!) + "\n");
+                this.torn = false;
+            }
+            this.waiting = [];
+            if (this.retry) clearTimeout(this.retry);
+            this.retry = undefined;
         } catch {
-            // the session keeps working without it
+            this.waiting.splice(0, saved);
+            this.torn = true;
+            if (this.retry) clearTimeout(this.retry);
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.write();
+            }, savingRetry.ms);
+            this.retry.unref?.();
         }
     }
 }
