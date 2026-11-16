@@ -367,10 +367,12 @@ export class MarkdownRenderer {
                 // While streaming, only the tail is settled: frozen blocks are
                 // closed, and settle() only changes the end of what it's given,
                 // so the last render (no longer streaming) keeps them too.
-                const append = previous && (previous.streaming === streaming || previous.streaming) && previous.tailStart >= 0 && !hasLinks(previous.tokens) && text.startsWith(previous.text);
-                let from = append ? previous.tailStart : 0;
+                // Its one-line paragraph finished (a blank line after it): kept as rendered, not lexed again (endLine).
+                const base = streaming && previous?.line ? (this.endLine(previous, text, lookup) ?? previous) : previous;
+                const append = base && (base.streaming === streaming || base.streaming) && base.tailStart >= 0 && !hasLinks(base.tokens) && text.startsWith(base.text);
+                let from = append ? base.tailStart : 0;
                 // The tail ends in a list or a table: only its last item or row is lexed again (listTail, tableTail).
-                const spliced = append && streaming ? (previous.list?.head !== undefined ? tableTail(previous, text) : listTail(previous, text)) : undefined;
+                const spliced = append && streaming ? (base.list?.head !== undefined ? tableTail(base, text) : listTail(base, text)) : undefined;
                 let source = spliced ? spliced.source : streaming ? settle(text.slice(from)) : text.slice(from);
                 let tail = spliced?.tail ?? ((streaming && openFence(source)) || (streaming ? lexOnce(source) : md.lexer(source)));
                 if (append && hasLinks(tail)) {
@@ -379,11 +381,11 @@ export class MarkdownRenderer {
                     tail = md.lexer(source);
                 }
                 const appended = append && from > 0;
-                relexedFrom = appended ? previous.tailIndex : 0;
-                tokens = appended ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
+                relexedFrom = appended ? base.tailIndex : 0;
+                tokens = appended ? Object.assign([...base.tokens.slice(0, base.tailIndex), ...tail], { links: tail.links }) : tail;
                 // What's frozen was checked when it was lexed: only the tail is looked at again.
                 const at = (k: number) => (k < from ? text[k] : source[k - from]);
-                let tailIndex = appended ? previous.tailIndex : 0;
+                let tailIndex = appended ? base.tailIndex : 0;
                 // Where the tail starts holds whether or not its tokens add up to what was lexed (a list's last line
                 // ends in a space, its raw in a newline): only new freezes need the tokens' offsets.
                 const exact = tail.map((t) => t.raw).join("") === source;
@@ -417,9 +419,9 @@ export class MarkdownRenderer {
                 // The reply ends in a paragraph of one line, the only block not yet settled: words appended to it are
                 // rendered as they come rather than the line lexed again with each (appendLine).
                 const open = exact && tailIndex === tokens.length - 1 && tokens[tailIndex]!.type === "paragraph" && !hasLinks(tokens) && OPEN_LINE.test(text.slice(tailStart, tailStart + 3)) && !/[\r\n]/.test(text.slice(tailStart));
-                const was = append && previous.list?.from === tailStart ? previous.list : undefined;
+                const was = append && base?.list?.from === tailStart ? base.list : undefined;
                 const list = streaming && !hasLinks(tokens) ? (openList(text, tokens, tailIndex, tailStart, last, was) ?? openTable(text, tokens, tailIndex, tailStart, last, was)) : undefined;
-                this.lexed = { text, streaming, tokens, tailIndex, tailStart, ...(open ? { line: { start: tailStart, frozen: tailStart, scan: tailStart, open: [], html: "", answers: new Map(), refs: 0, linked: Boolean(lookup), dead: false } } : {}), ...(list ? { list } : {}) };
+                this.lexed = { text, streaming, tokens, tailIndex, tailStart, ...(open ? { line: { start: tailStart, frozen: tailStart, scan: tailStart, open: [], html: "", inline: [], answers: new Map(), refs: 0, linked: Boolean(lookup), dead: false } } : {}), ...(list ? { list } : {}) };
             }
             // A late reference definition must also invalidate cached HTML.
             const references = JSON.stringify(tokens.links ?? {});
@@ -556,7 +558,9 @@ export class MarkdownRenderer {
                 const answers = new Map<string, string | null | undefined>();
                 ctx = lookup && { lookup, answers, refs: next.refs, inLink: false };
                 try {
-                    next.html += md.parseInline(piece) as string;
+                    const inline = md.Lexer.lexInline(piece, md.defaults);
+                    next.html += md.Parser.parseInline(inline, md.defaults);
+                    next.inline = next.inline.concat(inline);
                     if (ctx) next.refs = ctx.refs;
                 } catch {
                     return undefined;
@@ -586,6 +590,38 @@ export class MarkdownRenderer {
         this.lexed = { text, streaming, tokens, tailIndex: previous.tailIndex, tailStart: previous.tailStart, line: next };
         return tokens;
     }
+
+    /**
+     * The reply's last paragraph, one line, finished: a blank line after it, so nothing written after can change it.
+     * What `previous` would be with it lexed whole and frozen, its tokens what's rendered for good of it (OpenLine) and
+     * the rest of it read once; else undefined. What's after it is then lexed as any tail is.
+     */
+    private endLine(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string, lookup?: PathLookup): MarkdownRenderer["lexed"] {
+        const line = previous.line!;
+        if (!previous.streaming || line.linked !== Boolean(lookup) || !text.startsWith(previous.text)) return undefined;
+        const end = text.indexOf("\n", line.start);
+        if (end < 0 || !/^\n[ \t]*\n/.test(text.slice(end, end + 64)) || text.slice(line.start, end).includes("\r")) return undefined;
+        if (lookup) for (const [p, a] of line.answers) if (lookup(p) !== a) return undefined;
+        const answers = new Map(line.answers);
+        let inline: Token[];
+        let html: string;
+        ctx = lookup && { lookup, answers, refs: line.refs, inLink: false };
+        try {
+            const rest = md.Lexer.lexInline(text.slice(line.frozen, end), md.defaults);
+            html = `<p>${line.html}${md.Parser.parseInline(rest, md.defaults)}</p>\n`;
+            inline = line.inline.concat(rest);
+        } catch {
+            return undefined;
+        } finally {
+            ctx = undefined;
+        }
+        const raw = text.slice(line.start, end);
+        const token = { type: "paragraph", raw, text: raw, tokens: inline } as Tokens.Paragraph;
+        // Rendered already: as the segment for it, which segments() takes as it takes any block lexed before.
+        this.html.set(`paragraph\0${raw}`, { kind: "html", key: `h${previous.tailIndex}:${raw.length}`, html, answers: [...answers] });
+        const tokens = Object.assign([...previous.tokens.slice(0, previous.tailIndex), token], { links: previous.tokens.links });
+        return { text: text.slice(0, end), streaming: true, tokens, tailIndex: previous.tailIndex + 1, tailStart: end };
+    }
 }
 
 /**
@@ -598,6 +634,8 @@ interface OpenLine {
     scan: number;
     open: string[];
     html: string;
+    /** What `html` was rendered from. */
+    inline: Token[];
     answers: Map<string, string | null | undefined>;
     /** Paths looked up so far in the paragraph (MAX_REFS a block). */
     refs: number;
