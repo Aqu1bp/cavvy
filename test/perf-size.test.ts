@@ -71,7 +71,7 @@ const settledHeap = async () => {
     return last;
 };
 
-interface Cost { openSent: number; findSent: number; rewindSent?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
+interface Cost { openSent: number; findSent: number; rewindSent?: number; sendSent?: number; readOnSend?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
 
 async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const cwd = join(tempDir(`cavvy-perf-size-${kind}-`), "project");
@@ -99,6 +99,8 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         keptOpen = now;
     }
     let rewindSent: number | undefined;
+    let sendSent: number | undefined;
+    let readOnSend: number | undefined;
     if (kind === "native") {
         // Back to before the last prompt.
         const last = open.msg.result.turns.at(-1).pos.index as number;
@@ -107,6 +109,16 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         await ok("session.rewind", { id: t.id, index: last, planId: plan.msg.result.planId, code: false, conversation: true });
         await Bun.sleep(150);
         rewindSent = opsBytes;
+        // A prompt, sent and answered (the mock model's reply): from the send to the turn's end.
+        const rt = srv.engine.runtimes.get(t.id)!;
+        opsBytes = 0;
+        const read4 = readSoFar();
+        await ok("session.send", { id: t.id, text: "Say hello" });
+        for (let i = 0; i < 2000 && rt.idle; i++) await Bun.sleep(5);
+        for (let i = 0; i < 2000 && !rt.idle; i++) await Bun.sleep(5);
+        const read5 = readSoFar();
+        sendSent = opsBytes;
+        readOnSend = read4 === undefined || read5 === undefined ? undefined : read5 - read4;
     }
     await ok("session.close", { id: t.id });
     // Opened again (its turns stored as it was let go of: src/server/turn-store.ts), twice: what it keeps is the less
@@ -125,7 +137,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         reopen.kept = Math.min(reopen.kept, kept2);
     }
     return {
-        openSent: open.bytes, findSent: find.bytes, rewindSent, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
+        openSent: open.bytes, findSent: find.bytes, rewindSent, sendSent, readOnSend, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
         readOnReopen: reopen!.read, keptAfterReopen: reopen!.kept, openMs, reopenMs: reopen!.ms,
     };
 }
@@ -179,6 +191,17 @@ describe("a session of one of Cavvy's own models", () => {
     test("a rewind sends its last turns, not all of them", () => {
         const { small, large } = measured.native!;
         expect(within(small.rewindSent!, large.rewindSent!)).toBe(true);
+    });
+    // The prompt and its answer, whatever came before them (Linux: 13 KB read for 3,000 items and for 100,000).
+    test("a send sends its own turn", () => {
+        const { small, large } = measured.native!;
+        expect(small.sendSent).toBeGreaterThan(0);
+        expect(within(small.sendSent!, large.sendSent!)).toBe(true);
+    });
+    test.skipIf(!existsSync("/proc/self/io"))("a send reads what its turn needs", () => {
+        const { small, large } = measured.native!;
+        expect(small.readOnSend).toBeDefined();
+        expect(within(small.readOnSend!, large.readOnSend!)).toBe(true);
     });
     // Open, its turns beyond the latest in its store (put there a slice at a time after it opens), and what Find
     // searches let go of a while after it's used (runtime.ts findKeeping: 30 MB for 100,000 items).
