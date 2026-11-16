@@ -88,6 +88,9 @@ export function CommandPalette() {
                 return;
             }
             setSearching(true);
+            // Asked at once (a task later, so a paste or keys in one go ask once): each keystroke's search stops the
+            // one before it on the server, which takes 1-8 ms with 10,000 sessions. Waited for 140 ms, a key's
+            // results showed 160-170 ms after it (on a Mac).
             wait = setTimeout(async () => {
                 try {
                     await searchRounds(
@@ -103,7 +106,7 @@ export function CommandPalette() {
                 } finally {
                     if (mine === asked) setSearching(false);
                 }
-            }, 140);
+            }, 0);
         }),
     );
     onCleanup(() => clearTimeout(wait));
