@@ -15,7 +15,7 @@ import { chmod, open, rename, unlink } from "fs/promises";
 import { dirname, join } from "path";
 import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
-import { textOf, type Message } from "../providers/types";
+import { textOf, type Message, type UserMessage } from "../providers/types";
 import { eachLine } from "../util/lines";
 import { redact } from "../util/redact";
 import { nextSlice } from "../util/slices";
@@ -75,9 +75,7 @@ export function forkTitle(title: string): string {
 /** Unlike a rewind, a fork can branch from imported prompts without changing the imported original. */
 export function forkTargets(messages: Message[]): { index: number; text: string; checkpoint?: number }[] {
     return messages.flatMap((m, index) => {
-        if (m.role !== "user") return [];
-        const kind = m.meta?.kind ?? "prompt";
-        if (kind !== "prompt" && kind !== "command") return [];
+        if (!isForkTarget(m)) return [];
         const first = m.content.find((p) => p.type === "text" && !/^<system-reminder>/.test(p.text));
         const text = (m.meta?.display ?? (first?.type === "text" ? first.text : "")).replace(REMINDERS, "").trim();
         return [{ index, text, checkpoint: m.meta?.checkpoint }];
@@ -86,7 +84,15 @@ export function forkTargets(messages: Message[]): { index: number; text: string;
 
 /** Where a fork from the turn of the prompt at `index` ends: before the next prompt (or at the end of the history). */
 export function forkCut(messages: Message[], index: number): number {
-    return forkTargets(messages).find((t) => t.index > index)?.index ?? messages.length;
+    for (let i = index + 1; i < messages.length; i++) if (isForkTarget(messages[i])) return i;
+    return messages.length;
+}
+
+/** A prompt a fork can be made at (forkTargets). */
+export function isForkTarget(m: Message | undefined): m is UserMessage {
+    if (m?.role !== "user") return false;
+    const kind = m.meta?.kind ?? "prompt";
+    return kind === "prompt" || kind === "command";
 }
 
 /**
@@ -295,7 +301,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
  * on (a 100,000-item session's copy, redacted again, took 0.35 s). `keep` puts back the lines the fork was just
  * loaded from, for the task it's called in (Session.keepLoadedLines): its runtime doesn't read the file again.
  */
-export async function forkSessionSoon(original: Session, o: ForkOptions & { source: Line[] }): Promise<{ session: Session; keep: () => void }> {
+export async function forkSessionSoon(original: Session, o: ForkOptions & { source: Line[]; id?: string; createdAt?: number }): Promise<{ session: Session; keep: () => void }> {
     const { file, lines } = forkLines(original, o);
     hold(file);
     const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -332,7 +338,7 @@ export async function forkSessionSoon(original: Session, o: ForkOptions & { sour
 }
 
 /** What the fork of `original` is: its file's name and its records, checked against the original's history; the backend sessions it shares marked as such in the original. */
-function forkLines(original: Session, o: ForkOptions & { source?: Line[] }): { file: string; lines: Line[] } {
+function forkLines(original: Session, o: ForkOptions & { source?: Line[]; id?: string; createdAt?: number }): { file: string; lines: Line[] } {
     if (!original.persisted || !existsSync(original.path)) throw new Error("This session hasn't been saved yet, so there's nothing to fork.");
     if (!Number.isInteger(o.cut) || o.cut < 1 || o.cut > original.messages.length) throw new Error("That point isn't in this conversation.");
     const source = o.source ?? parse(original.path);
@@ -347,7 +353,7 @@ function forkLines(original: Session, o: ForkOptions & { source?: Line[] }): { f
     // What's saved must be what the original has (a write it couldn't make, say), as written: redacted.
     if (redactedJson(historyOf(copied)) !== redactedJson(original.messages.slice(0, o.cut))) throw new Error("The saved conversation doesn't match this session's, so it can't be forked.");
 
-    const id = newSessionId();
+    const id = o.id ?? newSessionId();
     const file = join(dirname(original.path), `${id}.jsonl`);
     const shown = oneLine(o.title ?? original.title ?? firstPrompt(copied) ?? "") || "(untitled)";
     let at = Date.now();
@@ -361,7 +367,7 @@ function forkLines(original: Session, o: ForkOptions & { source?: Line[] }): { f
     const parked = o.shareBackends === false ? [] : original.parkedBackends().filter((p) => p.session.synced <= o.cut && original.markParkedForked(p));
     const model = o.model ?? original.model;
     const lines: Line[] = [
-        { t: "meta", id, cwd: original.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
+        { t: "meta", id, cwd: original.meta.cwd, createdAt: o.createdAt ?? Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
         ...copied.map((l) => l.t === "import" ? { ...l, inherited: true as const } : l),
         { t: "title", title: forkTitle(shown) },
         ...(model ? [{ t: "model" as const, model }] : []),

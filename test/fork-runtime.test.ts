@@ -105,6 +105,53 @@ test("invalid, running, archived and stale fork requests are RpcErrors and creat
     }
 });
 
+test("a soon fork answers at once with how the fork will look; calls on it wait until it's made", async () => {
+    const { engine, rt, client, fork } = await setup();
+    try {
+        const turn = prompted(rt.snapshot())[0]!;
+        const preview = await fork(turn, { soon: true });
+        const id = preview.state.id;
+        expect(preview.making).toBe(true);
+        expect(preview.seq).toBe(0);
+        // Not made yet: no session there, and the window isn't sent its ops.
+        expect(engine.runtimes.has(id)).toBe(false);
+        expect(client.subs.has(id)).toBe(false);
+        expect(preview.state).toMatchObject({ title: "Fork of Questions", busy: false, cost: 0, tokensIn: 0, tokensOut: 0, queued: [], forkOf: { id: rt.id, title: "Questions" } });
+        // Opened, it waits until it's made, and it's what was shown.
+        const made = (await engine.handle(client, "session.open", { id })) as SessionSnapshot;
+        expect(made.making).toBeUndefined();
+        expect(made.state.id).toBe(id);
+        expect(made.state.createdAt).toBe(preview.state.createdAt);
+        expect(made.state.title).toBe(preview.state.title);
+        expect(prompted(made).map(shape)).toEqual(prompted(preview).map(shape));
+        expect(engine.runtimes.get(id)!.session.messages).toEqual(rt.session.messages.slice(0, 2));
+        expect(client.subs.has(id)).toBe(true);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("a soon fork that fails to be made fails the calls that waited for it, and leaves no session", async () => {
+    const { engine, rt, client, fork } = await setup();
+    try {
+        const files = () => listSessions(rt.ws.cwd).map((s) => s.id).sort();
+        const before = files();
+        (engine as any).makeFork = async () => {
+            throw new Error("No space left on device");
+        };
+        const preview = await fork(prompted(rt.snapshot())[0]!, { soon: true });
+        const id = preview.state.id;
+        await expect(engine.handle(client, "session.open", { id })).rejects.toThrow("No space left on device");
+        await expect(engine.handle(client, "session.send", { id, text: "hello" })).rejects.toThrow("No space left on device");
+        expect(engine.runtimes.has(id)).toBe(false);
+        expect(files()).toEqual(before);
+        // What can't be forked is said at once, as without `soon`.
+        await expect(fork(prompted(rt.snapshot())[0]!, { soon: true, text: "stale" })).rejects.toThrow("changed since this was shown");
+    } finally {
+        await engine.stop();
+    }
+});
+
 test("fork rewind uses only its own file history and retains the pre-fork explanation", async () => {
     const { engine, rt, fork } = await setup();
     try {

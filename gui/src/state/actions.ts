@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -280,7 +280,17 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         const images = attachments.flatMap((a) => (a.kind === "image" ? [a] : []));
         // Hashed while the message uploads: done long before the turn asks (and if not, it asks the server as before).
         if (images.length) void keepSentImages(id, images);
-        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
+        const wire = toWire(attachments);
+        // To a fork still being made (it waits for it): if making it fails, the message goes back to where it was forked from.
+        const forkOf = forkMakingOf(id);
+        try {
+            await rpc.call("session.send", { id, text, ...wire, literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
+        } catch (e) {
+            const back = forkOf && !handleFor(id) ? handleFor(forkOf) : undefined;
+            if (!back) throw e;
+            back.addDraft({ text, ...wire });
+            return false;
+        }
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);

@@ -20,7 +20,7 @@ import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
-import { beforeFork, forkCut, forkTargets } from "../agent/fork";
+import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -1656,9 +1656,10 @@ export class Runtime {
         return { resumed: true, seq: this.batch, ops: this.sentLately.slice(at).flatMap((b) => b.ops) };
     }
 
-    snapshot(last?: number, budget?: number, fold = false): SessionSnapshot {
+    snapshot(last?: number, budget?: number, fold = false, upTo?: number): SessionSnapshot {
         this.flush();
-        const all = this.view.turns;
+        // Those up to a turn (forkPreview), or all.
+        const all = upTo === undefined ? this.view.turns : this.view.turns.slice(0, upTo + 1);
         let from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
         // No more than fit the budget, back from the latest (what's measured is what's sent: no more than that), one at least.
         const sent: Turn[] = [];
@@ -1783,6 +1784,46 @@ export class Runtime {
             await this.allTurns();
         }
         return this.snapshot(last, budget, fold);
+    }
+
+    /**
+     * What a fork from the turn `turnId` shows while it's made (session.fork's `soon`): this view's turns up to it, as
+     * an open of the fork is sent them, and the state the fork starts with. Undefined when that turn isn't built here.
+     */
+    forkPreview(turnId: string, o: { id: string; title: string; named: string; createdAt: number }, last?: number, budget?: number, fold = false): SessionSnapshot | undefined {
+        const at = this.view.turns.findIndex((t) => t.id === turnId);
+        if (at < 0) return undefined;
+        const snap = this.snapshot(last, budget, fold, at);
+        const s = snap.state;
+        const { activity: _a, costUnknown: _c, queuedModes: _m, queuedWhy: _w, goal: _g, ...kept } = s;
+        // As a session starts (the constructor): what's its own (spend, work, queue, schedules) empty.
+        snap.state = {
+            ...kept,
+            id: o.id,
+            title: o.title,
+            createdAt: o.createdAt,
+            persisted: true,
+            status: "idle",
+            busy: false,
+            cost: 0,
+            costUnknown: false,
+            tokensIn: 0,
+            tokensOut: 0,
+            queued: [],
+            queueIds: [],
+            queuedAttached: [],
+            interactions: [],
+            shells: [],
+            watches: [],
+            backgroundTasks: [],
+            schedules: [],
+            forkOf: { id: s.id, title: o.named },
+        };
+        // Its own: nothing it's sent until it's made and opened (the window opens it then, session.open).
+        snap.seq = 0;
+        snap.epoch = undefined;
+        snap.making = true;
+        return snap;
     }
 
     /** Its folder's first snapshot taken ahead of the first prompt (Agent.warmSnapshots), once its agent is there. */
@@ -4877,13 +4918,23 @@ export class Runtime {
      * once a rewind rebuilds the timeline) with this prompt and its text.
      */
     forkPoint(index: unknown, text: string, turnId: string): number {
+        this.canFork(index, text, turnId);
+        return Math.min(forkCut(this.session.messages, index as number), this.runStart ?? Infinity);
+    }
+
+    /**
+     * Whether a fork can be made there (forkPoint), throwing why not. `soon` (a fork shown before it's made): its
+     * messages not read for it where they aren't (35 ms, a Claude Code session of 100,000 items); making the fork
+     * checks that again, and fails as it would here.
+     */
+    canFork(index: unknown, text: string, turnId: string, soon = false) {
         if (typeof index !== "number" || !Number.isInteger(index)) throw new RpcError("index must be an integer");
-        if (!forkTargets(this.session.messages).some((t) => t.index === index)) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
+        const digest = soon ? this.session.historyDigest : undefined;
+        if (!(digest && index < digest.from) && !isForkTarget(this.session.messageAt(index))) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
         if (this.runStart !== undefined && index >= this.runStart) throw new RpcError("That turn is still running. Fork from it once it's done, or interrupt it first.", "busy");
         const shown = this.view.turns.find((t) => t.id === turnId);
         const shownIndex = shown?.imported ? shown.pos?.index : shown?.prompt?.index;
         if (!shown || shown.archived || shownIndex !== index || shown.prompt?.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
-        return Math.min(forkCut(this.session.messages, index), this.runStart ?? Infinity);
     }
 
     /** Notes that were pending at a fork's cut: they went out with the prompt there (as a rewind to it would queue them again). */

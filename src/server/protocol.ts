@@ -872,6 +872,8 @@ export interface SessionSnapshot {
     earlier?: number;
     /** Sub-agents not sent (finished, of those turns): session.agentList has them. */
     agentsMore?: AgentsMore;
+    /** A fork still being made (session.fork's `soon`): how it will look. Not watched: session.open it. */
+    making?: true;
 }
 
 /**
@@ -2240,7 +2242,12 @@ export interface Methods {
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
-    "session.fork": { params: { id: string; index: number; text: string; turn: string; last?: number; budget?: number; fold?: boolean }; result: SessionSnapshot };
+    /**
+     * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
+     * conversation as built; open it (session.open) for the fork itself. Calls on it wait until it's made, and fail
+     * as making it did.
+     */
+    "session.fork": { params: { id: string; index: number; text: string; turn: string; last?: number; budget?: number; fold?: boolean; soon?: boolean }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     /**
      * `worktree`: another worktree of the session's repository to look at (a path `session.worktrees` lists);
