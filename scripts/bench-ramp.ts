@@ -7,11 +7,17 @@
 // Reported: wall time from launching Cavvy or the CLIs and from the first prompt to the last turn's end; the whole
 // machine's CPU over it (/proc/stat: the machine should run nothing else); CPU and memory by role every second
 // (Cavvy, its helper processes, the CLIs, what the agents run); and with --acct (root), every process's CPU from the
-// kernel's process accounting, short-lived ones too, by command and by role. Linux only.
+// kernel's process accounting, short-lived ones too, by command and by role. Linux and macOS: on macOS the machine's CPU
+// is the kernel's own count (host_statistics), each process's from `ps`, memory from vm_stat and the kernel's memory
+// pressure level, and --acct isn't there.
 //
 //   bun scripts/bench-ramp.ts --mode cavvy|bare --repo <repo> --steps 10,30 [--per-session 15 | --minutes 6]
 //       [--model sonnet] [--cavvy <checkout>] [--label x] [--mock <url>] [--acct] [--profile] [--shown first|none|all]
-//       [--debug <file>] [--times <file>] [--hold <seconds>]
+//       [--debug <file>] [--times <file>] [--hold <seconds>] [--cli-home <dir>]
+//
+// --cli-home: the HOME the CLIs run with, in both modes (Cavvy's own state stays in a fresh folder each step). Without it
+// each step has a fresh HOME, where a CLI is signed out unless --mock: give it a test HOME the CLI was signed in to once
+// (`HOME=<dir> claude`, then /login).
 //
 // --mock: the CLIs talk to bench-claude-api.ts instead of Anthropic, for the same work to the byte in both modes.
 // --debug: Cavvy's live-CLI debug log (CAVVY_DEBUG); --times: when each prompt was sent and each turn ended.
@@ -40,6 +46,8 @@ const TIMES = arg("--times");
 const SHOWN = arg("--shown") ?? "first";
 /** --mock <url>: the CLIs talk to bench-claude-api.ts instead of Anthropic: the same work, to the byte, in both modes. */
 const MOCK = arg("--mock");
+const CLI_HOME = arg("--cli-home") ? resolve(arg("--cli-home")!) : undefined;
+const MAC = process.platform === "darwin";
 /** The step's worktrees, for the mock's prompts (they name files by path). */
 let DIRS: string[] = [];
 const NCPU = cpus().length;
@@ -72,10 +80,16 @@ function prompt(i: number, k: number): string {
 type Proc = { pid: number; ppid: number; rssKB: number; cpu: number; args: string };
 function procs(): Map<number, Proc> {
     const out = new Map<number, Proc>();
-    for (const line of Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,rss=,args="]).stdout.toString().split("\n")) {
-        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
+    // macOS: CPU from ps's cumulative time (user and system, to 1/100 s), as it has no /proc.
+    for (const line of Bun.spawnSync(["ps", "-A", "-o", MAC ? "pid=,ppid=,rss=,time=,args=" : "pid=,ppid=,rss=,args="]).stdout.toString().split("\n")) {
+        const m = MAC ? line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/) : line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
         if (!m) continue;
-        const p: Proc = { pid: Number(m[1]), ppid: Number(m[2]), rssKB: Number(m[3]), cpu: 0, args: m[4]! };
+        const p: Proc = { pid: Number(m[1]), ppid: Number(m[2]), rssKB: Number(m[3]), cpu: 0, args: (MAC ? m[5] : m[4])! };
+        if (MAC) {
+            p.cpu = psTime(m[4]!);
+            out.set(p.pid, p);
+            continue;
+        }
         try {
             const f = readFileSync(`/proc/${p.pid}/stat`, "utf8");
             const rest = f.slice(f.lastIndexOf(")") + 2).split(" ");
@@ -84,6 +98,11 @@ function procs(): Map<number, Proc> {
         out.set(p.pid, p);
     }
     return out;
+}
+/** ps's `time`: [[dd-]hh:]mm:ss.ss, in seconds. */
+function psTime(t: string): number {
+    const [days, rest] = t.includes("-") ? [Number(t.split("-")[0]), t.split("-")[1]!] : [0, t];
+    return days * 86400 + rest.split(":").reduce((a, x) => a * 60 + Number(x), 0);
 }
 const isClaude = (a: string) => /(^|\/)claude(\s|$)/.test(a) || /\/claude\s/.test(a);
 function roles(ps: Map<number, Proc>, root: number, server?: number): Map<number, string> {
@@ -105,15 +124,60 @@ function roles(ps: Map<number, Proc>, root: number, server?: number): Map<number
     return out;
 }
 const psi = (k: string) => { try { return Number(readFileSync(`/proc/pressure/${k}`, "utf8").match(/some avg10=([\d.]+)/)?.[1]); } catch { return undefined; } };
+/** macOS: every core's ticks by state (user, system, idle, nice), summed, from the kernel (host_statistics). */
+const macTicks = (() => {
+    if (!MAC) return undefined;
+    const { dlopen, FFIType, ptr } = require("bun:ffi") as typeof import("bun:ffi");
+    const lib = dlopen("/usr/lib/libSystem.B.dylib", {
+        mach_host_self: { args: [], returns: FFIType.u32 },
+        host_statistics: { args: [FFIType.u32, FFIType.i32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    });
+    const host = lib.symbols.mach_host_self();
+    const info = new Uint32Array(4), count = new Uint32Array(1);
+    return () => {
+        count[0] = 4; // HOST_CPU_LOAD_INFO_COUNT
+        if (lib.symbols.host_statistics(host, 3 /* HOST_CPU_LOAD_INFO */, ptr(info), ptr(count)) !== 0) throw new Error("host_statistics failed");
+        return { user: info[0]!, system: info[1]!, idle: info[2]!, nice: info[3]! };
+    };
+})();
+/** The machine's CPU, busy and in all, in 1/100 s of one core (as /proc/stat counts it). */
 function cpuStat() {
+    if (macTicks) {
+        const t = macTicks();
+        const total = t.user + t.system + t.idle + t.nice;
+        return { busy: ((total - t.idle) * 100) / MAC_HZ, total: (total * 100) / MAC_HZ };
+    }
     const f = readFileSync("/proc/stat", "utf8").split("\n")[0]!.trim().split(/\s+/).slice(1).map(Number);
     const total = f.reduce((a, b) => a + b, 0);
     return { busy: total - f[3]! - f[4]!, total };
 }
+/** How many ticks a core counts a second on macOS: counted, over a second, rather than assumed. */
+const MAC_HZ = await (async () => {
+    if (!macTicks) return 100;
+    const sum = () => { const t = macTicks(); return t.user + t.system + t.idle + t.nice; };
+    const a = sum(), t0 = performance.now();
+    await sleep(1000);
+    const hz = (sum() - a) / NCPU / ((performance.now() - t0) / 1000);
+    console.error(`macOS: ${Math.round(hz)} ticks a second a core`);
+    return hz;
+})();
+/** macOS: what can be had without paging: free, inactive, speculative and purgeable pages (vm_stat). */
 function memAvailableMB(): number {
+    if (MAC) {
+        const v = Bun.spawnSync(["vm_stat"]).stdout.toString();
+        const page = Number(v.match(/page size of (\d+) bytes/)?.[1] ?? 16384);
+        const pages = (k: string) => Number(v.match(new RegExp(`Pages ${k}:\\s+(\\d+)`))?.[1] ?? 0);
+        return Math.round(((pages("free") + pages("inactive") + pages("speculative") + pages("purgeable")) * page) / 1048576);
+    }
     const m = readFileSync("/proc/meminfo", "utf8").match(/MemAvailable:\s+(\d+)/);
     return m ? Math.round(Number(m[1]) / 1024) : Math.round(freemem() / 1048576);
 }
+/** macOS: the kernel's memory pressure, 1 normal, 2 warning, 4 critical (what memory_pressure reports). */
+const macPressure = () => {
+    if (!MAC) return undefined;
+    const n = Number(Bun.spawnSync(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).stdout.toString().trim());
+    return Number.isFinite(n) ? n : undefined;
+};
 
 // ---- Worktrees: one a session, made once, put back before each step.
 function worktree(i: number): string {
@@ -133,7 +197,7 @@ function cleanEnv(home: string): Record<string, string> {
     const keep = ["PATH", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "LANG", "TMPDIR", "USER", "SHELL"];
     const env: Record<string, string> = Object.fromEntries(keep.filter((k) => process.env[k]).map((k) => [k, process.env[k]!]));
     env.NO_PROXY = env.no_proxy = [env.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",");
-    env.HOME = home;
+    env.HOME = CLI_HOME ?? home;
     if (MOCK) Object.assign(env, { ANTHROPIC_BASE_URL: MOCK, ANTHROPIC_API_KEY: "sk-ant-mock-0000" });
     // Commits work in both modes (no question about who to commit as).
     Object.assign(env, { GIT_AUTHOR_NAME: "Ramp", GIT_AUTHOR_EMAIL: "ramp@example.com", GIT_COMMITTER_NAME: "Ramp", GIT_COMMITTER_EMAIL: "ramp@example.com" });
@@ -296,6 +360,7 @@ const ACCT_KNOBS = "/proc/sys/kernel/acct";
 
 /** Accounting on into `file`, or off. False when it can't be (not root, no BSD accounting in the kernel). */
 function acctSwitch(file?: string): boolean {
+    if (MAC) return false;
     try {
         const { dlopen, FFIType, ptr } = require("bun:ffi") as typeof import("bun:ffi");
         const lib = dlopen("libc.so.6", { acct: { args: [FFIType.ptr], returns: FFIType.i32 } });
@@ -372,7 +437,7 @@ async function step(n: number) {
         try { knobs = readFileSync(ACCT_KNOBS, "utf8"); writeFileSync(ACCT_KNOBS, "1 0 30"); } catch { knobs = undefined; }
         writeFileSync(acctFile, "");
         accounting = acctSwitch(acctFile);
-        if (!accounting) console.error("--acct: process accounting couldn't be turned on (it needs root, and BSD accounting in the kernel)");
+        if (!accounting) console.error(MAC ? "--acct: Linux only" : "--acct: process accounting couldn't be turned on (it needs root, and BSD accounting in the kernel)");
     }
     // Everything from here is the run: starting Cavvy or the CLIs counts.
     const launchedAt = performance.now(), launchedEpoch = Date.now() / 1000, stat0 = cpuStat();
@@ -402,7 +467,7 @@ async function step(n: number) {
                 cpuSec: Object.fromEntries(Object.entries(cpu).map(([k, v]) => [k, Math.round(v * 100) / 100])),
                 rssMB: Object.fromEntries(Object.entries(rss).map(([k, v]) => [k, Math.round(v)])), procs: count,
                 machineBusyPct: r1(((st.busy - lastStat.busy) / (st.total - lastStat.total)) * 100),
-                psi: { cpu: psi("cpu"), io: psi("io"), memory: psi("memory") }, availMB: memAvailableMB(),
+                psi: { cpu: psi("cpu"), io: psi("io"), memory: psi("memory") }, availMB: memAvailableMB(), ...(MAC ? { memoryPressure: macPressure() } : {}),
             });
             lastPs = ps; lastT = now; lastStat = st;
         }
@@ -461,6 +526,7 @@ async function step(n: number) {
         rssMBPeak: { cavvy: Math.max(0, ...samples.map((x) => x.rssMB.cavvy ?? 0)), cli: Math.max(0, ...samples.map((x) => x.rssMB["claude-cli"] ?? 0)) },
         machineBusyPctAvg: r1(avg(col((x) => x.machineBusyPct))), availMBMin: Math.min(...col((x) => x.availMB)),
         psiAvg: { cpu: r1(avg(col((x) => x.psi.cpu))), io: r1(avg(col((x) => x.psi.io))), memory: r1(avg(col((x) => x.psi.memory))) },
+        ...(MAC ? { memoryPressureMax: Math.max(0, ...col((x) => x.memoryPressure)) } : {}),
         pingMs: { p50: r1(pct(col((x) => x.pingMs), 0.5)), p95: r1(pct(col((x) => x.pingMs), 0.95)), max: r1(Math.max(0, ...col((x) => x.pingMs))) },
         cores: NCPU, memMB: Math.round(totalmem() / 1048576),
         ...(rep.idle ? { idle: rep.idle } : {}),
