@@ -540,6 +540,7 @@ export class Engine {
     // Sending
 
     broadcast(ev: ServerEvent) {
+        if (ev.type === "sessions.remove") this.summarySent.delete(ev.id);
         for (const c of this.clients) c.send(ev);
     }
 
@@ -633,8 +634,15 @@ export class Engine {
             const saved = s.runs?.flatMap((r) => r.sessions).find((m) => m.id === rt.id);
             if (saved) saved.outcome = outcome;
         });
-        this.broadcast({ type: "sessions.upsert", session: this.summaryOf(rt) });
+        // Not again as it was last sent (a turn's end told twice: its status, then its notice).
+        const session = this.summaryOf(rt);
+        const said = JSON.stringify(session);
+        if (this.summarySent.get(rt.id) === said) return;
+        this.summarySent.set(rt.id, said);
+        this.broadcast({ type: "sessions.upsert", session });
     }
+    /** Each open session's row as last sent to the windows (sessionChanged): forgotten as it's closed or removed. */
+    private summarySent = new Map<string, string>();
 
     workspaceChanged(ws: Workspace) {
         for (const r of this.runtimes.values()) if (r.ws === ws) r.workspaceChanged();
@@ -1280,6 +1288,7 @@ export class Engine {
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        this.summarySent.delete(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
@@ -1379,6 +1388,7 @@ export class Engine {
             try {
                 if (rt) {
                     this.runtimes.delete(id);
+                    this.summarySent.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
