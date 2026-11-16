@@ -245,6 +245,15 @@ function runOutcome(rt: Runtime): RunOutcome {
     return rt.lastTurnStatus === "done" ? "done" : "stopped";
 }
 
+/** The store's lists as sets, for asking about many sessions at once. */
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember> };
+let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
+function storeLists(store: GuiStore): StoreLists {
+    // The store read is frozen and kept until the file changes: so are these.
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store) } };
+    return listsOf.lists;
+}
+
 const storeFile = () => join(cavvyHome(), "gui.json");
 /** The store's lists of session ids. */
 const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
@@ -961,9 +970,8 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Sessions
 
-    summaryOf(rt: Runtime): SessionSummary {
-        const store = readStore();
-        const run = runMembers(store).get(rt.id);
+    summaryOf(rt: Runtime, lists: StoreLists = storeLists(readStore())): SessionSummary {
+        const run = lists.runs.get(rt.id);
         return {
             id: rt.id,
             cwd: rt.ws.cwd,
@@ -976,9 +984,9 @@ export class Engine {
             status: rt.status,
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
-            pinned: (store.pinned ?? []).includes(rt.id),
-            archived: (store.archived ?? []).includes(rt.id),
-            settled: (store.settled ?? []).includes(rt.id),
+            pinned: lists.pinned.has(rt.id),
+            archived: lists.archived.has(rt.id),
+            settled: lists.settled.has(rt.id),
             model: rt.session.model,
             live: true,
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
@@ -986,19 +994,18 @@ export class Engine {
     }
 
     listSessions(limit = 200, archived = false): SessionSummary[] {
-        const store = readStore();
-        const pinned = new Set(store.pinned ?? []);
-        const arch = new Set(store.archived ?? []);
-        const settled = new Set(store.settled ?? []);
-        const runs = runMembers(store);
+        const lists = storeLists(readStore());
+        const { pinned, settled, runs } = lists;
+        const arch = lists.archived;
         const out = new Map<string, SessionSummary>();
-        for (const s of listAllSessions(limit + arch.size)) {
+        // Only the list asked for is read: the other side of `archived` grows with history.
+        for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messageCount && !rt.busy)) continue;
+            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
-            out.set(rt.id, this.summaryOf(rt));
+            out.set(rt.id, this.summaryOf(rt, lists));
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).filter((s, i) => i < limit || s.status === "waiting");
     }

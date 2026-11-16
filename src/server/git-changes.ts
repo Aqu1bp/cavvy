@@ -633,17 +633,28 @@ export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime:
     return !racy;
 }
 
-/** Attributes for paths, as check-attr reports them ("unspecified" when not set). */
-async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Record<string, string>>> {
-    const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0", deadline });
+const ATTRS = new Set(["filter", "ident", "working-tree-encoding", "text", "eol"]);
+const NO_ATTRS: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
+ * The attributes that change what's read from disk, for each of `paths`: a path missing one has it unspecified.
+ * Every path asked gets an entry, unless git couldn't say (then none does). `-a` prints only the attributes set:
+ * none at all where the repository has no .gitattributes, against five records a path (12 ms and 945 KB for
+ * 5,000 paths, 3.5 ms and nothing with `-a`, measured).
+ */
+async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Readonly<Record<string, string>>>> {
+    const out = new Map<string, Readonly<Record<string, string>>>();
+    const r = await git(root, ["check-attr", "-a", "-z", "--stdin"], { input: paths.join("\0") + "\0", deadline });
+    if (r.code !== 0 || r.cut) return out;
     const recs = records(r.out);
-    const out = new Map<string, Record<string, string>>();
     for (let i = 0; i + 2 < recs.length; i += 3) {
-        // Filled in place: a copy for each of a path's five records cost 10 ms for 5,000 paths.
-        let a = out.get(recs[i]!);
+        if (!ATTRS.has(recs[i + 1]!)) continue;
+        // Filled in place: a copy for each record cost 10 ms for 5,000 paths.
+        let a = out.get(recs[i]!) as Record<string, string> | undefined;
         if (!a) out.set(recs[i]!, (a = {}));
         a[recs[i + 1]!] = recs[i + 2]!;
     }
+    for (const p of paths) if (!out.has(p)) out.set(p, NO_ATTRS);
     return out;
 }
 
@@ -933,8 +944,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // (no attribute that could, no core.autocrlf: git read it as it is, as this would) has changed, whatever its
     // bytes: it's read only if it's among those listed (MAX_FILES). 5,000 changed files: the first review after a
     // start read every one of them.
-    const ATTRS = ["filter", "ident", "working-tree-encoding", "text", "eol"];
-    let early = new Map<string, Record<string, string>>();
+    let early = new Map<string, Readonly<Record<string, string>>>();
     /** Changes listed without their file read: read once they're known to be listed. */
     const unreadChanges = new Set<Change>();
     let unread: Set<string> | undefined;
@@ -946,7 +956,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         });
         if (maybe.length > MAX_FILES) {
             early = await attributes(root, maybe, deadline);
-            unread = new Set(maybe.filter((p) => ATTRS.every((k) => early.get(p)?.[k] === "unspecified")));
+            unread = new Set(maybe.filter((p) => early.get(p) === NO_ATTRS));
             // Not even stat'ed: git's mode for the file (its last, without core.filemode).
             for (const path of unread) {
                 const was = old.get(path)!;
@@ -1004,7 +1014,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const candidates = changes.filter((c) => (c.change === "added" || c.change === "modified" || c.change === "typechange") && tracked(c));
     // check-attr only reads .gitattributes; it runs nothing.
     const asked = [...candidates, ...crlfOnly, ...rawEqual].map((c) => c.path).filter((p) => !early.has(p));
-    const attrs = asked.length ? await attributes(root, asked, deadline) : new Map<string, Record<string, string>>();
+    const attrs = asked.length ? await attributes(root, asked, deadline) : new Map<string, Readonly<Record<string, string>>>();
     for (const [path, a] of early) attrs.set(path, a);
     const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
     /**
@@ -1101,22 +1111,36 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     inTime();
     // Those not read, now read where they're listed: one back as it was (since git looked) isn't a change, and those
     // after it move up; one gone is deleted.
+    let oldBlobs: Promise<Map<string, Buffer>> | undefined;
     while (unreadChanges.size) {
         const due = changes.slice(0, MAX_FILES).filter((c) => unreadChanges.has(c));
         if (!due.length) break;
         const same = new Set<Change>();
-        await eachLimit(due, 32, async (c) => {
-            inTime();
-            unreadChanges.delete(c);
-            const was = c.old!;
-            const now = await wt.entry(c.path, was);
-            if (!now) {
-                c.change = "deleted";
-                c.now = undefined;
-                c.kind = kindOf(was.mode);
-            } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
-            else c.now = now;
-        });
+        // Their old sides, which the listing shows, are asked for meanwhile: sizes, then contents.
+        const sized = blobSizes(root, due.map((c) => c.old!), deadline);
+        if (!oldBlobs) {
+            oldBlobs = sized.then(() => {
+                const take = due.map((c) => c.old!).filter((e) => isFileMode(e.mode) && (e.size ?? Infinity) <= MAX_DIFF_INPUT);
+                return blobs(root, [...new Set(take.map((e) => e.oid))], deadline);
+            });
+            // One that fails is asked again with the rest.
+            oldBlobs.catch(() => {});
+        }
+        await Promise.all([
+            sized,
+            eachLimit(due, 32, async (c) => {
+                inTime();
+                unreadChanges.delete(c);
+                const was = c.old!;
+                const now = await wt.entry(c.path, was);
+                if (!now) {
+                    c.change = "deleted";
+                    c.now = undefined;
+                    c.kind = kindOf(was.mode);
+                } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
+                else c.now = now;
+            }),
+        ]);
         if (!same.size) break;
         removeWhere(changes, (c) => same.has(c));
     }
@@ -1142,7 +1166,13 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const unseen = listed.filter((c) => c.change !== "deleted" && !c.indexed && !c.kind && !attrs.has(c.path)).map((c) => c.path);
     if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
     if (differ) await blobSizes(root, listed.flatMap((c) => (c.old ? [c.old] : [])), deadline);
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols });
+    const readBlobs = oldBlobs && (async (oids: string[], deadline: number) => {
+        const have = (await oldBlobs!.catch(() => undefined)) ?? new Map<string, Buffer>();
+        const rest = oids.filter((o) => !have.has(o));
+        if (rest.length) for (const [oid, b] of await blobs(root, rest, deadline)) have.set(oid, b);
+        return have;
+    });
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols, readBlobs });
     let added = 0;
     let removed = 0;
     for (const f of files) {
