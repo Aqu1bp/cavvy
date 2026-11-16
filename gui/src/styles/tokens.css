@@ -65,6 +65,8 @@
     --panel-w: 280px;
     --review-w: 720px;
     --column-w: calc(736 * var(--sp));
+    /* The scrollbars' width (base.css). */
+    --scrollbar-w: 10px;
     --header-h: 52px;
     /* One centre line across the top of the window, from its top edge: the
        traffic lights (desktop/src-tauri/tauri.conf.json, trafficLightPosition),

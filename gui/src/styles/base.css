@@ -223,8 +223,8 @@ h3 {
 }
 
 ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: var(--scrollbar-w);
+    height: var(--scrollbar-w);
 }
 
 ::-webkit-scrollbar-thumb {
