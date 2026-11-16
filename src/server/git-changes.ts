@@ -616,7 +616,10 @@ const NS = 1_000_000_000n;
  * Whether a file's stat still matches its index entry, by git's own rules
  * (racy-git.adoc, core.checkStat, core.trustCtime): then git takes it as
  * unchanged without reading it. Nanoseconds count only where git recorded
- * them; an entry not older than the index itself is racy, so not trusted.
+ * them and compares them; an entry not older than the index itself is racy,
+ * so not trusted. Where only seconds are compared, an entry from the index's
+ * own second is racy: a rewrite of the same size later in that second
+ * would look the same (as git built without USE_NSEC sees it).
  */
 export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime: bigint, rules: { trustCtime: boolean; minimal: boolean }): boolean {
     if (!e) return false;
@@ -626,7 +629,7 @@ export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime:
     if (!rules.minimal && (u32(st.ino) !== e.ino || u32(st.uid) !== e.uid || u32(st.gid) !== e.gid)) return false;
     const [sec, nsec] = e.mtime;
     const idxSec = indexMtime / NS;
-    const racy = sec > idxSec || (sec === idxSec && (nsec === 0n || nsec >= indexMtime % NS));
+    const racy = sec > idxSec || (sec === idxSec && (rules.minimal || nsec === 0n || nsec >= indexMtime % NS));
     return !racy;
 }
 
