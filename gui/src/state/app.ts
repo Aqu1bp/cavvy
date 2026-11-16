@@ -1022,6 +1022,8 @@ export async function refreshSessions() {
     // The other machines' sessions go on being listed: none in the place of one of this machine's own.
     const mine = new Set([...list, ...archived].map((s) => s.id));
     for (const s of others.list?.() ?? []) if (!mine.has(s.id)) (s.archived ? archived : list).push(s);
+    // (What came before the list is in it.)
+    upsertsFirst();
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -1167,6 +1169,8 @@ const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 export function forgetSession(id: string) {
+    // One due to be put in (changed just before) goes in first, so it doesn't come back after.
+    upsertsFirst();
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
@@ -1196,25 +1200,62 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 export function upsertSession(s: SessionSummary) {
-    sessionPresent(s.id);
-    const seen = seenBeforeDelete.get(s.id);
-    if (seen !== undefined) {
-        seenBeforeDelete.delete(s.id);
-        if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    upsertsFirst();
+}
+
+/** Into the lists in one update: the sidebar and the palette are worked out again once, not once each. */
+function upsertSessions(all: readonly SessionSummary[]) {
+    if (!all.length) return;
+    for (const s of all) {
+        sessionPresent(s.id);
+        const seen = seenBeforeDelete.get(s.id);
+        if (seen !== undefined) {
+            seenBeforeDelete.delete(s.id);
+            if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+        }
     }
-    const key = s.archived ? "archived" : "sessions";
-    const other = s.archived ? "sessions" : "archived";
-    batch(() => {
-        setApp(other, (list) => list.filter((x) => x.id !== s.id));
+    const put = (key: "sessions" | "archived", these: readonly SessionSummary[], gone: ReadonlySet<string>) =>
         setApp(key, (list) => {
-            const i = list.findIndex((x) => x.id === s.id);
-            if (i < 0) return orderSessions([s, ...list]);
-            const next = list.slice();
-            next[i] = s;
-            return orderSessions(next);
+            const by = new Map(these.map((s) => [s.id, s]));
+            if (!by.size && !list.some((x) => gone.has(x.id))) return list;
+            const next = list.flatMap((x) => (by.has(x.id) ? [by.get(x.id)!] : gone.has(x.id) ? [] : [x]));
+            const have = new Set(list.map((x) => x.id));
+            return orderSessions([...these.filter((s) => !have.has(s.id)), ...next]);
         });
+    const archived = all.filter((s) => s.archived);
+    const live = all.filter((s) => !s.archived);
+    batch(() => {
+        put("sessions", live, new Set(archived.map((s) => s.id)));
+        put("archived", archived, new Set(live.map((s) => s.id)));
     });
-    if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+    for (const s of all) if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+}
+
+/**
+ * Sessions the server changed, put in at the next frame together (or a moment on, in a hidden window): 30 finishing in
+ * the same second each worked the sidebar out again, 6 ms a time (headless), so the last showed done 400-700 ms late.
+ */
+const upsertsDue = new Map<string, SessionSummary>();
+let upsertFrame: number | undefined;
+let upsertTimer: ReturnType<typeof setTimeout> | undefined;
+rpc.beforeAnswer = () => upsertsDue.size && upsertsFirst();
+function upsertSoon(s: SessionSummary) {
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    if (upsertTimer !== undefined) return;
+    upsertTimer = setTimeout(upsertsFirst, 100);
+    if (typeof requestAnimationFrame === "function") upsertFrame = requestAnimationFrame(upsertsFirst);
+}
+/** What's due goes in now (first, where what follows reads or changes the lists). */
+export function upsertsFirst() {
+    if (upsertFrame !== undefined) cancelAnimationFrame(upsertFrame);
+    clearTimeout(upsertTimer);
+    upsertFrame = upsertTimer = undefined;
+    const due = [...upsertsDue.values()];
+    upsertsDue.clear();
+    upsertSessions(due);
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,7 +1275,7 @@ function onEvent(ev: ServerEvent) {
             return;
         }
         case "sessions.upsert":
-            upsertSession(own(ev.session));
+            upsertSoon(own(ev.session));
             return;
         case "sessions.remove":
             forgetSession(ev.id);
