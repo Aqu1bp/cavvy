@@ -15,6 +15,7 @@ const { registerSecret, unregisterSecret, knownSecrets } = await import("../src/
 const { SecretStore } = await import("../src/agent/secrets");
 const { Engine } = await import("../src/server/engine");
 const { writeImportedSession } = await import("../src/server/cli-import");
+const { noteSessionWrite } = await import("../src/agent/session-writes");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
 import type { UserMessage } from "../src/providers/types";
 
@@ -107,6 +108,18 @@ describe("searching session files", () => {
         expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits).toEqual([]);
         appendFileSync(old.file, JSON.stringify(reply("a platypus")) + "\n");
         expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
+    test("an old session this server wrote to and let go of is found by the next search at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-written-"), "proj");
+        const old = write([prompt("the oldest session"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("echidna")).hits).toEqual([]);
+        // Written by a Session of this process (not open any more: no `open`).
+        appendFileSync(old.file, JSON.stringify(reply("an echidna")) + "\n");
+        noteSessionWrite(old.file);
+        expect((await searchSessions("echidna")).hits.map((h) => h.id)).toEqual([old.id]);
     });
 
     // Each session's runs of three characters (search.ts gramsOf) let a search skip those that can't have it: never one

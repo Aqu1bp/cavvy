@@ -60,6 +60,12 @@ for (const kind of ["cli", "native"] as const) {
         expect(before.length).toBeGreaterThan(0);
         expect(before.every((m) => ids.has(m.turnId))).toBe(true);
         expect(before).toEqual(findMatches(all.turns.slice(0, Math.floor(turns.length / 2)), "the server").map((m) => expect.objectContaining(m)));
+        // And in a gap the window holds (a page far up, then its later turns): those between, marked, in order.
+        const q = Math.floor(turns.length / 4);
+        const page = (await call("session.find", { id: t.id, query: "the server", before: turns[q]!.id, gap: { after: turns[q + 5]!.id, before: mid } })).matches as { turnId: string; gap?: true }[];
+        const between = findMatches(all.turns.slice(q + 6, Math.floor(turns.length / 2)), "the server");
+        expect(between.length).toBeGreaterThan(0);
+        expect(page).toEqual([...findMatches(all.turns.slice(0, q), "the server").map((m) => expect.objectContaining(m)), ...between.map((m) => expect.objectContaining({ ...m, gap: true }))]);
         await call("session.close", { id: t.id });
     }, 60_000);
 }

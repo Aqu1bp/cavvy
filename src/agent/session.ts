@@ -11,6 +11,7 @@ import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
 import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
+import { noteSessionWrite, sessionWriteCount, writtenAfter } from "./session-writes";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
@@ -450,6 +451,7 @@ export class Session {
                 appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
                 this.torn = false;
             }
+            noteSessionWrite(this.file);
             if (this.failing) {
                 this.failing = false;
                 this.onSaving?.(undefined);
@@ -1936,7 +1938,7 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
 
 type ListedFile = { f: string; file: string; mtimeMs: number; size: number; createdAt: number };
 /** Every session file as last listed whole, newest first, with each project folder's mtime then and when. */
-let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, number>; at: number } | undefined;
+let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, number>; at: number; writes: number } | undefined;
 /**
  * Listed whole more than this long ago, it's listed whole again after the call, for the next. Until then, only the
  * newest RELISTED_RECENT files are looked at again (what's being written to is among them; a file put in or taken out
@@ -1945,6 +1947,7 @@ let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, numbe
  */
 const RELIST_MS = 1000;
 const RELISTED_RECENT = 64;
+
 let relistTimer: ReturnType<typeof setTimeout> | undefined;
 
 const folderTime = (dir: string) => {
@@ -1973,8 +1976,13 @@ function sessionFiles(root: string): ListedFile[] | undefined {
             relistTimer.unref?.();
         }
         let changed = false;
+        // Those this process wrote to since too, wherever they were (one far down, reopened and written to, is the
+        // newest now). Another process's write is seen by the next whole listing, at most RELIST_MS on.
+        const writes = sessionWriteCount();
+        const written = writtenAfter(was.writes);
+        was.writes = writes;
         const files = was.files.map((x, i): ListedFile | undefined => {
-            if (i >= RELISTED_RECENT) return x;
+            if (i >= RELISTED_RECENT && !written?.has(x.file)) return x;
             try {
                 const st = statSync(x.file);
                 if (st.mtimeMs === x.mtimeMs && st.size === x.size) return x;
@@ -1994,6 +2002,7 @@ function sessionFiles(root: string): ListedFile[] | undefined {
 /** As listWhole, letting the server's other work run every RELIST_SLICE files (what's listed is the same). */
 const RELIST_SLICE = 500;
 async function listWholeLater(root: string): Promise<void> {
+    const writes = sessionWriteCount();
     let dirs: string[];
     try {
         dirs = readdirSync(root);
@@ -2030,11 +2039,12 @@ async function listWholeLater(root: string): Promise<void> {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     // Listed whole meanwhile (a folder changed, say): that's the newer.
     if (listedFiles && listedFiles.root === root && listedFiles.at > relistStarted) return;
-    listedFiles = { root, files, folders, at: performance.now() };
+    listedFiles = { root, files, folders, at: performance.now(), writes };
 }
 let relistStarted = 0;
 
 function listWhole(root: string, dirs: string[]): ListedFile[] {
+    const writes = sessionWriteCount();
     const files: ListedFile[] = [];
     const folders = new Map<string, number>();
     for (const d of dirs) {
@@ -2058,7 +2068,7 @@ function listWhole(root: string, dirs: string[]): ListedFile[] {
         }
     }
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    listedFiles = { root, files, folders, at: performance.now() };
+    listedFiles = { root, files, folders, at: performance.now(), writes };
     return files;
 }
 

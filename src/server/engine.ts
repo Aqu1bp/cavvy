@@ -2700,8 +2700,10 @@ export class Engine {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const also = Array.isArray(p.turns) ? (p.turns as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 10_000) : undefined;
+                const g = p.gap as { after?: unknown; before?: unknown } | undefined;
+                const gap = g && typeof g === "object" && typeof g.after === "string" && typeof g.before === "string" ? { after: g.after, before: g.before } : undefined;
                 await rt.allTurns();
-                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also) };
+                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also, gap) };
             }
             case "session.agentList": {
                 const rt = this.runtimes.get(str(p.id, "id"));

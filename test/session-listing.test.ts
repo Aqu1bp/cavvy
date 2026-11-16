@@ -38,3 +38,18 @@ test("made, removed and written to: listed as they are, the old ones a call late
     await Bun.sleep(100);
     expect(ids()[0]).toBe(made[0]!.meta.id);
 });
+
+test("an old one written to here: listed first at once", () => {
+    const cwd = realpathSync(tempDir());
+    const made = Array.from({ length: 80 }, (_, i) => {
+        const s = Session.create(cwd);
+        s.push(say(`session ${i}`));
+        const at = new Date(Date.now() - (400 - i) * 60_000);
+        utimesSync(s.path, at, at);
+        return s;
+    });
+    expect(ids()).toContain(made[0]!.meta.id);
+    // Far below the newest the listing looks at again, reopened and written to by this server.
+    made[0]!.push(say("again"));
+    expect(ids()[0]).toBe(made[0]!.meta.id);
+});

@@ -8,6 +8,7 @@
 import { closeSync, lstatSync, openSync, readdirSync, readSync } from "fs";
 import { basename, dirname, join } from "path";
 import { paths } from "../config/paths";
+import { sessionWriteCount, writtenAfter } from "../agent/session-writes";
 import type { Message } from "../providers/types";
 import { redact, redactionVersion } from "../util/redact";
 import { promptText, STEERING, withoutActionsNote } from "./history";
@@ -53,7 +54,9 @@ const gram = (a: number, b: number, c: number) => (Math.imul(a, 0x9e3779b1) ^ Ma
 /**
  * Its pairs of characters, each a bit of PAIR_BITS, for what's searched before it's three characters long (the second
  * key typed). Without them, two characters found nowhere looked through every session (10,000 sessions: 37-46 ms of
- * that keystroke's search, measured). A long session sets most of them, and is looked through, as before.
+ * that keystroke's search, measured). A long session sets most of them, and is looked through, as before. 512 bytes a
+ * session read: 10,000 sessions read kept 6.6 MB more than without them (50.9 vs 44.3 MB, measured), counted in the
+ * cache's size like the rest.
  */
 const PAIR_BITS = 4096;
 const pair = (a: number, b: number) => (Math.imul(a, 0x27d4eb2f) ^ Math.imul(b, 0x165667b1)) >>> 20;
@@ -593,6 +596,8 @@ type Listed = { id: string; file: string; size: number; mtimeMs: number; ino: nu
 let listing: Listed[] | undefined;
 /** When the files were last listed whole, and each project folder's mtime then (a file put in or taken out changes it). */
 let listedAt = -Infinity;
+/** Session writes as of the listing (session-writes.ts): those after it are looked at again. */
+let listedWrites = 0;
 let folders: Map<string, number> | undefined;
 /**
  * Typed into, a search a keystroke: only the newest RECENT files and those of sessions open here are looked at again
@@ -630,8 +635,12 @@ async function sessionFiles(ctl: Control, open?: ReadonlySet<string>): Promise<L
     if (was && foldersAsListed()) {
         if (performance.now() - listedAt >= LIST_FRESH_MS) relistSoon();
         let changed = false;
+        // And those this process wrote to since, wherever they were (one written to and let go of since).
+        const writes = sessionWriteCount();
+        const written = writtenAfter(listedWrites);
+        listedWrites = writes;
         const now = was.map((f, i) => {
-            if (i >= RECENT && !open?.has(f.id)) return f;
+            if (i >= RECENT && !open?.has(f.id) && !written?.has(f.file)) return f;
             let st;
             try {
                 st = plainStat(f.file);
@@ -652,17 +661,28 @@ async function sessionFiles(ctl: Control, open?: ReadonlySet<string>): Promise<L
 /** Every session file, listed whole: the listing from now on (the same array where nothing changed). */
 async function relist(ctl: Control): Promise<Listed[] | undefined> {
     const was = listing;
+    const writes = sessionWriteCount();
     const files = await listSessionFiles(ctl);
     if (!files) return undefined;
     listedAt = performance.now();
+    // As of its start: what was written as it went is looked at again (no harm if it was in it).
+    listedWrites = writes;
     if (was && was.length === files.length && files.every((f, i) => f.file === was[i]!.file && f.size === was[i]!.size && f.mtimeMs === was[i]!.mtimeMs && f.ino === was[i]!.ino)) return was;
     listing = files;
     return files;
 }
 
-/** Listed whole once the search under way is answered (a task later), letting others run as it goes. */
+/** Searches under way: a relisting waits for them to be answered, not slowing one that yields as it goes. */
+let searching = 0;
+let relistWanted = false;
+/** Listed whole once the searches under way are answered, letting others run as it goes. */
 function relistSoon() {
     if (relisting) return;
+    if (searching) {
+        relistWanted = true;
+        return;
+    }
+    relistWanted = false;
     relisting = new Promise((r) => setTimeout(r, 0))
         .then(() => relist(new Control(() => false, SEARCH_LIMITS.budgetMs, SEARCH_LIMITS.budgetBytes)))
         .catch(() => undefined)
@@ -751,6 +771,15 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
 let lastScan: { fq: string; files: Listed[]; redaction: number; found: Set<string> } | undefined;
 
 export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
+    searching++;
+    try {
+        return await searchNow(query, o);
+    } finally {
+        if (--searching === 0 && relistWanted) relistSoon();
+    }
+}
+
+async function searchNow(query: string, o: SearchOptions): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
     const fq = foldCase(query);
     const redaction = redactionVersion();

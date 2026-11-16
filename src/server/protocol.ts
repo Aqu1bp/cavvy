@@ -895,6 +895,8 @@ export interface SessionFindMatch {
     part: string;
     n: number;
     pos?: { seg: number; index: number };
+    /** In the turns the window holds a gap for (SessionView.gap), after its turn `after`: not before the window's first. */
+    gap?: true;
 }
 
 export interface SessionTurnsPage {
@@ -2180,7 +2182,7 @@ export interface Methods {
      * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`. And in `turns` (those
      * it was sent folded: it can't count them itself), in order with the rest.
      */
-    "session.find": { params: { id: string; query: string; before?: string; turns?: string[] }; result: { matches: SessionFindMatch[] } };
+    "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };

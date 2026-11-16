@@ -1672,13 +1672,14 @@ export class Runtime {
         void this.ready.then(() => this.agent?.warmSnapshots(), () => undefined);
     }
 
-    /** Find in the turns before `before` (those the window hasn't been sent): src/server/find.ts. */
-    async find(query: string, before?: string, also?: readonly string[]): Promise<SessionFindMatch[]> {
+    /** Find in the turns before `before` and in its `gap` (those the window hasn't been sent): src/server/find.ts. */
+    async find(query: string, before?: string, also?: readonly string[], gap?: { after: string; before: string }): Promise<SessionFindMatch[]> {
         this.flush();
         // The latest asked: one asked before it stops (the window counts only the latest).
         const asked = ++this.finding;
         const found = await findBefore(this.view.turns, query, {
             before,
+            gap,
             also: also?.length ? new Set(also) : undefined,
             whole: (t) => this.whole(t),
             stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
