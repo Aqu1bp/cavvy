@@ -109,6 +109,22 @@ describe("git changes", () => {
         expect(r.files).toEqual([]);
     });
 
+    test("only what git's stat data says may differ is read, unless git can't be asked without running a program", async () => {
+        const dir = repo({ "a.txt": "aaaa\n", "b.txt": "same\n" });
+        git(dir, "config", "core.trustctime", "false");
+        const old = new Date("2020-01-01T00:00:00Z");
+        for (const f of ["a.txt", "b.txt"]) utimesSync(join(dir, f), old, old);
+        git(dir, "update-index", "-q", "--refresh");
+        // Rewritten in place, its size and mtime kept: git's stat data says it's as it was, so `git status` doesn't look.
+        writeFileSync(join(dir, "a.txt"), "AAAA\n");
+        utimesSync(join(dir, "a.txt"), old, old);
+        write(dir, "b.txt", "changed\n");
+        expect(summary(await gitChanges(dir, { scope: "uncommitted" }))).toEqual(["modified b.txt +1 -1"]);
+        // A config file the repository includes could define a filter after it was checked: every file is read.
+        git(dir, "config", "include.path", "missing.config");
+        expect(summary(await gitChanges(dir, { scope: "uncommitted" }))).toEqual(["modified a.txt +1 -1", "modified b.txt +1 -1"]);
+    });
+
     test("an exact rename is one entry", async () => {
         const dir = repo({ "old.txt": "content\nhere\n" });
         renameSync(join(dir, "old.txt"), join(dir, "new.txt"));
@@ -820,6 +836,34 @@ describe("outside a repository", () => {
 });
 
 describe("repository config never runs a program", () => {
+    test("nor does asking git what differs, with commits since a branch's base", async () => {
+        const marks = tempDir("cavvy-marks-");
+        const dir = repo({ "a.txt": "one\n", "b.txt": "two\n" });
+        git(dir, "branch", "-q", "base");
+        write(dir, "a.txt", "one more\n");
+        git(dir, "commit", "-qam", "Second");
+        write(dir, ".gitattributes", "* filter=evil diff=evil\n");
+        const touch = (name: string) => `touch ${join(marks, name)}; cat`;
+        git(dir, "config", "filter.evil.clean", touch("clean"));
+        git(dir, "config", "filter.evil.smudge", touch("smudge"));
+        git(dir, "config", "filter.evil.process", `touch ${join(marks, "process")}; false`);
+        git(dir, "config", "filter.evil.required", "true");
+        git(dir, "config", "diff.evil.textconv", touch("textconv"));
+        writeFileSync(join(marks, "ext.sh"), `#!/bin/sh\ntouch ${join(marks, "external")}\n`);
+        chmodSync(join(marks, "ext.sh"), 0o755);
+        git(dir, "config", "diff.external", join(marks, "ext.sh"));
+        git(dir, "config", "core.fsmonitor", `touch ${join(marks, "fsmonitor")}; false`);
+        write(dir, "b.txt", "two!\n");
+        const marked = () => Bun.spawnSync(["ls", marks]).stdout.toString().split("\n").filter((f) => f && f !== "ext.sh");
+
+        const r = await gitChanges(dir, { scope: "branch", base: "base" });
+        expect(marked()).toEqual([]);
+        expect(r.files.map((f) => f.path)).toEqual(["a.txt", "b.txt", ".gitattributes"]);
+        // Control: plain git does run them, so the test would notice.
+        Bun.spawnSync(["git", "diff", "base"], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+        expect(marked().length).toBeGreaterThan(0);
+    });
+
     test("in a partial clone, a missing old blob is never fetched", async () => {
         const src = repo({ "f.txt": "v1\n" });
         write(src, "f.txt", "v2\n");
