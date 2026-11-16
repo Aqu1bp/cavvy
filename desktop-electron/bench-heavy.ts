@@ -347,6 +347,9 @@ try {
                     ids[slot] = await create(a);
                     await a.rpc.call("session.pin", { id: old, pinned: false });
                     await a.rpc.call("session.archive", { id: old, archived: true });
+                    // And let go, as the window lets go of what it no longer shows: held here, every archived session
+                    // stayed loaded, and the end measured the bench's sessions, not the app's.
+                    await a.rpc.call("session.close", { id: old });
                     archived++;
                 }
             }
