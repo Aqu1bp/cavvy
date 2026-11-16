@@ -82,6 +82,20 @@ test("what animates for as long as something waits changes only when it must, an
     }
 });
 
+test("what animates for good stops when nobody can see it (lib/loops.ts)", () => {
+    // Its rule's play state is the gate's: paused while the window is minimized or hidden, out of view, or for the
+    // decorative, while Cavvy hasn't the focus. A shorthand after it would set it running again.
+    for (const f of files("gui/src/styles", "*.css")) {
+        const css = read(f);
+        for (const m of css.matchAll(/animation:\s*[\w-]+\s[^;]*\binfinite\b[^;]*;/g)) {
+            const rule = css.slice(css.lastIndexOf("{", m.index) + 1, css.indexOf("}", m.index));
+            const after = rule.slice(rule.indexOf(m[0]) + m[0].length);
+            expect(`${f}: ${m[0]} ${after.trim()}`).toMatch(/animation-play-state: var\(--(loops|decor)\)/);
+            expect(`${f}: ${m[0]} then:${after}`).not.toMatch(/then:[^]*\banimation:/);
+        }
+    }
+});
+
 test("what animates for good changes on the stream clock's grid, or the window is drawn again for each one out of step", async () => {
     const { STEP_MS } = await import("../gui/src/lib/stream-clock");
     const css = files("gui/src/styles", "*.css").map(read).join("\n");

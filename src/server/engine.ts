@@ -2562,6 +2562,8 @@ export class Engine {
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
+            case "server.lag":
+                return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
             case "terminal.list":
                 return this.terminals.list(client);
             case "terminal.attach":

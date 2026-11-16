@@ -26,6 +26,8 @@ import { LiveCommandBody, useCardFolds } from "./blocks/Activity";
 const OUT_MS = 120;
 const IN_MS = 180;
 const IN_DELAY_MS = 60;
+/** Where the light stops as it crosses the label: 24 steps, the first (all of it before the label) dark. */
+const LIGHT_STEPS = Array.from({ length: 23 }, (_, i) => i + 1);
 
 /** A motion's duration as Settings → Motion and the system's reduced-motion setting have it: 0 for none. */
 export function motionMs(base: number): number {
@@ -214,13 +216,15 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
     );
     return (
         <div ref={el} class={`layer k-${s().kind} ${p.layer.leaving() ? "leaving" : ""}`} title={s().title} aria-hidden="true">
-            {/* A bright copy of the label in a soft-edged window: the window slides one way and the copy the other, so
-                the words hold still and only the light moves (transforms, on the stream clock's steps). */}
+            {/* A soft light crosses the label and rests, the words holding still: a bright copy of the label for each place
+                the light stops at, each shown for its step (transcript.css). */}
             <Show when={s().kind !== "wait"} fallback={<span class="lbl">{s().label}</span>}>
                 <span class="lbl shim">
                     {label()}
-                    <span class="shim-win">
-                        <span class="shim-hi">{label()}</span>
+                    <span class="lights" data-find-skip>
+                        {LIGHT_STEPS.map((k) => (
+                            <span style={`--k:${k}`}>{label()}</span>
+                        ))}
                     </span>
                 </span>
             </Show>

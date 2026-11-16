@@ -438,6 +438,7 @@
     box-shadow: 0 0 0 calc(2 * var(--sp)) color-mix(in srgb, var(--accent) 25%, transparent);
     opacity: 0;
     animation: nd-pulse 1.8s steps(18) infinite;
+    animation-play-state: var(--loops);
 }
 
 @keyframes nd-pulse {

@@ -131,7 +131,21 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // Following the end, the end stays (as the conversation grows): nothing to measure. Read higher up, what's read
         // stays, the scroll position taking what went in above it.
         keep: (el: Element | null | undefined, put: () => void) => {
-            if (!el || !scroller || untrack(stick)) return put();
+            if (!el || !scroller) return put();
+            if (untrack(stick) && !smoothScroll) {
+                put();
+                // Held at the end before this frame is laid out, not after: laid out once with the end pushed below the
+                // view, what content-visibility skips counts it out of view, and the end went blank for a frame.
+                queueMicrotask(() => {
+                    if (!scroller || !untrack(stick)) return;
+                    const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+                    if (Math.abs(end - scroller.scrollTop) <= 0.5) return;
+                    scroller.scrollTop = end;
+                    wrote();
+                });
+                return;
+            }
+            if (untrack(stick)) return put();
             const was = el.getBoundingClientRect().top;
             put();
             queueMicrotask(() => {

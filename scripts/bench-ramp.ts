@@ -26,6 +26,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { LoopLag } from "../src/server/protocol";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
@@ -162,9 +163,10 @@ const MAC_HZ = await (async () => {
     return hz;
 })();
 /** macOS: what can be had without paging: free, inactive, speculative and purgeable pages (vm_stat). */
-function memAvailableMB(): number {
+function memAvailableMB(): number | undefined {
     if (MAC) {
         const v = Bun.spawnSync(["vm_stat"]).stdout.toString();
+        if (!/Pages free:/.test(v)) return undefined;
         const page = Number(v.match(/page size of (\d+) bytes/)?.[1] ?? 16384);
         const pages = (k: string) => Number(v.match(new RegExp(`Pages ${k}:\\s+(\\d+)`))?.[1] ?? 0);
         return Math.round(((pages("free") + pages("inactive") + pages("speculative") + pages("purgeable")) * page) / 1048576);
@@ -209,6 +211,8 @@ interface Driver {
     turn(i: number, k: number): Promise<{ error?: string }>;
     /** Its own responsiveness this second, ms (undefined for bare). */
     ping(): Promise<number | undefined>;
+    /** How late the server ran what was due, from inside it (server.lag; `reset`: from now). Undefined for bare. */
+    lag?(reset?: boolean): Promise<LoopLag | undefined>;
     stop(): Promise<void>;
     serverPid?: number;
 }
@@ -295,6 +299,7 @@ async function cavvyDriver(n: number, dirs: string[], home: string): Promise<Dri
         },
         // Something the server answers from memory: how long the GUI's requests wait behind its other work.
         async ping() { const t = performance.now(); await call("terminal.list", {}, 30_000); return performance.now() - t; },
+        async lag(reset) { return (await call("server.lag", reset ? { reset: true } : {}, 30_000))?.result as LoopLag | undefined; },
         async stop() { ws.close(); server.kill("SIGTERM"); await Promise.race([server.exited, sleep(20_000)]); server.kill("SIGKILL"); },
     };
 }
@@ -475,6 +480,8 @@ async function step(n: number) {
     })();
     try {
         driver = MODE === "cavvy" ? await cavvyDriver(n, dirs, home) : await bareDriver(n, dirs, home);
+        // The server's own lag from here on: the ping's round trip also counts this process's wait for a core.
+        await driver.lag?.(true).catch(() => undefined);
         firstSendAt = performance.now();
         const total = PER_SESSION ?? 1e9;
         const deadline = firstSendAt + (PER_SESSION ? 40 : MINUTES) * 60_000;
@@ -491,6 +498,8 @@ async function step(n: number) {
         }));
         endAt = performance.now();
         stat1 = cpuStat();
+        const lag = await driver.lag?.().catch(() => undefined);
+        if (lag) rep.serverLagMs = { p50: lag.p50, p95: lag.p95, p99: lag.p99, max: lag.max, ticks: lag.samples, worst: lag.worst.map((w) => ({ secondsIn: r1((w.at / 1000 - launchedEpoch)), ms: w.ms })) };
         if (HOLD > 0) {
             // Idle: sessions open, their CLIs alive, nothing asked. Each role's CPU over it, from the samples.
             const from = samples.length, statHeld = cpuStat();
@@ -529,6 +538,8 @@ async function step(n: number) {
         psiAvg: { cpu: r1(avg(col((x) => x.psi.cpu))), io: r1(avg(col((x) => x.psi.io))), memory: r1(avg(col((x) => x.psi.memory))) },
         ...(MAC ? { memoryPressureMax: Math.max(0, ...col((x) => x.memoryPressure)) } : {}),
         pingMs: { p50: r1(pct(col((x) => x.pingMs), 0.5)), p95: r1(pct(col((x) => x.pingMs), 0.95)), max: r1(Math.max(0, ...col((x) => x.pingMs))) },
+        // The server's own: how late it ran what was due (a 10 ms timer inside it), without the ping's wait for a core.
+        ...(rep.serverLagMs ? { serverLagMs: rep.serverLagMs } : {}),
         cores: NCPU, memMB: Math.round(totalmem() / 1048576),
         ...(rep.idle ? { idle: rep.idle } : {}),
     };

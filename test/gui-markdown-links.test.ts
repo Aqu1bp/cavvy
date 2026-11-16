@@ -272,6 +272,18 @@ describe("a reply shown again", () => {
         expect(known.segs[1]).not.toBe(one.segs[1]);
     });
 
+    test("a path in a line still being written becomes a link when it's known, the line whole", () => {
+        // The line's words are rendered as they come (markdown.ts appendLine); the answer arriving renders it again.
+        const text = "Kept under src/later.ts and nothing in it is lost when the window goes, or when it";
+        const later = (p: string) => (p === "src/later.ts" ? `${ROOT}/src/later.ts` : lookup(p));
+        const r = new MarkdownRenderer();
+        for (let i = 1; i <= text.length; i++) r.segments(text.slice(0, i), true, lookup);
+        const html = (segs: ReturnType<typeof r.segments>) => segs.map((s) => (s.kind === "html" ? s.html : "")).join("");
+        const again = html(r.segments(text, true, later));
+        expect(again).toBe(html(new MarkdownRenderer().segments(text, true, later)));
+        expect(again).toContain(`data-file="${ROOT}/src/later.ts"`);
+    });
+
     test("while it's still being written, it's rendered as it comes", () => {
         const text = "Being written: src/server/engine.ts and more";
         const done = render(text);

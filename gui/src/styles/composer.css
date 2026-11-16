@@ -545,6 +545,7 @@
     border-radius: 50%;
     background: var(--accent);
     animation: uq-joining 1.2s steps(12) infinite;
+    animation-play-state: var(--loops);
 }
 
 @keyframes uq-joining {
