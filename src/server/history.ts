@@ -7,6 +7,7 @@
 import { imageKey } from "./tool-images";
 import { createHash } from "crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { chmod, mkdir, open, rename, unlink } from "fs/promises";
 import { dirname, join } from "path";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
@@ -531,38 +532,36 @@ export class UiLog {
 }
 
 /**
+ * A session's log read whole, a slice at a time (readAllSoon): the server gets on meanwhile. Undefined when it has
+ * none. For a fork (forkUiLog), read before it's made: a 100,000-item Claude Code session's is 189 MB, 1.2 s to read.
+ */
+export async function readUiLogSoon(sessionFile: string, id: string): Promise<UiLog | undefined> {
+    const log = new UiLog(sessionFile, id, false);
+    if (!existsSync(log.path)) return undefined;
+    await log.readAllSoon();
+    return log;
+}
+
+/**
  * A fork's log, from the original's: what its copied turns need (tool rows'
  * summaries and diffs, turn times). The fork's segments are the original's up
  * to the cut, so records keep their keys. Written in one go, before the fork
- * is opened.
+ * is opened. `o.source`: the original's log, read already (readUiLogSoon);
+ * `o.segments`: the fork's, read already.
+ *
+ * Laid out as a log written as the turns ran: each turn's start, its steps and
+ * tools, then its end, and a state last. Opening the fork reads it from its
+ * end, back to its last turns' starts (UiLog.readTail): with each turn's
+ * record whole and every tool at the end, it read all of it (0.6 s for a
+ * 100,000-item Claude Code session's fork, each time it was opened).
  */
-export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }) {
-    const source = new UiLog(from.file, from.id);
-    const segments = readSegments(to.file);
-    const calls = new Set<string>();
-    const records: UiRecord[] = [];
-    for (const [si, seg] of segments.entries()) {
-        for (const [index, m] of seg.messages.entries()) {
-            if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
-            const turn = source.turn(si, index);
-            // The same index can belong to a different prompt after a rewind.
-            if (turn && (turn.prompt === undefined || (m.role === "user" && turn.prompt === promptKey(m)))) records.push(turn);
-            if (m.role !== "user") continue;
-            const blocks = source.shown(si, index, m);
-            if (!blocks) continue;
-            records.push({ t: "blocks", seg: si, index, prompt: promptKey(m), blocks });
-            for (const b of blocks) if (b.t === "tool") calls.add(b.id);
-        }
-    }
-    for (const id of calls) {
-        const tool = source.tools.get(id);
-        if (tool) records.push(tool);
-    }
-    // State, pending turns and delegated runs belong to the original. Only
-    // its completed timeline is inherited; the fork gets its own live state.
-    const out = records.map((r) => redactedJson(r));
+export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }, o: { source?: UiLog | null; segments?: Segment[] } = {}) {
+    const source = o.source === undefined ? new UiLog(from.file, from.id) : o.source;
+    // None to fork (an original that never had one, or lost it).
+    if (!source) return;
+    const out = [...forkUiLines(source, o.segments ?? readSegments(to.file))];
     if (!out.length) return;
-    const file = join(dirname(to.file), "ui", `${to.id}.jsonl`);
+    const file = uiLogFile(to.file, to.id);
     const tmp = `${file}.${process.pid}.tmp`;
     try {
         mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -577,6 +576,100 @@ export function forkUiLog(from: { file: string; id: string }, to: { file: string
             // never made
         }
     }
+}
+
+/**
+ * forkUiLog, a slice at a time, and written while the server gets on: a 100,000-item Claude Code session's fork has
+ * 189 MB of it, which held the server 1.4 s made and written at once.
+ */
+export async function forkUiLogSoon(to: { file: string; id: string }, source: UiLog, segments: Segment[]): Promise<void> {
+    const file = uiLogFile(to.file, to.id);
+    const tmp = `${file}.${process.pid}.tmp`;
+    let fh: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+        let chunk: string[] = [];
+        let size = 0;
+        let since = performance.now();
+        for (const line of forkUiLines(source, segments)) {
+            chunk.push(line);
+            size += line.length;
+            if (size < 4 * 1024 * 1024 && performance.now() - since < 8) continue;
+            if (!fh) {
+                await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+                fh = await open(tmp, "w", 0o600);
+            }
+            await fh.write(chunk.join("\n") + "\n");
+            chunk = [];
+            size = 0;
+            await nextSlice();
+            since = performance.now();
+        }
+        if (!fh && !chunk.length) return;
+        if (!fh) {
+            await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+            fh = await open(tmp, "w", 0o600);
+        }
+        if (chunk.length) await fh.write(chunk.join("\n") + "\n");
+        await fh.close();
+        fh = undefined;
+        await chmod(tmp, 0o600);
+        await rename(tmp, file);
+    } catch {
+        // The timeline is rebuilt without it (derived summaries, no timings).
+        await fh?.close().catch(() => undefined);
+        await unlink(tmp).catch(() => undefined);
+    }
+}
+
+/**
+ * A fork's log, line by line (forkUiLog): those of its turns' records in `source` (keyed by segment and index, the
+ * original's up to the cut), each redacted again as it's written.
+ *
+ * Laid out as a log written as the turns ran: each turn's start, its steps and tools, then its end, and a state last.
+ * Opening the fork reads it from its end, back to its last turns' starts (UiLog.readTail): with each turn's record
+ * whole and every tool at the end, it read all of it (0.6 s for a 100,000-item Claude Code session's fork, each time
+ * it was opened).
+ */
+function* forkUiLines(source: UiLog, segments: Segment[]): Generator<string> {
+    let calls = new Set<string>();
+    /** The turn whose steps and tools are being written: its end goes after them. */
+    let current: Extract<UiRecord, { t: "turn" }> | undefined;
+    let any = false;
+    function* close() {
+        for (const id of calls) {
+            const tool = source.tools.get(id);
+            if (tool) yield redactedJson(tool);
+        }
+        calls = new Set();
+        if (current && (current.end !== undefined || current.status !== undefined || current.prompt !== undefined)) yield redactedJson(current);
+        current = undefined;
+    }
+    for (const [si, seg] of segments.entries()) {
+        for (const [index, m] of seg.messages.entries()) {
+            const turn = source.turn(si, index);
+            // The same index can belong to a different prompt after a rewind.
+            if (turn && (turn.prompt === undefined || (m.role === "user" && turn.prompt === promptKey(m)))) {
+                yield* close();
+                // Its start, as it was written: what reading from the end stops at.
+                yield redactedJson({ t: "turn", seg: turn.seg, index: turn.index, at: turn.at });
+                current = turn;
+                any = true;
+            }
+            if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
+            if (m.role !== "user") continue;
+            const blocks = source.shown(si, index, m);
+            if (!blocks) continue;
+            yield redactedJson({ t: "blocks", seg: si, index, prompt: promptKey(m), blocks });
+            any = true;
+            for (const b of blocks) if (b.t === "tool") calls.add(b.id);
+        }
+    }
+    for (const id of calls) if (source.tools.has(id)) any = true;
+    yield* close();
+    // State, pending turns and delegated runs belong to the original. Only
+    // its completed timeline is inherited; the fork gets its own live state.
+    // (One with nothing in it: reading from the end stops at the first state it finds.)
+    if (any) yield redactedJson({ t: "state" });
 }
 
 // ---------------------------------------------------------------------------

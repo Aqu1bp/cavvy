@@ -1081,7 +1081,7 @@ createRoot(() => createEffect(() => {
 
 /** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
 export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
-    const snap = await rpc.call("session.fork", { id, ...at });
+    const snap = await rpc.call("session.fork", { ...opening(id), id, ...at });
     sameMachine(id, snap.state.id);
     const h = adopt(snap);
     await activate(h.id);

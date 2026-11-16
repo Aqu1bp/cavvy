@@ -64,7 +64,7 @@ import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
-import { forkUiLog } from "./history";
+import { forkUiLogSoon, readSegments, readUiLogSoon } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
@@ -405,6 +405,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Forks being made (forkSession): opened once they have their log. */
+    private forking = new Set<string>();
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
@@ -1138,7 +1140,10 @@ export class Engine {
      * speed, mode and effort.
      */
     async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
-        await original.allTurns();
+        // Only to find a turn the window hasn't been sent: all of a 100,000-item Claude Code session's took 3 s.
+        if (!original.hasTurn(turnId)) await original.allTurns();
+        // Its log, a slice at a time, before anything's made (what's written meanwhile is read with the rest).
+        const log = await readUiLogSoon(original.session.path, original.id);
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
@@ -1149,7 +1154,19 @@ export class Engine {
         } catch (e) {
             throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
         }
-        forkUiLog({ file: original.session.path, id: original.id }, { file: session.path, id: session.meta.id });
+        if (log) {
+            // From the lines just read, kept for the runtime (Session.takeLoadedLines): not read from the file again.
+            const segments = readSegments(session.path, { takeLoadedLines: () => session.peekLoadedLines() });
+            const lines = session.keepLoadedLines();
+            // Not opened elsewhere meanwhile (its file is in the folder's list now): it's opened here, once it has its log.
+            this.forking.add(session.meta.id);
+            try {
+                await forkUiLogSoon({ file: session.path, id: session.meta.id }, log, segments);
+            } finally {
+                this.forking.delete(session.meta.id);
+            }
+            lines();
+        }
         // Made now, by the person: it goes to the top of the sidebar, and stays there until something else works.
         session.worked(Date.now(), true);
         // The original's folder, already trusted to open it; bypass mode still needs allowing (the constructor checks).
@@ -1283,6 +1300,7 @@ export class Engine {
     openSession(id: string): Runtime {
         const live = this.runtimes.get(id);
         if (live) return live;
+        if (this.forking.has(id)) throw new RpcError("This fork is still being made. Try again in a moment.", "in_use");
         const session = this.loadSession(id);
         let rt: Runtime;
         try {
@@ -2889,7 +2907,10 @@ export class Engine {
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
                 this.watch(client, rt.id);
-                return rt.snapshot();
+                // As much as an open asks for: all of a long conversation's turns was 4,949 sent at once.
+                const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
+                const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                return await rt.snapshotSoon(last, budget, p.fold === true);
             }
             case "session.changes":
                 return this.runtime(p.id).changes();

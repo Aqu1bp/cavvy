@@ -4866,6 +4866,11 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Forking
 
+    /** Whether the turn `id` is built here already (the window's, and those read since): forkPoint needs only it. */
+    hasTurn(id: string): boolean {
+        return this.view.turns.some((t) => t.id === id);
+    }
+
     /**
      * Where a fork from the turn of the prompt at `index` ends (session.fork),
      * checked against what the window showed: that turn (by id, which is new
