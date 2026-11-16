@@ -26,7 +26,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { LoopLag } from "../src/server/protocol";
+import type { LoopLag, ServerMemory } from "../src/server/protocol";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
@@ -213,6 +213,8 @@ interface Driver {
     ping(): Promise<number | undefined>;
     /** How late the server ran what was due, from inside it (server.lag; `reset`: from now). Undefined for bare. */
     lag?(reset?: boolean): Promise<LoopLag | undefined>;
+    /** What the server's memory is made of (server.memory). Undefined for bare. */
+    memory?(types?: boolean): Promise<ServerMemory | undefined>;
     stop(): Promise<void>;
     serverPid?: number;
 }
@@ -300,6 +302,7 @@ async function cavvyDriver(n: number, dirs: string[], home: string): Promise<Dri
         // Something the server answers from memory: how long the GUI's requests wait behind its other work.
         async ping() { const t = performance.now(); await call("terminal.list", {}, 30_000); return performance.now() - t; },
         async lag(reset) { return (await call("server.lag", reset ? { reset: true } : {}, 30_000))?.result as LoopLag | undefined; },
+        async memory(types) { return (await call("server.memory", types ? { types: true } : {}, 30_000))?.result as ServerMemory | undefined; },
         async stop() { ws.close(); server.kill("SIGTERM"); await Promise.race([server.exited, sleep(20_000)]); server.kill("SIGKILL"); },
     };
 }
@@ -467,8 +470,11 @@ async function step(n: number) {
                 rss[rl] = (rss[rl] ?? 0) + p.rssKB / 1024;
                 count[rl] = (count[rl] ?? 0) + 1;
             }
+            // The server's memory by kind, every 5 s: beside its footprint, what a peak is made of.
+            const serverMem = samples.length % 5 === 0 ? await Promise.race([driver?.memory?.().catch(() => undefined), sleep(5000).then(() => undefined)]) : undefined;
             const st = cpuStat();
             samples.push({
+                ...(serverMem ? { serverMem } : {}),
                 t: r1((now - launchedAt) / 1000), w: r1(w), pingMs: ping === undefined ? undefined : r1(ping),
                 cpuSec: Object.fromEntries(Object.entries(cpu).map(([k, v]) => [k, Math.round(v * 100) / 100])),
                 rssMB: Object.fromEntries(Object.entries(rss).map(([k, v]) => [k, Math.round(v)])), procs: count,
@@ -500,6 +506,8 @@ async function step(n: number) {
         stat1 = cpuStat();
         const lag = await driver.lag?.().catch(() => undefined);
         if (lag) rep.serverLagMs = { p50: lag.p50, p95: lag.p95, p99: lag.p99, max: lag.max, ticks: lag.samples, worst: lag.worst.map((w) => ({ secondsIn: r1((w.at / 1000 - launchedEpoch)), ms: w.ms, cpuMs: w.cpuMs, waits: w.waits, preempted: w.preempted })) };
+        const mem = await driver?.memory?.(true).catch(() => undefined);
+        if (mem) rep.serverMemoryAtEnd = mem;
         if (HOLD > 0) {
             // Idle: sessions open, their CLIs alive, nothing asked. Each role's CPU over it, from the samples.
             const from = samples.length, statHeld = cpuStat();
