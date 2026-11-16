@@ -169,7 +169,9 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
             } while (untrack(above) && performance.now() - building.from + building.step <= FRAME_BUSY_MS);
             if (untrack(above)) frame = requestAnimationFrame(step);
         };
-        frame = requestAnimationFrame(step);
+        // Not in the frame that first shows it: its first step's layout would be that frame's (a switch to a session
+        // ending in a 60 KB reply: its longest task 43.7 -> 71.3 ms on a Mac). From the frame after.
+        frame = requestAnimationFrame(() => (frame = requestAnimationFrame(step)));
         onCleanup(() => {
             if (frame !== undefined) cancelAnimationFrame(frame);
         });
