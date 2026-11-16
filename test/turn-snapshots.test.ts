@@ -640,6 +640,65 @@ describe("per-turn snapshots", () => {
         }
     });
 
+    test("a big repository whose attributes below its top store other bytes starts no git status it would throw away", async () => {
+        const { cwd, dir } = setup({ "a.txt": `a ${crypto.randomUUID()}\n`, "sub/.gitattributes": "*.sh text eol=lf\n", "sub/run.sh": "echo hi\n" });
+        const log = join(dirname(cwd), "git-calls"), bin = join(dirname(cwd), "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o755 });
+        const statuses = () => (existsSync(log) ? readFileSync(log, "utf-8").split("\n").filter((l) => / status /.test(l)).length : 0);
+        const path = process.env.PATH;
+        process.env.PATH = `${bin}:${path}`;
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        try {
+            // The first may ask before its index has said (it's read alongside); those after know its attributes.
+            await snapshots.begin(1, "Edit a file");
+            const first = statuses();
+            write(cwd, "a.txt", "edited\n");
+            await snapshots.end();
+            for (let turn = 2; turn <= 3; turn++) {
+                await snapshots.begin(turn, "Edit it again");
+                write(cwd, "a.txt", `edited ${turn}\n`);
+                await snapshots.end();
+            }
+            expect(statuses()).toBe(first);
+            expect(snapshots.statusCount).toBe(0);
+        } finally {
+            process.env.PATH = path;
+            await snapshots.stop();
+        }
+    });
+
+    test("a big repository with something staged since its last commit starts no git status it would throw away", async () => {
+        const { cwd, dir } = setup({ "a.txt": `a ${crypto.randomUUID()}\n` });
+        const log = join(dirname(cwd), "git-calls"), bin = join(dirname(cwd), "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o755 });
+        const statuses = () => (existsSync(log) ? readFileSync(log, "utf-8").split("\n").filter((l) => / status /.test(l)).length : 0);
+        const path = process.env.PATH;
+        process.env.PATH = `${bin}:${path}`;
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        try {
+            // Each turn stages a file: Git's index has no tree for it then, and git's list can't be used. The first capture
+            // may ask before its index has said (it's read alongside); those after know it refused.
+            write(cwd, "staged0.txt", "0\n");
+            git(cwd, ["add", "staged0.txt"]);
+            await snapshots.begin(1, "Stage a file");
+            const first = statuses();
+            for (let turn = 1; turn <= 3; turn++) {
+                if (turn > 1) await snapshots.begin(turn, "Stage another");
+                write(cwd, `staged${turn}.txt`, `${turn}\n`);
+                git(cwd, ["add", `staged${turn}.txt`]);
+                await snapshots.end();
+            }
+            expect(statuses()).toBe(first);
+            expect(snapshots.statusCount).toBe(0);
+            expect(snapshots.list()).toHaveLength(3);
+        } finally {
+            process.env.PATH = path;
+            await snapshots.stop();
+        }
+    });
+
     test("ignored files are omitted, large files are marked, and ordinary files still diff", async () => {
         const { cwd, dir, snapshots } = setup({ ".gitignore": "private.txt\n", "small.txt": "before\n" });
         write(cwd, "private.txt", "not captured\n");

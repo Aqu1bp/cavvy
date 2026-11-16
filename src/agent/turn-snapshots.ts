@@ -407,6 +407,11 @@ interface StatusPrep {
     /** What's outside the folder that decides what's ignored, as it was before `git status` read it (ignoreKeyOf). */
     ignoreKey: string;
     index: Promise<IndexPrep | undefined>;
+    /**
+     * Whether `index`'s say is taken before `git status` is started: once it has settled, or where it refused last time
+     * (an index with something staged and no commit since, say, refuses each capture: `git status` would be thrown away).
+     */
+    indexFirst: () => boolean;
 }
 /** What Git's index records (index-scan.ts), the tree Git worked out for it, and its .gitattributes files. */
 interface IndexPrep {
@@ -415,6 +420,10 @@ interface IndexPrep {
     attributes: string[];
 }
 const locations = new Map<string, Located>();
+/** Each repository's .gitattributes files, as its index last listed them: asked of before `git status` is (statusPrep). */
+const attributesSeen = new Map<string, string[]>();
+/** Repositories whose index refused `git status`'s list last time it was read (statusPrep). */
+const indexRefused = new Set<string>();
 
 /** Each repository's worktrees, listed again only once something that decides them changes (for every session in it). */
 const worktreeLists = new Map<string, WorktreeList>();
@@ -1705,8 +1714,13 @@ export class TurnSnapshots {
         if (!before) return undefined;
         // Most repositories' attributes are all in the top folder's file, where it's kept (and taken again below). Asked
         // before the index is read: where they store other bytes (git-lfs's), that read would only be thrown away.
+        // So are those its index listed last time (in folders below it too): where they store other bytes, `git status`
+        // would only be thrown away, every capture.
         const top = lstatSync(join(root, ".gitattributes"), { throwIfNoEntry: false }) ? [".gitattributes"] : [];
-        if (await this.converts(root, indexPath, top, deadline)) return undefined;
+        const known = [...new Set([...top, ...(attributesSeen.get(root) ?? [])])];
+        if (await this.converts(root, indexPath, known, deadline)) return undefined;
+        let indexDone = false;
+        const refusedLast = indexRefused.has(root);
         const index = (async (): Promise<IndexPrep | undefined> => {
             const scan = await scanIndexPaths(root, indexPath, this.algo === "sha1" ? 20 : 32, [], true, deadline).catch(() => undefined);
             if (!scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return undefined;
@@ -1717,11 +1731,23 @@ export class TurnSnapshots {
                 treesFound.add(scan.cacheRoot);
             }
             const attributes = scan.attributes ?? [];
+            if (attributesSeen.size >= 64 && !attributesSeen.has(root)) attributesSeen.delete(attributesSeen.keys().next().value!);
+            attributesSeen.set(root, attributes);
             if (await this.converts(root, indexPath, attributes, deadline)) return undefined;
             return { contentKey: scan.contentKey, cacheRoot: scan.cacheRoot, attributes };
         })();
-        index.catch(() => {});
-        return { before, index, ignoreKey: ignoreKeyOf(root, indexPath) };
+        index.then(
+            (ok) => {
+                indexDone = true;
+                indexRefused.delete(root);
+                if (!ok) {
+                    if (indexRefused.size >= 64) indexRefused.delete(indexRefused.values().next().value!);
+                    indexRefused.add(root);
+                }
+            },
+            () => (indexDone = true),
+        );
+        return { before, index, indexFirst: () => indexDone || refusedLast, ignoreKey: ignoreKeyOf(root, indexPath) };
     }
 
     /**
@@ -1742,6 +1768,10 @@ export class TurnSnapshots {
         const prep = await (prepared ?? this.statusPrep(indexPath, deadline));
         inTime();
         if (!prep || !w.healthy) return false;
+        // The index read while the watch was set up, where it has been by now or refused last time: what it says refuses,
+        // before git is started. (Otherwise side by side: the first capture in a repository whose attributes below its top
+        // store other bytes starts a `git status` that's thrown away.)
+        if (prep.indexFirst() && !(await prep.index)) return false;
         const guard = await statusGuard(root, this.algo, deadline);
         inTime();
         if (!guard) return false;
