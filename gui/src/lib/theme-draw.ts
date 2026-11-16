@@ -3,7 +3,7 @@
 
 import type { Layer, Motion } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
-import { poseAt, restPose, type Pose } from "./theme-motion";
+import { poseAt, restPose, type Pose } from "./theme-pose";
 
 export const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 

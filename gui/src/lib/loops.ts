@@ -8,7 +8,7 @@
 // Every endless animation's play state is var(--loops) or var(--decor) (test/perf-rules.test.ts): paused here by
 // attributes, and started again from its start when it can be seen again, never mid-motion. A theme's scene
 // (data-loop-keeps) is the exception: its layers drift in and out of the window as they move, so they aren't watched
-// for it, and they carry on from where they stopped, on the grid, rather than all jumping back to their start.
+// for it, and it puts them back on the grid itself, from where they stopped.
 
 import { electron } from "./platform";
 import { STEP_MS } from "./stream-clock";
@@ -18,33 +18,15 @@ let focused = true;
 
 const endless = (a: Animation): boolean => a.effect?.getComputedTiming().iterations === Infinity;
 
+/** A theme's scene: carries on from where it stopped (ThemeBackdrop.tsx), and moves in and out of view as it does. */
 const KEEPS = "[data-loop-keeps]";
-const keeps = (a: Animation): boolean => Boolean((a.effect as KeyframeEffect | null)?.target?.closest(KEEPS));
-
-/** The next step of the stream clock's grid. */
-function nextStep(): number | undefined {
-    const now = document.timeline.currentTime;
-    return typeof now === "number" ? Math.ceil(now / STEP_MS) * STEP_MS : undefined;
-}
 
 /** From their start, on the stream clock's grid: a light coming back crosses from the label's left edge. */
 function restart(anims: Animation[]) {
-    const at = nextStep();
-    if (at === undefined) return;
-    for (const a of anims) if (endless(a) && a.playState === "running") keeps(a) ? keepOn(a, at) : (a.startTime = at);
-}
-
-/** From where it stopped, put back on the grid: what it shows moves at most a step. */
-function keepOn(a: Animation, at: number) {
-    const t = a.currentTime;
-    if (typeof t === "number") a.startTime = at - Math.floor(t / STEP_MS) * STEP_MS;
-}
-
-/** Those of `anims` running again (a scene's, after nobody was at the window) carry on from where they stopped, on the grid. */
-export function carryOn(anims: Animation[]) {
-    const at = nextStep();
-    if (at === undefined) return;
-    for (const a of anims) if (endless(a) && a.playState === "running") keepOn(a, at);
+    const now = document.timeline.currentTime;
+    if (typeof now !== "number") return;
+    const at = Math.ceil(now / STEP_MS) * STEP_MS;
+    for (const a of anims) if (endless(a) && a.playState === "running" && !(a.effect as KeyframeEffect | null)?.target?.closest(KEEPS)) a.startTime = at;
 }
 
 function apply() {

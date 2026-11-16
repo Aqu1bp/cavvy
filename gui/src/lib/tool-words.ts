@@ -177,6 +177,16 @@ function actedOn(output: string | undefined): string | undefined {
  * Cavvy's other tools, however they were called (ServerAdd, or mcp__cavvy__server_add from an agent CLI): what each
  * does, what it's doing, and which of its arguments says on what. Never "Using cavvy": that says nothing.
  */
+/** ThemeList: all, a layer of one, one; ThemeSet: none, a theme saved, one shown. */
+const THEME_WORDS: [verb: string, running: string][] = [
+    ["List themes", "Listing themes"],
+    ["Read layer of", "Reading a layer of"],
+    ["Read theme", "Reading theme"],
+    ["Turn the theme off", "Turning the theme off"],
+    ["Save theme", "Saving theme"],
+    ["Show theme", "Showing theme"],
+];
+
 const CAVVY: Record<string, [verb: string, running: string, arg?: string]> = {
     ServerKey: ["Prepare server", "Preparing server", "name"],
     ServerAdd: ["Add server", "Adding server", "name"],
@@ -217,15 +227,12 @@ function ownWords(t: ToolBlock): Words | undefined {
             return { verb, running };
         }
         // Which theme, and what of it: a list, a theme read whole and its layers read one by one aren't one thing.
-        case "ThemeList": {
-            const id = s("id")?.trim();
-            if (!id) return { verb: "List themes", running: "Listing themes" };
-            return s("layer") ? { verb: "Read layer of", running: "Reading a layer of", arg: id } : { verb: "Read theme", running: "Reading theme", arg: id };
-        }
+        case "ThemeList":
         case "ThemeSet": {
             const id = s("id")?.trim();
-            if (id === "none") return { verb: "Turn the theme off", running: "Turning the theme off" };
-            return (i.theme !== undefined && i.theme !== null) || s("file") ? { verb: "Save theme", running: "Saving theme", arg: id } : { verb: "Show theme", running: "Showing theme", arg: id };
+            const off = kind === "ThemeSet" && id === "none";
+            const [verb, running] = THEME_WORDS[kind === "ThemeList" ? (!id ? 0 : s("layer") ? 1 : 2) : off ? 3 : i.theme != null || s("file") ? 4 : 5]!;
+            return { verb, running, arg: off ? undefined : id };
         }
         case "BrowserSnapshot":
             return { verb: "Read the page", running: "Reading the page" };

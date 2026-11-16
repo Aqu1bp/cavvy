@@ -4,6 +4,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // suite"), which opens into a card with a row per call, which opens into the
 // call's details.
 
+import { Dynamic } from "solid-js/web";
 import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
@@ -23,7 +24,7 @@ import {
     Hand,
     ListChecks,
     MessageCircleQuestion,
-    Palette,
+    Layers,
     Plug,
     Radar,
     Search,
@@ -107,15 +108,20 @@ export function groupBlocks(blocks: Block[]): Item[] {
 // ---------------------------------------------------------------------------
 // Icons and summaries (the words are lib/tool-words.ts's)
 
+/** Each of a kind of Cavvy's own tools (BrowserNavigate, SimulatorAct, ThemeSet), by its name's start. */
+const KIND_ICONS: [string, typeof Globe][] = [
+    ["Browser", Globe],
+    ["Simulator", Smartphone],
+    ["Theme", Layers],
+];
+
 export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
     const s = () => p.size ?? 15;
     const kind = () => toolKind(p.name);
     return (
         <Switch fallback={<Wrench size={s()} />}>
             <Match when={p.agent}><Bot size={s()} /></Match>
-            <Match when={kind().startsWith("Browser")}><Globe size={s()} /></Match>
-            <Match when={kind().startsWith("Simulator")}><Smartphone size={s()} /></Match>
-            <Match when={kind().startsWith("Theme")}><Palette size={s()} /></Match>
+            <Match when={KIND_ICONS.find(([k]) => kind().startsWith(k))}>{(hit) => <Dynamic component={hit()[1]} size={s()} />}</Match>
             <Match when={p.name === "Read"}><FileText size={s()} /></Match>
             <Match when={p.name === "Grep" || p.name === "Glob"}><Search size={s()} /></Match>
             <Match when={p.name === "LS"}><FolderTree size={s()} /></Match>

@@ -11,10 +11,9 @@ import type { Layer, Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
 import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette";
 import { parseHex, rgba } from "../../../src/themes/color";
-import { frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
+import { carryOn, frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { away } from "../lib/away";
-import { carryOn } from "../lib/loops";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
 import { drawnTheme, onScreen, sceneKey, sceneReady, shown, type Shown } from "../state/theme";
@@ -197,8 +196,22 @@ export function ThemeBackdrop(): JSX.Element {
     const upKey = () => upNow()?.key;
     const still = () => !prefs.themeMotion;
     const resting = away(() => !still() && Boolean(upNow()?.shown.look.layers?.some((l) => l.motion)));
-    // Back from away: on the grid again, from where each stopped (getAnimations brings the play state up to date).
-    createEffect(on(resting, (now, was) => was && !now && carryOn(root.getAnimations({ subtree: true })), { defer: true }));
+    // Running again, from away or as Cavvy's seen and focused again (lib/loops.ts): on the grid, from where each stopped.
+    // getAnimations brings the play state up to date first.
+    const again = () => carryOn(root.getAnimations({ subtree: true }));
+    createEffect(on(resting, (now, was) => was && !now && again(), { defer: true }));
+    onMount(() => {
+        const html = document.documentElement;
+        const gated = () => html.hasAttribute("data-decor-off");
+        let was = gated();
+        const watch = new MutationObserver(() => {
+            const now = gated();
+            if (was && !now) again();
+            was = now;
+        });
+        watch.observe(html, { attributeFilter: ["data-decor-off"] });
+        onCleanup(() => watch.disconnect());
+    });
     createEffect(() => {
         const s = shown();
         // A theme with no scene is drawn as soon as it's on <html>.

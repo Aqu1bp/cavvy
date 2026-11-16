@@ -94,7 +94,7 @@ export const PREF_DEFAULTS: Prefs = {
     themeMotion: true,
 };
 
-/** A theme's id (src/themes/format.ts ID): theme-boot.js checks the same. */
+/** A theme's id (src/themes/format.ts ID). */
 const THEME_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const SCHEMES: readonly string[] = ["system", "light", "dark"];
 const GLASSES: readonly string[] = ["glass", "tinted", "solid"];
@@ -126,7 +126,6 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     if (!TINTS.includes(out.tint as string)) delete out.tint;
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
     if ("themeId" in out && !(typeof out.themeId === "string" && THEME_ID.test(out.themeId))) delete out.themeId;
-    if ("themeMotion" in out && typeof out.themeMotion !== "boolean") delete out.themeMotion;
     // Folded projects: a list of paths, or the default (none).
     if ("collapsedProjects" in out && !(Array.isArray(out.collapsedProjects) && out.collapsedProjects.every((c) => typeof c === "string"))) delete out.collapsedProjects;
     if ("foldedDays" in out && !(Array.isArray(out.foldedDays) && out.foldedDays.every((d) => DAYS.includes(d as DayLabel)))) delete out.foldedDays;

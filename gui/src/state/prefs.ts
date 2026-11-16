@@ -32,19 +32,16 @@ media?.addEventListener("change", (e) => setSystemDark(e.matches));
 /** `n` px at text size 14, at the text size showing: what calc(n * var(--sp)) is in CSS (tokens.css). */
 export const sp = (n: number) => scaled(n, prefs.fontSize);
 
-/** The one scheme the theme showing is made for (state/theme.ts): the window follows it while it shows. theme-boot.js puts it on <html> before the first paint. */
-const bootForced = () => {
-    // Read where there's a page: the state's also loaded without one (tests, the terminal's shared code).
-    const v = typeof document === "undefined" ? undefined : document.documentElement?.dataset?.themeOnly;
-    return v === "light" || v === "dark" ? v : undefined;
-};
-export const [forcedScheme, setForcedScheme] = createSignal<"light" | "dark" | undefined>(bootForced());
+/**
+ * The one scheme the theme showing is made for (state/theme.ts): the window follows it while it shows. theme-boot.js
+ * puts it on <html> before the first paint, only ever "light" or "dark". (The state's also loaded without a page: tests,
+ * the terminal's shared code.)
+ */
+export const [forcedScheme, setForcedScheme] = createSignal(globalThis.document?.documentElement.dataset.themeOnly as "light" | "dark" | undefined);
 
 /** The scheme of the theme on screen, while one is (state/theme.ts): the window turns light or dark with its crossfade, not before. */
 export const [heldScheme, setHeldScheme] = createSignal<"light" | "dark" | undefined>(undefined);
 
-/** What Settings needs to know of the theme showing (state/theme.ts sets it): kept here so Settings doesn't load the theme code. */
-export const [themeTraits, setThemeTraits] = createSignal<{ name: string; scened: boolean; accent: boolean } | undefined>(undefined);
 
 /** The scheme the window's own setting asks for, whatever a theme makes it. */
 export function chosenScheme(): "light" | "dark" {

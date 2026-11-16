@@ -3,22 +3,41 @@
 // an agent for a new one.
 
 import { createMemo, createSignal, For, onMount, Show, type JSX } from "solid-js";
-import { Moon, Plus, Sun, X } from "lucide-solid";
+import { Moon, Plus, Sun } from "lucide-solid";
 import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
-import { refreshThemes, reportError, rpc, toast } from "../state/app";
+import { reportError, rpc, toast } from "../state/app";
+import { refreshThemes } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
 import { applyTheme, builtinTheme, keptTheme, loadAllBuiltins, themeName, userThemes } from "../state/theme";
-import { setHomeDraft, setSettingsTab } from "../state/ui";
+import { setSettingsTab } from "../state/ui";
 import { svgUrl } from "../lib/theme-draw";
 import { machine } from "../lib/platform";
 import "../styles/theme-gallery.css";
 
 /** What Make one puts in a new session's composer. */
 const ASK = "Make me a Cavvy theme: ";
+
+/**
+ * Puts ASK in Home's composer as if it were typed there, after anything already typed, with the caret after it. Home
+ * shows a frame or so after newSession.
+ */
+function askAtHome(tries = 0) {
+    const ta = document.querySelector<HTMLTextAreaElement>('.composer.v-home textarea[aria-label="Message"]');
+    if (!ta) return void (tries < 60 && requestAnimationFrame(() => askAtHome(tries + 1)));
+    const end = ta.value.trimEnd().length;
+    const text = (end ? "\n" : "") + ASK;
+    ta.focus();
+    ta.setSelectionRange(end, ta.value.length);
+    // Typed, so the composer takes it as its own (and Undo undoes it); where that's not offered, put in and told.
+    if (!document.execCommand?.("insertText", false, text)) {
+        ta.setRangeText(text, end, ta.value.length, "end");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+}
 
 let serial = 0;
 
@@ -107,7 +126,10 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
             </button>
             <Show when={p.onDelete}>
                 <button class="tg-del" aria-label={`Delete ${p.name}`} title="Delete" onClick={() => p.onDelete?.()}>
-                    <X size={11} />
+                    {/* Lucide's X, drawn here: the icon from lucide-solid would be a chunk of its own that the window's first load fetches. */}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
                 </button>
             </Show>
         </div>
@@ -157,7 +179,7 @@ export function ThemeGallery(): JSX.Element {
                             onClick={() => {
                                 setSettingsTab(undefined);
                                 newSession();
-                                setHomeDraft(ASK);
+                                requestAnimationFrame(() => askAtHome());
                             }}
                         >
                             <span class="tg-pv">

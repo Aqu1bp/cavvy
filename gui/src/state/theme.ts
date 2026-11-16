@@ -8,7 +8,8 @@ import type { ThemeEntry } from "@shared/protocol";
 import { builtin, BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette, type Palette } from "../../../src/themes/palette";
-import { chosenScheme, prefs, setForcedScheme, setHeldScheme, setPrefs, setThemeTraits } from "./prefs";
+import { chosenScheme, prefs, setForcedScheme, setHeldScheme, setPrefs } from "./prefs";
+import { setThemeTraits } from "./theme-traits";
 import { machine } from "../lib/platform";
 
 const CACHE = "cavvy.theme";

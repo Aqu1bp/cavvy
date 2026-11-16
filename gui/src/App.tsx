@@ -3,7 +3,7 @@ import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, themeEvents, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -11,7 +11,7 @@ import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./li
 import { installWindowDrag } from "./lib/window-drag";
 
 /** Loaded with the first theme chosen: a window with none carries none of it. */
-const ThemeBackdrop = lazy(() => import("./components/ThemeBackdrop").then((m) => ({ default: m.ThemeBackdrop })));
+const ThemeBackdrop = lazy(themeEvents);
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
@@ -559,9 +559,7 @@ export function App() {
             data-settings={settingsTab() ? "on" : "off"}
         >
             {/* A theme's scene, behind everything: loaded only once a theme is chosen, and kept so the last one fades out when it's turned off. */}
-            <Show when={sceneWanted()}>
-                <ThemeBackdrop />
-            </Show>
+            {sceneWanted() && <ThemeBackdrop />}
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
                     {/* The window's edges move it, under the rail and the sheet (and so does its whole top strip: lib/window-drag.ts). */}

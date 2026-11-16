@@ -5,13 +5,12 @@
 import { batch, createEffect, createRoot, createSignal, untrack } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { ThemeEntry, ThemeReplaced, ThemeReport } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
-import { activeTheme, prefs, setPrefs } from "./prefs";
+import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
@@ -1301,49 +1300,8 @@ function recheckUpdate() {
     rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
 }
 
-/** An agent showed a theme (or none): shown here, and how it came out told back to it. */
-async function themeApplied(id: string | null, entry: ThemeEntry | undefined, request: string, replaced?: ThemeReplaced) {
-    const m = await import("./theme");
-    // An agent saved over one of the user's themes: the old one comes back with Undo.
-    if (id && replaced)
-        toast(`Replaced ${replaced.name}`, "info", {
-            label: "Undo",
-            run: () => void rpc.call("themes.restore", { id, text: replaced.text, replace: true }).then(() => refreshThemes()).catch(reportError),
-        });
-    if (entry) m.addThemeEntry(entry);
-    // One of the user's own, shown by id in a window that hasn't had the list yet: the list first, or it can't show.
-    else if (id && !m.listKnown()) await refreshThemes().catch(() => undefined);
-    m.applyTheme(id ?? undefined);
-    const still = !prefs.themeMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const drawn = id ? await m.whenDrawn(id) : undefined;
-    // Made after the crossfade: it draws on the main thread, and during it would hold the fade up (measured: 244 ms).
-    if (drawn) await m.afterFade();
-    // A picture of it for the agent, made only now that one has asked.
-    const s = m.shown();
-    const picture = drawn && s ? await import("../lib/theme-picture").then((p) => p.themePicture(s.look, s.palette.vars, drawn.map)).catch(() => undefined) : undefined;
-    const report: ThemeReport = id ? (drawn ? { request, shown: true, scheme: drawn.scheme, ...(drawn.veil !== undefined ? { veil: drawn.veil } : {}), ...(drawn.veilMost !== undefined ? { veilMost: drawn.veilMost } : {}), failed: drawn.failed, still, ...(picture ? { picture } : {}) } : { request, shown: false }) : { request, shown: true };
-    await rpc.call("themes.report", report).catch(() => undefined);
-}
-
-/** Settings → Appearance, scrolled to a theme's tile: the gallery mounts a moment after the tab opens. */
-function showThemeTile(id: string) {
-    setSettingsTab("appearance");
-    let tries = 0;
-    const find = () => {
-        const tile = document.querySelector<HTMLElement>(`.tg-tile[data-id="${CSS.escape(id)}"]`);
-        if (tile) tile.scrollIntoView({ block: "center" });
-        else if (++tries < 60) requestAnimationFrame(find);
-    };
-    requestAnimationFrame(find);
-}
-
-/** The user's themes, from the server: read when a window connects, kept up to date by themes.changed. */
-export async function refreshThemes() {
-    const m = await import("./theme");
-    // A window on a server: this device's own theme, not the server's list (themes are per device).
-    if (machine) return void m.setThemeEntries(m.localThemes());
-    m.setThemeEntries(await rpc.call("themes.list", {}));
-}
+/** What the server says about themes is handled there, loaded with the first of it or the first theme shown (App.tsx). */
+export const themeEvents = () => import("./theme-events");
 
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
@@ -1549,16 +1507,8 @@ function onEvent(ev: ServerEvent) {
             keybindingsChanged(ev.keybindings);
             return;
         case "themes.changed":
-            // A server's own themes: a window on it shows this device's (refreshThemes).
-            if (machine) return;
-            void import("./theme").then((m) => {
-                const { problem, id } = m.setThemeEntries(ev.themes);
-                // What's wrong is on its tile in Settings → Appearance; the window keeps its last good look meanwhile.
-                if (problem && id) toast(`${m.themeName(id)} has an error`, "warn", { label: "Show", run: () => showThemeTile(id) });
-            });
-            return;
         case "theme.apply":
-            void themeApplied(ev.id, ev.entry, ev.request, ev.replaced);
+            void themeEvents().then((m) => m.onThemeEvent(ev));
             return;
         case "app.update":
             setApp("update", reconcile(ev.info));
@@ -1652,14 +1602,6 @@ export function start() {
         shownNow();
         if (app.conn === "open") tellShown();
     }));
-    // And which theme it shows, so an agent asked to change "this theme" knows which (ThemeList). A window on a
-    // server has no theme tools there.
-    if (!machine)
-        createRoot(() => createEffect(() => {
-            const id = prefs.themeId ?? null;
-            const scheme = activeTheme();
-            if (app.conn === "open") void rpc.call("themes.showing", { id, scheme }).catch(() => undefined);
-        }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
         batch(() => {
@@ -1681,7 +1623,7 @@ export function start() {
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
-                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined), (prefs.themeId ? refreshThemes() : Promise.resolve()).catch(() => undefined)]);
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined), prefs.themeId && themeEvents().then((m) => m.refreshThemes(), () => undefined)]);
                 // The models are asked for with the lists (the composer names its model from them, offers its efforts,
                 // and a pick brought from another machine is checked against them), but after them, and not waited
                 // for: the machine answers in the order it's asked, and the first screen waits for the lists (asked

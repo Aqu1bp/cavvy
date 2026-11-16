@@ -43,13 +43,13 @@
     // The theme showing (state/theme.ts keeps its palette here as it last applied it): its colours from the first
     // paint, and the one scheme it's made for, which the window follows.
     var look;
-    if (typeof m.themeId === "string" && /^[a-z0-9][a-z0-9-]{0,47}$/.test(m.themeId)) {
+    if (typeof m.themeId === "string") {
         try {
             look = JSON.parse(localStorage.getItem("cavvy.theme") || "null");
         } catch (e) {
             look = undefined;
         }
-        if (!look || typeof look !== "object" || look.id !== m.themeId || !look.vars || typeof look.vars !== "object") look = undefined;
+        if (!look || typeof look !== "object" || look.id !== m.themeId) look = undefined;
     }
 
     var d = document.documentElement;
@@ -68,9 +68,10 @@
     d.style.setProperty("--sidebar-w", p.sidebarWidth + "px");
     d.style.setProperty("--review-w", p.reviewWidth + "px");
     d.style.setProperty("--column-w", "calc(" + (COLUMNS[p.chatWidth] || COLUMNS["default"]) + " * var(--sp))");
-    var vars = look && look.vars[theme];
+    var vars = look && look.vars && look.vars[theme];
     if (vars && typeof vars === "object") {
-        for (var name in vars) if (Object.prototype.hasOwnProperty.call(vars, name) && /^--[a-z0-9-]+$/.test(name) && typeof vars[name] === "string") d.style.setProperty(name, vars[name]);
+        // Only custom properties: a cache written by hand can't set the window's own.
+        for (var name in vars) if (/^--[a-z0-9-]+$/.test(name) && typeof vars[name] === "string") d.style.setProperty(name, vars[name]);
         d.dataset.themed = look.scened ? "scene" : "colors";
         if (only) d.dataset.themeOnly = only;
     }

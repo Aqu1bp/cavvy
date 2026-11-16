@@ -10,7 +10,8 @@ import { reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, themeTraits, type AccentId } from "../state/prefs";
+import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, type AccentId } from "../state/prefs";
+import { themeTraits } from "../state/theme-traits";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
 const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));

@@ -62,8 +62,6 @@ export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 export const [review, setReview] = createSignal<{ path?: string; token?: string; scope?: ReviewScope; turnId?: number; worktree?: string } | undefined>();
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
-/** Text for Home's composer to take as it shows (Settings → Theme's "Make one"). */
-export const [homeDraft, setHomeDraft] = createSignal<string>();
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
 
 /**
