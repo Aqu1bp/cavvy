@@ -951,6 +951,9 @@ export class Session {
         const cp = readCheckpoint(file);
         let meta: SessionMeta | undefined = cp?.state.meta;
         const lines: Line[] = [];
+        // Each message line's length: what a checkpoint would hold of it, about.
+        const lineSizes = new WeakMap<Line, number>();
+        const kept = new WeakMap<Message, number>();
         let empty = !cp;
         // A line at a time (lib eachLine): a session of any size, never all of it as one string.
         const { endsWithNewline, end } = eachLine(file, (raw) => {
@@ -959,6 +962,7 @@ export class Session {
             // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
             if (raw.startsWith(MSG_LINE)) {
                 lines.push(lazyMessage(raw));
+                lineSizes.set(lines[lines.length - 1]!, raw.length);
                 return;
             }
             try {
@@ -1008,7 +1012,10 @@ export class Session {
             if (i < lastCompact && CLEARED_BY_COMPACT.has(l.t)) continue;
             if (l.t === "msg") {
                 const m = l.m as Message | undefined;
-                if (m) s.messages.push(m);
+                if (m) {
+                    s.messages.push(m);
+                    kept.set(m, lineSizes.get(l) ?? 0);
+                }
             }
             else if (l.t === "compact") {
                 s.segments++;
@@ -1083,7 +1090,9 @@ export class Session {
         }
         // Read far past where it was read from before (or all of it): from here, next time. As it is now, read: what
         // happens to it from here (a repair below) is written to it, and read from it next time.
-        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState());
+        // Not where its messages alone are more than it would be kept at: a session never compacted (a Claude Code one's)
+        // has all of them, and making that checkpoint to throw it away was 18 ms of opening one of 100,000 items.
+        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after && s.messages.reduce((n, m) => n + (kept.get(m) ?? 0), 0) * 0.9 <= end * checkpointing.most) writeCheckpoint(file, end, s.toState());
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
