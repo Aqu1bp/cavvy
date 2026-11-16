@@ -885,6 +885,72 @@ try {
     assert.equal(turn("turn-399"), undefined, "those far below go in after");
     for (let i = 0; i < 4; i++) settle();
     assert.ok(articles().length > 40, "and they do");
+    // Each from a fresh session read 9 pages up (turn-0 to turn-119 drawn, those below held back).
+    const readUp = (id: string) => {
+        dispose();
+        const h = { id, view: { state: {}, get turns() { return manyTurns(); } } };
+        dispose = mount(h);
+        for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+        assert.equal(articles().length, 120);
+        return h;
+    };
+    // Find showing a turn among those held: a page around it, and not the pages read up through put back above it.
+    readUp("held-find");
+    findProps.show("turn-300");
+    settle(); settle();
+    assert.ok(turn("turn-300"), "the turn found is drawn");
+    assert.ok(articles().length <= 120, `a jump into the turns held below draws no more than three pages (${articles().length})`);
+    assert.equal(turn("turn-100"), undefined, "the pages read up through aren't put back above it");
+    for (let i = 0; i < 20 && lastDrawn() < 399; i++) downToLast();
+    assert.equal(lastDrawn(), 399, "read down from it, the end comes");
+    assert.ok(articles().length <= 160, `and no more than four pages are drawn (${articles().length})`);
+    // Just below what's drawn: no more than a page goes in at once.
+    readUp("held-near");
+    findProps.show("turn-150");
+    assert.ok(articles().length <= 120 + 41, `a turn just below what's drawn puts in no more than a page at once (${articles().length})`);
+    settle();
+    assert.ok(turn("turn-150"), "the turn found is drawn");
+    // The place read stays where it is as the page below it goes in.
+    readUp("held-read");
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    const readTurn = articles().at(-1)!.props["data-turn"], readTop = turn(readTurn).getBoundingClientRect().top;
+    settle();
+    assert.equal(turn(readTurn).getBoundingClientRect().top, readTop, "the turn read doesn't move as the page below it goes in");
+    // End, or ⌘↓, goes to the end, as before turns were held below, not a page more each time.
+    readUp("held-end");
+    scroller().props.onKeyDown({ key: "End" });
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "End shows the last turn");
+    assert.ok(articles().length <= 40, `and only the end's page (${articles().length})`);
+    assert.equal(button("jump"), undefined, "following the end");
+    readUp("held-cmd-down");
+    scroller().props.onKeyDown({ key: "ArrowDown", metaKey: true });
+    settle();
+    assert.ok(turn("turn-399"), "⌘↓ too");
+    // The scrollbar dragged to the bottom, too; a drag of the conversation itself (a finger) only reads on.
+    readUp("held-bar");
+    scroller().props.onPointerDown({ target: scroller() });
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    pointerUp();
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "the scrollbar dragged to the bottom shows the last turn");
+    readUp("held-drag");
+    scroller().props.onPointerDown({ target: turn("turn-60") });
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    pointerUp();
+    settle();
+    assert.equal(lastDrawn(), 159, "the conversation dragged to the bottom reads on a page");
+    // Reopened read up, then Latest: only the end's page goes in, not every page from the place read down to the end.
+    const reopened = readUp("held-reopen");
+    scroll(20000);
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(reopened);
+    settle(); settle();
+    button("jump").props.onClick();
+    assert.ok(turn("turn-399"), "Latest shows the last turn");
+    assert.ok(articles().length <= 40 + 40, `Latest after a reopen puts in the end's page, not the turns down to it (${articles().length})`);
+    settle(); scroller().props.onScroll();
+    assert.ok(articles().length <= 40, `and only the end's page stays (${articles().length})`);
     setFindShown(false);
     dispose();
 
