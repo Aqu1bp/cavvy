@@ -458,15 +458,21 @@ function letGo(h: SessionHandle) {
 }
 
 /**
- * Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed
- * back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to be shown (not yet the one in view):
- * with the others all working or waiting on the user, it was the one closed, and what was typed into it went nowhere.
+ * Few sessions stay subscribed; the rest are closed (the server keeps running them). Those working or waiting on the
+ * user stay, and aren't counted: KEEP_OPEN is of the others. Counted, twelve waiting on plans had every other session
+ * closed, the one just left too, each opened afresh on the way back (another machine's: 119-137 ms, against 14-19).
+ * Not one holding a message handed back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to
+ * be shown (not yet the one in view): with the others all working or waiting on the user, it was the one closed, and
+ * what was typed into it went nowhere.
  */
 function trim(opened: string) {
-    if (handles.size <= KEEP_OPEN) return;
+    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined;
+    let idle = 0;
+    for (const h of handles.values()) if (!kept(h)) idle++;
+    if (idle <= KEEP_OPEN) return;
     const shown = onScreen.beside();
-    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
-    for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
+    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !kept(h)).sort((a, b) => a.lastUsed - b.lastUsed);
+    for (const h of old.slice(0, idle - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
     }
