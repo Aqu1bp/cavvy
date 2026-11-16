@@ -10,7 +10,7 @@ const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter
 for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
+const { TurnSnapshots, statusGuard } = await import("../src/agent/turn-snapshots");
 const { pruneFileHistory, HISTORY_MAX_AGE_MS, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { paths } = await import("../src/config/paths");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -463,6 +463,145 @@ describe("per-turn snapshots", () => {
         } finally {
             process.env.GIT_CONFIG_GLOBAL = "/dev/null";
         }
+    });
+
+    // git-lfs's, set in the user's config by `git lfs install`, in a repository that doesn't use it.
+    test("a big repository's first capture is taken with git status where a filter is defined but no attribute names it, and runs none", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        const user = join(dirname(cwd), "gitconfig"), marker = join(dirname(cwd), "filter-ran");
+        git(cwd, ["config", "--file", user, "filter.lfs.clean", `touch '${marker}'; cat`]);
+        git(cwd, ["config", "--file", user, "filter.lfs.process", `touch '${marker}'; exit 1`]);
+        git(cwd, ["config", "--file", user, "filter.lfs.required", "true"]);
+        process.env.GIT_CONFIG_GLOBAL = user;
+        try {
+            write(cwd, "a.txt", "a, before the turn\n");
+            utimesSync(join(cwd, "b.txt"), new Date(), new Date(Date.now() + 5000));
+            const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+            await snapshots.begin(1, "Edit a file");
+            expect(snapshots.statusCount).toBe(1);
+            write(cwd, "a.txt", "a, after the turn\n");
+            await snapshots.end();
+            expect(existsSync(marker)).toBe(false);
+            const turn = snapshots.list()[0]!;
+            expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+            await snapshots.stop();
+        } finally {
+            process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+        }
+    });
+
+    /**
+     * A repository whose config would run programs (a filter, fsmonitor, hooks, and in `include` an included file in the
+     * folder that defines more), the user's config a filter too (git-lfs's, say), and attributes that name them all.
+     * Each program, run, leaves a file in `ran`. Every git started is logged in `calls`.
+     */
+    function hostile(o: { attributes: "top, tracked" | "a folder's, untracked"; include: "none" | "include.path" | "includeIf" }) {
+        const files: Record<string, string> = { "a.txt": "a\n", "sub/b.r": "b\n", "sub/c.l": "c\n", "sub/d.i": "d\n" };
+        const rules = "*.r filter=repo\n*.l filter=lfs\n*.i filter=inc\n";
+        if (o.attributes === "top, tracked") files[".gitattributes"] = rules;
+        const { cwd, dir } = setup(files);
+        if (o.attributes !== "top, tracked") write(cwd, "sub/.gitattributes", rules);
+        const ran = join(dirname(cwd), "ran"), bin = join(dirname(cwd), "bin"), log = join(dirname(cwd), "git-calls");
+        mkdirSync(ran);
+        mkdirSync(bin);
+        writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o755 });
+        const program = (name: string) => {
+            const path = join(cwd, "hooks", name);
+            write(cwd, `hooks/${name}`, `#!/bin/sh\ntouch '${join(ran, name)}'\ncat\n`);
+            chmodSync(path, 0o755);
+            return path;
+        };
+        for (const hook of ["pre-commit", "post-commit", "post-checkout", "post-index-change", "reference-transaction", "pre-auto-gc", "post-rewrite", "fsmonitor-watchman"]) program(hook);
+        const config = join(cwd, ".git/config"), user = join(dirname(cwd), "gitconfig");
+        git(cwd, ["config", "filter.repo.clean", program("repo-clean")]);
+        git(cwd, ["config", "filter.repo.process", program("repo-process")]);
+        git(cwd, ["config", "filter.repo.required", "true"]);
+        git(cwd, ["config", "core.fsmonitor", program("fsmonitor")]);
+        git(cwd, ["config", "core.hooksPath", join(cwd, "hooks")]);
+        git(cwd, ["config", "--file", user, "filter.lfs.clean", program("lfs-clean")]);
+        git(cwd, ["config", "--file", user, "filter.lfs.process", program("lfs-process")]);
+        git(cwd, ["config", "--file", user, "filter.lfs.required", "true"]);
+        // In the folder, where an agent can rewrite it: relative to the config that includes it.
+        write(cwd, "included.cfg", `[filter "inc"]\n\tclean = ${program("inc-clean")}\n\tprocess = ${program("inc-process")}\n[core]\n\tfsmonitor = ${program("inc-fsmonitor")}\n`);
+        if (o.include === "include.path") git(cwd, ["config", "--file", config, "include.path", "../included.cfg"]);
+        if (o.include === "includeIf") git(cwd, ["config", "--file", config, "includeIf.gitdir:**.path", "../included.cfg"]);
+        // Git compares these by content: their stat no longer matches what the index recorded.
+        for (const path of ["sub/b.r", "sub/c.l", "sub/d.i"]) utimesSync(join(cwd, path), new Date(), new Date(Date.now() + 5000));
+        return { cwd, dir, user, bin, ran: () => readdirSync(ran), calls: () => (existsSync(log) ? readFileSync(log, "utf-8") : "") };
+    }
+
+    for (const attributes of ["top, tracked", "a folder's, untracked"] as const) for (const include of ["none", "include.path", "includeIf"] as const) test(`no program a repository's config names runs for a big repository's capture (attributes ${attributes}, include ${include}), and it sees the turn's changes`, async () => {
+        const h = hostile({ attributes, include });
+        const path = process.env.PATH;
+        process.env.PATH = `${h.bin}:${path}`;
+        process.env.GIT_CONFIG_GLOBAL = h.user;
+        const snapshots = new TurnSnapshots(h.dir, h.cwd, { statusFromEntries: 0 });
+        try {
+            write(h.cwd, "a.txt", "a, before the turn\n");
+            await snapshots.begin(1, "Edit a file");
+            write(h.cwd, "a.txt", "a, after the turn\n");
+            await snapshots.end();
+            expect(h.ran()).toEqual([]);
+            // Asked only where neither the attributes git status was to compare by nor an include stood in the way.
+            const asked = / status /.test(h.calls());
+            expect(asked).toBe(attributes !== "top, tracked" && include === "none");
+            const turn = snapshots.list()[0]!;
+            expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+            const shown = await snapshots.changes({ scope: "last-turn" });
+            expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+        } finally {
+            await snapshots.stop();
+            process.env.PATH = path;
+            process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+        }
+        expect(h.ran()).toEqual([]);
+    });
+
+    test("statusGuard keeps git status from running a filter by each of its guards alone, and refuses what it can't keep", async () => {
+        const h = hostile({ attributes: "a folder's, untracked", include: "none" });
+        const deadline = () => Date.now() + 10_000;
+        const status = (args: string[], env: Record<string, string>) => {
+            const base = gitEnv();
+            for (const k of Object.keys(base)) if (k.startsWith("GIT_")) delete base[k];
+            return Bun.spawnSync(gitArgv([...args, "--no-optional-locks", "status", "--porcelain=v2", "-z"]), { cwd: h.cwd, env: { ...base, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: h.user, ...env }, stdout: "pipe", stderr: "pipe" });
+        };
+        // The test itself: unguarded, git status runs them.
+        status([], {});
+        expect(h.ran().length).toBeGreaterThan(0);
+        for (const name of h.ran()) rmSync(join(dirname(h.cwd), "ran", name));
+        process.env.GIT_CONFIG_GLOBAL = h.user;
+        try {
+            const guard = (await statusGuard(h.cwd, "sha1", deadline()))!;
+            expect(guard).toBeDefined();
+            // The config's settings alone, attributes read from the folder.
+            const byConfig = status(guard.args, {});
+            expect([byConfig.exitCode, byConfig.stderr.toString(), h.ran()]).toEqual([0, "", []]);
+            // The attributes' source alone, the filters as configured (Git 2.41 and later).
+            const version = /(\d+)\.(\d+)/.exec(git(h.cwd, ["--version"]).toString())!;
+            if (Number(version[1]) * 100 + Number(version[2]) >= 241) {
+                const byAttributes = status([], guard.env);
+                expect([byAttributes.exitCode, byAttributes.stderr.toString(), h.ran()]).toEqual([0, "", []]);
+            }
+            // Both, as a capture runs it.
+            const both = status(guard.args, guard.env);
+            expect([both.exitCode, h.ran()]).toEqual([0, []]);
+            // A filter spelled with another case is another filter: each is undone as it's spelled.
+            git(h.cwd, ["config", "filter.Repo.clean", join(h.cwd, "hooks/repo-clean")]);
+            write(h.cwd, "sub/.gitattributes", "*.r filter=Repo\n*.l filter=lfs\n");
+            const spelled = status((await statusGuard(h.cwd, "sha1", deadline()))!.args, {});
+            expect([spelled.exitCode, h.ran()]).toEqual([0, []]);
+            // An include in the repository's config, or a filter the command's config defines: refused.
+            git(h.cwd, ["config", "include.path", "../included.cfg"]);
+            expect(await statusGuard(h.cwd, "sha1", deadline())).toBeUndefined();
+            git(h.cwd, ["config", "--unset", "include.path"]);
+            expect(await statusGuard(h.cwd, "sha1", deadline())).toBeDefined();
+            Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "filter.cmd.clean", GIT_CONFIG_VALUE_0: "cat" });
+            expect(await statusGuard(h.cwd, "sha1", deadline())).toBeUndefined();
+        } finally {
+            for (const key of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) delete process.env[key];
+            process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+        }
+        expect(h.ran()).toEqual([]);
     });
 
     test("a big repository's first capture reads Git's own files while the folder's watch is set up, and lists none of the folder's till it's up", async () => {
