@@ -2692,7 +2692,7 @@ export class Engine {
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
                 // The turns asked for are earlier ones: there, once a first open has built them (Runtime.allTurns).
                 await rt.allTurns();
-                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true });
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true, upTo: typeof p.upTo === "number" && p.upTo > 0 ? Math.min(Math.floor(p.upTo), 1000) : undefined, after: typeof p.after === "string" ? p.after : undefined });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
             }

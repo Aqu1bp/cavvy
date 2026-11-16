@@ -13,6 +13,11 @@ export interface SessionView {
     earlier?: number;
     /** In a window: sub-agents it hasn't been sent (SessionSnapshot.agentsMore). */
     agentsMore?: AgentsMore;
+    /**
+     * In a window: turns it hasn't been sent after the turn `after` (one of `turns`), before the next it has. A page
+     * fetched around a turn far up (a jump to it), not every turn down to those it had (SessionTurnsPage.skipped).
+     */
+    gap?: { after: string; count: number };
 }
 
 /** A sub-agent's activity keeps this many blocks (the rest are counted in `dropped`). */
@@ -143,6 +148,7 @@ export function applyOp(view: SessionView, op: SessionOp): void {
         }
         case "reset":
             view.turns = op.turns;
+            if (view.gap) view.gap = undefined;
             if (view.earlier || op.earlier) view.earlier = op.earlier ?? 0;
             if (op.agents) view.agents = op.agents;
             if (op.agents && (view.agentsMore || op.agentsMore)) view.agentsMore = op.agentsMore;

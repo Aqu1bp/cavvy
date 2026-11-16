@@ -43,6 +43,15 @@ test("earlier turns come as a page before a turn, back to a message's, or all; w
     expect(rt.turnsBefore("t7", { count: 2, through: { seg: 0, index: 5 } })!.turns[0]!.id).toBe("t2");
     expect(rt.turnsBefore("t7", { all: true })!).toMatchObject({ earlier: 0 });
     expect(rt.turnsBefore("t7", { all: true })!.turns).toHaveLength(7);
+    // Back to a message far up, a page from there (`upTo`), the rest before t7 skipped; the next page after it.
+    expect(rt.turnsBefore("t7", { count: 1, through: { seg: 0, index: 1 }, upTo: 2 })).toMatchObject({ earlier: 0, skipped: 5 });
+    expect(rt.turnsBefore("t7", { count: 1, through: { seg: 0, index: 1 }, upTo: 2 })!.turns.map((t) => t.id)).toEqual(["t0", "t1"]);
+    const next = rt.turnsBefore("t7", { after: "t1", count: 3 })!;
+    expect(next.turns.map((t) => t.id)).toEqual(["t2", "t3", "t4"]);
+    expect(next).toMatchObject({ earlier: 2, skipped: 2 });
+    expect(rt.turnsBefore("t7", { after: "t4", count: 9 })).toMatchObject({ skipped: 0 });
+    // After a turn that isn't before it: nothing.
+    expect(rt.turnsBefore("t3", { after: "t5" })).toBeUndefined();
     // A turn the view doesn't have (replaced by a rewind): nothing, rather than turns from elsewhere.
     expect(rt.turnsBefore("gone", {})).toBeUndefined();
     // Copies: what the window does with them doesn't touch the server's.

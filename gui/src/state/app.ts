@@ -569,11 +569,13 @@ function openAhead() {
  * the turn holding message `through`, or `all` of them. False when they couldn't be had (the session's turns were
  * replaced meanwhile, as by a rewind: then it has them all already) or the server didn't answer.
  */
-export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean } = {}): Promise<boolean> {
+export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean; upTo?: number } = {}): Promise<boolean> {
     const going = loadingEarlier.get(h.id);
     // One at a time: the next asks from where that one left off.
     const run = (going ?? Promise.resolve(true)).then(async () => {
         if (!h.view.earlier) return true;
+        // A page far up asked for while one is here already (with its gap): that one goes back into the gap first.
+        if (how.upTo !== undefined && h.view.gap) dropPage(h);
         const first = h.view.turns[0]?.id;
         if (!first) return false;
         const page = await rpc.call("session.turns", { id: h.id, before: first, fold: !prefs.expandActivity, ...how });
@@ -583,6 +585,7 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
         batch(() => h.set(produce((v) => {
             v.turns.unshift(...page.turns);
             v.earlier = page.earlier;
+            if (page.skipped && page.turns.length) v.gap = { after: page.turns.at(-1)!.id, count: page.skipped };
             // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial), or only
             // counted them (agentsMore).
             for (const a of page.agents ?? []) {
@@ -604,6 +607,57 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
     return settled;
 }
 
+/** The page before a gap let go of: its turns are the gap's (earlier than them, `earlier`'s), and no gap is left. */
+function dropPage(h: SessionHandle) {
+    const gap = h.view.gap;
+    if (!gap) return;
+    const at = h.view.turns.findIndex((t) => t.id === gap.after);
+    batch(() => h.set(produce((v) => {
+        v.turns.splice(0, at + 1);
+        v.earlier = (v.earlier ?? 0) + at + 1 + gap.count;
+        v.gap = undefined;
+    })));
+}
+
+/** The gap's next page (those after the page fetched far up), in one request: false when it couldn't be had. */
+const fillingGap = new Map<string, Promise<boolean>>();
+/** `put`: told, in the same update, how many turns went in (a view counting what it shows from the end shows them too). */
+export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void): Promise<boolean> {
+    const going = fillingGap.get(h.id);
+    if (going) return going;
+    const run = (async () => {
+        const gap = h.view.gap;
+        if (!gap) return true;
+        const at = h.view.turns.findIndex((t) => t.id === gap.after);
+        const next = h.view.turns[at + 1]?.id;
+        if (at < 0 || !next) return false;
+        const page = await rpc.call("session.turns", { id: h.id, before: next, after: gap.after, count, fold: !prefs.expandActivity });
+        flush(h);
+        const now = h.view.gap;
+        if (!now || now.after !== gap.after || h.view.turns[at + 1]?.id !== next) return false;
+        batch(() => {
+            put?.(page.turns.length);
+            h.set(produce((v) => {
+            v.turns.splice(at + 1, 0, ...page.turns);
+            v.gap = page.skipped && page.turns.length ? { after: page.turns.at(-1)!.id, count: page.skipped } : undefined;
+            for (const a of page.agents ?? []) {
+                const i = v.agents.findIndex((x) => x.id === a.id);
+                if (i >= 0) {
+                    if (!a.partial || v.agents[i]!.partial) v.agents[i] = a;
+                } else {
+                    v.agents.push(a);
+                    if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
+                }
+            }
+            }));
+        });
+        return true;
+    })().catch(() => false);
+    fillingGap.set(h.id, run);
+    void run.finally(() => { if (fillingGap.get(h.id) === run) fillingGap.delete(h.id); });
+    return run;
+}
+
 /** Whole before its view opens (a sub-agent of a turn the window doesn't have): the view's first frame is all of it. */
 export function agentReady(agentId: string): Promise<void> {
     for (const h of handles.values()) {
@@ -623,8 +677,14 @@ export function forgetEarlier(h: SessionHandle, keep: number) {
     // Not while a page of them is coming: it's put in before the first it has.
     if (drop <= 0 || loadingEarlier.has(h.id)) return;
     batch(() => h.set(produce((v) => {
+        // Past a gap: what's let go of before it, and the gap with it, are earlier ones now.
+        const gapAt = v.gap ? v.turns.findIndex((t) => t.id === v.gap!.after) : -1;
         const gone = new Set(v.turns.splice(0, drop).map((t) => t.id));
         v.earlier = (v.earlier ?? 0) + drop;
+        if (v.gap && gapAt >= 0 && drop > gapAt) {
+            v.earlier += v.gap.count;
+            v.gap = undefined;
+        }
         v.agents = v.agents.map((a) => {
             if (!gone.has(a.turnId) || a.partial || a.status === "running" || a.status === "waiting") return a;
             const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
@@ -762,7 +822,7 @@ export function loadEarlierTo(h: SessionHandle, key: TurnKey): Promise<boolean> 
     if (!near || !h.view.earlier || keyedTurn(h.view.turns, key)) return undefined;
     const first = h.view.turns.find((t) => t.pos)?.pos;
     if (first && !placeBefore(near, first)) return undefined;
-    return loadEarlier(h, { through: near, count: 1 });
+    return loadEarlier(h, { through: near, count: 1, upTo: 40 });
 }
 
 /** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */

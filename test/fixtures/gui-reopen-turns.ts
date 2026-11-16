@@ -37,13 +37,21 @@ class ServerSocket extends Socket {
             pages.push(params);
             const all = turnsOf(params.id);
             const at = all.findIndex((t) => t.id === params.before);
+            // A gap's next page, after the turn `after` (Runtime.turnsBefore).
+            if (params.after) {
+                const start = all.findIndex((t) => t.id === params.after) + 1;
+                const end = Math.min(at, start + (params.count ?? 40));
+                return reply({ turns: all.slice(start, end), earlier: start, skipped: at - end, seq: 0 });
+            }
             let from = params.all ? 0 : Math.max(0, at - (params.count ?? 40));
             // Back to the turn holding that message, as the server does (Runtime.turnsBefore).
             if (params.through) {
                 const holder = all.findLastIndex((t, i) => i < at && !placeBefore(params.through, t.pos));
                 if (holder >= 0) from = Math.min(from, holder);
             }
-            reply({ turns: all.slice(from, at), earlier: from, seq: 0 });
+            // A page from there, not every turn down to those it has (upTo): the rest skipped.
+            const end = params.upTo && !params.all ? Math.min(at, from + params.upTo) : at;
+            reply({ turns: all.slice(from, end), earlier: from, seq: 0, ...(end < at ? { skipped: at - end } : {}) });
         } else if (method === "hello" || method === "settings.get") reply({});
         else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
@@ -52,7 +60,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, openSession, loadEarlier, loadEarlierTo, handleFor, OPEN_TURNS, OPEN_BYTES } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, loadEarlier, loadEarlierTo, handleFor, fillGap, forgetEarlier, OPEN_TURNS, OPEN_BYTES } = await import("../../gui/src/state/app");
 const { keyedTurn, placeBefore, turnKey } = await import("../../gui/src/lib/transcript-scroll");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 const lastOpen = () => opens.filter((o) => o.id === "long").at(-1)!;
@@ -115,7 +123,7 @@ try {
     const first = again.view.turns[0]!.id;
     assert.ok(await loadEarlierTo(again, read));
     // (Its work folded, as it opened: what only an opened row shows comes as it's shown.)
-    assert.deepEqual(pages, [{ id: "long", before: first, through: { seg: 0, index: 2 }, count: 1, fold: true }]);
+    assert.deepEqual(pages, [{ id: "long", before: first, through: { seg: 0, index: 2 }, count: 1, upTo: 40, fold: true }]);
     assert.equal(keyedTurn(again.view.turns, read)?.prompt?.text, "prompt 1");
     assert.equal(again.view.turns[0]!.prompt?.text, "prompt 1");
     // Here already: nothing asked.
@@ -126,6 +134,30 @@ try {
     assert.equal(await loadEarlierTo(again, { ...read, pos: { seg: 0, index: 1 }, near: { seg: 0, index: 1 } }), true);
     assert.equal(pages.length, 1);
     assert.equal(keyedTurn(again.view.turns, { ...read, pos: { seg: 0, index: 1 } }), undefined);
+
+    // A jump to a turn far up: a page from it, the rest a gap the window fills a page at a time, not every turn down
+    // to those it has.
+    sessions.set("deep", 1000);
+    const deep = await openSession("deep");
+    assert.equal(deep.view.turns.length, 100);
+    pages.length = 0;
+    assert.ok(await loadEarlier(deep, { through: { seg: 0, index: 20 }, upTo: 12 }));
+    assert.equal(deep.view.turns.length, 112);
+    assert.equal(deep.view.turns[0]!.prompt?.text, "prompt 10");
+    assert.equal(deep.view.earlier, 10);
+    assert.deepEqual(deep.view.gap, { after: deep.view.turns[11]!.id, count: 878 });
+    let put = 0;
+    assert.ok(await fillGap(deep, 40, (n) => (put = n)));
+    assert.equal(put, 40);
+    assert.equal(deep.view.turns.length, 152);
+    assert.equal(deep.view.turns[12]!.prompt?.text, "prompt 22");
+    assert.deepEqual(deep.view.gap, { after: deep.view.turns[51]!.id, count: 838 });
+    // Back at the end, the page and the gap are earlier turns again: what's kept is the end.
+    forgetEarlier(deep, 100);
+    assert.equal(deep.view.turns.length, 100);
+    assert.equal(deep.view.turns[0]!.prompt?.text, "prompt 900");
+    assert.equal(deep.view.earlier, 900);
+    assert.equal(deep.view.gap, undefined);
 } finally {
     rpc.close();
 }
