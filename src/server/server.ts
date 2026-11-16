@@ -21,7 +21,7 @@ import { redact, registerSecret } from "../util/redact";
 import { encodeBrowserFrame, encodeSimulatorFrame } from "./browser-wire";
 import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
-import { orderedSender, type OrderedSender } from "./ws-send";
+import { orderedSender, streamCoalescer, type OrderedSender } from "./ws-send";
 
 export interface ServeOptions extends EngineOptions {
     host?: string;
@@ -71,6 +71,13 @@ export interface RunningServer {
 const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "cavvy://app"];
 const SUBPROTOCOL = "cavvy.v1";
 const CODE_TTL_MS = 120_000;
+/**
+ * How long a window on another machine's streamed text is held to go with what follows, and how much of it goes as soon
+ * as it's there (ws-send.ts streamCoalescer): 1.2 bytes a character needs about 70 a message over an ssh tunnel. The
+ * window shows a stream that comes in bursts at an even pace (lib/reveal.ts), this far behind.
+ */
+const STREAM_HOLD_MS = 150;
+const STREAM_HOLD_CHARS = 80;
 
 const TYPES: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
@@ -105,8 +112,10 @@ interface Conn {
     client: EngineClient;
     /** Everything this socket sends, in order and none dropped (ws-send.ts). */
     out?: OrderedSender;
-    /** A window on another machine: what it's sent is compressed (permessage-deflate). */
+    /** A window on another machine: what it's sent is compressed (permessage-deflate), streamed text held a moment. */
     compress?: boolean;
+    /** What's held of a stream for it (compress): sent before anything else is. */
+    flushHeld?: () => void;
 }
 
 export async function startServer(o: ServeOptions = {}): Promise<RunningServer> {
@@ -277,7 +286,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return;
                 }
                 const c = ws.data.client;
-                c.send = (ev: ServerEvent) => {
+                const sendNow = (ev: ServerEvent) => {
                     if (ws.readyState !== 1) return;
                     // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
                     if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() + out.queued > 1024 * 1024) {
@@ -294,6 +303,11 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") out.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
                     else out.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
+                if (ws.data.compress) {
+                    const held = streamCoalescer((ev) => sendNow(ev as ServerEvent), STREAM_HOLD_MS, STREAM_HOLD_CHARS);
+                    ws.data.flushHeld = held.flush;
+                    c.send = (ev) => held.send(ev);
+                } else c.send = sendNow;
                 engine.clients.add(c);
             },
             async message(ws: ServerWebSocket<Conn>, raw) {
@@ -333,7 +347,10 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
                     reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
-                if (!notification && ws.readyState === 1) ws.data.out!.send(JSON.stringify(reply, wireReplacer));
+                if (!notification && ws.readyState === 1) {
+                    ws.data.flushHeld?.();
+                    ws.data.out!.send(JSON.stringify(reply, wireReplacer));
+                }
             },
             drain(ws: ServerWebSocket<Conn>) {
                 ws.data.out?.drain();

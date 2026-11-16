@@ -449,7 +449,9 @@ async function step(n: number) {
         let lastPs = ps0, lastT = performance.now(), lastStat = cpuStat();
         while (sampling) {
             await sleep(1000);
-            const pingP = driver?.ping() ?? Promise.resolve(undefined);
+            // The ping first, and nothing else here meanwhile: reading the processes blocks this event loop (spawnSync
+            // ps, and on macOS vm_stat and sysctl), and a reply arriving then waited for it, counted as the server's.
+            const ping = await Promise.race([driver?.ping() ?? Promise.resolve(undefined), sleep(5000).then(() => 5000)]);
             const now = performance.now(), w = (now - lastT) / 1000;
             const ps = procs(), role = roles(ps, process.pid, driver?.serverPid);
             const cpu: Record<string, number> = {}, rss: Record<string, number> = {}, count: Record<string, number> = {};
@@ -461,7 +463,6 @@ async function step(n: number) {
                 count[rl] = (count[rl] ?? 0) + 1;
             }
             const st = cpuStat();
-            const ping = await Promise.race([pingP, sleep(5000).then(() => 5000)]);
             samples.push({
                 t: r1((now - launchedAt) / 1000), w: r1(w), pingMs: ping === undefined ? undefined : r1(ping),
                 cpuSec: Object.fromEntries(Object.entries(cpu).map(([k, v]) => [k, Math.round(v * 100) / 100])),

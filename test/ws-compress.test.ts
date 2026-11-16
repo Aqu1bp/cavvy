@@ -44,20 +44,24 @@ function proxy(host: string, port: number) {
     return { port: srv.port, reset: () => { down = 0; }, get down() { return down; } };
 }
 
-async function streamed(host: string): Promise<{ chars: number; wire: number }> {
+async function streamed(host: string, prompt = "perfreply 8000 40 10"): Promise<{ chars: number; wire: number; messages: number; text: string }> {
     const server = await startServer({ host, port: 0, token: TOKEN });
     stops.push(() => server.stop?.());
     const p = proxy(host, server.port);
     const ws = new WebSocket(`ws://127.0.0.1:${p.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-    let seq = 0, chars = 0, on = false, idle = false;
+    let seq = 0, chars = 0, on = false, idle = false, messages = 0, text = "";
     const replies = new Map<number, (v: any) => void>();
     ws.onmessage = (m) => {
         const msg = JSON.parse(String(m.data));
         if (msg.id) return replies.get(msg.id)?.(msg);
         if (!on || msg.event?.type !== "session.ops") return;
+        messages++;
         for (const o of msg.event.ops) {
-            if (o.op === "append") chars += o.text.length;
+            if (o.op === "append") {
+                chars += o.text.length;
+                if (o.field === "text") text += o.text;
+            }
             if (o.op === "state" && o.patch?.status === "idle") idle = true;
         }
     };
@@ -66,12 +70,12 @@ async function streamed(host: string): Promise<{ chars: number; wire: number }> 
     await call("session.open", { id });
     p.reset();
     on = true;
-    // A model's pace: 40 characters every 10 ms, each its own message, as a reply streams.
-    await call("session.send", { id, text: "perfreply 8000 40 10" });
+    // A model's pace: as many characters every so many ms (perfreply), each its own message as the reply streams.
+    await call("session.send", { id, text: prompt });
     for (let i = 0; i < 300 && !idle; i++) await Bun.sleep(20);
     on = false;
     ws.close();
-    return { chars, wire: p.down };
+    return { chars, wire: p.down, messages, text };
 }
 
 test.skipIf(process.platform !== "linux")("a window on another machine is sent about a byte a streamed character, this machine's own its messages whole", async () => {
@@ -83,4 +87,15 @@ test.skipIf(process.platform !== "linux")("a window on another machine is sent a
     expect(remote.wire / remote.chars).toBeLessThanOrEqual(1.2);
     // Uncompressed here: what the CPU would cost buys nothing on loopback (measured 2.66, almost 5 times as much).
     expect(local.wire).toBeGreaterThan(remote.wire * 3);
+}, 30_000);
+
+test.skipIf(process.platform !== "linux")("a slow stream goes to another machine in messages of many characters, whole and in order", async () => {
+    // 20 characters every 33 ms: each was its own message, about 50 bytes of a tunnel's own a message (3.8 bytes a
+    // character through ssh to a VPS, measured). Held a moment for a window on another machine, not for this one's.
+    const remote = await streamed("127.0.0.2", "perfreply 3000 20 33");
+    const local = await streamed("127.0.0.1", "perfreply 3000 20 33");
+    expect(remote.text).toBe(local.text);
+    expect(remote.chars).toBeGreaterThan(2500);
+    expect(remote.chars / remote.messages).toBeGreaterThanOrEqual(60);
+    expect(local.chars / local.messages).toBeLessThan(30);
 }, 30_000);
