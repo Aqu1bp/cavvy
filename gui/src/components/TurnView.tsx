@@ -44,12 +44,28 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         return f && k && f.key === k ? f.images : undefined;
     };
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
+    // Each image's place, kept from the first frame while it's fetched: what's below doesn't move when it comes.
+    const sizes = () => {
+        const s = p.turn.prompt?.imageSizes;
+        return s?.length === p.count ? s : undefined;
+    };
+    const failed = () => fetched()?.key === key() && !fetched()?.images.length;
+    const width = (k: number) => {
+        const [w, h] = sizes()?.[k] ?? [0, 0];
+        return `calc(${w && h ? Math.min(220, Math.max(56, (76 * w) / h)) : 101} * var(--sp))`;
+    };
+    const chip = () => (
+        <Show when={sizes() && !failed()} fallback={<span class="chip tiny">{label()}</span>}>
+            <For each={sizes()}>{(_, i) => <span class="prompt-image wait" style={{ width: width(i()) }} role="img" aria-label={`Image ${i() + 1} of ${p.count}`} />}</For>
+        </Show>
+    );
     return (
-        <Show when={images()?.length} fallback={<span class="chip tiny">{label()}</span>}>
+        <Show when={images()?.length} fallback={chip()}>
             <For each={images()}>
                 {(img, i) => (
                     <button
-                        class="prompt-image"
+                        class={`prompt-image ${sizes() ? "sized" : ""}`}
+                        style={sizes() ? { width: width(i()) } : undefined}
                         title="View full size"
                         aria-label={`View image ${i() + 1} of ${images()!.length}`}
                         onClick={(e) => setViewedImage({ images: images()!.map((m, k) => ({ name: `Image ${k + 1}`, full: m, preview: m.thumb })), index: i(), from: e.currentTarget })}

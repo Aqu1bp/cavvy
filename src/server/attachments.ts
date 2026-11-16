@@ -14,6 +14,7 @@ import { MEDIA_BUDGET, base64Size } from "../util/media";
 import type { AttachedPart, FilePart, ImagePart } from "../providers/types";
 import { formatBytes, isInside, looksBinary } from "../util/files";
 import { redact } from "../util/redact";
+import { imageSize } from "../ui/images";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
@@ -164,10 +165,56 @@ export function fileChips(parts: readonly { type: string }[]): FileChip[] {
  * (imagesKey), which files. `keyed: false` leaves the key out, and the hash of
  * every image's bytes (~6 ms for a 12 MB screenshot) with it.
  */
-export function attachedPrompt(parts: readonly { type: string }[] | undefined, keyed = true): { images?: number; imagesKey?: string; files?: FileChip[] } {
+export function attachedPrompt(parts: readonly { type: string }[] | undefined, keyed = true): { images?: number; imagesKey?: string; imageSizes?: [number, number][]; files?: FileChip[] } {
     const images = (parts ?? []).filter((p): p is ImagePart => p.type === "image");
     const files = fileChips(parts ?? []);
-    return { ...(images.length ? { images: images.length, ...(keyed ? { imagesKey: imagesKey(images) } : {}) } : {}), ...(files.length ? { files } : {}) };
+    return { ...(images.length ? { images: images.length, ...(keyed ? { imagesKey: imagesKey(images), imageSizes: images.map(shownSize) } : {}) } : {}), ...(files.length ? { files } : {}) };
+}
+
+/**
+ * How much of an image to read for its header, in base64: most have it in
+ * the first few bytes; a JPEG's can come after its EXIF data (at most 64 KB),
+ * and only then is the rest read.
+ */
+const HEADERS_BASE64 = [4 * 1024, 96 * 1024, Infinity];
+
+/** An image's width and height as it's shown (a JPEG turned as its EXIF says); 0, 0 when they can't be read. */
+export function shownSize(i: { data: string }): [number, number] {
+    for (const n of HEADERS_BASE64) {
+        const b = Buffer.from(n < i.data.length ? i.data.slice(0, n) : i.data, "base64");
+        const size = imageSize(b);
+        if (size?.width && size.height) return turned(b) ? [size.height, size.width] : [size.width, size.height];
+        if (n >= i.data.length) break;
+    }
+    return [0, 0];
+}
+
+/** A JPEG whose EXIF orientation is a quarter turn (5 to 8): shown with width and height swapped. */
+function turned(b: Buffer): boolean {
+    if (b[0] !== 0xff || b[1] !== 0xd8) return false;
+    let i = 2;
+    while (i + 4 <= b.length && b[i] === 0xff) {
+        const m = b[i + 1]!;
+        if (m === 0xda || m === 0xd9) return false;
+        const len = b.readUInt16BE(i + 2);
+        if (m === 0xe1 && b.toString("latin1", i + 4, i + 10) === "Exif\0\0") {
+            const t = i + 10;
+            if (t + 8 > b.length) return false;
+            const le = b.toString("latin1", t, t + 2) === "II";
+            const u16 = (o: number) => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+            const u32 = (o: number) => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+            const ifd = t + u32(t + 4);
+            if (ifd + 2 > b.length) return false;
+            for (let e = 0, n = u16(ifd); e < n; e++) {
+                const at = ifd + 2 + e * 12;
+                if (at + 10 > b.length) return false;
+                if (u16(at) === 0x0112) return u16(at + 8) >= 5 && u16(at + 8) <= 8;
+            }
+            return false;
+        }
+        i += 2 + len;
+    }
+    return false;
 }
 
 /** The same for the same images, in the same order, and only then: what the GUI keeps fetched images by. */
