@@ -10,7 +10,8 @@ const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter
 for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-const { TurnSnapshots, statusGuard } = await import("../src/agent/turn-snapshots");
+const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
+const { statusGuard } = await import("../src/server/git-changes");
 const { pruneFileHistory, HISTORY_MAX_AGE_MS, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { paths } = await import("../src/config/paths");
 const { gitArgv, gitEnv } = await import("../src/util/git");

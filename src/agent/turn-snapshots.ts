@@ -13,7 +13,7 @@ import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
 import type { Session } from "./session";
-import { blobId, blobs, git, gitEnvironment, readRegular, readRegularSync, render, WorkTree, type Change, type Entry } from "../server/git-changes";
+import { blobId, blobs, git, gitEnvironment, readRegular, readRegularSync, render, statusGuard, WorkTree, type Change, type Entry } from "../server/git-changes";
 import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
@@ -519,55 +519,6 @@ function objectId(type: string, buf: Buffer, algo: "sha1" | "sha256"): string {
 const convertsByRoot = new Map<string, { key: string; converts: boolean; excludes?: string }>();
 /** Cache-tree roots whose every tree git was found to have (fromCacheTree): they aren't looked for again. */
 const treesFound = new Set<string>();
-
-/** The tree with nothing in it, which git knows without having it stored. */
-const EMPTY_TREE = { sha1: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha256: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" };
-
-/**
- * How `git status` is run in `root` so that it runs no program: undefined where that can't be made sure of, and
- * `git status` isn't to be used. Asked just before it runs. Two guards, each enough where it holds:
- * - For each filter Git's config defines (git-lfs's, which `git lfs install` puts in the user's config, for one),
- *   settings that make its programs none and its failing no error, so that whatever attributes name it, it runs
- *   nothing. A filter is only ever run for an attribute that names one Git's config defines, and the repository's
- *   own config files are out of an agent's reach (sandbox.ts). A file the repository's config includes (`include.path`,
- *   `includeIf`) can be anywhere, its folder too, and rewritten after this looked: an include from the repository's
- *   config, or the command's, refuses. One the user's or the system's config includes is theirs. So does a filter the
- *   command's own config defines (GIT_CONFIG_PARAMETERS), and GIT_CONFIG, which would point `git config` alone at
- *   another file. Older git, without --show-scope, says nothing plainly: refused.
- * - The folder's .gitattributes files, which an agent can write, read from the empty tree instead
- *   (GIT_ATTR_SOURCE): none of them can name a filter. Git before 2.41 doesn't know it, and the first guard stands
- *   alone. A capture from `git status` takes only what attributes don't change (TurnSnapshots.converts), so they
- *   change nothing it says.
- * And no hooks, though `git status` that doesn't write Git's index runs none, and no fsmonitor (gitArgv).
- */
-export async function statusGuard(root: string, algo: "sha1" | "sha256", deadline: number): Promise<{ args: string[]; env: Record<string, string> } | undefined> {
-    if (gitEnvironment().GIT_CONFIG !== undefined) return undefined;
-    const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
-    if (found.cut || (found.code && found.code !== 1)) return undefined;
-    const names = new Set<string>();
-    // scope NUL key LF value NUL, for each.
-    // Decoded strictly: a name that isn't UTF-8 would come back as another (U+FFFD for its bytes), and be the one turned off.
-    let text = "";
-    try {
-        text = found.code === 1 ? "" : new TextDecoder("utf-8", { fatal: true }).decode(found.out);
-    } catch {
-        return undefined;
-    }
-    const fields = text ? text.split("\0") : [];
-    for (let i = 0; i + 1 < fields.length; i += 2) {
-        const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!, lower = key.toLowerCase();
-        if (lower.startsWith("filter.")) {
-            // filter.<name>.clean or .process: the name as it's spelled (its case counts), to be spelled again in `-c`,
-            // which takes what's before its first "=" for the key.
-            const name = key.slice("filter.".length, key.lastIndexOf("."));
-            if (scope === "command" || !name || name.includes("=") || (!names.has(name) && names.size >= 64)) return undefined;
-            names.add(name);
-        } else if (scope !== "global" && scope !== "system") return undefined;
-    }
-    const args = ["-c", "core.hooksPath=/dev/null"];
-    for (const name of names) args.push(...["clean", "smudge", "process"].flatMap((program) => ["-c", `filter.${name}.${program}=`]), "-c", `filter.${name}.required=false`);
-    return { args, env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_SOURCE: EMPTY_TREE[algo] } };
-}
 
 /**
  * What says, outside the folder, which files are ignored (its info/exclude, core.excludesFile, and the config files
