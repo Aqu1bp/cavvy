@@ -88,3 +88,34 @@ test("through a real socket, a small message sent right after a big one arrives,
         srv.stop(true);
     }
 }, 30_000);
+
+test("streamed text for another machine goes in fewer messages, in order, and nothing else waits", async () => {
+    const { streamCoalescer } = await import("../src/server/ws-send");
+    const sent: any[] = [];
+    const c = streamCoalescer((ev) => sent.push(ev), 40, 30);
+    const text = (seq: number, t: string, blockId = "b1") => ({ type: "session.ops", sessionId: "s", seq, ops: [{ op: "append", turnId: "t", blockId, field: "text", text: t }] });
+    // The first words after a quiet spell go at once.
+    c.send(text(1, "Hello"));
+    expect(sent.map((e) => e.seq)).toEqual([1]);
+    // Then held, a block's text as one append, with the last seq.
+    c.send(text(2, " wor"));
+    c.send(text(3, "ld"));
+    expect(sent).toHaveLength(1);
+    await Bun.sleep(60);
+    expect(sent[1]).toEqual({ type: "session.ops", sessionId: "s", seq: 3, ops: [{ op: "append", turnId: "t", blockId: "b1", field: "text", text: " world" }] });
+    // Enough held goes at once.
+    c.send(text(4, "x".repeat(10)));
+    c.send(text(5, "y".repeat(25)));
+    expect(sent[2]).toMatchObject({ seq: 5, ops: [{ text: "x".repeat(10) + "y".repeat(25) }] });
+    // Anything that isn't text (a status, a question) goes at once, after what's held: never before it.
+    c.send(text(6, "!", "b2"));
+    c.send({ type: "session.ops", sessionId: "s", seq: 7, ops: [{ op: "state", patch: { status: "idle" } }] });
+    expect(sent.slice(3).map((e) => e.seq)).toEqual([6, 7]);
+    // A reply to a request: what's held first (the server calls flush before it).
+    c.send(text(8, "a"));
+    c.send(text(9, "b"));
+    c.flush();
+    expect(sent.at(-1)).toMatchObject({ seq: 9, ops: [{ text: "ab" }] });
+    await Bun.sleep(60);
+    expect(sent.at(-1).seq).toBe(9);
+});
