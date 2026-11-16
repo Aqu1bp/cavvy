@@ -238,3 +238,37 @@ test("a window presents the same private key after reconnect, only in handshake 
     expect(JSON.stringify(first.sent)).not.toContain(key);
     expect(back.sent).toEqual([]);
 });
+
+// A window on another machine whose link drops is refused the same way a stale token is: it says it's signed out only
+// if the server answers.
+for (const [what, answers, expected] of [["a link that's down", false, "reconnecting"], ["a server that refuses the token", true, "unauthorized"]] as const) {
+    test(`refused before opening, again and again: ${what} → ${expected}`, async () => {
+        const { client, advance } = setup();
+        const realFetch = globalThis.fetch;
+        const asked: string[] = [];
+        globalThis.fetch = (async (url: string) => {
+            asked.push(String(url));
+            if (!answers) throw new TypeError("Failed to fetch");
+            return new Response(null, { status: 200 });
+        }) as unknown as typeof fetch;
+        try {
+            await client.connect();
+            for (let i = 0; i < 4; i++) {
+                Socket.instances.at(-1)!.close();
+                await Promise.resolve();
+                advance(20_000);
+                await Promise.resolve();
+            }
+            for (let i = 0; i < 5; i++) await Promise.resolve();
+            await new Promise((r) => queueMicrotask(() => r(undefined)));
+            expect(asked).toContain("http://test/healthz");
+            expect(client.state).toBe(expected);
+            const tries = Socket.instances.length;
+            advance(20_000);
+            await Promise.resolve();
+            expect(Socket.instances.length > tries).toBe(!answers);
+        } finally {
+            globalThis.fetch = realFetch;
+        }
+    });
+}
