@@ -107,6 +107,20 @@ Link profiles:
 
 Measure these by recording frames and counting layout shifts and blank frames (extend `test/perf-gui.test.ts`).
 
+### J. Machine-wide cost (added 2026-11-16)
+| Case | Target |
+|---|---|
+| J1. WindowServer and GPU in every state: idle, waiting with the spinner, scrolling, resizing, streaming, hidden, minimized and covered | WindowServer plus Cavvy's GPU process within noise of Cavvy not running when nothing changes, and ≤ 1.1× the same CLI in Terminal.app when it does |
+| J2. Battery and wakeups | Energy Impact and wakeups per second within noise of Cavvy not running, idle and waiting |
+| J3. No frames when nothing changes | On a 120 Hz Mac, no frames drawn while nothing on screen changes, and the spinner costs a fixed small number of frames a second, never full refresh |
+| J4. Memory, every process counted | "All of Cavvy" includes the GPU helper, renderer and utility processes, terminals and their scrollback, and the @-mention workers (228 MB at 1M files per the plan doc); also measured under memory pressure (swap and compression), not just resident size |
+| J5. Disk writes | Bytes written per turn ≤ about what the CLI itself writes for that turn; the turn store's size bounded, not growing as a second full copy of the logs |
+| J6. Soak under load | An hour with sessions streaming, memory and CPU per turn at the end within 5% of the start, with no thermal slowdown traceable to Cavvy |
+
+Not added: a 4K/5K external display (none to test on now).
+
+Measuring: WindowServer's and Cavvy's CPU time can be read on the Mac without admin rights; powermetrics (energy, GPU) needs sudo, so a row that needs it is flagged first. Real-model benches run on the Mac with Haiku 5.5 sessions (`desktop-electron/bench-real.ts`, `bench-heavy-real.ts`). Mock runs stay for A/B diffs, but a target counts as met only on real-model numbers where real models apply.
+
 ### I. Failures, and mobile later
 - **Failures:**
   - Target 10 (no work lost, the other sessions carry on) holds at 100 sessions.
@@ -127,8 +141,8 @@ performance-plan.md, from builds before this work). "Out of reach" only once a m
 
 | Target | Status | Measurement |
 |---|---|---|
-| A. Open again after switching away | Not measured | Not at 50,000/100,000 items. Mac (b1a66d2): the session just left 9–21 ms; a cold switch to a 60 KB-reply session 67–83 ms. Linux, a long reply now built from its end (0185941): the switch's task 20–32 ms. |
-| A. Open cold after a restart | Not met (Claude Code) | Plan, Linux, server: 14–21 ms for Cavvy's own models; 83–92 ms for a 100,000-item Claude Code session, which reads its whole 9.6 MB transcript (bytes grow with the thread). |
+| A. Open again after switching away | Met (Linux), Mac to confirm | Linux, click to first frame showing it: 100,000 items (Cavvy's own) back while kept 11 ms, after two others 16 ms; 100,000 Claude Code 11/18 ms; 10 items 12/18 ms. Earlier notes: not at 50,000/100,000 items before tonight. Mac (b1a66d2): the session just left 9–21 ms; a cold switch to a 60 KB-reply session 67–83 ms. Linux, a long reply now built from its end (0185941): the switch's task 20–32 ms. |
+| A. Open cold after a restart | Not met | Linux, server restarted, click to first frame: 10 items 56 ms (0.12 MB read); 50,000 Cavvy's own 65 ms (1.85 MB); 100,000 Cavvy's own 88 ms (2.79 MB: the turn index, every turn's head, 1.87 MB, read whole); 100,000 Claude Code 153 ms (15.65 MB: its whole transcript). Bytes read grow with the thread in both. |
 | A. Scroll from bottom to top | Not measured | Mac, 200 turns: memory +2.6–3.3% after paging; frames not counted. |
 | A. Jump to any item | Not measured | |
 | A. Send in it | Not measured | |
@@ -145,10 +159,10 @@ performance-plan.md, from builds before this work). "Out of reach" only once a m
 | C. 30 finish in the same second | Not measured | |
 | C. One session flooding | Partly | Plan: met for one big build. |
 | C. 10,000 sessions in history | Search: met (Linux), Mac to confirm. Sidebar: met (Linux) | Linux, 10,000 sessions: the palette waited 140 ms after each key before searching (an intentional wait, now removed); a search a second after the last whole listing listed every session file first (now renewed in the background); two-letter searches skip sessions without that pair. Key to results on screen: 10–29 ms (56–71 ms with the palette's blur, drawn in software headless). Server search per key 2–8 ms. Sidebar: 25 rows either way; its list call 1.4–3.6 ms (was 22–34 ms of statting every file). The window's heap is 8 MB larger with 10,000 sessions: not yet explained. |
-| D. Keystroke to screen | Not met | Plan, Mac interactions bench: 1–3 dropped frames, without the load. |
+| D. Keystroke to screen | Not met | Plan, Mac interactions bench: 1–3 dropped frames, without the load. Linux (Event Timing, 100,000-item thread on screen): no frame over 17 ms, but about half the keys are presented a frame late (24–40 ms; a bare textarea: every key within 16 ms), with or without 10 streaming. |
 | D. Esc | Screen: met (Linux, no load); CLI part not measured | Linux, mock model: the turn shows stopped 25–37 ms after Esc (was 55–72). |
 | D. Permission prompt | Not measured | Applied at the next frame since a20f8cd. |
-| D. Switch, palette, Settings, any screen | Not met | Mac (b1a66d2): cold switch to the long-reply session 67–83 ms; Settings first open 15–17 ms (f1f0e45). Linux: see A and C. |
+| D. Switch, palette, Settings, any screen | Switching met on the Mac; palette and other screens to measure | Mac (69935d0): cold switch to the 60 KB-reply session 40–44 ms (was 67–83), the VPS one 22–29, back 9–16; Settings first open 15–17 ms (f1f0e45). A wheel 60 ms after a cold switch jumped once in 3 (fixed in cb6f060: the reply's top now goes in a slice a frame, all in within 154–258 ms, Linux). |
 | E. Streaming vs Terminal.app | Not met | Plan, Mac: 2.1× instructions, WindowServer 15.6% vs 3.0%. |
 | E. Idle, waiting, hidden, minimized | Not met while waiting | Plan, Mac: idle 22 M instructions/s, waiting 134. Linux: while waiting, about 20 frames a second from the spinners (turn spinner and sidebar ring 20 steps/s, shimmer 10); main thread 6.6 ms/s. Fewer steps would change how they look: the owner's call. |
 | E. All of Cavvy's memory | Not met | Plan, Mac: 545 MB at 15 sessions. |
@@ -165,6 +179,12 @@ performance-plan.md, from builds before this work). "Out of reach" only once a m
 | H. Flinging through 100,000 items | Not measured | |
 | H. Images, code blocks, diffs arriving | Code blocks met (Linux); the rest not measured | Linux: code blocks out of sight are their drawn size at text sizes 12–18: 0 moves. |
 | H. Animations under heavy use | Not measured | |
+| J1. WindowServer and GPU, every state | Not measured | Needs the Mac (WindowServer CPU without admin rights; GPU via powermetrics, sudo). |
+| J2. Battery and wakeups | Not met while waiting (Linux proxy) | Linux: while waiting, about 200 empty compositor-thread tasks a second and about 20 frames a second from the spinners; idle 28 tasks a second. Energy Impact needs the Mac. |
+| J3. No frames when nothing changes | Not measured on the Mac | Linux: idle draws 2 a second; waiting about 20 a second (spinner steps), the spinner's rate the owner's call. |
+| J4. Memory, every process counted | Not measured | |
+| J5. Disk writes | Not measured | The turn store keeps every turn again beside the logs (100,000 items: 112 MB store beside a 132 MB log, Linux). |
+| J6. Soak under load | Not measured | |
 | I. Failures at 100 sessions, full disk, corrupt file | Not measured | Plan: failures met at 20 sessions. |
 | I. Back after a crash | Met | 150–200 ms. |
 | I. Mobile | Not measured | |
