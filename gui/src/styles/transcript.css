@@ -3008,13 +3008,13 @@
 /* A finished reply's code: one out of sight isn't styled or laid out, at its size (its lines, each a line high) till it
    comes near: a long reply's code is most of what it is. Exactly the size it's drawn at, wide or not: the conversation
    keeps the reader's place itself, and a block above them drawn at another size would move what they read. So where
-   scrollbars take room (--hbar, lib/scrollbars.ts) there's always one under the lines (its track is clear), in what
+   scrollbars take room (--hbar, lib/code-metrics.ts) there's always one under the lines (its track is clear), in what
    was the padding below them. */
 .md .code:not(.writing, .bare) > pre.code-body {
     overflow-x: scroll;
     padding-bottom: max(0px, calc(12 * var(--sp)) - var(--hbar, 0px));
     content-visibility: auto;
-    contain-intrinsic-block-size: auto calc(var(--lines) * 1lh);
+    /* Its size, set on it (CodeBlock.tsx): its lines, each --code-line high (lib/code-metrics.ts). */
 }
 
 /* While it's being written, a box for each finished line: the line being typed is laid out on its own, not the block with it. */
