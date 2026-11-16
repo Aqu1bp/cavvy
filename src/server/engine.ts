@@ -1138,7 +1138,8 @@ export class Engine {
      * speed, mode and effort.
      */
     async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
-        await original.allTurns();
+        // Only to find a turn the window hasn't been sent: all of a 100,000-item Claude Code session's took 3 s.
+        if (!original.hasTurn(turnId)) await original.allTurns();
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
@@ -2889,7 +2890,10 @@ export class Engine {
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
                 this.watch(client, rt.id);
-                return rt.snapshot();
+                // As much as an open asks for: all of a long conversation's turns was 4,949 sent at once.
+                const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
+                const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                return await rt.snapshotSoon(last, budget, p.fold === true);
             }
             case "session.changes":
                 return this.runtime(p.id).changes();

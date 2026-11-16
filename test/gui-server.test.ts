@@ -2181,6 +2181,18 @@ describe("forking", () => {
         c.close();
     }, 45_000);
 
+    test("a fork answers with the turns the window asked for, and the earlier ones on request", async () => {
+        const c = await client();
+        const { id } = await threeTurns(c);
+        const third = prompted(c.view(id))[2]!;
+        const snap = await c.call<SessionSnapshot>("session.fork", { id, index: third.prompt!.index, text: "third prompt", turn: third.id, last: 1 });
+        expect(snap.turns.filter((t) => t.prompt).map((t) => t.prompt!.text)).toEqual(["third prompt"]);
+        expect(snap.earlier).toBe(2);
+        const all = await c.call<{ turns: Turn[] }>("session.turns", { id: snap.state.id, before: snap.turns[0]!.id, all: true });
+        expect(all.turns.filter((t) => t.prompt).map((t) => t.prompt!.text)).toEqual(["first prompt", "demo"]);
+        c.close();
+    }, 30_000);
+
     test("the running turn can't be forked; an earlier, finished one can", async () => {
         const c = await client();
         const dir = project();
