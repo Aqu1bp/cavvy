@@ -450,8 +450,8 @@ export class Session {
             for (; saved < lines.length; saved++) {
                 appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
                 this.torn = false;
+                noteSessionWrite(this.file);
             }
-            noteSessionWrite(this.file);
             if (this.failing) {
                 this.failing = false;
                 this.onSaving?.(undefined);
@@ -994,6 +994,7 @@ export class Session {
             try {
                 if (s.workedAt === undefined) appendFileSync(file, "\n" + redactedJson({ t: "worked", at: writtenAt }) + "\n");
                 else appendFileSync(file, "\n");
+                noteSessionWrite(file);
                 s.workedAt ??= writtenAt;
                 s.savedWorkedAt ??= writtenAt;
             } catch {
