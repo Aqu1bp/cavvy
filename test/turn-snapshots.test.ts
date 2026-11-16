@@ -465,6 +465,37 @@ describe("per-turn snapshots", () => {
         }
     });
 
+    test("a big repository's first capture reads Git's own files while the folder's watch is set up, and lists none of the folder's till it's up", async () => {
+        // Files no other test has: their tree isn't one an earlier capture found in Git's objects already.
+        const { cwd, dir } = setup({ "a.txt": "read once watched\n", "b.txt": "b\n" });
+        // Each git started, as it was asked.
+        const log = join(dirname(cwd), "git-calls"), bin = join(dirname(cwd), "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o755 });
+        const calls = () => (existsSync(log) ? readFileSync(log, "utf-8") : "");
+        const path = process.env.PATH;
+        process.env.PATH = `${bin}:${path}`;
+        let release = () => {};
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0, holdWatch: new Promise<void>((r) => (release = r)) });
+        try {
+            const begun = snapshots.begin(1, "Edit a file");
+            // Its worktrees and its index's tree: all that's read before the folder.
+            const before = [" worktree list", " cat-file --batch-check"];
+            for (let i = 0; i < 300 && !before.every((call) => calls().includes(call)); i++) await Bun.sleep(10);
+            for (const call of before) expect(calls()).toContain(call);
+            // Nor its filters: looked for just before `git status`, so they're as it finds them.
+            expect(calls()).not.toMatch(/ (status|ls-files|diff-files) | --show-scope /);
+            release();
+            await begun;
+            expect(calls()).toMatch(/ --show-scope [^\n]*\n[^]* status /);
+            expect(snapshots.statusCount).toBe(1);
+        } finally {
+            process.env.PATH = path;
+            release();
+            await snapshots.stop();
+        }
+    });
+
     test("ignored files are omitted, large files are marked, and ordinary files still diff", async () => {
         const { cwd, dir, snapshots } = setup({ ".gitignore": "private.txt\n", "small.txt": "before\n" });
         write(cwd, "private.txt", "not captured\n");
