@@ -702,8 +702,11 @@ export async function statusGuard(root: string, algo: "sha1" | "sha256", deadlin
  * no attributes), so no conversion makes a changed file look unchanged: these are every path the full comparison could list,
  * but for a file changed with its stat data left as it was, which git doesn't see either. Not submodules: it doesn't look in.
  */
-/** Paths git says differ (status, and a branch's commits); `onDisk`: those whose file differs from the index, by git's reading. */
-type Differ = Set<string> & { onDisk: Set<string> };
+/**
+ * Paths git says differ (status, and a branch's commits); `onDisk`: those whose file differs from the index, by git's
+ * reading, with the file's mode as git saw it.
+ */
+type Differ = Set<string> & { onDisk: Map<string, string> };
 
 async function differing(root: string, guard: { args: string[]; env: Record<string, string> }, base: string | undefined, head: string | undefined, deadline: number): Promise<Differ | undefined> {
     // Replacement objects as the listings here see them, so HEAD is the same tree.
@@ -715,7 +718,7 @@ async function differing(root: string, guard: { args: string[]; env: Record<stri
     ]);
     const failed = (r?: GitOut) => !!r && (r.code !== 0 || r.cut || !!r.err.trim());
     if (failed(status) || failed(since)) return undefined;
-    const paths = Object.assign(new Set<string>(since ? records(since.out) : []), { onDisk: new Set<string>() });
+    const paths = Object.assign(new Set<string>(since ? records(since.out) : []), { onDisk: new Map<string, string>() });
     for (const rec of records(status.out)) {
         // "1 XY sub mH mI mW hH hI path"; unmerged, "u XY sub m1 m2 m3 mW h1 h2 h3 path".
         const fields = rec.split(" ");
@@ -724,7 +727,7 @@ async function differing(root: string, guard: { args: string[]; env: Record<stri
         const path = fields.slice(at).join(" ");
         paths.add(path);
         // Y: the file against the index (M: its content or mode).
-        if (rec.startsWith("1 ") && rec[3] === "M") paths.onDisk.add(path);
+        if (rec.startsWith("1 ") && rec[3] === "M") paths.onDisk.set(path, fields[5]!);
     }
     return paths;
 }
@@ -932,21 +935,28 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // start read every one of them.
     const ATTRS = ["filter", "ident", "working-tree-encoding", "text", "eol"];
     let early = new Map<string, Record<string, string>>();
+    /** Changes listed without their file read: read once they're known to be listed. */
+    const unreadChanges = new Set<Change>();
     let unread: Set<string> | undefined;
     if (differ && differ.onDisk.size > MAX_FILES && req.path === undefined && !autocrlf) {
-        const maybe = [...differ.onDisk].filter((p) => {
+        const maybe = [...differ.onDisk.keys()].filter((p) => {
             const was = old.get(p);
             const ix = staged.get(p);
-            return !!was && !!ix && ix.tag === "H" && ix.oid === was.oid && ix.mode === was.mode && isFileMode(was.mode);
+            return !!was && !!ix && ix.tag === "H" && ix.oid === was.oid && ix.mode === was.mode && isFileMode(was.mode) && isFileMode(differ.onDisk.get(p)!);
         });
         if (maybe.length > MAX_FILES) {
             early = await attributes(root, maybe, deadline);
             unread = new Set(maybe.filter((p) => ATTRS.every((k) => early.get(p)?.[k] === "unspecified")));
+            // Not even stat'ed: git's mode for the file (its last, without core.filemode).
+            for (const path of unread) {
+                const was = old.get(path)!;
+                const c: Change = { path, change: "modified", old: was, now: { mode: filemode ? differ.onDisk.get(path)! : was.mode, oid: "" } };
+                changes.push(c);
+                unreadChanges.add(c);
+            }
         }
     }
-    /** Changes listed without their file read (unread): read once they're known to be listed. */
-    const unreadChanges = new Set<Change>();
-    const paths = [...new Set([...old.keys(), ...staged.keys()])];
+    const paths = [...new Set([...old.keys(), ...staged.keys()])].filter((p) => !unread?.has(p));
     await eachLimit(paths, 32, async (path) => {
         inTime();
         const was = old.get(path);
@@ -964,7 +974,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             // Skip-worktree and assume-unchanged: git doesn't look at the file, so neither does this.
             now = ix;
             indexed = true;
-        } else now = await wt.entry(path, was, !unread?.has(path));
+        } else now = await wt.entry(path, was);
         if (!was && !now) {
             // Staged as a new file, then deleted on disk: git still lists it ("AD").
             if (ix && req.scope === "uncommitted") changes.push({ path, change: "added", now: ix, indexed: true, kind: kindOf(ix.mode), note: "Staged as a new file, then deleted on disk." });
@@ -983,8 +993,6 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         const c: Change = { path, change: kindOf(was.mode) === kindOf(now.mode) && now.mode !== "other" ? "modified" : "typechange", old: was, now, kind: kindOf(now.mode) ?? kindOf(was.mode), indexed };
         if (sameMode && now.norm === was.oid) crlfOnly.push(c);
         else changes.push(c);
-        // Not read (unread): a regular file's entry without its id.
-        if (now.oid === "") unreadChanges.add(c);
     });
     inTime();
 
