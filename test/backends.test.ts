@@ -276,6 +276,17 @@ describe("agent providers", () => {
         expect(codex.models[1]!.supportsFastMode).toBe(false);
     });
 
+    test("lists asked for at once share one CLI: the window and the server asking as it starts made two", async () => {
+        const lists = () => starts().filter((s) => s.argv.includes("--no-session-persistence") && !s.argv.includes("--disable-slash-commands")).length;
+        const before = lists();
+        const gone = new AbortController();
+        const [a, b, c] = await Promise.allSettled([listAllModels({ refresh: true }), listAllModels({ refresh: true }), listAllModels({ refresh: true, signal: gone.signal }).finally(() => {}), Promise.resolve(gone.abort())]);
+        // One Claude Code list for the three; the one that stopped waiting didn't stop the others'.
+        expect(lists() - before).toBe(1);
+        expect(c.status).toBe("fulfilled");
+        for (const r of [a, b]) expect(r.status === "fulfilled" && r.value.find((l) => l.provider.id === "claude-code")?.status).toBe("ok");
+    });
+
     test("the startup trust check lists the project config of the CLIs that are on, skills and agents included", () => {
         const proj = tempDir("trust-");
         for (const d of [".claude/skills/x", ".claude/agents", ".codex"]) Bun.spawnSync(["mkdir", "-p", join(proj, d)]);

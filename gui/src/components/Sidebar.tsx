@@ -204,31 +204,13 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
-/**
- * How a row is doing, just before its time at the far end: a check while it's picked, an amber dot while it needs
- * you, a ring while it works, a red dot when it stopped on an error, a solid dot when it finished unread, a pin when
- * pinned. Otherwise nothing, so a glyph there always means something: the titles still start at one edge.
- */
-function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
-    // Set again only when it changes, not at each tick of the clock it's worked out from.
-    const word = createMemo(() => sessionStatus(p.s, now())?.text);
+/** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
+function RowLead(p: { s: SessionSummary; picked?: boolean }) {
     return (
         <span class="lead" aria-hidden="true">
             <Switch>
                 <Match when={p.picked}>
                     <span class="st pick"><Check size={10} stroke-width={3.4} /></span>
-                </Match>
-                <Match when={p.s.status === "waiting"}>
-                    <span class="wait-dot" title={word()} />
-                </Match>
-                <Match when={p.s.status === "running"}>
-                    <span class="spin-ring" title={word()} />
-                </Match>
-                <Match when={p.s.status === "error"}>
-                    <span class="err-dot" title={word()} />
-                </Match>
-                <Match when={p.unread}>
-                    <span class="unread-dot" />
                 </Match>
                 <Match when={p.s.pinned}>
                     <Pin size={11} class="lead-pin" />
@@ -238,9 +220,17 @@ function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
     );
 }
 
-/** The end of a row: when it last moved ("2m", "1h", "3d"). */
-function RowEnd(p: { s: SessionSummary }) {
-    return <span class="when">{(now(), since(p.s.updatedAt))}</span>;
+/**
+ * The end of a row, one thing: how it's doing when that's news ("Working 8m", "Done" when it finished and you haven't
+ * looked, "Stopped" on an error), otherwise when it last moved ("2m", "1h", "3d"), amber while it waits on you.
+ */
+function RowEnd(p: { s: SessionSummary; unread: boolean }) {
+    // Set again only when it changes, not at each tick of the clock it's worked out from.
+    const word = createMemo(() =>
+        p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : undefined,
+    );
+    const tone = () => (p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
+    return <span class={`when ${tone()}`}>{word() ?? (now(), since(p.s.updatedAt))}</span>;
 }
 
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
@@ -397,9 +387,9 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     return (
         <div ref={el} data-needs-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
-                <RowLead s={p.s} unread={unread()} />
+                <RowLead s={p.s} />
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
-                <span class="end"><RowEnd s={p.s} /></span>
+                <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
                 <span class="m"><span class="truncate">{line()}</span></span>
             </button>
             <Show when={r.editing()}>
@@ -453,13 +443,13 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
-                <RowLead s={p.s} unread={unread()} picked={picked()} />
+                <RowLead s={p.s} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
                 </span>
                 <span class="end">
-                    <RowEnd s={p.s} />
+                    <RowEnd s={p.s} unread={unread()} />
                 </span>
                 {/* Its project, under the title, and what it runs on. Listed by date only: by project, the heading says it. */}
                 <span class="sub" aria-hidden="true">{p.s.machine ? `${machineLabel(p.s.machine)} · ${p.s.projectName}` : p.s.projectName}</span>
@@ -510,7 +500,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
-                    <RowLead s={p.s} unread={unread()} picked={picked()} />
+                    <RowLead s={p.s} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                     <Show when={p.s.machine}>
                         <span class="slim-at">{p.s.machine}</span>
@@ -518,7 +508,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                 </button>
                 <span class="slim-end">
                     <span class="t">
-                        <RowEnd s={p.s} />
+                        <RowEnd s={p.s} unread={unread()} />
                     </span>
                     <span class="slim-acts">
                         <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>

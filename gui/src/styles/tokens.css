@@ -200,6 +200,8 @@
     --accent-ink: #ffffff;
 
     --ok: #0b5a30;
+    /* A session at work, as a word: fixed whatever accent is picked. */
+    --working: #1d4fc4;
     --warn: #734300;
     --warn-bg: rgba(255, 179, 64, 0.16);
     --danger: #9b1c16;
@@ -294,6 +296,7 @@
     --accent-ink: #ffffff;
 
     --ok: #74de9d;
+    --working: #8eaefc;
     --warn: #ffc15c;
     --warn-bg: rgba(255, 179, 64, 0.13);
     --danger: #ffb0aa;
