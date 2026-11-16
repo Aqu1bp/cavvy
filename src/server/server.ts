@@ -105,6 +105,8 @@ interface Conn {
     client: EngineClient;
     /** Everything this socket sends, in order and none dropped (ws-send.ts). */
     out?: OrderedSender;
+    /** A window on another machine: what it's sent is compressed (permessage-deflate). */
+    compress?: boolean;
 }
 
 export async function startServer(o: ServeOptions = {}): Promise<RunningServer> {
@@ -223,7 +225,11 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
+                // A window on another machine (signed in through a tunnel, or reaching an address that isn't loopback):
+                // its messages compressed. A reply streamed at a model's pace was 5.1 bytes a character as message text,
+                // 0.78 on the wire (measured; test/ws-compress.test.ts). This machine's own windows aren't: no link to save.
+                const remote = url.pathname === "/ws" && (who !== undefined || (host !== "127.0.0.1" && host !== "localhost" && req.headers.get("host")?.toLowerCase() === `${host}:${port}`));
+                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}), ...(remote ? { compress: true } : {}) };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -257,11 +263,14 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
         },
         websocket: {
             maxPayloadLength: 48 * 1024 * 1024,
+            // Offered, used only for windows on another machine (Conn.compress). A context of its own per connection
+            // (64 KB): each message's frame and keys are then nearly free (a shared one: 4.2 bytes a character).
+            perMessageDeflate: { compress: "64KB", decompress: false },
             idleTimeout: 120,
             sendPings: true,
             open(ws: ServerWebSocket<Conn>) {
                 sockets.add(ws);
-                const out = (ws.data.out = orderedSender(ws));
+                const out = (ws.data.out = orderedSender(ws, undefined, ws.data.compress));
                 if (ws.data.desktop) {
                     ws.data.desktop.host = attachDesktopHost({ send: (t) => out.send(t), close: (code, reason) => ws.close(code, reason) });
                     log("the desktop app's browser connected");
