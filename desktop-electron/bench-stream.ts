@@ -9,7 +9,8 @@
 //
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
-// streaming fast, sampled each second (does the cost grow with the reply?).
+// streaming fast, sampled each second (does the cost grow with the reply?); a terminal flood, in Cavvy's terminal and
+// (on a Mac) in Terminal.app (--only terminalFlood,terminalAppFlood [--flood-mb 200]).
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -477,6 +478,69 @@ try {
         await sleep(3000);
         await streamWhile([[long, text]], () => phase(`textLong@${n}`, SECONDS));
     }
+    // A terminal flood (B. Terminal flood): the same 200 MB of `yes` in Cavvy's terminal, then (on a Mac) in Terminal.app,
+    // each counted from the command's start to its end: the app drawing it and WindowServer, not `yes` or the shell.
+    const FLOOD_MB = Number(arg("--flood-mb") ?? 200);
+    const FLOOD = `yes 'flood line of output, 0123456789 abcdefghijklmnopqrstuvwxyz' | head -c ${FLOOD_MB}000000`;
+    const flooding = () => Bun.spawnSync(["pgrep", "-f", "flood line of output"]).stdout.toString().trim().length > 0;
+    /** CPU (%) and instructions (M/s) by role, and the seconds, from now until `done`. */
+    const until = async (roles: Map<number, string>, done: () => boolean) => {
+        const t0 = performance.now();
+        const c0 = cpuTimes([...roles.keys()]);
+        const i0 = new Map([...roles.keys()].map((pid) => [pid, instructions(pid)]));
+        while (!done() && performance.now() - t0 < 600_000) await sleep(100);
+        const ran = (performance.now() - t0) / 1000;
+        // And what drawing its last screens costs after the command's done: both apps the same 3 s.
+        await sleep(3000);
+        const wall = (performance.now() - t0) / 1000;
+        const c1 = cpuTimes([...roles.keys()]);
+        const cpuSeconds: Record<string, number> = {};
+        const instructionsM: Record<string, number> = {};
+        for (const [pid, role] of roles) {
+            cpuSeconds[role] = Math.round(((cpuSeconds[role] ?? 0) + (c1.get(pid) ?? 0) - (c0.get(pid) ?? 0)) * 100) / 100;
+            if (role !== "WindowServer") instructionsM[role] = Math.round((instructionsM[role] ?? 0) + (instructions(pid) - (i0.get(pid) ?? NaN)) / 1e6);
+        }
+        return { seconds: Math.round(ran * 10) / 10, countedSeconds: Math.round(wall * 10) / 10, mb: FLOOD_MB, cpuSeconds, instructionsM };
+    };
+    if (want("terminalFlood")) {
+        await show(short);
+        await js(`document.querySelector('button[aria-label="Toggle terminal"]')?.click()`);
+        for (let i = 0; i < 100 && !(await js(`!!document.querySelector('.xterm-helper-textarea')`)); i++) await sleep(100);
+        await sleep(1500);
+        await js(`document.querySelector('.xterm-helper-textarea')?.focus()`);
+        await page.cdp("Input.insertText", { text: FLOOD });
+        const roles = await pids();
+        let started = false;
+        const done = () => (flooding() ? ((started = true), false) : started);
+        await page.cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+        await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        // Over when the command is, and the window has drawn what it was sent (its last bytes reach it after).
+        const r = await until(roles, done);
+        report.phases.terminalFlood = r;
+        console.error(`terminalFlood: ${JSON.stringify(r)}`);
+        await sleep(1500);
+        await js(`document.querySelector('button[aria-label="Toggle terminal"]')?.click()`);
+        await sleep(1500);
+    }
+    if (MAC && want("terminalAppFlood")) {
+        const osa = (script: string) => Bun.spawnSync(["osascript", "-e", script]);
+        osa(`tell application "Terminal" to activate`);
+        await sleep(2000);
+        const roles = new Map<number, string>();
+        for (const pid of Bun.spawnSync(["pgrep", "-x", "Terminal"]).stdout.toString().trim().split("\n").filter(Boolean)) roles.set(Number(pid), "terminalApp");
+        const ws = Bun.spawnSync(["pgrep", "-x", "WindowServer"]).stdout.toString().trim();
+        if (ws) roles.set(Number(ws), "WindowServer");
+        let started = false;
+        const done = () => (flooding() ? ((started = true), false) : started);
+        const run = until(roles, done);
+        osa(`tell application "Terminal" to do script "${FLOOD.replace(/"/g, '\\"')}"`);
+        const r = await run;
+        report.phases.terminalAppFlood = { ...r, note: "Terminal.app, the same command in a window of its own; Cavvy idle behind it" };
+        console.error(`terminalAppFlood: ${JSON.stringify(r)}`);
+        await sleep(1000);
+        osa(`tell application "Terminal" to close front window saving no`);
+    }
+
     // Memory once it's all over and settled.
     await sleep(5000);
     report.memoryAfterMB = rss([...(await pids())]);
