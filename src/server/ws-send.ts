@@ -8,7 +8,7 @@
 
 /** The part of Bun's ServerWebSocket this uses. */
 export interface Sink {
-    send(data: string | Uint8Array): number;
+    send(data: string | Uint8Array, compress?: boolean): number;
     close(code?: number, reason?: string): void;
 }
 
@@ -22,7 +22,8 @@ export interface OrderedSender {
     readonly queued: number;
 }
 
-export function orderedSender(ws: Sink, max = MAX_QUEUED_BYTES): OrderedSender {
+/** `compress`: each message compressed, if the connection agreed to it (permessage-deflate). */
+export function orderedSender(ws: Sink, max = MAX_QUEUED_BYTES, compress = false): OrderedSender {
     const queue: (string | Uint8Array)[] = [];
     let queued = 0;
     let gone = false;
@@ -41,12 +42,12 @@ export function orderedSender(ws: Sink, max = MAX_QUEUED_BYTES): OrderedSender {
             if (gone) return;
             // Behind something still waiting: after it.
             if (queue.length) return wait(d);
-            if (ws.send(d) === 0) wait(d);
+            if (ws.send(d, compress) === 0) wait(d);
         },
         drain() {
             while (queue.length && !gone) {
                 const d = queue[0]!;
-                if (ws.send(d) === 0) return;
+                if (ws.send(d, compress) === 0) return;
                 queue.shift();
                 queued -= size(d);
             }

@@ -172,7 +172,7 @@ performance-plan.md, from builds before this work). "Out of reach" only once a m
 | F. @-mention, 1,000,000 files | Met (Linux) | Plan: 1–4 ms median, 35–42 ms worst. |
 | F. Turn changing 10,000 files | Met (Linux) | Plan: 1.4–1.5 s vs 7.4 s for `git add`. |
 | F. File watchers | Nearly | Plan: 0.12 ms of CPU a second. |
-| G. Bytes per streamed character | Not met | Counted, uncompressed JSON: budget 3.3. |
+| G. Bytes per streamed character | Met on Linux | A window on another machine is sent its messages compressed (permessage-deflate, a 64 KB context per connection): 16,000 characters at 40 every 50 ms, 5.09 bytes a character as message text, 0.78 on the wire; 8,000 at 40 every 10 ms, 0.55 (test/ws-compress.test.ts holds ≤ 1.2). This machine's own windows: uncompressed, 2.66–5.2. Server CPU over the 16,000-character stream: 31–43 ticks compressed vs 28–51 not, within noise (Linux, /proc). Not yet measured through a real tunnel from the Mac. |
 | G. Everything else | Not measured | |
 | H. Opening: first frame finished | Not measured with frame recording | "Worked for" no longer fades in as a page of turns is built (a944406; Linux 0 of 62). |
 | H. Loading earlier turns while scrolling | Not met for "Show earlier" | Mac: wheel up a 200-turn session 0 px over 137 steps; "Show earlier" 0.6 px. |
