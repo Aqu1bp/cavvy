@@ -78,7 +78,7 @@ async function launch() {
     for (let i = 0; !gui; i++) { gui = ((await fetch("http://127.0.0.1:9358/json/list").then((r) => r.json(), () => [])) as any[]).find((t) => t.url.startsWith("cavvy://app")); if (!gui) { if (i > 2000) throw new Error("no window"); await sleep(10); } }
     const page = await connect(gui.webSocketDebuggerUrl);
     const js = async (expression: string) => (await page.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })).result?.result?.value;
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(10); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(10); }
     let server: any = {};
     for (let i = 0; !server.token; i++) { server = ((await Bun.file(metricsFile).json().catch(() => ({}))) as any).server ?? {}; if (i > 200) throw new Error("no server"); if (!server.token) await sleep(100); }
     const rpc = await connect(`ws://127.0.0.1:${server.port}/ws`, ["cavvy.v1", `auth.${server.token}`]);
@@ -142,7 +142,7 @@ async function click(a: App, id: string) {
 }
 /** Opens a session from the sidebar: how long from the click to the frame showing it, or -1 past a minute. */
 async function open(a: App, id: string) {
-    const shown = `!!document.querySelector('[data-session-row="${id}"].cur, [data-session-id="${id}"].cur, [data-session-row="${id}"] .cur') && document.querySelectorAll('.transcript [data-turn]').length > 0`;
+    const shown = `!!document.querySelector('[data-session-row="${id}"].cur, [data-session-id="${id}"].cur, [data-session-row="${id}"] .cur') && document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length > 0`;
     const t0 = await a.js(`performance.now()`);
     await click(a, id);
     const t1 = await a.js(`new Promise((res) => { const t0 = performance.now(); (function check() { let ok = false; try { ok = ${shown}; } catch {} if (ok) requestAnimationFrame(() => res(performance.now())); else if (performance.now() - t0 > 60000) res(-1); else requestAnimationFrame(check); })(); })`);

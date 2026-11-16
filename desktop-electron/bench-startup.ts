@@ -43,7 +43,7 @@ try {
         const pending = new Map<number, (v: any) => void>();
         ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); pending.get(m.id)?.(m); pending.delete(m.id); };
         const js = (expression: string) => new Promise<any>((r) => { const id = ++seq; pending.set(id, (m) => r(m.result?.result?.value)); ws!.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true } })); });
-        for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(5); }
+        for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(5); }
         const interactive = Math.round(performance.now() - spawnedAt);
         await sleep(1500);
         const marks = ((await Bun.file(metricsFile).json().catch(() => ({}))) as { marks?: Record<string, number> }).marks ?? {};

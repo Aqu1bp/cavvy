@@ -1197,6 +1197,11 @@ export class Agent {
         return { texts, context, attachments, ...(transaction ? { transaction } : {}) };
     }
 
+    /** The folder's first snapshot taken now, ahead of the first prompt, which would wait for it (TurnSnapshots.warm). */
+    warmSnapshots() {
+        if (!this.o.isSubagent && this.o.trusted?.()) void this.turnSnapshots?.warm()?.catch(() => undefined);
+    }
+
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
         // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
         const history = this.o.isSubagent ? undefined : this.state.fileHistory;

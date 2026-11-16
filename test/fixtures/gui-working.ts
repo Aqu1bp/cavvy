@@ -7,6 +7,7 @@ import * as format from "../../gui/src/lib/format";
 import * as live from "../../gui/src/lib/live-line";
 import * as notices from "../../gui/src/lib/notices";
 import { splitComments } from "../../gui/src/lib/review-comments";
+import * as cards from "../../gui/src/lib/cards";
 
 // Compile the actual turn, its live line and activity grouping; replace only leaf widgets and
 // the DOM boundary. The real Solid renderer maintains child order and removal.
@@ -21,7 +22,7 @@ const stub = () => node("widget");
 const prefs = { showThinking: true, expandActivity: false, motion: "instant" };
 const scope = {
     RenderBoundary: boundary(undefined, (e) => console.error(e)), splitComments,
-    ...format, ...live, ...notices, now: clock, prefs, findReveal: () => undefined,
+    ...format, ...live, ...notices, ...cards, now: clock, prefs, findReveal: () => undefined,
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub,

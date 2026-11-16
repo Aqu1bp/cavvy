@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
-import { LAG_MS, revealEnd, revealStep } from "../gui/src/lib/reveal";
+import { LAG_MS, lagFor, MAX_LAG_MS, nextGap, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
 import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
@@ -39,6 +39,10 @@ test("incremental Markdown agrees with a fresh parse at every streamed character
         "Done.\n\nStreams **every event** and `inline` code, *em* and ~~gone~~.\n\n1. **Prompt** — `Composer`\n2. **Model call** — opens a stream\n   - text deltas\n   - tool calls\n\nAfter.",
         "Intro.\n\n## What each side owns\n\n| Part | Owns |\n| --- | --- |\n| Server | sessions |\n| GUI | scroll |\n\nThe end.",
         "Para.\n\n```ts\nconst a = `x`;\n```\n\n---\n\nSee docs and snake_case_names.",
+        // A fence in a list item ends with the item: what's after isn't read as code still open.
+        "- ```\n  code\n  ```\n\nAfter.\n\n- b",
+        "1. ```ts\n  open\n\n- b",
+        "- a\n  ```\n  open\n- b\n\nAfter.\n\n-",
     ];
     for (const sample of cases) {
         const incremental = new MarkdownRenderer();
@@ -91,6 +95,143 @@ test("long Markdown lexes only the growing block on append, with safe full-parse
     for (let i = 0; i < 100; i++) { text += "word "; linked.segments(text, true); }
     expect(chars).toBeLessThan(30_000);
 });
+
+test("code that reads like a link definition, an open code block, and the end of the reply aren't lexed whole again", () => {
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    const stream = (text: string) => {
+        const r = new MarkdownRenderer();
+        chars = 0;
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        r.segments(text, false);
+        return chars / text.length;
+    };
+    try {
+        const prose = Array.from({ length: 60 }, (_, i) => `Paragraph ${i} says what it does and why, in a sentence or two.\n\n`).join("");
+        // "]:" is in code all the time; it used to make every later update lex the whole reply.
+        expect(stream("```ts\ninterface Bag {\n    [key: string]: number;\n}\n```\n\n" + prose)).toBeLessThan(5);
+        expect(stream("```py\ndef f(x) -> dict[str, int]:\n    pass\n```\n\n" + prose)).toBeLessThan(5);
+        // A long code block, written a few characters at a time.
+        const code = "Here it is.\n\n```ts\n" + Array.from({ length: 300 }, (_, i) => `    const part${i} = input.slice(${i}).trim();\n`).join("") + "```\n\nDone.";
+        expect(stream(code)).toBeLessThan(2);
+        // A list, a quote and a table are closed by the text that starts after them.
+        const blocks = Array.from({ length: 20 }, (_, i) => `- item ${i}\n- another\n\n> quoted ${i}\n\n| a | b |\n| --- | --- |\n| ${i} | x |\n\nText ${i}.\n\n`).join("");
+        expect(stream(blocks)).toBeLessThan(6);
+    } finally {
+        Marked.prototype.lexer = lexer;
+    }
+});
+
+test("incremental Markdown agrees with a fresh parse on replies made of every kind of block", () => {
+    const pieces = [
+        "Para one.", "Para with *em* and `code`.", "# H1", "Setext\n===", "Setext two\n---", "---",
+        "- a\n- b", "- a\n\n- b", "1. one\n2. two", "- a\n  continued", "- a\n\n  indented para", "- a\n    - deep\n- b",
+        "> quote", "> q\nlazy", "> q\n>\n> more", "| a | b |\n| --- | --- |\n| 1 | 2 |",
+        "    indented code", "```\nfence\n```", "```ts\nconst x: { [k: string]: number } = {};\n```", "~~~py\ndef f(x) -> dict[str, int]:\n    pass\n~~~", "```  ts  \nx\n```",
+        "<div>\nhtml\n</div>", "<!-- c\n\nstill -->", "[ref]: https://example.com", "See [ref] and [x][ref].",
+        "Text\n- list right after", "Text\n> quote right after", "  two-space para", "\tTabbed", "-", "1.", "#", ">",
+    ];
+    let seed = 1;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    for (let n = 0; n < 250; n++) {
+        const parts = Array.from({ length: 3 + Math.floor(rand() * 7) }, () => pieces[Math.floor(rand() * pieces.length)]!);
+        const sample = parts.map((p, i) => p + (i < parts.length - 1 ? ["\n\n", "\n", "\n\n\n"][Math.floor(rand() * 3)] : "")).join("");
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+});
+
+test("a long list written a character at a time renders as a fresh parse would, however its items read", () => {
+    // Only a list's last item is lexed again as it grows (markdown.ts listTail): what's before it, its looseness and
+    // where it ends must come out as the whole list lexed again would.
+    const items = [
+        "- a", "- **bold** item with `code`", "- [ ] task", "- [x] done task", "* star", "+ plus", "1. one", "2) paren", "10. ten",
+        "- a\n  continued", "- a\nlazy line", "- a\n\n  second para", "- a\n  - nested\n  - more", "- a\n    - deep",
+        "- a\n\n      indented code", "- ```\n  code\n  ```", "- ```ts\n  open fence", "- a\n  > quote", "- a\n  | t | u |\n  | - | - |\n  | 1 | 2 |",
+        "- a\n  ```\n  open", "- a\n  ~~~\n  x\n  ~~~", "- a\n  - ```sh\n    nested", "- - -", "* * *", "-", "1.", "- # heading", "-   wide", "- a\n---", "- a\n===", "- <div>", "- see [x](https://example.com)",
+    ];
+    const joins = ["\n", "\n", "\n", "\n\n", "\n\n\n", "\n  ", "\n\nAfter.\n\n"];
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)]!;
+    for (let n = 0; n < 300; n++) {
+        // Mostly one kind of marker, as a list is written; sometimes another.
+        const kind = pick(["- ", "* ", "1. ", "2) "]);
+        const parts = Array.from({ length: 3 + Math.floor(rand() * 8) }, () => {
+            const item = pick(items);
+            return rand() < 0.7 ? item.replace(/^(?:[-*+]|\d+[.)]) /, kind) : item;
+        });
+        const sample = (rand() < 0.5 ? "Intro.\n\n" : "") + parts.map((p, i) => p + (i < parts.length - 1 ? (rand() < 0.75 ? "\n" : pick(joins)) : "")).join("");
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+}, 120_000);
+
+test("a table written a character at a time renders as a fresh parse would, whatever its rows", () => {
+    // Only a table's last row is lexed again as it grows, with its header (markdown.ts tableTail).
+    const heads = ["| a | b |\n| --- | --- |", "| a | b | c |\n|:--|:-:|--:|", "a | b\n--- | ---", "| a |\n|---|", "| a | b |\n| - |"];
+    const rows = ["| 1 | 2 |", "| **x** | `y` |", "| 1 | 2 | 3 | 4 |", "| 1 |", "1 | 2", "|  |  |", "| a \\| b | c |", "| [l](https://e.com) | x |", "| - | - |", "|", "| ``` | x |", "- item", "> q", "```", "# h", "    code"];
+    const joins = ["\n", "\n", "\n", "\n", "\n\n", "\n\nAfter.\n\n"];
+    let seed = 11;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)]!;
+    for (let n = 0; n < 200; n++) {
+        const parts = [pick(heads), ...Array.from({ length: 2 + Math.floor(rand() * 8) }, () => (rand() < 0.75 ? pick(rows.slice(0, 9)) : pick(rows)))];
+        const sample = pick(["", "Intro.\n\n", "Intro.\n", "| x |\n\n", "- a\n\n"]) + parts.map((p, i) => p + (i < parts.length - 1 ? (i === 0 || rand() < 0.8 ? "\n" : pick(joins)) : "")).join("") + pick(["", "\n", "\n\nEnd."]);
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i++) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
+        }
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+    }
+}, 120_000);
+
+test("a long paragraph written a word at a time renders as a fresh parse would, whatever its inline marks", () => {
+    // What a line of a reply or of reasoning holds: a paragraph's words before the last space are rendered once, so
+    // nothing written after may change how they read.
+    const words = [
+        "word", "another", "x", "1", "2024", "a.b", "end.", "(aside)", "—", "naïve", "日本語",
+        "`code`", "``co`de``", "`a b`", "`open", "```", "``", "**bold**", "**two words**", "*em*", "_em_", "__strong__", "*", "**", "_", "__",
+        "a*b*c", "snake_case_name", "_init_", "**open", "*open", "close**", "close*", "~~gone~~", "~single~", "~", "~~",
+        "src/lib/markdown.ts:42", "./x.ts", "~/notes.md", "missing/file.ts", "https://example.com/a_b_c", "www.example.com", "me@example.com",
+        "[link](https://example.com)", "[text]", "]", "[", "<b>", "<", ">", "a<b", "\\*", "\\", "&amp;", "&", "|", "a|b", "#", "1.", "-", "+",
+        "!", "![img](x.png)", "\"quoted\"", "'single'",
+    ];
+    // Marks alone, densely: code spans of every length against each other, and emphasis of every kind.
+    const marks = ["`", "``", "```", "`a", "a`", "``a", "a``", "`a b`", "*", "**", "***", "_", "__", "*a", "a*", "**a", "a**", "_a", "a_", "a", "b", "a*b", "a_b"];
+    const known = new Set(["src/lib/markdown.ts", "./x.ts"]);
+    const look = (p: string) => (known.has(p) ? `/repo/${p.replace(/^\.\//, "")}` : p.startsWith("missing/") ? null : undefined);
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)]!;
+    for (let n = 0; n < 400; n++) {
+        const line = () => {
+            const first = pick(["Then", "The", "Now", "**Note:**", "*Aside*", "`x`", "_why_", "2 things", "Ok"]);
+            const from = n % 2 ? marks : words;
+            return [first, ...Array.from({ length: 4 + Math.floor(rand() * 30) }, () => pick(from))].join(pick([" ", " ", " ", "  "]));
+        };
+        const sample = Array.from({ length: 1 + Math.floor(rand() * 3) }, line).join(pick(["\n\n", "\n\n", "\n"])) + pick(["", " ", "  ", "*", "`"]);
+        for (const l of [undefined, look]) {
+            const incremental = new MarkdownRenderer();
+            const fresh = (text: string, streaming = true) => new MarkdownRenderer().segments(text, streaming, l).map((s) => (s.kind === "html" ? s.html : s.code));
+            for (let i = 0; i <= sample.length; i += 1 + Math.floor(rand() * 3)) {
+                const text = sample.slice(0, i);
+                expect({ text, seen: incremental.segments(text, true, l).map((s) => (s.kind === "html" ? s.html : s.code)) }).toEqual({ text, seen: fresh(text) });
+            }
+            expect({ sample, seen: incremental.segments(sample, false, l).map((s) => (s.kind === "html" ? s.html : s.code)) }).toEqual({ sample, seen: fresh(sample, false) });
+        }
+    }
+}, 60_000);
 
 /** What a reader would see of the non-code blocks: text with the tags taken out. */
 const prose = (r: MarkdownRenderer, text: string) => r.segments(text, true).filter((s) => s.kind === "html").map((s) => (s as { html: string }).html.replace(/<code>[^<]*<\/code>/g, "").replace(/<[^>]+>/g, "")).join("\n");
@@ -183,17 +324,35 @@ test("reveal drains a burst at one speed by its deadline, never crawls, and stop
     expect(revealEnd("x https://example.com/a/very/long/path", 0, 3)).toBe(19);
 });
 
+test("a stream that comes in bursts runs as far behind as they're apart, a steady one hardly at all", () => {
+    // Text comes in on the clock's steps: steady, 50ms apart.
+    let gap: number | undefined;
+    for (let i = 0; i < 10; i++) gap = nextGap(gap, 50);
+    expect(lagFor(gap)).toBe(LAG_MS);
+    // A paragraph every half second: each one sweeps in over most of the wait for the next, no more than the most.
+    gap = undefined;
+    for (let i = 0; i < 10; i++) gap = nextGap(gap, 500);
+    expect(lagFor(gap)).toBe(MAX_LAG_MS);
+    // One long wait (a tool) doesn't hold the words after it back for long: steady again, the lag comes back down.
+    gap = nextGap(gap, 60_000);
+    expect(gap).toBeLessThanOrEqual(MAX_LAG_MS * 2);
+    for (let i = 0; i < 12; i++) gap = nextGap(gap, 50);
+    expect(lagFor(gap)).toBe(LAG_MS);
+    expect(lagFor(undefined)).toBe(LAG_MS);
+});
+
 test("what just came out is drawn lighter by its age, then plain", () => {
-    expect(TRAIL_MS).toEqual([35, 70, 120]);
-    expect([0, 34, 35, 69, 70, 119, 120, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, -1, -1]);
+    // A tier a step of the stream clock (50ms), the boundaries between steps.
+    expect(TRAIL_MS).toEqual([25, 75, 125, 175, 225, 275, 325]);
+    expect([0, 24, 25, 50, 75, 100, 150, 200, 250, 300, 325, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, 3, 4, 5, 6, -1, -1]);
 });
 
 test("streamed text has no animation: the trail is static opacity, none with Reduce motion", () => {
     const css = readFileSync(new URL("../gui/src/styles/markdown.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/md-fresh/);
     expect(css).not.toMatch(/code\.fresh/);
-    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf(".md-caret,"));
-    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.45], ["2", 0.7], ["3", 0.88]]);
+    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf("}\n}\n", css.indexOf("@media (prefers-reduced-motion: no-preference)")) + 4);
+    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.12], ["2", 0.28], ["3", 0.45], ["4", 0.61], ["5", 0.75], ["6", 0.87], ["7", 0.95]]);
     expect(trail).not.toMatch(/animation|transition/);
     // Outside that media query nothing draws the tiers.
     expect(css.replace(trail, "")).not.toMatch(/md-t\d/);

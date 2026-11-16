@@ -172,7 +172,14 @@ test("find goes through to App, which decides what it does (nothing under Settin
     expect(f.closes).toBe(1);
 });
 
-test("global shortcuts stay inside the menu except the command palette and find", () => {
+test("Settings goes through to App too: the menu closes", () => {
+    const f = fixture(); f.tick();
+    const settings = f.key(",", paletteModifier);
+    expect(settings.stopped).toBe(false);
+    expect(f.closes).toBe(1);
+});
+
+test("global shortcuts stay inside the menu except the command palette, find and Settings", () => {
     const f = fixture(); f.tick();
     expect(f.key("n", { metaKey: true }).stopped).toBe(true);
     const composing = f.key("Escape", { isComposing: true });

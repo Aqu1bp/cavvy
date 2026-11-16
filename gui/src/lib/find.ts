@@ -2,125 +2,29 @@
 // so pages not drawn yet and rows folded away count too; the one being shown
 // is then looked up in the page, once the rows around it are open.
 
-import { foldCase, type Block, type Turn } from "@shared/protocol";
-import { cardOf } from "../components/blocks/Activity";
-import { planTitle } from "./plan-chat";
-import { commandDescription, sameInARow, toolLabel } from "./tool-words";
-import { commandLabel, commandMeta, firstStep, liveCommand, outputLines } from "./command-row";
-import { stripAnsi } from "./format";
-import { renderMarkdown } from "./markdown";
-import { splitComments } from "./review-comments";
-import { noticeReads } from "./notices";
+import { foldCase, type Turn } from "@shared/protocol";
+import { findMatches, MAX_MATCHES, type FindMatch } from "./find-text";
 
-/** More than this and the count says "N+". */
-export const MAX_MATCHES = 5000;
-
-export interface FindMatch {
-    turnId: string;
-    /** The row it's in: "prompt", or a block's id (the element with that data-find). */
-    part: string;
-    /** Which match in that row. */
-    n: number;
-}
-
-const shownText = new Map<string, string>();
-
-/** Markdown as it reads on the page: rendered the way the transcript renders it, then its text. */
-function plain(md: string): string {
-    let text = shownText.get(md);
-    if (text === undefined) {
-        text = new DOMParser().parseFromString(renderMarkdown(md), "text/html").body.textContent ?? md;
-        // Finished replies don't change; a streaming one is a new key each time, so old ones go.
-        if (shownText.size > 4000) shownText.clear();
-        shownText.set(md, text);
-    }
-    return text;
-}
+export { MAX_MATCHES, findMatches, findParts, plain, type FindMatch } from "./find-text";
 
 /**
- * What a block shows, as find sees it. Thinking isn't searched; a tool row is its title and summary, not its
- * output (its details are for reading, not searching); a finished command's row is its command and output too.
+ * Every match, in the turns' order: those the server found (`there`: in turns the window hasn't, and in those it has
+ * folded, which it can't count itself), then each of the window's turns, counted here or (folded) there, with those
+ * of the turns its gap stands for after `gapAfter`. Those of a turn that has come in whole since it was asked are
+ * counted here. At most MAX_MATCHES.
  */
-/** `counted`: the first of a run of the same call, drawn as one row with a count and no result (sameInARow). */
-function blockText(b: Block, counted = false): string | undefined {
-    switch (b.t) {
-        case "text":
-            return plain(b.text);
-        case "tool": {
-            const l = toolLabel(b);
-            // A sub-agent's row starts with its task, not the word "Agent", running or not.
-            if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
-            // A plan's card: its title (the rest is a faded glimpse; the plan dialog has all of it).
-            if (cardOf(b) === "plan") return b.status === "streaming" || b.status === "queued" ? undefined : planTitle(String(b.input?.plan ?? "")) || "Plan";
-            if (cardOf(b) === "command") {
-                // As its row reads folded: its label (what it's for, or the command shortened) and what it came to;
-                // opened, all of the command and its output.
-                if (b.status === "streaming") return undefined;
-                // Under way, the turn's live line shows it: what it says after its label is what find counts there.
-                if (b.status === "running" || b.status === "queued") return liveCommand(b);
-                if (b.status === "awaiting") return commandDescription(b) ?? firstStep(String(b.input?.command ?? ""));
-                const head = [commandLabel(b), commandMeta(b)].filter(Boolean).join(" ");
-                const command = String(b.input?.command ?? "").trim();
-                // Its output as the opened row draws it (without the exit code the tool adds: the footer, which find skips, says it).
-                const output = outputLines(b.output, b.status === "error").join("\n");
-                return [head, command || undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
-            }
-            // Still running: its argument, which its live row shows as long as it runs (nothing while the call is still arriving).
-            if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
-            if (b.status === "streaming") return undefined;
-            // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
-            // A card (an edit, a command) doesn't show its verb: it's there for the screen reader only.
-            const meta = counted ? undefined : b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
-            return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
-        }
-        case "peer":
-            // A message from another session that joined the turn, as it's quoted.
-            return b.text;
-        case "notice":
-            // As it reads opened (lib/notices.ts): its title or line, then what folds under it.
-            return noticeReads(b, Date.now());
-        case "compact":
-            return plain(b.summary);
-        case "shell":
-            return `${b.command}\n${stripAnsi(b.output)}`;
-        default:
-            return undefined;
-    }
-}
-
-export function findParts(turn: Turn): { part: string; text: string }[] {
-    const out: { part: string; text: string }[] = [];
-    if (turn.prompt?.text) {
-        // As drawn: the typed text, then each review comment's text (their markup isn't shown).
-        const { text, comments } = splitComments(turn.prompt.text);
-        out.push({ part: "prompt", text: [text, ...comments.map((c) => c.text)].filter(Boolean).join("\n") });
-    }
-    // The same call made again in a row is drawn once, counted (Activity.tsx StepRows): no row of its own to find in.
-    const same = sameInARow(turn.blocks, { apart: (t) => Boolean(cardOf(t)) });
-    for (const b of turn.blocks) {
-        if (same.joined.has(b.id)) continue;
-        const text = blockText(b, same.more.has(b.id));
-        if (text) out.push({ part: b.id, text });
-    }
-    return out;
-}
-
-/** Every place `query` (literal, any case) appears, in order. */
-export function findMatches(turns: readonly Turn[], query: string): FindMatch[] {
-    const q = foldCase(query);
-    const out: FindMatch[] = [];
-    if (!q) return out;
-    for (const t of turns) {
-        for (const p of findParts(t)) {
-            const f = foldCase(p.text);
-            let n = 0;
-            for (let i = f.indexOf(q); i >= 0; i = f.indexOf(q, i + q.length)) {
-                out.push({ turnId: t.id, part: p.part, n: n++ });
-                if (out.length >= MAX_MATCHES) return out;
-            }
-        }
-    }
-    return out;
+export function allMatches(turns: readonly Turn[], query: string, there: readonly (FindMatch & { gap?: true })[], gapAfter?: string): FindMatch[] {
+    const here = findMatches(turns.filter((t) => !t.folded), query);
+    if (!there.length) return here;
+    const whole = new Set(turns.filter((t) => !t.folded).map((t) => t.id));
+    const has = new Set(turns.map((t) => t.id));
+    const byTurn = new Map<string, FindMatch[]>();
+    for (const m of [...there.filter((x) => has.has(x.turnId) && !whole.has(x.turnId)), ...here]) byTurn.set(m.turnId, [...(byTurn.get(m.turnId) ?? []), m]);
+    // Those of turns that came in since it was asked (the gap filled) are counted with them; for a gap the window no
+    // longer holds, it's asked again.
+    const inGap = gapAfter && has.has(gapAfter) ? there.filter((m) => m.gap && !has.has(m.turnId)) : [];
+    const before = there.filter((m) => !has.has(m.turnId) && !m.gap);
+    return [...before, ...turns.flatMap((t) => (t.id === gapAfter ? [...(byTurn.get(t.id) ?? []), ...inGap] : byTurn.get(t.id) ?? []))].slice(0, MAX_MATCHES);
 }
 
 /**
@@ -182,6 +86,13 @@ export function textRanges(root: Node, query: string): Range[] {
 export function revealInBoxes(r: Range, outer: Element) {
     for (let el = r.startContainer.parentElement; el && el !== outer; el = el.parentElement) {
         const cs = getComputedStyle(el);
+        // One skipped while out of sight (a reply's code block, transcript.css) measures as if it held nothing: drawn
+        // for this, and left to the page again at the next frame, once the caller has brought it into view.
+        if (cs.contentVisibility === "auto") {
+            const box = el as HTMLElement;
+            box.style.contentVisibility = "visible";
+            requestAnimationFrame(() => box.style.removeProperty("content-visibility"));
+        }
         const sy = el.scrollHeight > el.clientHeight && /auto|scroll/.test(cs.overflowY);
         const sx = el.scrollWidth > el.clientWidth && /auto|scroll/.test(cs.overflowX);
         if (!sx && !sy) continue;

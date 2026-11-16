@@ -2,10 +2,11 @@
 // window, and over them the theme's background, as much of it as text needs (measured from the scene's own pixels:
 // palette.ts veilFor). A new scene is drawn out of sight, then put up with the theme's colours in one crossfade
 // (state/theme.ts putUp). What moves is the compositor's alone
-// (lib/theme-motion.ts); layers for "working" show while the session on screen works. With nobody at the window it
-// stops where it is, and carries on from there at the next touch (away).
+// (lib/theme-motion.ts); layers for "working" show while the session on screen works. It moves only while Cavvy can be
+// seen and has the focus (lib/loops.ts), and with nobody at the window it stops where it is; either way it carries on
+// from there.
 
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import type { Layer, Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
 import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette";
@@ -13,6 +14,7 @@ import { parseHex, rgba } from "../../../src/themes/color";
 import { frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { away } from "../lib/away";
+import { carryOn } from "../lib/loops";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
 import { drawnTheme, onScreen, sceneKey, sceneReady, shown, type Shown } from "../state/theme";
@@ -195,6 +197,8 @@ export function ThemeBackdrop(): JSX.Element {
     const upKey = () => upNow()?.key;
     const still = () => !prefs.themeMotion;
     const resting = away(() => !still() && Boolean(upNow()?.shown.look.layers?.some((l) => l.motion)));
+    // Back from away: on the grid again, from where each stopped (getAnimations brings the play state up to date).
+    createEffect(on(resting, (now, was) => was && !now && carryOn(root.getAnimations({ subtree: true })), { defer: true }));
     createEffect(() => {
         const s = shown();
         // A theme with no scene is drawn as soon as it's on <html>.
@@ -221,7 +225,7 @@ export function ThemeBackdrop(): JSX.Element {
         onCleanup(() => ro.disconnect());
     });
     return (
-        <div ref={root} class="theme-backdrop" aria-hidden="true" data-still={still() ? "" : undefined} data-away={resting() ? "" : undefined} hidden={!upKey()}>
+        <div ref={root} class="theme-backdrop" aria-hidden="true" data-loop-keeps data-still={still() ? "" : undefined} data-away={resting() ? "" : undefined} hidden={!upKey()}>
             <For each={scenes()}>{(x) => <Scene shown={x.shown} sceneKey={x.key} up={x.key === upKey()} />}</For>
         </div>
     );

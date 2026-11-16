@@ -253,7 +253,7 @@
 }
 
 /* A narrow column: the title has the room, not a stub of the branch. */
-:where(.main[data-narrow~="640"]) .br {
+:where(.main[data-narrow~="640"], .stage-pane[data-narrow~="640"]) .br {
     display: none;
 }
 
@@ -373,16 +373,16 @@ button.bc:hover {
 }
 
 /* Getting narrow: the title gives up room first, so the session's own title keeps some. */
-:where(.main[data-narrow~="700"]) .needs {
+:where(.main[data-narrow~="700"], .stage-pane[data-narrow~="700"]) .needs {
     max-width: calc(220 * var(--sp));
 }
 
 /* Under 600px: just the hand and how many. */
-:where(.main[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
     display: none;
 }
 
-:where(.main[data-narrow~="600"]) .needs {
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs {
     padding: 0 calc(11 * var(--sp));
 }
 
@@ -391,7 +391,7 @@ button.bc:hover {
     display: none;
 }
 
-:where(.main[data-narrow~="600"]) .needs .needs-one {
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs .needs-one {
     display: inline;
 }
 
@@ -443,4 +443,16 @@ button.bc:hover {
 /* A shortcut at the end of a menu row (the session menu's Find). */
 .menu-kbd {
     margin-left: auto;
+}
+
+/* A session of two side by side, narrow (the room its title bar has: Panes.tsx data-bar): the title keeps the room.
+   The project before it and the branch after it go first; then the window's own toggles (the terminal, the side panel), as they have
+   shortcuts and are in the command palette; then the count of changed lines, the project's scripts, and the changes
+   button (Review changes is in the conversation). */
+.stage-pane[data-bar~="640"] .header :is(.proj-box, .br),
+.stage-pane[data-bar~="440"] .header .hb.win,
+.stage-pane[data-bar~="440"] .header .diffchip :is(.a, .d),
+.stage-pane[data-bar~="360"] .header :is(.script-split, .scripts-sep),
+.stage-pane[data-bar~="240"] .header :is(.diffchip, .diffchip + .sep) {
+    display: none;
 }

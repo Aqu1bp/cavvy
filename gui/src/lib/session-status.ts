@@ -12,7 +12,9 @@ export function sessionStatus(s: SessionSummary, now: number): { text: string; t
     }
     if (s.status === "running") {
         const ms = s.turnStartedAt === undefined ? 0 : Math.max(0, now - s.turnStartedAt);
-        return { text: ms >= 1000 ? `Working ${duration(ms).replace(/ \d+s$/, "")}` : "Working", tone: "info" };
+        // By the minute: it's a row's tooltip and spoken label, worked out each second (by the second, each working row's
+        // two labels changed each second: restyled, and read out again).
+        return { text: ms >= 60_000 ? `Working ${duration(ms).replace(/ \d+s$/, "")}` : "Working", tone: "info" };
     }
     if (s.status === "error") return { text: "Stopped", tone: "err" };
     if (s.messages > 0) return { text: "Done", tone: "muted" };

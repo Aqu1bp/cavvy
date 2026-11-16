@@ -600,6 +600,7 @@
     border: 1.5px solid color-mix(in srgb, var(--rail-fg) 26%, transparent);
     border-top-color: var(--rail-fg);
     animation: spin 0.9s steps(18) infinite;
+    animation-play-state: var(--loops);
 }
 
 /* Words coming out say it's working: this would have the window drawn again for no news (lib/reveal.ts). */
@@ -1291,4 +1292,10 @@
 
 [data-motion="instant"] .rail-sel {
     animation: none;
+}
+
+/* In a split, the session beside the open one: a faint fill, no outline (that's the open one's). */
+.card.beside,
+.slim.beside {
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
 }

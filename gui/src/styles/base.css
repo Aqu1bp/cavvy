@@ -284,6 +284,23 @@ h3 {
 
 /* ---- Motion ---- */
 
+/* Looping motion runs only where it can be seen, and the decorative only while Cavvy has the focus (lib/loops.ts). Each
+   endless animation's play state is one of these. */
+:root {
+    --loops: running;
+    --decor: running;
+}
+
+:root[data-decor-off] {
+    --decor: paused;
+}
+
+:root[data-loops-off],
+[data-loop-out] {
+    --loops: paused;
+    --decor: paused;
+}
+
 @keyframes spin {
     to {
         transform: rotate(360deg);
@@ -300,6 +317,7 @@ h3 {
 
 .spinner {
     animation: spin 0.8s steps(16) infinite;
+    animation-play-state: var(--loops);
 }
 
 @keyframes pulse {
@@ -310,6 +328,7 @@ h3 {
 
 .pulse {
     animation: pulse 1.4s steps(14) infinite;
+    animation-play-state: var(--loops);
 }
 
 /* A continuous compositor animation. Text stays readable without repainting
@@ -322,6 +341,7 @@ h3 {
 .shimmer {
     color: var(--fg-2);
     animation: shimmer 2.2s steps(22) infinite;
+    animation-play-state: var(--decor);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -365,6 +385,7 @@ h3 {
     }
     .spinner {
         animation: spin 1.6s steps(32) infinite !important;
+        animation-play-state: var(--loops) !important;
     }
 }
 

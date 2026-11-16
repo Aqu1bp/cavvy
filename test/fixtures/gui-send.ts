@@ -41,7 +41,7 @@ function submit() {
     }).then((ok) => { if (ok) draft.clearSent(submitted, ok === "command"); return ok; });
 }
 mock.module("../../gui/src/state/app", () => ({
-    app, rpc, reportError: (e: unknown) => errors.push(e),
+    app, rpc, rpcFor: () => rpc, modelsFor: () => app.models, refreshModelsFor: noop, connFor: () => app.conn, awayMachine: () => undefined, machineFor: () => undefined, homeCwdAfter: () => app.homeCwd, reportError: (e: unknown) => errors.push(e),
     toast: (text: string, _level: string, action: any) => notices.push({ text, action }),
     createSession: async () => { created++; return { id: "created" }; }, setApp: (key: string, value: any) => {
         Object.assign(app, { [key]: value });
@@ -50,7 +50,7 @@ mock.module("../../gui/src/state/app", () => ({
             composer = mount(value ?? "home");
         }
     },
-    activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, noModel: () => false, refreshModels: noop, refreshProjects: noop,
+    activate: noop, agentReady: async () => {}, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, noModel: () => false, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop, serversUi: noop,
 }));
 // No servers here: the window is on this computer.
@@ -64,6 +64,7 @@ mock.module("../../gui/src/state/ui", () => ({
         "setModelPickerOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax", "railOpen", "setRailOpen", "freeRail",
     ].map((name) => [name, noop])),
     shellLayout: () => ({ railMode: "dock" }),
+    splitActions: {},
 }));
 const { send } = await import("../../gui/src/state/actions");
 const textFile = "# attached notes\n";

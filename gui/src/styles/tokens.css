@@ -122,6 +122,19 @@
     --shiki-token-punctuation: var(--fg-2);
     --shiki-token-link: var(--syn-type);
 }
+/* Highlighted code's tokens (highlight-core.ts tokenClass): classes, shared, not a style on each span. */
+.sk-foreground { color: var(--shiki-foreground); }
+.sk-keyword { color: var(--shiki-token-keyword); }
+.sk-string { color: var(--shiki-token-string); }
+.sk-string-expression { color: var(--shiki-token-string-expression); }
+.sk-comment { color: var(--shiki-token-comment); }
+.sk-function { color: var(--shiki-token-function); }
+.sk-constant { color: var(--shiki-token-constant); }
+.sk-parameter { color: var(--shiki-token-parameter); }
+.sk-punctuation { color: var(--shiki-token-punctuation); }
+.sk-link { color: var(--shiki-token-link); }
+.sk-i { font-style: italic; }
+.sk-b { font-weight: 600; }
 
 /* ---- Light ------------------------------------------------------------ */
 :root,

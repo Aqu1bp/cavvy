@@ -2,7 +2,7 @@
 // (session.turns): pages before a turn it has, back to a message, or all, as the server's view has them now.
 import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
-import type { SessionOp, SessionState, Turn } from "../src/server/protocol";
+import type { AgentRun, SessionOp, SessionState, Turn } from "../src/server/protocol";
 
 const iso = isolate();
 const { Runtime } = await import("../src/server/runtime");
@@ -43,6 +43,15 @@ test("earlier turns come as a page before a turn, back to a message's, or all; w
     expect(rt.turnsBefore("t7", { count: 2, through: { seg: 0, index: 5 } })!.turns[0]!.id).toBe("t2");
     expect(rt.turnsBefore("t7", { all: true })!).toMatchObject({ earlier: 0 });
     expect(rt.turnsBefore("t7", { all: true })!.turns).toHaveLength(7);
+    // Back to a message far up, a page from there (`upTo`), the rest before t7 skipped; the next page after it.
+    expect(rt.turnsBefore("t7", { count: 1, through: { seg: 0, index: 1 }, upTo: 2 })).toMatchObject({ earlier: 0, skipped: 5 });
+    expect(rt.turnsBefore("t7", { count: 1, through: { seg: 0, index: 1 }, upTo: 2 })!.turns.map((t) => t.id)).toEqual(["t0", "t1"]);
+    const next = rt.turnsBefore("t7", { after: "t1", count: 3 })!;
+    expect(next.turns.map((t) => t.id)).toEqual(["t2", "t3", "t4"]);
+    expect(next).toMatchObject({ earlier: 2, skipped: 2 });
+    expect(rt.turnsBefore("t7", { after: "t4", count: 9 })).toMatchObject({ skipped: 0 });
+    // After a turn that isn't before it: nothing.
+    expect(rt.turnsBefore("t3", { after: "t5" })).toBeUndefined();
     // A turn the view doesn't have (replaced by a rewind): nothing, rather than turns from elsewhere.
     expect(rt.turnsBefore("gone", {})).toBeUndefined();
     // Copies: what the window does with them doesn't touch the server's.
@@ -65,10 +74,184 @@ test("an op for a turn the window hasn't been sent changes nothing; the page sen
     expect(windowView.earlier).toBe(0);
 });
 
+test("a reset that says how many turns came before it leaves those to be asked for", () => {
+    const server = runtime(150);
+    const windowView = { ...structuredClone(server.rt.snapshot(100)) };
+    // A rewind of a long session sends the windows its last turns, as an open does, and how many came before.
+    applyOp(windowView, { op: "reset", turns: structuredClone(server.view.turns.slice(50)), earlier: 50 });
+    expect(windowView.turns).toHaveLength(100);
+    expect(windowView.earlier).toBe(50);
+    const page = server.rt.turnsBefore(windowView.turns[0]!.id, { all: true })!;
+    expect(page).toMatchObject({ earlier: 0 });
+    expect(page.turns).toHaveLength(50);
+});
+
+test("a long session rebuilt (a rewind) keeps all its turns, and sends the windows its last 100", () => {
+    const server = runtime(250);
+    const sent: SessionOp[] = [];
+    const rt = server.rt as unknown as { op(o: SessionOp, sent?: SessionOp): void; outbox: SessionOp[]; noteStep(): void; flushTimer?: unknown; engine: unknown };
+    Object.assign(rt, { outbox: sent, noteStep() {}, flushTimer: 1, engine: { sessionShown: () => true } });
+    const turns = structuredClone(server.view.turns);
+    const from = turns.length - 100;
+    rt.op({ op: "reset", turns }, structuredClone({ op: "reset", turns: turns.slice(from), earlier: from }));
+    expect(server.view.turns).toHaveLength(250);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ op: "reset", earlier: 150 });
+    expect((sent[0] as Extract<SessionOp, { op: "reset" }>).turns).toHaveLength(100);
+    // What's sent isn't the view's: a window changing it changes nothing here.
+    (sent[0] as Extract<SessionOp, { op: "reset" }>).turns[0]!.status = "aborted";
+    expect(server.view.turns[150]!.status).toBe("done");
+});
+
+test("a session opens with no more of its last turns than fit the budget, and one at least", () => {
+    const { rt, view } = runtime(50);
+    for (const t of view.turns) (t as { blocks: unknown[] }).blocks = [{ t: "text", id: `${t.id}-b`, text: "x".repeat(1000) }];
+    const size = JSON.stringify(view.turns[49]).length;
+    // Five turns' worth: the five latest (the fifth is the one that reaches it).
+    const five = rt.snapshot(100, size * 5);
+    expect(five.turns.map((t) => t.id)).toEqual(["t45", "t46", "t47", "t48", "t49"]);
+    expect(five.earlier).toBe(45);
+    // Less than one: one.
+    expect(rt.snapshot(100, 10).turns.map((t) => t.id)).toEqual(["t49"]);
+    // `last` still caps it.
+    expect(rt.snapshot(3, size * 100).turns).toHaveLength(3);
+});
+
+test("a session opens with the sub-agents of the turns it sends, and any running, whole; the rest counted, and listed when asked", () => {
+    const { rt, view } = runtime(10);
+    const agent = (id: string, turnId: string, status: AgentRun["status"], more: Partial<AgentRun> = {}): AgentRun => ({ id, turnId, status, description: `does ${id}`, agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, prompt: "the instructions", report: "what it found", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"], ...more });
+    (view as { agents: AgentRun[] }).agents = [agent("old", "t1", "done"), agent("broke", "t1", "failed"), agent("task", "t1", "done", { taskId: "task-1" }), agent("busy", "t2", "running"), agent("new", "t8", "done")];
+    const some = rt.snapshot(3);
+    const byId = Object.fromEntries(some.agents.map((a) => [a.id, a]));
+    // Of a turn it sends, or still running: whole.
+    expect(byId.new).toMatchObject({ blocks: [{ id: "new-b" }], prompt: "the instructions", report: "what it found" });
+    expect(byId.new!.partial).toBeUndefined();
+    expect(byId.busy).toMatchObject({ blocks: [{ id: "busy-b" }], prompt: "the instructions" });
+    // One a background task is: what the list shows of it (the task's row is its row), and no more.
+    expect(byId.task).toEqual({ id: "task", turnId: "t1", status: "done", description: "does task", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, taskId: "task-1", blocks: [], partial: true });
+    // The rest of a turn it doesn't send: counted, not sent; how many failed too (the Finished fold says it).
+    expect(Object.keys(byId).sort()).toEqual(["busy", "new", "task"]);
+    expect(some.agentsMore).toEqual({ count: 2, failed: 1 });
+    // Asked for (the fold shown): each as the list shows it.
+    const list = rt.agentList();
+    expect(list.map((a) => a.id)).toEqual(["old", "broke", "task", "busy", "new"]);
+    expect(list.find((a) => a.id === "old")).toEqual({ id: "old", turnId: "t1", status: "done", description: "does old", agentType: "general-purpose", startedAt: 1, toolCount: 3, tokens: 9, blocks: [], partial: true });
+    // Every turn sent: every sub-agent whole, none counted.
+    const all = rt.snapshot();
+    expect(all.agents.every((a) => !a.partial && a.blocks.length === 1)).toBe(true);
+    expect(all.agentsMore).toBeUndefined();
+    // Its turn's page brings it whole, and so does asking for it.
+    const page = rt.turnsBefore("t7", { count: 10 })!;
+    expect(page.agents?.map((a) => a.id).sort()).toEqual(["broke", "busy", "old", "task"]);
+    expect(page.agents?.find((a) => a.id === "old")).toMatchObject({ prompt: "the instructions", blocks: [{ id: "old-b" }] });
+    expect(rt.agentWhole("old")).toMatchObject({ report: "what it found" });
+    expect(rt.agentWhole("gone")).toBeNull();
+    // Copies: what the window does with them doesn't touch the server's.
+    byId.new!.blocks.length = 0;
+    list[0]!.description = "changed";
+    expect(view.agents[4]!.blocks).toHaveLength(1);
+    expect(view.agents[0]!.description).toBe("does old");
+});
+
 test("a finished step list written before the turns a window has is stale", () => {
     const done = [{ content: "a", status: "completed" }] as never;
     const turns = [{ blocks: [] }, { blocks: [] }];
     expect(stepsStale(done, turns)).toBe(false);
     expect(stepsStale(done, turns, 40)).toBe(true);
     expect(stepsStale(done, [{ blocks: [{ t: "tool", name: "TodoWrite" }] }], 40)).toBe(false);
+});
+
+test("an edit is sent with its change once: in its diff, not again in its input", () => {
+    const { rt, view } = runtime(2);
+    const diff = { path: "a.ts", status: "added", added: 1, removed: 0, hunks: [] };
+    const tool = (id: string, name: string, input: Record<string, unknown>, more: object = {}) => ({ t: "tool", id, name, title: name, status: "ok", input, ...more });
+    view.turns[1]!.blocks = [
+        tool("w", "Write", { file_path: "a.ts", content: "the whole file" }, { diff }),
+        tool("e", "Edit", { file_path: "b.ts", old_string: "x", new_string: "y", replace_all: true }, { diff }),
+        // No diff to show it: its input is what the card shows.
+        tool("n", "MultiEdit", { file_path: "c.ts", edits: [{ old_string: "x", new_string: "y" }] }),
+        // Not an edit: as it is.
+        tool("r", "Bash", { command: "cat a.ts", content: "kept" }, { diff }),
+    ] as Turn["blocks"];
+    const sent = rt.snapshot().turns[1]!.blocks as { id: string; input: Record<string, unknown> }[];
+    expect(sent.map((b) => [b.id, b.input])).toEqual([
+        ["w", { file_path: "a.ts" }],
+        ["e", { file_path: "b.ts", replace_all: true }],
+        ["n", { file_path: "c.ts", edits: [{ old_string: "x", new_string: "y" }] }],
+        ["r", { command: "cat a.ts", content: "kept" }],
+    ]);
+    // The server's own turn keeps all of it (Find, export, rewind read it).
+    expect((view.turns[1]!.blocks[0] as { input: object }).input).toEqual({ file_path: "a.ts", content: "the whole file" });
+});
+
+test("a finished turn's thoughts are sent without their text, which comes when one is opened", () => {
+    const { rt, view } = runtime(3);
+    const thought = (id: string) => ({ t: "thinking", id, text: `thinking about ${id}`, durationMs: 4000 });
+    view.turns[1]!.blocks = [thought("a"), { t: "text", id: "r", text: "the reply" }] as Turn["blocks"];
+    view.turns[2]!.blocks = [thought("b")] as Turn["blocks"];
+    view.turns[2]!.status = "running";
+    const sent = rt.snapshot().turns;
+    // How long it took is what its row shows.
+    expect(sent[1]!.blocks).toEqual([{ t: "thinking", id: "a", text: "", omitted: true, durationMs: 4000 }, { t: "text", id: "r", text: "the reply" }]);
+    // One still being written: as it is (the live line shows its latest line).
+    expect(sent[2]!.blocks[0]).toEqual(thought("b"));
+    expect(rt.turnsBefore("t2", { all: true })!.turns[1]!.blocks[0]).toMatchObject({ text: "", omitted: true });
+    // Asked for: whole. The server's own keeps it.
+    expect(rt.blockWhole("t1", "a")).toEqual(thought("a"));
+    expect(rt.blockWhole("t1", "gone")).toBeNull();
+    expect(rt.blockWhole("gone", "a")).toBeNull();
+    expect((view.turns[1]!.blocks[0] as { text: string }).text).toBe("thinking about a");
+});
+
+test("a window that folds work is sent a finished turn's work with what shows folded, and the turn whole when it's shown", async () => {
+    const { rt, view } = runtime(3);
+    const long = "x".repeat(500);
+    const diff = { path: "a.ts", status: "modified", added: 2, removed: 1, hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [{ t: "ctx", a: 1, b: 1, text: "keep" }, { t: "del", a: 2, text: "old" }, { t: "add", b: 2, text: "new" }, { t: "add", b: 3, text: "more" }] }, { oldStart: 20, oldLines: 1, newStart: 21, newLines: 1, lines: [{ t: "add", b: 21, text: "later" }] }] };
+    const tool = (id: string, name: string, more: object) => ({ t: "tool", id, name, title: name, status: "ok", ...more });
+    view.turns[1]!.blocks = [
+        tool("cmd", "Bash", { input: { command: "npm test", description: "Run the tests" }, output: long, summary: "exit 0" }),
+        tool("left", "Bash", { input: { command: "npm run dev" }, output: "Still running in the background (process 7)." }),
+        tool("ed", "Edit", { input: { file_path: "a.ts", old_string: long, new_string: "y" }, diff, diagnostics: { errors: 1 } }),
+        tool("plan", "ExitPlanMode", { input: { plan: long }, output: long }),
+        tool("sub", "Task", { agent: true, input: { description: "Map it", prompt: long }, output: long }),
+        { t: "text", id: "r", text: "the reply" },
+    ] as Turn["blocks"];
+    view.turns[2]!.status = "running";
+    view.turns[2]!.blocks = [tool("now", "Bash", { input: { command: "ls" }, output: long })] as Turn["blocks"];
+    const agent = (id: string, turnId: string): AgentRun => ({ id, turnId, status: "done", description: id, agentType: "general-purpose", startedAt: 1, toolCount: 1, tokens: 1, report: "found it", blocks: [{ t: "text", id: `${id}-b`, text: "a step" }] as AgentRun["blocks"] });
+    (view as { agents: AgentRun[] }).agents = [agent("sub", "t1")];
+
+    const snap = rt.snapshot(undefined, undefined, true);
+    const [first, folded, running] = snap.turns;
+    // Nothing in it to leave out: as it is.
+    expect(first!.folded).toBeUndefined();
+    expect(folded!.folded).toBe(true);
+    const byId = Object.fromEntries(folded!.blocks.map((b) => [b.id, b as any]));
+    // Its row as it reads folded: its name, what it was for, how it ended; not its output.
+    expect(byId.cmd).toEqual(tool("cmd", "Bash", { input: { command: "npm test", description: "Run the tests" }, summary: "exit 0" }));
+    // A short output (a command left running says so in it: the turn's "Stopped" line reads it).
+    expect(byId.left.output).toBe("Still running in the background (process 7).");
+    // An edit: its file and counts, and its diff as far as its first change (the changes card says where).
+    expect(byId.ed.input).toEqual({ file_path: "a.ts" });
+    expect(byId.ed.diagnostics).toBeUndefined();
+    expect(byId.ed.diff).toEqual({ ...diff, hunks: [{ ...diff.hunks[0], lines: diff.hunks[0]!.lines.slice(0, 2) }] });
+    // A plan's card shows outside the work: whole.
+    expect(byId.plan.input.plan).toBe(long);
+    expect(byId.plan.output).toBe(long);
+    expect(byId.sub.output).toBeUndefined();
+    expect(byId.r.text).toBe("the reply");
+    // One under way: whole.
+    expect(running!.folded).toBeUndefined();
+    expect((running!.blocks[0] as any).output).toBe(long);
+    // Its sub-agents as they're listed (their row is in its work).
+    expect(snap.agents).toEqual([{ ...agent("sub", "t1"), report: undefined, blocks: [], partial: true }].map(({ report: _r, ...a }) => a));
+    // Not folding: whole.
+    expect(rt.snapshot().turns[1]!.folded).toBeUndefined();
+    expect(rt.turnsBefore("t2", { all: true, fold: true })!.turns[1]!.folded).toBe(true);
+    // Shown: whole, and its sub-agents whole.
+    const whole = rt.turnWhole("t1")!;
+    expect(whole.turn.folded).toBeUndefined();
+    expect((whole.turn.blocks.find((b) => b.id === "cmd") as any).output).toBe(long);
+    expect(whole.agents).toEqual([agent("sub", "t1")]);
+    expect(rt.turnWhole("gone")).toBeNull();
 });

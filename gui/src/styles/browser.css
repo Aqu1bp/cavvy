@@ -394,6 +394,7 @@ body.resizing .br-host-tab {
 .br-live.on {
     background: var(--accent);
     animation: pulse 1.8s steps(18) infinite;
+    animation-play-state: var(--loops);
 }
 
 /* The agent's page is 1280×800: the box keeps that shape. */

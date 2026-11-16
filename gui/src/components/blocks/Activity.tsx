@@ -43,7 +43,7 @@ import { short, summarize } from "../../lib/run-summary";
 import { backgroundOf } from "../../lib/background";
 import { agentProvider, agentStep } from "../../lib/agent-marks";
 import { now } from "../../lib/clock";
-import { app, handleFor, reportError, rpc } from "../../state/app";
+import { app, handleFor, loadBlock, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
@@ -55,13 +55,13 @@ import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
+import { cardOf, EDIT_TOOLS, type Card } from "../../lib/cards";
 
 export type Item =
     | { kind: "block"; block: Block }
     | { kind: "activity"; id: string; tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; card?: Card };
 
 /** A call shown as its own card rather than a line in a group: an edit (its diff), a command (its output), or a plan (PlanCard). */
-export type Card = "edit" | "command" | "plan";
 
 /**
  * Fold runs of tool calls (and the thinking between them) into activity groups.
@@ -103,16 +103,6 @@ export function groupBlocks(blocks: Block[]): Item[] {
     return out;
 }
 
-const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
-
-/** Whether a call gets a card of its own (sub-agents keep their own row). */
-export function cardOf(t: ToolBlock): Card | undefined {
-    if (t.agent) return undefined;
-    if (EDIT_TOOLS.has(t.name)) return "edit";
-    if (t.name === "Bash") return "command";
-    if (t.name === "ExitPlanMode") return "plan";
-    return undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Icons and summaries (the words are lib/tool-words.ts's)
@@ -179,11 +169,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     const done = createMemo(() => tools().filter((t) => !isLive(t)));
     const key = () => `run:${tools()[0]?.id ?? ""}`;
     // A call under way with no live line to say so (a turn a steered message ended keeps the calls that began in
-    // it): its row is the only thing that does, so the run stays open while there is one.
-    const mustShow = createMemo(() => !p.hideLive && tools().some(isLive));
-    // Once shown that way it stays open (until the reader closes it): its row isn't taken away as the call ends.
-    createEffect(() => mustShow() && folds.get(key()) === undefined && folds.set(key(), true));
-    const open = () => mustShow() || (folds.get(key()) ?? prefs.expandActivity);
+    // it): its row is the only thing that does, so the run opens while there is one, and its line has a spinner
+    // while the reader keeps it closed.
+    const unshown = createMemo(() => (p.hideLive ? 0 : tools().filter(isLive).length));
+    // Once shown that way it stays open until the reader closes it: its row isn't taken away as the call ends.
+    createEffect(() => unshown() && folds.get(key()) === undefined && folds.set(key(), true));
+    const open = () => folds.get(key()) ?? (unshown() > 0 || prefs.expandActivity);
     // Find's match in one of its steps, or in a thought among them, opens it.
     createEffect(on(findReveal, (r) => r && p.items.some((it) => (it.kind === "activity" ? it.steps.some((b) => b.id === r.part) : it.block.id === r.part)) && folds.set(key(), true)));
     const title = createMemo(() => (done().length === 1 ? oneCall(done()[0]!) : summarize(done())));
@@ -227,6 +218,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
                     <Show when={denied()}>
                         <span class="wflag warn" title={`${plural(denied(), "call")} declined`}>
                             <X size={12} /> {denied()}
+                        </span>
+                    </Show>
+                    <Show when={unshown() && !open()}>
+                        <span class="wflag run-live" title={`${plural(unshown(), "call")} running`}>
+                            <Spinner size={12} class="tone-accent" />
+                            <span class="sr-only">{`${plural(unshown(), "call")} running`}</span>
                         </span>
                     </Show>
                     <Show when={!pictured()}>
@@ -295,12 +292,18 @@ export function ActivityGroup(p: GroupProps) {
  */
 export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const [open, setOpen] = createSignal(false);
+    // A finished turn's thought comes without its text (ThinkingBlock.omitted): asked for as the pointer comes to it,
+    // so it's there by the click, or as it's opened.
+    const folds = useCardFolds();
+    const fetch = () => {
+        if (p.block.omitted && folds.sessionId) void loadBlock(folds.sessionId, p.block.id);
+    };
     const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
             <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
-                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
                     <ChevronRight size={14} class="chev" />
                     <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
                 </button>

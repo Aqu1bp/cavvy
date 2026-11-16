@@ -4,21 +4,21 @@
 // be there's one line saying how it's doing instead. An agent is a Task call, or a task Claude Code or Codex
 // delegated.
 
-import { createMemo, createSignal, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, CornerLeftDown } from "lucide-solid";
 import { LiveLine } from "./LiveLine";
 import { liveLine, workSegments } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
-import type { SessionHandle } from "../state/app";
+import { loadAgent, machineFor, type SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
-import { setAgentFocus, setDockHeight } from "../state/ui";
+import { paneDock, setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { shortModelRef } from "../lib/tool-words";
 import { Markdown } from "./blocks/Markdown";
-import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
+import { ClosePane, Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
 import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
@@ -95,6 +95,8 @@ function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?:
 
 export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const a = () => p.agent;
+    // One whose turn the window doesn't have: its steps, instructions and report come now.
+    createEffect(() => { if (a().partial) void loadAgent(p.handle, a().id); });
     const st = () => p.handle.view.state;
     const [unfolded, setUnfolded] = createSignal(false);
     const [fullTask, setFullTask] = createSignal(false);
@@ -132,26 +134,27 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
     // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
     // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.) A floating
-    // inspector or diff reader ends above it, as in the session (App.tsx SessionView).
+    // inspector or diff reader ends above it, as in the session (Panes.tsx SessionView).
     let dock: HTMLDivElement | undefined;
+    const key = {};
     const [dockH, setDockH] = createSignal(72);
     onMount(() => {
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
             setDockH(h);
-            setDockHeight(h);
+            paneDock(key, h);
         });
         if (dock) ro.observe(dock);
         onCleanup(() => {
             ro.disconnect();
-            setDockHeight(0);
+            paneDock(key, undefined);
         });
     });
 
     return (
         <>
-            <TitleBar>
-                <Crumb title={`New session in ${st().projectName}`} onClick={() => newSession(st().cwd)}>
+            <TitleBar end={<ClosePane />}>
+                <Crumb title={`New session in ${st().projectName}`} onClick={() => newSession(st().cwd, machineFor(p.handle.id))}>
                     <Monogram name={st().projectName} size={14} />
                     <span class="truncate">{st().projectName}</span>
                 </Crumb>
@@ -215,7 +218,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                 <Show when={live(a())}>
                                     <LiveLine state={line()} />
                                 </Show>
-                                <Show when={a().replayed && !a().blocks.length}>
+                                <Show when={a().replayed && !a().blocks.length && !a().partial}>
                                     <div class="agent-dropped">Its steps aren't kept once the session is reopened.</div>
                                 </Show>
                                 <Show when={result()}>

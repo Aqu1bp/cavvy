@@ -138,6 +138,8 @@ test("status distinguishes permission/question/secret/plan/done; working uses tu
     expect(sessionStatus(session("s", { status: "waiting" }), 0)?.text).toBe("Needs you");
     expect(sessionStatus(session("s", { status: "running", turnStartedAt: 1000 }), 181000)?.text).toBe("Working 3m");
     expect(sessionStatus(session("s", { status: "running" }), 181000)?.text).toBe("Working");
+    // Under a minute: no seconds (it would change each one).
+    expect(sessionStatus(session("s", { status: "running", turnStartedAt: 1000 }), 41000)?.text).toBe("Working");
     expect(sessionStatus(session("s"), 0)?.text).toBe("Done");
     expect(sessionStatus(session("s", { messages: 0 }), 0)).toBeUndefined();
     expect(sessionStatus(session("s", { status: "error" }), 0)?.text).toBe("Stopped");

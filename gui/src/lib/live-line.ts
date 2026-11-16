@@ -214,6 +214,9 @@ type Row = { kind: "activity"; card?: string } | { kind: "block"; block: { t: st
 
 export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; interim: boolean };
 
+/** Text blocks that have said something (workSegments). */
+const spoken = new WeakSet<object>();
+
 /**
  * Work (tool runs, thinking) vs what's said: the reply, notices. What the model said on its way (`interim`) folds
  * away with the work once the turn is done. The reply is what it said after its last step; when it ended on a
@@ -227,8 +230,17 @@ export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
     const isWork = (it: Row) => (it.kind === "activity" ? it.card !== "plan" : it.block.t === "thinking");
     const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
     const duringWork = (it: Row) => it.kind === "block" && (it.block.t === "compact" || (it.block.t === "notice" && (it.block.compacted === true || it.block.wake === true)));
-    // Something said: a blank block (a CLI's stray newlines) isn't a reply.
-    const said = (it: Row) => isText(it) && Boolean((it as { block: { text?: string } }).block.text?.trim());
+    // Something said: a blank block (a CLI's stray newlines) isn't a reply. Text only grows, so once a block has said
+    // something it's not read again: read in a memo, each word streamed into it ran this again, and every run of
+    // work in the turn was handed its items anew.
+    const said = (it: Row) => {
+        if (!isText(it)) return false;
+        const block = (it as { block: { text?: string } }).block;
+        if (spoken.has(block)) return true;
+        if (!block.text?.trim()) return false;
+        spoken.add(block);
+        return true;
+    };
     const lastWork = items.findLastIndex(isWork);
     const lastText = items.findLastIndex(said);
     // Where the reply starts: after the last step, or at the last thing said when nothing was after it.

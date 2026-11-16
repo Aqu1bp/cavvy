@@ -130,7 +130,10 @@ export interface TextBlock {
 export interface ThinkingBlock {
     t: "thinking";
     id: string;
+    /** Empty when `omitted`. */
     text: string;
+    /** Its text wasn't sent (a finished turn sent whole: it's read only opened): session.block has it. */
+    omitted?: true;
     startedAt?: number;
     durationMs?: number;
 }
@@ -215,6 +218,11 @@ export interface AgentRun {
     turnAfter?: string;
     /** From before the session was reopened: nothing of it runs. Only its call and result are known, unless a backend's turn ran it (then its steps are kept too). */
     replayed?: boolean;
+    /**
+     * Only what the list of sub-agents shows of it: its steps, its instructions and its report come with its turn
+     * (session.turns), or on their own (session.agent). A session sends all of them only for the turns it sends.
+     */
+    partial?: true;
 }
 
 export interface NoticeBlock extends NoticeData {
@@ -424,6 +432,11 @@ export interface Turn {
     endedAt?: number;
     /** Before the last compaction: shown, but no longer in the model's context. */
     archived?: boolean;
+    /**
+     * Sent with its work folded (session.open's and session.turns' `fold`): its tools without what only their opened rows
+     * show (outputs, diffs past their first change, long inputs). session.turn has it whole, as its work is shown.
+     */
+    folded?: true;
     /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
     imported?: boolean;
     /**
@@ -852,16 +865,53 @@ export interface SessionSnapshot {
     turns: Turn[];
     agents: AgentRun[];
     seq: number;
+    /** Whose `seq` it is: the session as the server has it read in now (session.open's `since`). */
+    epoch?: string;
     /** Turns before these that weren't sent (session.open's `last`): session.turns has them. */
     earlier?: number;
+    /** Sub-agents not sent (finished, of those turns): session.agentList has them. */
+    agentsMore?: AgentsMore;
+}
+
+/**
+ * What a window that had the session open missed while its connection was down (session.open's `since`): the ops
+ * after its `seq`, in order, and the `seq` they come to. In place of a snapshot when they're all still to be had.
+ */
+export interface SessionResumed {
+    resumed: true;
+    seq: number;
+    ops: SessionOp[];
+}
+
+/** How many of its sub-agents a window hasn't been sent, and how many of those failed (its Finished fold counts them). */
+export interface AgentsMore {
+    count: number;
+    failed: number;
 }
 
 /** Turns before one a window has (session.turns), as they are when sent: later ops apply to them too. */
+/** Where Find found a query in a turn (session.find): the turn, the part ("prompt", or a block's id), which match in it, and where the turn is. */
+export interface SessionFindMatch {
+    turnId: string;
+    part: string;
+    n: number;
+    pos?: { seg: number; index: number };
+    /** In the turns the window holds a gap for (SessionView.gap), after its turn `after`: not before the window's first. */
+    gap?: true;
+}
+
 export interface SessionTurnsPage {
     turns: Turn[];
     /** Turns before these, still not sent. */
     earlier: number;
+    /**
+     * Turns between the last of these and `before` not sent (`upTo` kept to a page around the one asked for): the
+     * window has a gap there, filled a page at a time (`after`).
+     */
+    skipped?: number;
     seq: number;
+    /** The sub-agents of these turns, whole (the window had only what its list shows of them: AgentRun.partial). */
+    agents?: AgentRun[];
 }
 
 /** A change to a session's timeline or state. Applied identically on both sides (applyOp). */
@@ -875,7 +925,8 @@ export type SessionOp =
     | { op: "block.patch"; turnId: string; blockId: string; patch: Partial<Block>; parent?: string }
     | { op: "block.remove"; turnId: string; blockId: string }
     | { op: "append"; turnId: string; blockId: string; field: "text" | "progress" | "output"; text: string }
-    | { op: "reset"; turns: Turn[]; agents?: AgentRun[] }
+    /** `earlier`: turns before these that weren't sent (session.turns has them), as a long session opens. */
+    | { op: "reset"; turns: Turn[]; agents?: AgentRun[]; earlier?: number; agentsMore?: AgentsMore }
     /** A sub-agent started (or replaced, with the same id). */
     | { op: "agent"; agent: AgentRun }
     | { op: "agent.patch"; id: string; patch: Partial<Omit<AgentRun, "id" | "blocks">> }
@@ -2019,6 +2070,32 @@ export interface HelloResult {
     servers?: number;
 }
 
+/** How late the server ran what was due, in ms, since `since` (ms since the epoch): over that many ticks, and the worst. */
+export interface LoopLag {
+    since: number;
+    samples: number;
+    p50: number;
+    p95: number;
+    p99: number;
+    max: number;
+    /** `cpuMs`, `waits`, `preempted`: what the process did over that tick (src/server/loop-lag.ts). */
+    worst: { at: number; ms: number; cpuMs?: number; waits?: number; preempted?: number }[];
+}
+
+export interface ServerMemory {
+    rssMB: number;
+    /** The JS heap as its last collection left it (0 before the first). */
+    heapMB: number;
+    /** What the allocator holds now and at most so far (the heap's own, buffers, strings' storage, the runtime's). */
+    mallocMB: number;
+    mallocPeakMB: number;
+    arrayBuffersMB: number;
+    /** With `types`: a walk of the heap. */
+    objects?: number;
+    extraMB?: number;
+    types?: [string, number][];
+}
+
 export interface Methods {
     // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
@@ -2053,8 +2130,12 @@ export interface Methods {
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
-    /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
-    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
+    /**
+     * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.
+     * `link`: for a connection of the window's own to that server, for one of its sessions opened in this window: the
+     * window isn't on that server, so it's still told of that server's other sessions from here.
+     */
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean; link?: boolean }; result: ConnectResult };
     "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };
@@ -2113,6 +2194,10 @@ export interface Methods {
      * with that key reaches them. They keep running for a while when it goes.
      */
     "terminal.list": { params: Record<string, never>; result: TerminalInfo[] };
+    /** How late the server's thread runs what's due (src/server/loop-lag.ts): measuring starts with the first call. */
+    "server.lag": { params: { reset?: boolean }; result: LoopLag };
+    /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
+    "server.memory": { params: { types?: boolean }; result: ServerMemory };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
@@ -2155,12 +2240,26 @@ export interface Methods {
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     /** `last`: only the last that many turns (the rest are counted in `earlier`); all without it. */
-    "session.open": { params: { id: string; last?: number }; result: SessionSnapshot };
+    /** `last`: no more than this many of its latest turns; `budget`: and no more than fit this many bytes (at least one). */
+    /** `since`: what the window had (its snapshot's epoch, the last seq it applied): what it missed, if it can be had. */
+    "session.open": { params: { id: string; last?: number; budget?: number; fold?: boolean; since?: { epoch: string; seq: number } }; result: SessionSnapshot | SessionResumed };
+    /** A turn whole: one sent folded (Turn.folded), as its work is shown. Null when it's gone (a rewind). */
+    "session.turn": { params: { id: string; turnId: string }; result: { turn: Turn; agents: AgentRun[] } | null };
     /**
      * The turns before `before` (a turn the window has): `count` of them (40 by default), or all back to the one holding
      * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).
      */
-    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
+    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean; upTo?: number; after?: string }; result: SessionTurnsPage };
+    /** A sub-agent whole: its steps, instructions and report (one the window has only part of: AgentRun.partial). */
+    "session.agent": { params: { id: string; agentId: string }; result: AgentRun | null };
+    /** Every sub-agent, as its row in the Agents list shows it (AgentRun.partial): those a window wasn't sent (agentsMore). */
+    "session.agentList": { params: { id: string }; result: AgentRun[] };
+    /**
+     * Find, in the turns before `before` (the first the window has): where `query` appears, counted as the window
+     * counts it (gui/src/lib/find-text.ts), at most MAX_MATCHES. All the turns without `before`. And in `turns` (those
+     * it was sent folded: it can't count them itself), in order with the rest.
+     */
+    "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
@@ -2238,6 +2337,8 @@ export interface Methods {
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
+    /** A block of a turn whole: one sent without all of itself (ThinkingBlock.omitted). Null when it's gone. */
+    "session.block": { params: { id: string; turnId: string; blockId: string }; result: Block | null };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     "session.toolImage": { params: { id: string; key: string }; result: { mediaType: string; data: string } };

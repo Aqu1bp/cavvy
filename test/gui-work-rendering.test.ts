@@ -10,6 +10,7 @@ class Box {
     parentElement?: Box;
     attributes = new Set<string>();
     style = { containIntrinsicBlockSize: "" };
+    dataset: Record<string, string> = {};
     top = -300;
     height = 31;
     natural = 31;
@@ -22,6 +23,8 @@ class Box {
     setAttribute(name: string) { this.attributes.add(name); }
     removeAttribute(name: string) { this.attributes.delete(name); }
     hasAttribute(name: string) { return this.attributes.has(name); }
+    addEventListener() {}
+    removeEventListener() {}
     getBoundingClientRect() { const height = this.hasAttribute("data-work-far") ? this.height : this.natural; return { top: this.top, bottom: this.top + height, height }; }
 }
 let io: Observer, ro: Observer, mo: Observer;
@@ -31,6 +34,7 @@ class Observer {
     observe(el: Box) { this.targets.add(el); }
     unobserve(el: Box) { this.targets.delete(el); }
     disconnect() { this.targets.clear(); }
+    takeRecords() { return []; }
     emit(entries: any[]) { this.callback(entries, this); }
 }
 const names = ["IntersectionObserver", "ResizeObserver", "MutationObserver"] as const;
@@ -201,14 +205,97 @@ test("rows of far turns are let go of only while parkFar says so (many turns dra
 
 test("a row skipped from here ends what it was still bringing in; what goes on for good goes on", () => {
     const f = fixture(); const row = f.rows[0]!;
-    const fade = { finished: false, effect: { getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
-    const spin = { finished: false, effect: { getComputedTiming: () => ({ iterations: Infinity }) }, finish() { this.finished = true; } };
-    (row as any).getAnimations = () => [fade, spin];
-    f.near(row, false);
-    f.measure(row, 40);
+    // The page's animations, asked for once (lib/entrances.ts): one in this row, one in another, one that goes on.
+    const other = f.rows[1] ?? {};
+    const anim = (target: unknown, iterations: number) => ({ finished: false, effect: { target, getComputedTiming: () => ({ iterations }) }, finish() { this.finished = true; } });
+    const fade = anim(row, 1);
+    const spin = anim(row, Infinity);
+    const elsewhere = anim(other, 1);
+    const had = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [fade, spin, elsewhere] };
+    try {
+        f.near(row, false);
+        f.measure(row, 40);
+    } finally {
+        (globalThis as any).document = had;
+    }
     expect(row.hasAttribute("data-work-far")).toBe(true);
     // Left part way in a skipped box, an entrance would never end: the page would pay for it on every frame.
     expect(fade.finished).toBe(true);
     expect(spin.finished).toBe(false);
+    expect(elsewhere.finished).toBe(false);
     f.dispose();
+});
+
+// Switched back to, a session's rows are skipped at once at the sizes they were, not all laid out before its first
+// frame (one ending in a 60 KB reply laid that reply out whole, every switch: 30 ms of layout of a 70-100 ms frame).
+test("a session's rows shown again are skipped at once at the sizes they were; another session's aren't", () => {
+    const shown = (session: string, count = 80) => {
+        (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
+        (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
+        (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
+        const root = new Box(); root.top = 0;
+        const content = new Box(); root.append(content);
+        const turn = new Box(); turn.setAttribute("data-turn"); turn.dataset.turn = "t1"; content.append(turn);
+        const rows = Array.from({ length: count }, () => new Box(true)); rows.forEach((row) => turn.append(row));
+        const dispose = observeWorkRendering(root as any, content as any, () => {}, () => true, session);
+        return { rows, dispose };
+    };
+    const first = shown("s1");
+    first.rows.forEach((row, i) => ro.emit([{ target: row, contentRect: { height: 40 + i } }]));
+    first.dispose();
+    const again = shown("s1");
+    expect(again.rows.every((row) => row.hasAttribute("data-work-far"))).toBe(true);
+    expect(again.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.rows.map((_, i) => `auto ${40 + i}px`));
+    // What they bring in (a step rising in) came in long ago: marked so it starts already over (transcript.css), in
+    // the first frame each is drawn, wherever that is (one in view is drawn before the observer says it's near).
+    expect(again.rows.every((row) => row.hasAttribute("data-work-again"))).toBe(true);
+    io.emit([{ target: again.rows[79], isIntersecting: true }]);
+    expect(again.rows[79]!.hasAttribute("data-work-far")).toBe(false);
+    // Still marked while what it brought in could still be playing: let go of now, those animations would go back to
+    // where their own delay puts them, part way or not begun. (Taken off AGAIN_MS later.)
+    expect(again.rows[79]!.hasAttribute("data-work-again")).toBe(true);
+    again.dispose();
+    expect(again.rows.some((row) => row.hasAttribute("data-work-again"))).toBe(false);
+    const other = shown("s2");
+    expect(other.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
+    other.dispose();
+    // The turn changed while it wasn't shown (a row more: it went on): its sizes aren't taken for other rows.
+    const grown = shown("s1", 81);
+    expect(grown.rows.some((row) => row.hasAttribute("data-work-far"))).toBe(false);
+    grown.dispose();
+});
+
+// A session opens with its last turns, and the rest go in a few at a time after (Transcript's grow, a page of earlier
+// turns): those rows are skipped at the sizes they had too, as they go in (settle, called before they're laid out),
+// not laid out first and skipped after.
+test("rows of a turn put in after it opened, shown before as they are, are skipped at their sizes as they go in", () => {
+    const mount = (session: string, withEarlier: boolean) => {
+        (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
+        (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
+        (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
+        const root = new Box(); root.top = 0;
+        const content = new Box(); root.append(content);
+        const turn = (id: string, count: number) => {
+            const t = new Box(); t.setAttribute("data-turn"); t.dataset.turn = id;
+            const rows = Array.from({ length: count }, () => new Box(true)); rows.forEach((row) => t.append(row));
+            return { t, rows };
+        };
+        const earlier = turn("t1", 80), last = turn("t2", 5);
+        if (withEarlier) content.append(earlier.t);
+        content.append(last.t);
+        const view = observeWorkRendering(root as any, content as any, () => {}, () => true, session);
+        return { view, content, earlier, last };
+    };
+    const first = mount("s3", true);
+    [...first.earlier.rows, ...first.last.rows].forEach((row, i) => ro.emit([{ target: row, contentRect: { height: 30 + i } }]));
+    first.view();
+    // Opened again with its last turn only; the earlier one goes in after.
+    const again = mount("s3", false);
+    again.content.children.unshift(again.earlier.t); again.earlier.t.parentElement = again.content;
+    (mo as any).takeRecords = () => [{ type: "childList", addedNodes: [again.earlier.t], removedNodes: [] }];
+    again.view.settle();
+    expect(again.earlier.rows.every((row) => row.hasAttribute("data-work-far") && row.hasAttribute("data-work-again"))).toBe(true);
+    expect(again.earlier.rows.map((row) => row.style.containIntrinsicBlockSize)).toEqual(again.earlier.rows.map((_, i) => `auto ${30 + i}px`));
+    again.view();
 });

@@ -174,6 +174,11 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         ipcRenderer.on("browser", listener);
         return () => void ipcRenderer.removeListener("browser", listener);
     },
+    onWindowState: (fn: (s: { seen: boolean; focused: boolean }) => void) => {
+        const listener = (_e: unknown, s: { seen: boolean; focused: boolean }) => fn(s);
+        ipcRenderer.on("window_state", listener);
+        return () => void ipcRenderer.removeListener("window_state", listener);
+    },
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
     browserBack: (seen: number) => ipcRenderer.send("browser_back", seen),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),

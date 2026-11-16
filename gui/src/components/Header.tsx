@@ -4,13 +4,13 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
-import { prefs } from "../state/prefs";
+import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
@@ -21,6 +21,7 @@ import { ProjectScripts } from "./ProjectScripts";
 import { keyText, shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
 import { workingBranch } from "../lib/worktree-work";
+import { besideInFront, besideReads, closePane, usePane } from "../state/split";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; kbd?: string; run: () => void };
 
@@ -112,7 +113,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
 /** The rail's own two buttons (show it, new session), where the rail is hidden: the title bar, or a full-screen panel over it. */
 export function RailButtons() {
     // Listed by the rail when it's there (by Settings over both); hidden, its button here says there are some. The session in front of you shows its own request.
-    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
+    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() }), besideInFront(false)) : []));
     return (
         <>
             <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
@@ -154,6 +155,9 @@ function workingTitle(w: WorkingIn, s: SessionState): string {
  * as the diff reader shows it. Opens (and closes) the diff reader there.
  */
 function ChangesChip(p: { handle: SessionHandle }) {
+    // The diff reader is the focused session's: the other pane's chip isn't pressed.
+    const pane = usePane();
+    const reading = () => pane.focused() && !!review();
     const workingIn = () => p.handle.view.state.workingIn?.path;
     const [git] = useGitChanges(() => p.handle, () => (workingIn() ? "branch" : "uncommitted"), () => undefined, () => undefined, workingIn);
     // Only asked for outside a repository, where git has nothing to say.
@@ -175,10 +179,10 @@ function ChangesChip(p: { handle: SessionHandle }) {
             {(c) => (
                 <>
                     <button
-                        class={`hb diffchip ${review() ? "on" : ""}`}
-                        title={`${review() ? "Close the changes" : "Review changes"}${workingIn() ? " in the worktree the agent works in" : ""}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
+                        class={`hb diffchip ${reading() ? "on" : ""}`}
+                        title={`${reading() ? "Close the changes" : "Review changes"}${workingIn() ? " in the worktree the agent works in" : ""}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
                         aria-label={`Changes: ${plural(c().files, "file")}, ${c().added} added, ${c().removed} removed`}
-                        aria-pressed={!!review()}
+                        aria-pressed={reading()}
                         onClick={() => {
                             const w = workingIn();
                             if (review()) setReview(undefined);
@@ -198,8 +202,23 @@ function ChangesChip(p: { handle: SessionHandle }) {
     );
 }
 
+/** In a split, each pane's (a sub-agent's view in it too): the other session stays, alone. */
+export function ClosePane() {
+    const pane = usePane();
+    return (
+        <Show when={pane.split() && pane.id}>
+            {(id) => (
+                <button class="hb" title="Remove from split" aria-label="Remove from split" onClick={() => closePane(id())}>
+                    <X size={16} />
+                </button>
+            )}
+        </Show>
+    );
+}
+
 /** `title`: no session yet (one opening), what to call it. */
 export function Header(p: { handle?: SessionHandle; title?: string }) {
+    const pane = usePane();
     const [editing, setEditing] = createSignal(false);
     const [menuOpen, setMenuOpen] = createSignal(false);
     let moreBtn: HTMLButtonElement | undefined;
@@ -209,6 +228,8 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
         close();
         if (await copyText(text)) toast(done, "success");
     };
+    // The side panel shows the focused session's: the other pane's button isn't pressed.
+    const panelOn = () => pane.focused() && (prefs.panel || !!review() || besideReads());
     // Another session in view: no rename carries over.
     createEffect(on(() => p.handle?.id, () => setEditing(false), { defer: true }));
 
@@ -223,21 +244,22 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             {(cwd) => (
                                 <>
                                     <ProjectScripts cwd={cwd()} />
-                                    <span class="sep" />
+                                    <span class="sep scripts-sep" />
                                 </>
                             )}
                         </Show>
-                        <button class={`hb ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
+                        <button class={`hb win ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
                             <PanelBottom size={16} />
                         </button>
                         <Show when={st()}>
-                            <button class={`hb ${prefs.panel || review() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel || !!review()} onClick={() => togglePanel()}>
+                            <button class={`hb win ${panelOn() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={panelOn()} onClick={() => (pane.wasFocused() ? togglePanel() : setPrefs("panel", true))}>
                                 <PanelRight size={16} />
                             </button>
                             <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
                                 <Ellipsis size={16} />
                             </button>
                         </Show>
+                        <ClosePane />
                     </div>
                 </>
             }
@@ -247,7 +269,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
                         <span class="proj-box">
-                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
+                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
                                 <span class="truncate">{s().projectName}</span>
                                 <span class="proj-sep" aria-hidden="true">/</span>
                             </button>

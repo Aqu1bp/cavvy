@@ -28,7 +28,7 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
     const scale = p.width / STAGE.width;
     const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1, frameFor(l)) : undefined));
     return (
-        <span class="tg-scene" aria-hidden="true">
+        <span class="tg-scene" aria-hidden="true" data-loop-keeps>
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
             </Show>

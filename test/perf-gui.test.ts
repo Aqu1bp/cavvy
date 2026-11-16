@@ -73,7 +73,7 @@ async function devtools(profile: string, browser: { exitCode: number | null }) {
     return { page, js, close: () => ws.close() };
 }
 
-test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, and once it's done the page does nothing", async () => {
+test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, once it's done the page does nothing, and a long session opened cold is drawn at its end from its first frame", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "cavvy-perf-gui-"));
     const profile = join(scratch, "chrome");
     let demo: ReturnType<typeof Bun.spawn> | undefined;
@@ -103,20 +103,20 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         await page("Emulation.setDeviceMetricsOverride", { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
         await page("Page.addScriptToEvaluateOnNewDocument", { source: COUNT_GLIDES });
         await page("Page.navigate", { url: `http://127.0.0.1:${port}/#token=${TOKEN}` });
-        await until("the composer", 30_000, () => js(`!!document.querySelector("textarea")`));
+        await until("the composer", 30_000, () => js(`!!document.querySelector("textarea:not([data-parked] *)")`));
         // The app settles (its model and project known) before it takes a prompt.
         await sleep(1500);
 
         const enter = async () => { for (const type of ["keyDown", "keyUp"]) await page("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) }); };
         const send = async (prompt: string) => {
-            await js(`document.querySelector("textarea").focus()`);
+            await js(`document.querySelector("textarea:not([data-parked] *)").focus()`);
             await page("Input.insertText", { text: prompt });
-            await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`));
+            await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea:not([data-parked] *)")?.value === ${JSON.stringify(prompt)}`));
             await enter();
             await until("the reply to start", 45_000, async () => {
                 if (await js(`!!document.querySelector(".md.streaming")`)) return true;
                 // Not taken (the composer wasn't ready for it): the prompt is still there to send.
-                if (await js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`)) await enter();
+                if (await js(`document.querySelector("textarea:not([data-parked] *)")?.value === ${JSON.stringify(prompt)}`)) await enter();
                 return false;
             });
         };
@@ -127,7 +127,7 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
             let last;
             const frame = () => {
                 if (!document.querySelector(".md.streaming")) return;
-                const top = [...document.querySelectorAll(".transcript [data-turn]")].at(-1)?.getBoundingClientRect().top;
+                const top = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1)?.getBoundingClientRect().top;
                 if (last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
                 last = top;
                 requestAnimationFrame(frame);
@@ -144,8 +144,8 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         expect(await js(`window.__down`)).toEqual([]);
         expect(await js(`window.__resizeLoops`)).toBe(0);
         const { glides, replyHeight, viewHeight } = await js(`(() => {
-            const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
-            return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript").clientHeight };
+            const turn = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1);
+            return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript:not([data-parked] *)").clientHeight };
         })()`);
         const screens = replyHeight / viewHeight;
         expect(screens).toBeGreaterThan(2.5);
@@ -162,6 +162,91 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         withinBudget("idleStyleUpdatesAfterReply", after.RecalcStyleCount! - before.RecalcStyleCount!, { room: true });
         const running = await js(`document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations !== Infinity).length`);
         withinBudget("idleEntrancesRunningAfterReply", running);
+
+        // A reply that comes a paragraph at a time, between tools: while it comes, the words being written never move
+        // down (room under them taken back as the words stop for a tool or a pause, then made again as they go on);
+        // only once the turn's over does the room close. And nothing new is shown whole before the ink trail has it:
+        // each piece of a reply's text is drawn faint the first time it's on screen (code being highlighted aside).
+        await js(`(() => {
+            window.__down = [];
+            window.__bright = [];
+            window.__watch = true;
+            const seen = new WeakMap();
+            const shown = (n) => { let o = 1; for (let e = n.parentElement; e && !e.classList.contains("md"); e = e.parentElement) o *= Number(getComputedStyle(e).opacity); return o; };
+            let el, last;
+            const frame = () => {
+                if (!window.__watch) return;
+                const turn = [...document.querySelectorAll(".transcript:not([data-parked] *) [data-turn]")].at(-1);
+                const md = [...(turn?.querySelectorAll(".md") ?? [])].at(-1);
+                const top = md?.getBoundingClientRect().top;
+                if (turn?.getAttribute("aria-busy") === "true" && md === el && last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
+                el = md;
+                last = top;
+                // Only text that's new at the end: a path already shown, drawn again as a link once it's known, isn't.
+                for (const live of document.querySelectorAll(".md.streaming")) {
+                    const walk = document.createTreeWalker(live, NodeFilter.SHOW_TEXT);
+                    let at = 0;
+                    const had = seen.get(live) ?? 0;
+                    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+                        at += n.data.length;
+                        if (at <= had || !n.data.trim()) continue;
+                        if (!n.parentElement.closest(".code") && shown(n) > 0.6) window.__bright.push(n.data.slice(0, 40));
+                    }
+                    seen.set(live, at);
+                }
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        await send("fastdemo burst");
+        await until("the bursts to finish", 120_000, finished);
+        await sleep(1000);
+        await js(`window.__watch = false`);
+        expect(await js(`window.__down`)).toEqual([]);
+        expect(await js(`window.__bright`)).toEqual([]);
+
+        // A long session opened cold (the window loaded again, another session on screen): every frame drawn shows
+        // the session that was there, or the long one at its end. None at its top, none blank. Read just before each
+        // paint (a resize observer made each frame, so it runs after the page's own): a frame callback reads too early,
+        // and the browser's layout shifts count turns put in above, with the scroll moved to match, as a shift.
+        await send("perfreply 60000 200 1");
+        await until("the long reply to finish", 120_000, finished);
+        const long = await js(`document.querySelector("[data-session-id].cur")?.dataset.sessionId`);
+        expect(typeof long).toBe("string");
+        await js(`document.querySelector(".nav-row[title^='New session']").click()`);
+        await until("a new session's composer", 10_000, () => js(`!document.querySelector(".transcript:not([data-parked] *) article.turn")`));
+        await send("a short one");
+        await until("the short reply to finish", 60_000, finished);
+        await page("Page.reload");
+        await until("the short session again", 30_000, () => js(`!!document.querySelector(".transcript:not([data-parked] *) .user-bubble") && document.querySelector("[data-session-id='${long}']") !== null`));
+        await sleep(1500);
+        await js(`(() => {
+            window.__frames = [];
+            window.__watch = true;
+            const probe = document.body.appendChild(document.createElement("div"));
+            probe.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none";
+            const frame = () => {
+                if (!window.__watch) return;
+                probe.style.width = probe.style.width === "1px" ? "2px" : "1px";
+                const ro = new ResizeObserver(() => {
+                    ro.disconnect();
+                    const sc = document.querySelector(".transcript:not([data-parked] *)");
+                    const said = [...(sc?.querySelectorAll(".user-bubble") ?? [])].at(-1)?.textContent ?? "";
+                    const which = said.includes("perfreply 60000") ? "long" : said.includes("a short one") ? "short" : "blank";
+                    window.__frames.push(which === "long" ? which + (sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 1 ? "@end" : "@" + Math.round(sc.scrollTop)) : which);
+                });
+                ro.observe(probe);
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        const at = await js(`(() => { const r = document.querySelector("[data-session-id='${long}']").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+        for (const type of ["mousePressed", "mouseReleased"]) await page("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+        await sleep(2000);
+        await js(`window.__watch = false`);
+        const frames = (await js(`window.__frames`)) as string[];
+        const seen = frames.filter((f, i) => f !== frames[i - 1]);
+        expect(seen).toEqual(seen[0] === "short" ? ["short", "long@end"] : ["long@end"]);
     } finally {
         tools?.close();
         browser?.kill();

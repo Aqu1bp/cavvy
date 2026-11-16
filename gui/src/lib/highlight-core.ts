@@ -136,8 +136,16 @@ export async function highlight(code: string, lang: string | undefined): Promise
     if (!id) return undefined;
     const h = await highlighter();
     const html = h.codeToHtml(code, { lang: id, theme: "cavvy" });
-    // Keep just the code: the <pre> is ours.
-    const inner = html.replace(/^<pre[^>]*><code[^>]*>/, "").replace(/<\/code><\/pre>\s*$/, "");
+    // Keep just the code: the <pre> is ours. Each token's style as classes (see tokenHtml).
+    const inner = html
+        .replace(/^<pre[^>]*><code[^>]*>/, "")
+        .replace(/<\/code><\/pre>\s*$/, "")
+        .replace(/<span style="([^"]*)">/g, (span, style: string) => {
+            const decl = Object.fromEntries(style.split(";").filter(Boolean).map((d) => d.split(":").map((x) => x.trim()) as [string, string]));
+            const known = Object.keys(decl).every((k) => k === "color" || k === "font-style" || k === "font-weight");
+            const cls = known && tokenClass(decl.color, (decl["font-style"] === "italic" ? 1 : 0) | (decl["font-weight"] ? 2 : 0));
+            return cls === undefined || cls === false ? span : cls ? `<span class="${cls}">` : "<span>";
+        });
     return remember(cache, key, inner);
 }
 
@@ -145,7 +153,29 @@ function escape(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * A token's look as classes (sk-* in tokens.css) rather than a style of its own: elements with the same classes share
+ * a style, where each inline style is parsed and kept for its span alone (a 12 KB reply with code: 680 spans, each its
+ * own parsed style and computed style, kept for as long as the reply is on the page; measured in Chrome's heap).
+ * Undefined: a color that isn't one of the theme's variables, left as a style.
+ */
+function tokenClass(color: string | undefined, fontStyle: number): string | undefined {
+    const names: string[] = [];
+    if (color) {
+        const v = /^var\(--shiki-(?:token-)?([a-z-]+)\)$/.exec(color)?.[1];
+        if (!v || !TOKEN_COLORS.has(v)) return undefined;
+        names.push(`sk-${v}`);
+    }
+    if (fontStyle & 1) names.push("sk-i");
+    if (fontStyle & 2) names.push("sk-b");
+    return names.join(" ");
+}
+/** The theme's colors (tokens.css: --shiki-foreground and --shiki-token-*). */
+const TOKEN_COLORS = new Set(["foreground", "keyword", "string", "string-expression", "comment", "function", "constant", "parameter", "punctuation", "link"]);
+
 function tokenHtml(t: ThemedToken): string {
+    const cls = tokenClass(t.color, t.fontStyle ?? 0);
+    if (cls !== undefined) return cls ? `<span class="${cls}">${escape(t.content)}</span>` : escape(t.content);
     const style: string[] = [];
     if (t.color) style.push(`color:${t.color}`);
     if (t.fontStyle && t.fontStyle & 1) style.push("font-style:italic");

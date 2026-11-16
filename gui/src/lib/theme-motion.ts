@@ -1,6 +1,7 @@
 // A theme layer's keyframes as a CSS animation the compositor runs by itself: transform and opacity only, in steps
 // on the window's 50 ms grid (STEP_MS), like everything else that animates for good (test/perf-rules.test.ts). A layer
-// whose steps would show (frameFor) steps three times as often, 60 a second, still on the grid. The easing is worked
+// whose steps would show (frameFor) steps three times as often, 60 a second, still on the grid. It runs while
+// --scene-play says (theme-backdrop.css: Cavvy's window seen and focused, and someone at it). The easing is worked
 // into the keyframes: steps() takes no curve of its own, so the path is sampled along the curve and each stretch
 // between samples is walked in steps.
 
@@ -120,7 +121,7 @@ export function layerAnimation(m: Motion, name: string, baseOpacity = 1, frame =
     const delay = Math.round(((m.delay ?? 0) * 1000) / STEP_MS) * STEP_MS;
     return {
         keyframes: `@keyframes ${name}{${lines.join("")}}`,
-        animation: `${name} ${durationMs}ms steps(${Math.round(stretch / frame)}) ${delay}ms infinite ${m.loop === "repeat" ? "normal" : "alternate"} both`,
+        animation: `${name} ${durationMs}ms steps(${Math.round(stretch / frame)}) ${delay}ms infinite ${m.loop === "repeat" ? "normal" : "alternate"} both var(--scene-play)`,
         durationMs,
     };
 }

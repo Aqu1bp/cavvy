@@ -82,17 +82,30 @@ test("what animates for as long as something waits changes only when it must, an
     }
 });
 
-test("a theme's scene moves on the grid, 60 a second at most, and only while someone's at the window", async () => {
-    // Its animations are made in lib/theme-motion.ts, not written in a stylesheet: each frame a layer moves at costs the
-    // window a draw, whatever the layer's size (measured: 20 a second to 60 took Meadow's idle window from 190 to 293
-    // million instructions a second, and 120 to 371; resting, 86, as with no theme). So no faster than 60, three to each step of the grid, and none while
-    // nobody's there (test/gui-away.test.ts).
+test("what animates for good stops when nobody can see it (lib/loops.ts)", async () => {
+    // Its rule's play state is the gate's: paused while the window is minimized or hidden, out of view, or for the
+    // decorative, while Cavvy hasn't the focus. A shorthand after it would set it running again.
+    for (const f of files("gui/src/styles", "*.css")) {
+        const css = read(f);
+        for (const m of css.matchAll(/animation:\s*[\w-]+\s[^;]*\binfinite\b[^;]*;/g)) {
+            const rule = css.slice(css.lastIndexOf("{", m.index) + 1, css.indexOf("}", m.index));
+            const after = rule.slice(rule.indexOf(m[0]) + m[0].length);
+            expect(`${f}: ${m[0]} ${after.trim()}`).toMatch(/animation-play-state: var\(--(loops|decor)\)/);
+            expect(`${f}: ${m[0]} then:${after}`).not.toMatch(/then:[^]*\banimation:/);
+        }
+    }
+    // A theme's scene, made in lib/theme-motion.ts rather than written here: decoration, so its play state is --decor's,
+    // and paused too with nobody at the window (test/gui-away.test.ts). Each frame a layer moves at costs the window a
+    // draw, whatever the layer's size (measured: 20 a second to 60 took Meadow's idle window from 190 to 293 million
+    // instructions a second, and 120 to 371; resting, 86, as with no theme), so no faster than 60, three to each step.
     const { STEP_MS } = await import("../gui/src/lib/stream-clock");
-    const { SMOOTH_MS } = await import("../gui/src/lib/theme-motion");
+    const { SMOOTH_MS, layerAnimation } = await import("../gui/src/lib/theme-motion");
     expect(SMOOTH_MS).toBe(STEP_MS / 3);
-    expect(read("gui/src/lib/theme-motion.ts")).toContain("steps(${Math.round(stretch / frame)})");
+    const made = layerAnimation({ duration: 4, keyframes: [{ x: 0 }, { x: 400 }] }, "t", 1, SMOOTH_MS).animation;
+    expect(made).toMatch(/ infinite .* var\(--scene-play\)$/);
+    for (const f of ["gui/src/styles/theme-backdrop.css", "gui/src/styles/theme-gallery.css"]) expect(read(f)).toMatch(/\{\s*--scene-play: var\(--decor\);/);
+    expect(read("gui/src/styles/theme-backdrop.css")).toMatch(/\.theme-backdrop\[data-away\] \{\s*--scene-play: paused;/);
     expect(read("gui/src/components/ThemeBackdrop.tsx")).toContain('data-away={resting() ? "" : undefined}');
-    expect(read("gui/src/styles/theme-backdrop.css")).toMatch(/\.theme-backdrop\[data-away\] \.tb-layer > img \{\s*animation-play-state: paused !important;/);
 });
 
 test("what animates for good changes on the stream clock's grid, or the window is drawn again for each one out of step", async () => {

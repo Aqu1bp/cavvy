@@ -6,6 +6,7 @@ import { component, node, renderer, text, type Node } from "../helpers/gui-rende
 import * as liveLine from "../../gui/src/lib/live-line";
 import * as format from "../../gui/src/lib/format";
 import { createReveal, LAG_MS, revealing } from "../../gui/src/lib/reveal";
+import { linesOf } from "../../gui/src/lib/code-metrics";
 import { STEP_MS } from "../../gui/src/lib/stream-clock";
 import { growing } from "../../gui/src/lib/stream-dom";
 import { withinBudget } from "../helpers/perf-budget";
@@ -151,7 +152,7 @@ test("a code block being written goes to the highlighter a line at a time, each 
     const ended: number[] = [];
     let writings = 0;
     const CodeBlock = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: (p: { children: unknown }) => p.children, CopyButton: () => node("copy"), CARET_WAIT_MS: 400, trailBlock() {},
+        RenderBoundary: (p: { children: unknown }) => p.children, CopyButton: () => node("copy"), trailBlock() {}, linesOf,
         growing: () => (html: string) => shown.push(html),
         newWriting: () => ++writings, endWriting: (writing: number) => ended.push(writing),
         highlightMore: async (writing: number, lines: string) => { sent.push({ writing, lines }); return `[${lines}]`; },

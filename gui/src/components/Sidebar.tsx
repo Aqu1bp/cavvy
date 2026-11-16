@@ -8,11 +8,11 @@
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
@@ -28,6 +28,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { Logo, Spinner } from "./ui/bits";
 import { updateView } from "../lib/app-update";
 import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
+import { besideInFront, inSplit, setDraggedSession, SESSION_DRAG } from "../state/split";
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -209,7 +210,8 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
  * pinned. Otherwise nothing, so a glyph there always means something: the titles still start at one edge.
  */
 function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
-    const word = () => sessionStatus(p.s, now())?.text;
+    // Set again only when it changes, not at each tick of the clock it's worked out from.
+    const word = createMemo(() => sessionStatus(p.s, now())?.text);
     return (
         <span class="lead" aria-hidden="true">
             <Switch>
@@ -393,7 +395,7 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     return (
-        <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div ref={el} data-needs-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
                 <RowLead s={p.s} unread={unread()} />
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
@@ -406,6 +408,23 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
             <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => el} onRename={() => r.setEditing(true)} />
         </div>
     );
+}
+
+/** A row drags onto the stage to show its session beside the one in view (state/split.ts): not while it's renamed, nor one on another machine. */
+const draggable = (s: SessionSummary, editing: boolean) => (!editing && s.machine === machine ? "true" : undefined);
+/** In a split, the one beside the session in view. */
+const beside = (id: string) => app.activeId !== id && inSplit(id);
+
+/** A row's drag: the session it carries, for the stage to show where it would go. */
+function dragRow(e: DragEvent) {
+    const row = (e.target as HTMLElement | null)?.closest?.("[data-session-id], [data-needs-id]");
+    const id = row?.getAttribute("data-session-id") ?? row?.getAttribute("data-needs-id");
+    if (!id || !e.dataTransfer) return;
+    e.dataTransfer.setData(SESSION_DRAG, id);
+    e.dataTransfer.effectAllowed = "move";
+    setDraggedSession(id);
+    // The row may be gone by the drag's end (the list moved), and its dragend with it: the first move after the drag ends it.
+    window.addEventListener("mousemove", () => setDraggedSession(undefined), { once: true });
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
@@ -429,7 +448,8 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
         <div
             ref={el}
             data-session-id={p.s.id}
-            class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
+            draggable={draggable(p.s, r.editing())}
+            class={`card ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
@@ -475,7 +495,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
     const unread = () => isUnread(p.s) && !current();
     const picked = () => p.pick.picked(p.s.id);
     return (
-        <div data-session-id={p.s.id} class={`slim ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -649,7 +669,7 @@ export function Sidebar() {
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
     const pinnedHeld = () => (hovered() && !manualLayout() && !railFree()) || locked().size > 0;
     // Waiting on you, but the session in front of you (not under Settings or a sub-agent's view: lib/rail.ts inFront): pinned at the top as well.
-    const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
+    const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() }), besideInFront(Boolean(settingsTab()))).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     // Today's midnight: the day headings move when the date does, not with every tick of the clock.
     const today = createMemo(() => new Date(now()).setHours(0, 0, 0, 0));
     // The whole list, each session in its own place: what holds still while the pointer's on the rail.
@@ -847,6 +867,8 @@ export function Sidebar() {
         click: (e, id) => {
             const kind = clickKind(e, os === "macos");
             setRailSelection(clickSelect(railSelection(), id, kind, order(), listOf));
+            // The one shown already: nothing to open, and the keyboard goes back to its composer, as for any other.
+            if (kind === "plain" && id === app.activeId && !agentFocus() && handleFor(id) && !app.opening) return void requestComposerFocus();
             if (kind === "plain") return void activate(id);
             // The keys that act on the selection need the focus in the list (WebKit doesn't focus a clicked button).
             (e.currentTarget as HTMLElement | null)?.focus?.({ preventScroll: true });
@@ -977,8 +999,15 @@ export function Sidebar() {
             </div>
 
             <nav ref={listEl} class="side-list" data-group={prefs.groupBy} aria-label="Session list" onKeyDown={onRailKey}
+                onDragStart={dragRow}
+                onDragEnd={() => setDraggedSession(undefined)}
                 onPointerEnter={() => setHovered(true)}
-                onPointerLeave={() => setHovered(false)}>
+                onPointerLeave={() => setHovered(false)}
+                // Another machine's session: connected to as the pointer comes to it (warmFor), not as it's clicked.
+                onPointerOver={(e) => {
+                    const id = (e.target as HTMLElement | null)?.closest?.("[data-session-id]")?.getAttribute("data-session-id");
+                    if (id) warmFor(id);
+                }}>
                 <For each={keys()}>{(key) => {
                     const entry = () => entriesByKey().get(key)!;
                     // A held row keeps its component (and menu/rename) through status changes.

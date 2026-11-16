@@ -235,11 +235,76 @@ md.use({
  */
 export type Segment = { kind: "html"; key: string; html: string; answers?: [string, string | null | undefined][] } | { kind: "code"; key: string; lang: string; code: string; open: boolean };
 
+/** A finished reply as rendered: its blocks, and the reference definitions they were rendered with. */
+type Rendered = { out: Segment[]; references: string; chars: number };
+/**
+ * Finished replies rendered lately, by their text, the last used last: one shown again (a session switched back to, a
+ * page of turns read again) is what it was, not lexed and rendered anew (a 60 KB reply: 12 ms of a switch's 67,
+ * measured). Only its blocks are kept, not the lexer's tokens (four times the reply, measured): a block whose paths are
+ * known differently since is rendered again from the reply lexed anew.
+ */
+const done = { linked: new Map<string, Rendered>(), plain: new Map<string, Rendered>() };
+let doneChars = 0;
+/**
+ * What's kept, in characters: the replies (their keys), their blocks' HTML and code, and SEGMENT_CHARS a block. Full,
+ * about 6 MB more than none kept (forty 60 KB replies: 11.0 MB retained against 4.8, measured in V8).
+ */
+const DONE_CHARS = 2_000_000;
+const SEGMENT_CHARS = 64;
+
+const sizeOf = (text: string, out: readonly Segment[]) => out.reduce((n, s) => n + SEGMENT_CHARS + (s.kind === "html" ? s.html.length : s.code.length), text.length);
+
+/** Kept for its views that look paths up (`linked`: those that are files become links), or for those that don't. */
+function keep(kept: Map<string, Rendered>, text: string, r: Rendered) {
+    const had = kept.get(text);
+    if (had) {
+        kept.delete(text);
+        doneChars -= had.chars;
+    }
+    if (r.chars > DONE_CHARS / 4) return;
+    kept.set(text, r);
+    doneChars += r.chars;
+    order.set(r, ++used);
+    // The least lately used first, of either.
+    while (doneChars > DONE_CHARS) {
+        const p = done.plain.entries().next().value;
+        const l = done.linked.entries().next().value;
+        const [map, entry] = !l || (p && order.get(p[1])! < order.get(l[1])!) ? [done.plain, p!] : [done.linked, l];
+        map.delete(entry[0]);
+        doneChars -= entry[1].chars;
+    }
+}
+/** When each was last kept or used (for eviction across both maps). */
+const order = new WeakMap<Rendered, number>();
+let used = 0;
+
+/** Whether each of `out`'s blocks is rendered with what `lookup` knows now. */
+function fresh(out: readonly Segment[], lookup?: PathLookup): boolean {
+    if (!lookup) return true;
+    for (const s of out) if (s.kind === "html" && s.answers?.some(([p, a]) => lookup(p) !== a)) return false;
+    return true;
+}
+
+/** The blocks of `out` by what they were rendered from (as segments() keys them), with `tokens` that reply lexed. */
+function byToken(tokens: Token[], out: readonly Segment[]): Map<string, Segment> {
+    const map = new Map<string, Segment>();
+    let j = 0;
+    for (const t of tokens) {
+        if (t.type === "space" || t.type === "def") continue;
+        const s = out[j++];
+        if (!s) return new Map();
+        map.set(`${t.type}\0${t.raw}`, s);
+    }
+    return j === out.length ? map : new Map();
+}
+
 /** Renders one reply; keeps finished blocks between calls. */
 export class MarkdownRenderer {
     private html = new Map<string, Segment>();
-    private lexed?: { text: string; streaming: boolean; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
+    lexed?: { text: string; streaming: boolean; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number; line?: OpenLine; list?: OpenList };
     private references = "";
+    /** The open paragraph's block, rendered by `appendLine` rather than by marked: its token and what it renders as. */
+    private ready?: { token: Token; html: string; answers: [string, string | null | undefined][] };
     /** Paths in the last render that `lookup` didn't know. */
     pending = new Set<string>();
     /** The last render looked up paths, so a change in what's known may change it. */
@@ -262,47 +327,101 @@ export class MarkdownRenderer {
         this.paths = new Set();
         let tokens: Token[] & { links?: unknown };
         let relexedFrom = Infinity;
+        this.ready = undefined;
+        // A finished reply rendered before (by this view or another): as it was, where nothing it shows is known
+        // differently since; else from its blocks, those that are rendered again.
+        const kept = lookup ? done.linked : done.plain;
+        const was = streaming ? undefined : kept.get(text);
+        if (was && fresh(was.out, lookup)) {
+            for (const seg of was.out) if (seg.kind === "html") this.note(seg.answers ?? []);
+            keep(kept, text, was);
+            return was.out;
+        }
+        if (was && this.lexed?.text !== text) {
+            try {
+                const lexed = md.lexer(text);
+                this.lexed = { text, streaming: false, tokens: lexed, tailIndex: 0, tailStart: -1 };
+                this.html = byToken(lexed, was.out);
+                this.references = was.references;
+            } catch { /* lexed again below, as any other */ }
+        }
         try {
             // Rendered again with the same text when answers arrive: lex it once.
             const previous = this.lexed;
+            const appendedLine = previous?.text !== text ? this.appendLine(previous, text, streaming, lookup) : undefined;
             if (previous?.text === text && previous.streaming === streaming) tokens = previous.tokens;
-            else {
+            else if (appendedLine) {
+                tokens = appendedLine;
+                relexedFrom = previous!.tailIndex;
+            } else {
                 // Freeze only across a blank line after a closed, stable block.
                 // Adjacent blocks can change classification as markers arrive
                 // (e.g. '> b\n--'), and lists/quotes can absorb lazy continuations.
-                // A reference definition can change earlier inline tokens, so
-                // text that may hold one ("]:", wherever it sits: quotes and
-                // lists hold them too) takes the full lexer. Normalized source
-                // (e.g. CRLF) and replacements also use the full lexer.
+                // A reference definition can change earlier inline tokens, so a
+                // reply that has one (what's frozen had, or the tail just lexed
+                // has) takes the full lexer: by what the lexer found, not by
+                // "]:" in the text, which code has all the time ("[key: string]:",
+                // "dict[str, int]:") and which made every later update lex the
+                // whole reply. Normalized source (e.g. CRLF) and replacements also
+                // use the full lexer.
                 // While streaming, only the tail is settled: frozen blocks are
-                // closed, and settle() only changes the end of what it's given.
-                const append = previous && previous.streaming === streaming && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("]:");
-                relexedFrom = append ? previous.tailIndex : 0;
-                const from = append ? previous.tailStart : 0;
-                const source = streaming ? settle(text.slice(from)) : text.slice(from);
-                const tail = md.lexer(source);
-                tokens = append ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
-                const view = text.slice(0, from) + source;
-                const raw = tokens.map((t) => t.raw).join("");
-                let tailIndex = 0;
-                let tailStart = raw === view ? 0 : -1;
-                let offset = 0;
-                let stable = false;
+                // closed, and settle() only changes the end of what it's given,
+                // so the last render (no longer streaming) keeps them too.
+                // Its one-line paragraph finished (a blank line after it): kept as rendered, not lexed again (endLine).
+                const base = streaming && previous?.line ? (this.endLine(previous, text, lookup) ?? previous) : previous;
+                const append = base && (base.streaming === streaming || base.streaming) && base.tailStart >= 0 && !hasLinks(base.tokens) && text.startsWith(base.text);
+                let from = append ? base.tailStart : 0;
+                // The tail ends in a list or a table: only its last item or row is lexed again (listTail, tableTail).
+                const spliced = append && streaming ? (base.list?.head !== undefined ? tableTail(base, text) : listTail(base, text)) : undefined;
+                let source = spliced ? spliced.source : streaming ? settle(text.slice(from)) : text.slice(from);
+                let tail = spliced?.tail ?? ((streaming && openFence(source)) || (streaming ? lexOnce(source) : md.lexer(source)));
+                if (append && hasLinks(tail)) {
+                    from = 0;
+                    source = streaming ? settle(text) : text;
+                    tail = md.lexer(source);
+                }
+                const appended = append && from > 0;
+                relexedFrom = appended ? base.tailIndex : 0;
+                tokens = appended ? Object.assign([...base.tokens.slice(0, base.tailIndex), ...tail], { links: tail.links }) : tail;
+                // What's frozen was checked when it was lexed: only the tail is looked at again.
+                const at = (k: number) => (k < from ? text[k] : source[k - from]);
+                let tailIndex = appended ? base.tailIndex : 0;
+                // Where the tail starts holds whether or not its tokens add up to what was lexed (a list's last line
+                // ends in a space, its raw in a newline): only new freezes need the tokens' offsets.
+                const exact = tail.map((t) => t.raw).join("") === source;
+                let tailStart = from;
+                let offset = from;
+                // A freeze comes after a stable block, so the tail starts after one.
+                let stable = appended;
                 // Leave at least the final non-space block mutable, even if it
                 // currently ends in a blank line. Indented code, lists, quotes
-                // and HTML remain mutable until a later stable block closes.
+                // and tables are closed by a blank line and then a line that
+                // starts with text (it can't be indented into them, or be lazily
+                // continued, and the same list's marker would have joined it):
+                // what's written after can't reach back past it. HTML remains
+                // mutable until a later stable block closes.
+                let closable = false;
                 let last = tokens.length - 1;
                 while (last > 0 && tokens[last]?.type === "space") last--;
-                for (let i = 0; tailStart >= 0 && i < last; i++) {
+                for (let i = tailIndex; exact && i < last; i++) {
                     const t = tokens[i]!;
                     offset += t.raw.length;
-                    if (t.type !== "space") stable = t.type === "paragraph" || t.type === "heading" || t.type === "hr" || (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented");
-                    if (stable && raw.slice(offset - 2, offset) === "\n\n") {
+                    if (t.type !== "space") {
+                        stable = t.type === "paragraph" || t.type === "heading" || t.type === "hr" || (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented");
+                        closable = t.type === "list" || t.type === "blockquote" || t.type === "table" || t.type === "code";
+                    }
+                    const next = at(offset);
+                    if ((stable || (closable && next !== undefined && next !== " " && next !== "\t" && next !== "\n" && next !== "\r")) && at(offset - 2) === "\n" && at(offset - 1) === "\n") {
                         tailIndex = i + 1;
                         tailStart = offset;
                     }
                 }
-                this.lexed = { text, streaming, tokens, tailIndex, tailStart };
+                // The reply ends in a paragraph of one line, the only block not yet settled: words appended to it are
+                // rendered as they come rather than the line lexed again with each (appendLine).
+                const open = exact && tailIndex === tokens.length - 1 && tokens[tailIndex]!.type === "paragraph" && !hasLinks(tokens) && OPEN_LINE.test(text.slice(tailStart, tailStart + 3)) && !/[\r\n]/.test(text.slice(tailStart));
+                const was = append && base?.list?.from === tailStart ? base.list : undefined;
+                const list = streaming && !hasLinks(tokens) ? (openList(text, tokens, tailIndex, tailStart, last, was) ?? openTable(text, tokens, tailIndex, tailStart, last, was)) : undefined;
+                this.lexed = { text, streaming, tokens, tailIndex, tailStart, ...(open ? { line: { start: tailStart, frozen: tailStart, scan: tailStart, open: [], html: "", inline: [], answers: new Map(), refs: 0, linked: Boolean(lookup), dead: false } } : {}), ...(list ? { list } : {}) };
             }
             // A late reference definition must also invalidate cached HTML.
             const references = JSON.stringify(tokens.links ?? {});
@@ -318,6 +437,15 @@ export class MarkdownRenderer {
             const last = i === tokens.length - 1;
             // The same source can change block kind as nearby markers arrive.
             const cacheKey = `${t.type}\0${t.raw}`;
+            if (t === this.ready?.token) {
+                const { html, answers } = this.ready;
+                this.note(answers);
+                const cached = this.html.get(cacheKey);
+                const seg: Segment = cached?.kind === "html" && cached.html === html ? Object.assign(cached, { answers }) : { kind: "html", key: `h${i}:${t.raw.length}`, html, answers };
+                next.set(cacheKey, seg);
+                out.push(seg);
+                return;
+            }
             if (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented") {
                 const c = t as Tokens.Code;
                 const open = streaming && last && !/(`{3,}|~{3,})\s*$/.test(c.raw.trimEnd());
@@ -361,15 +489,372 @@ export class MarkdownRenderer {
             out.push(seg);
         });
         this.html = next;
+        if (!streaming && this.lexed?.text === text) keep(kept, text, { out, references: this.references, chars: sizeOf(text, out) });
         return out;
     }
+
+    /**
+     * The reply's last paragraph, one line, with more written on the same line: its tokens, the paragraph's rendered by
+     * this (`ready`) rather than lexed again whole. What's before the last space that nothing open spans (no emphasis
+     * or code span still open, nothing that can reach past it) renders the same whatever follows, so it's rendered
+     * once, a piece at a time; only what's after is rendered with each update. Undefined: not that, lexed as usual.
+     */
+    private appendLine(previous: MarkdownRenderer["lexed"], text: string, streaming: boolean, lookup?: PathLookup): (Token[] & { links?: unknown }) | undefined {
+        const line = previous?.line;
+        if (!previous || !line || (!streaming && !previous.streaming) || (streaming && !previous.streaming) || line.linked !== Boolean(lookup) || !text.startsWith(previous.text)) return undefined;
+        if (text.indexOf("\n", previous.text.length) >= 0 || text.indexOf("\r", previous.text.length) >= 0) return undefined;
+        if (lookup) for (const [p, a] of line.answers) if (lookup(p) !== a) return undefined;
+        const next: OpenLine = { ...line, open: [...line.open], answers: new Map(line.answers) };
+        if (!next.dead) {
+            // Read up to the last space: a run of markers before it has what follows it.
+            let end = text.length;
+            while (end > next.scan && !/\s/.test(text[end - 1]!)) end--;
+            let freeze = next.frozen;
+            for (let i = next.scan; i < end; ) {
+                const c = text[i]!;
+                if (REACHES.test(c)) {
+                    next.dead = true;
+                    break;
+                }
+                if (c === "`") {
+                    let j = i;
+                    while (text[j] === "`") j++;
+                    const run = j - i;
+                    // Its end: the next run of exactly as many (marked's code span), before the last space.
+                    let close = -1;
+                    for (let k = j; k < end; ) {
+                        if (text[k] !== "`") { k++; continue; }
+                        let m = k;
+                        while (text[m] === "`") m++;
+                        if (m - k === run) { close = m; break; }
+                        k = m;
+                    }
+                    if (close < 0 || close > end) break;
+                    i = close;
+                    next.scan = i;
+                    continue;
+                }
+                if (c === "*" || c === "_") {
+                    let j = i;
+                    while (text[j] === c) j++;
+                    const run = text.slice(i, j);
+                    const before = text[i - 1] ?? " ";
+                    const after = text[j] ?? " ";
+                    i = j;
+                    next.scan = i;
+                    if (c === "_" && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after)) continue;
+                    if (next.open.at(-1) === run && !/\s/.test(before)) next.open.pop();
+                    else if (!/\s/.test(after)) next.open.push(run);
+                    continue;
+                }
+                i++;
+                next.scan = i;
+                if (/\s/.test(c) && !next.open.length) freeze = i;
+            }
+            const piece = text.slice(next.frozen, freeze);
+            // settle() closes what it reads as open over the whole line: none of it may be open after this piece either.
+            if (piece && openMarkers(piece).length) next.dead = true;
+            else if (piece) {
+                const answers = new Map<string, string | null | undefined>();
+                ctx = lookup && { lookup, answers, refs: next.refs, inLink: false };
+                try {
+                    const inline = md.Lexer.lexInline(piece, md.defaults);
+                    next.html += md.Parser.parseInline(inline, md.defaults);
+                    next.inline = next.inline.concat(inline);
+                    if (ctx) next.refs = ctx.refs;
+                } catch {
+                    return undefined;
+                } finally {
+                    ctx = undefined;
+                }
+                for (const [p, a] of answers) next.answers.set(p, a);
+                next.frozen = freeze;
+            }
+        }
+        const rest = text.slice(next.frozen);
+        const live = streaming ? closeInline(rest, false) : rest;
+        const answers = new Map(next.answers);
+        let html: string;
+        ctx = lookup && { lookup, answers, refs: next.refs, inLink: false };
+        let inline: Token[];
+        try {
+            const tail = md.Lexer.lexInline(live, md.defaults);
+            html = `<p>${next.html}${md.Parser.parseInline(tail, md.defaults)}</p>\n`;
+            inline = next.inline.concat(tail);
+        } catch {
+            return undefined;
+        } finally {
+            ctx = undefined;
+        }
+        const raw = text.slice(next.start, next.frozen) + live;
+        // Its words as rendered: rendered again from them when an answer changes (a path found to be a file).
+        const token = { type: "paragraph", raw, text: raw, tokens: inline } as Tokens.Paragraph;
+        const tokens = Object.assign([...previous.tokens.slice(0, previous.tailIndex), token], { links: previous.tokens.links });
+        this.ready = { token, html, answers: [...answers] };
+        this.lexed = { text, streaming, tokens, tailIndex: previous.tailIndex, tailStart: previous.tailStart, line: next };
+        return tokens;
+    }
+
+    /**
+     * The reply's last paragraph, one line, finished: a blank line after it, so nothing written after can change it.
+     * What `previous` would be with it lexed whole and frozen, its tokens what's rendered for good of it (OpenLine) and
+     * the rest of it read once; else undefined. What's after it is then lexed as any tail is.
+     */
+    private endLine(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string, lookup?: PathLookup): MarkdownRenderer["lexed"] {
+        const line = previous.line!;
+        if (!previous.streaming || line.linked !== Boolean(lookup) || !text.startsWith(previous.text)) return undefined;
+        const end = text.indexOf("\n", line.start);
+        if (end < 0 || !/^\n[ \t]*\n/.test(text.slice(end, end + 64)) || text.slice(line.start, end).includes("\r")) return undefined;
+        if (lookup) for (const [p, a] of line.answers) if (lookup(p) !== a) return undefined;
+        const answers = new Map(line.answers);
+        let inline: Token[];
+        let html: string;
+        ctx = lookup && { lookup, answers, refs: line.refs, inLink: false };
+        try {
+            const rest = md.Lexer.lexInline(text.slice(line.frozen, end), md.defaults);
+            html = `<p>${line.html}${md.Parser.parseInline(rest, md.defaults)}</p>\n`;
+            inline = line.inline.concat(rest);
+        } catch {
+            return undefined;
+        } finally {
+            ctx = undefined;
+        }
+        const raw = text.slice(line.start, end);
+        const token = { type: "paragraph", raw, text: raw, tokens: inline } as Tokens.Paragraph;
+        // Rendered already: as the segment for it, which segments() takes as it takes any block lexed before.
+        this.html.set(`paragraph\0${raw}`, { kind: "html", key: `h${previous.tailIndex}:${raw.length}`, html, answers: [...answers] });
+        const tokens = Object.assign([...previous.tokens.slice(0, previous.tailIndex), token], { links: previous.tokens.links });
+        return { text: text.slice(0, end), streaming: true, tokens, tailIndex: previous.tailIndex + 1, tailStart: end };
+    }
+}
+
+/**
+ * A reply's last paragraph while it's one line: what of it is rendered for good (`frozen`, as `html`), and how far it's
+ * been read for where that can move to (`scan`, with the emphasis still `open` there).
+ */
+interface OpenLine {
+    start: number;
+    frozen: number;
+    scan: number;
+    open: string[];
+    html: string;
+    /** What `html` was rendered from. */
+    inline: Token[];
+    answers: Map<string, string | null | undefined>;
+    /** Paths looked up so far in the paragraph (MAX_REFS a block). */
+    refs: number;
+    linked: boolean;
+    /** Something that can reach back over what follows it (a link, raw HTML, an escape, a tilde): no more is frozen. */
+    dead: boolean;
+}
+
+/**
+ * A line that's a paragraph however it goes on: it can't become a list, heading, quote, fence, table, HTML or a break by
+ * more being written on it.
+ */
+const OPEN_LINE = /^(?:\p{L}|[*_]{1,2}\p{L}|`[^`]|\d+[^\d.)])/u;
+
+/** Characters whose meaning can reach past the next space to what's written after (links, HTML, escapes, strikes). */
+const REACHES = /[[\]<\\~]/;
+
+/**
+ * A streaming reply's tail that ends in a list: where its last item starts (`at`), so what's appended is lexed from
+ * there rather than from the list's start (or what's before it in the tail). Only the last item grows, or new ones
+ * follow it.
+ */
+interface OpenList {
+    /** The tail's start, which settle() reads from. */
+    from: number;
+    /** The list's index in the tokens, and where it starts. */
+    index: number;
+    start: number;
+    at: number;
+    /** What settle() has read from `from` to `at`: a fence open there, and the list isn't lexed from `at`. */
+    scan: Scan;
+    /** A table's instead: its header and delimiter rows, lexed with its last row (`at`) and what follows. */
+    head?: string;
+}
+/** A fence settle() reads as open; `within`: opened in a list item, it ends with the item, at a line indented less. */
+type Fence = { char: string; len: number; within?: number };
+/** What settle() reads line by line: the fence open, and the columns the text of the list items it's in starts at. */
+type Scan = { fence?: Fence; items?: readonly number[] };
+/** A list item's line: its marker, and the spaces after it (more than four: the text starts one after the marker). */
+const ITEM = /^(\s*(?:[-*+]|\d{1,9}[.)]))( *)/;
+
+/** What settle() reads after `line`, from `scan` before it. */
+function scanLine(line: string, scan: Scan): Scan {
+    let { fence, items = [] } = scan;
+    const indent = line.length - line.trimStart().length;
+    // A line indented less than an item's text ends the item, and a fence in it (a list's next item, or anything else).
+    if (line.trim()) {
+        if (fence?.within !== undefined && indent < fence.within) fence = undefined;
+        if (!fence) while (items.length && indent < items.at(-1)!) items = items.slice(0, -1);
+    }
+    const m = FENCE.exec(line);
+    if (m) {
+        const marker = m[2] ?? m[3]!;
+        if (fence) return marker[0] === fence.char && marker.length >= fence.len && line.trim() === marker ? { items } : { fence, items };
+        // Opened after an item's marker, or indented into the item it's in: it ends with the item.
+        const within = m[1] ? line.indexOf(marker) : items.at(-1);
+        return { fence: { char: marker[0]!, len: marker.length, ...(within !== undefined ? { within } : {}) }, items: m[1] ? [...items, within!] : items };
+    }
+    if (fence) return { fence, items };
+    const li = ITEM.exec(line);
+    if (li && line.trim()) items = [...items, li[1]!.length + (li[2]!.length > 4 || li[2]!.length === line.length - li[1]!.length ? 1 : li[2]!.length)];
+    return { fence, items };
+}
+
+/** What settle() reads after `lines` (each ending in a newline), from `scan`. */
+function scanLines(lines: string, scan: Scan): Scan {
+    for (const line of lines.split("\n")) scan = scanLine(line, scan);
+    return scan;
+}
+
+/** Where `tokens` (lexed from `text` at `from`) ends in a list to lex from its last item next time, if it does. */
+function openList(text: string, tokens: Token[], tailIndex: number, from: number, last: number, was: OpenList | undefined): OpenList | undefined {
+    const list = tokens[last];
+    if (list?.type !== "list" || last < tailIndex) return undefined;
+    const items = (list as Tokens.List).items;
+    if (!items.length) return undefined;
+    let start = from;
+    for (let k = tailIndex; k < last; k++) start += tokens[k]!.raw.length;
+    let at = start;
+    for (let k = 0; k < items.length - 1; k++) at += items[k]!.raw.length;
+    // Its items as they are in the text (the tail's tokens may not add up where it ends: a list's last line ending
+    // in a space, its raw in a newline).
+    const raw = list.raw;
+    if (!raw.startsWith(items.at(-1)!.raw, at - start) || text.slice(start, at) !== raw.slice(0, at - start)) return undefined;
+    // settle() from `at` reads what it reads from `from`: no fence open there, and that item's first line not a bare
+    // marker (which settle() holds back, and a table run before it).
+    const scan = scanTo(text, from, at, was);
+    const first = text.slice(at, text.indexOf("\n", at) + 1 || undefined).replace(/\n$/, "");
+    // An item it's in (by settle()'s reading) that its line doesn't end: settle() from `at` wouldn't know of it.
+    const indent = first.length - first.trimStart().length;
+    return { from, index: last, start, at: scan.fence || scan.items?.some((c) => c <= indent) || BARE.test(first) || !first.trim() ? Infinity : at, scan };
+}
+
+/** What settle() reads from `from` to `at`: on from what it read to an earlier mark, where there's one. */
+function scanTo(text: string, from: number, at: number, was: OpenList | undefined): Scan {
+    return was && was.at <= at && was.at !== Infinity ? scanLines(text.slice(was.at, at), was.scan) : scanLines(text.slice(from, at), {});
+}
+
+/**
+ * Where `tokens` ends in a table to lex from its last row next time, with its header and delimiter rows, if it does:
+ * one whose rows (and header) all start with "|", which is how settle() finds a table, and with no such line before.
+ */
+function openTable(text: string, tokens: Token[], tailIndex: number, from: number, last: number, was: OpenList | undefined): OpenList | undefined {
+    const table = tokens[last] as Tokens.Table | undefined;
+    if (table?.type !== "table" || last < tailIndex || !table.rows.length) return undefined;
+    let start = from;
+    for (let k = tailIndex; k < last; k++) start += tokens[k]!.raw.length;
+    const raw = table.raw;
+    const body = raw.replace(/\n+$/, "");
+    const lines = body.split("\n");
+    if (lines.length !== table.rows.length + 2 || !lines.every((l) => TABLE_ROW.test(l))) return undefined;
+    const at = start + body.length - lines.at(-1)!.length;
+    if (text.slice(start, at) !== raw.slice(0, at - start)) return undefined;
+    const before = start > from ? text.slice(text.lastIndexOf("\n", start - 2) + 1, start - 1) : "";
+    const scan = scanTo(text, from, at, was);
+    const head = `${lines[0]}\n${lines[1]}\n`;
+    return { from, index: last, start, at: scan.fence || scan.items?.length || TABLE_ROW.test(before) ? Infinity : at, scan, head };
+}
+
+/** The tail of `previous` with `text` appended, its table's last row on lexed again (OpenList): as listTail. */
+function tableTail(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string): { source: string; tail: Token[] & { links?: unknown } } | undefined {
+    const mark = previous.list;
+    if (!mark || mark.at === Infinity || mark.from !== previous.tailStart || mark.head === undefined) return undefined;
+    const prior = previous.tokens[mark.index] as Tokens.Table;
+    const settled = settle(mark.head + text.slice(mark.at));
+    if (!settled.startsWith(mark.head)) return undefined;
+    const lexed = lexOnce(settled);
+    const head = lexed[0] as Tokens.Table | undefined;
+    if (head?.type !== "table" || head.header.length !== prior.header.length || hasLinks(lexed)) return undefined;
+    const raw = text.slice(mark.start, mark.at) + head.raw.slice(mark.head.length);
+    const table: Tokens.Table = { ...head, header: prior.header, raw, rows: [...prior.rows.slice(0, -1), ...head.rows] };
+    const tail = Object.assign([...previous.tokens.slice(previous.tailIndex, mark.index), table, ...lexed.slice(1)], { links: lexed.links });
+    return { source: text.slice(previous.tailStart, mark.at) + settled.slice(mark.head.length), tail };
+}
+
+/**
+ * The last streaming tail lexed, and its tokens: one whose settled text is as it was (what's appended held back, as a
+ * table's unfinished row or a bare marker is) isn't lexed again.
+ */
+let lastLexed: { source: string; tokens: Token[] & { links?: unknown } } | undefined;
+function lexOnce(source: string): Token[] & { links?: unknown } {
+    if (lastLexed?.source === source) return lastLexed.tokens;
+    const tokens = md.lexer(source);
+    lastLexed = { source, tokens };
+    return tokens;
+}
+
+/** marked's: an item that ends in a blank line, and a blank line in one, make its list loose. */
+const DOUBLE_BLANK = /\n[ \t]*\n[ \t]*$/;
+const ANY_LINE = /\n.*\n/;
+
+/**
+ * The tail of `previous` with `text` appended, its list's last item lexed again (OpenList) and the earlier ones as
+ * they were: the same tokens the tail lexed whole would be. Undefined where they mightn't be: lexed whole.
+ */
+function listTail(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string): { source: string; tail: Token[] & { links?: unknown } } | undefined {
+    const mark = previous.list;
+    if (!mark || mark.at === Infinity || mark.from !== previous.tailStart) return undefined;
+    const prior = previous.tokens[mark.index] as Tokens.List;
+    const settled = settle(text.slice(mark.at));
+    const lexed = lexOnce(settled);
+    const head = lexed[0] as Tokens.List | undefined;
+    if (head?.type !== "list" || head.ordered !== prior.ordered || hasLinks(lexed)) return undefined;
+    const items = prior.items.slice(0, -1);
+    // Loose as marked reads it over the whole list: an item before another ending in a blank line, or one with a
+    // blank line in it. Looser or tighter than it was: every item renders differently, lexed whole.
+    const loose = head.loose || items.some((it) => DOUBLE_BLANK.test(it.raw) || it.tokens.some((t) => t.type === "space" && ANY_LINE.test(t.raw)));
+    if (loose !== prior.loose) return undefined;
+    // Loose only by the items before: these as marked makes them then (a task's box goes elsewhere: lexed whole).
+    if (loose && !head.loose) {
+        if (head.items.some((it) => it.task)) return undefined;
+        for (const it of head.items) {
+            it.loose = true;
+            for (const t of it.tokens) if (t.type === "text") t.type = "paragraph";
+        }
+    }
+    const list: Tokens.List = { ...head, loose, start: prior.start, raw: text.slice(mark.start, mark.at) + head.raw, items: [...items, ...head.items] };
+    const tail = Object.assign([...previous.tokens.slice(previous.tailIndex, mark.index), list, ...lexed.slice(1)], { links: lexed.links });
+    return { source: text.slice(previous.tailStart, mark.at) + settled, tail };
+}
+
+function hasLinks(tokens: { links?: unknown }): boolean {
+    for (const _ in (tokens.links ?? {}) as object) return true;
+    return false;
+}
+
+const OPEN_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
+const ANY_PUNCTUATION = /\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g;
+
+/**
+ * A streaming tail that's a code fence still open (no closing line yet), as the lexer would read it, without lexing it:
+ * all the rest is the code. A long one was lexed whole again with every update. Undefined for anything else, which
+ * the lexer reads.
+ */
+export function openFence(source: string): (Token[] & { links: Record<string, never> }) | undefined {
+    const m = OPEN_FENCE.exec(source);
+    if (!m) return undefined;
+    const fence = m[1]!;
+    const info = m[2]!;
+    if (fence[0] === "`" && info.includes("`")) return undefined;
+    const rest = source.slice(m[0].length);
+    // A closing line anywhere (a fence, then more fence characters and spaces): the lexer decides what follows.
+    const close = new RegExp(`^ {0,3}${fence}[~\`]* *$`, "m");
+    if (close.test(rest)) return undefined;
+    const lang = info ? info.trim().replace(ANY_PUNCTUATION, "$1") : info;
+    const text = rest.endsWith("\n") ? rest.slice(0, -1) : rest;
+    return Object.assign([{ type: "code", raw: source, lang, text } as Tokens.Code as Token], { links: {} });
 }
 
 // ---------------------------------------------------------------------------
 // Streaming
 
 /** A fence line: backticks can't appear in a backtick fence's info string. */
-const FENCE = /^\s*(?:(`{3,})[^`]*|(~{3,}).*)$/;
+/** A fence line, after any quote and list markers ("- ```ts" opens one in a list item). */
+const FENCE = /^\s*(?:>\s?\s*)*(?:((?:[-*+]|\d{1,9}[.)])\s+)\s*(?:>\s?\s*)*)?(?:(`{3,})[^`]*|(~{3,}).*)$/;
 /** A line that's only a marker so far: a list item, heading, quote or rule that hasn't said what it is yet. */
 const BARE = /^\s*(?:[-*+]|\d{1,9}[.)]?|#{1,6}|>|[-=_*][-=_* ]*|`{1,2}|~{1,2})\s*$/;
 const TABLE_ROW = /^\s*\|/;
@@ -396,15 +881,14 @@ export function settle(text: string): string {
     const lines = text.split("\n");
     const starts: number[] = [];
     let at = 0;
-    let fence: { char: string; len: number; line: number } | undefined;
+    let fence: (Fence & { line: number }) | undefined;
+    let scan: Scan = {};
     lines.forEach((line, i) => {
         starts.push(at);
         at += line.length + 1;
-        const m = FENCE.exec(line);
-        if (!m) return;
-        const marker = m[1] ?? m[2]!;
-        if (!fence) fence = { char: marker[0]!, len: marker.length, line: i };
-        else if (marker[0] === fence.char && marker.length >= fence.len && line.trim() === marker) fence = undefined;
+        const was = scan.fence;
+        scan = scanLine(line, scan);
+        fence = scan.fence && (scan.fence === was ? fence : { ...scan.fence, line: i });
     });
     const last = lines.length - 1;
     const upTo = (line: number) => text.slice(0, starts[line]);
@@ -437,13 +921,22 @@ export function settle(text: string): string {
     return text.slice(0, start) + closeInline(lines[last]!);
 }
 
-/** One line still being written, with its open inline markers closed. */
-function closeInline(line: string): string {
-    const prefix = LINE_PREFIX.exec(line)?.[0] ?? "";
+/** One line still being written, with its open inline markers closed. `atStart`: from the line's start (else from after a space in it). */
+function closeInline(line: string, atStart = true): string {
+    const prefix = atStart ? (LINE_PREFIX.exec(line)?.[0] ?? "") : "";
     // Markers at the very end may be an opener with nothing after it yet, or half a closer.
     let body = line.slice(prefix.length).replace(/[*_~`]+$/, "");
     // A link still being written: its text for now.
     body = body.replace(/\[([^\]\n]*)\]\([^)\s]*$/, "$1").replace(/(^|[\s(])\[([^\]\n]*)\]?$/, "$1$2");
+    const open = openMarkers(body);
+    if (!open.length) return prefix + body;
+    // A closer must touch the text it closes.
+    const code = open.at(-1)!.startsWith("`");
+    return prefix + (code ? body : body.trimEnd()) + open.reverse().join("");
+}
+
+/** The inline markers `body` leaves open, innermost last, as closeInline reads them. */
+function openMarkers(body: string): string[] {
     const open: string[] = [];
     for (let i = 0; i < body.length; ) {
         const c = body[i]!;
@@ -478,10 +971,7 @@ function closeInline(line: string): string {
         if (open.at(-1) === run && !/\s/.test(before)) open.pop();
         else if (!/\s/.test(after)) open.push(run);
     }
-    if (!open.length) return prefix + body;
-    // A closer must touch the text it closes.
-    const code = open.at(-1)!.startsWith("`");
-    return prefix + (code ? body : body.trimEnd()) + open.reverse().join("");
+    return open;
 }
 
 /** Markdown to HTML in one go (plans, summaries). */

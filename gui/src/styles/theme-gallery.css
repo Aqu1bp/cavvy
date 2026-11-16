@@ -31,6 +31,11 @@
     opacity: 0.55;
 }
 
+/* A preview moves while hovered, and like the window's scene only while Cavvy can be seen and has the focus (lib/loops.ts). */
+.tg-scene {
+    --scene-play: var(--decor);
+}
+
 .tg-pv {
     position: relative;
     display: grid;

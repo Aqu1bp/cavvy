@@ -124,7 +124,11 @@ createRoot(() => createEffect(on(() => app.sessionsLoaded, (loaded) => loaded &&
  * What a session's row offers, for one on another machine: sent there. Through this computer's Cavvy, which is
  * connected to every server; straight to it when the session is this computer's.
  */
+// (After the window's own: one of another machine's sessions opened in this window goes over its connection there.)
+const opened = rpc.route;
 rpc.route = (method, params) => {
+    const there = opened?.(method, params);
+    if (there) return there;
     const to = routeOf(method, params, far, listed, machine, gone);
     if (to === "here") return undefined;
     if (to === "refused") return Promise.reject(new RpcError("Open the session to do that.", "unsupported"));
@@ -178,9 +182,12 @@ function tell(ev: Extract<ServerEvent, { type: "servers.notify" }>) {
     // A window on that machine hears it from there, unless it's this computer that asks for a session there.
     const onIt = ev.name === machine;
     if ((onIt && !ev.lent) || !prefs.notifications) return;
-    // On screen already, in the session that's open (lib/lent.ts).
-    if (focused() && (ev.kind === "done" || (onIt && app.activeId === ev.sessionId))) return;
-    const open = () => (onIt ? void activate(ev.sessionId || undefined) : switchMachine(ev.name, ev.sessionId || undefined));
+    // On screen already, in the session that's open (lib/lent.ts, or one of that machine's opened in this window).
+    if (focused() && (ev.kind === "done" || app.activeId === ev.sessionId)) return;
+    // Its session is opened in this window, over a connection to that machine (state/app.ts activate); one not
+    // listed here (a guest's on this computer, say) by the window going there.
+    const listed = ev.sessionId && app.sessions.some((s) => s.id === ev.sessionId);
+    const open = () => (onIt || listed ? void activate(ev.sessionId || undefined) : switchMachine(ev.name, ev.sessionId || undefined));
     // The machine first: the rest is the session's own words, and a long title is cut at its end.
     void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, open, { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
 }

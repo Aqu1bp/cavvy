@@ -1,7 +1,8 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, handleFor, reportError, rpc, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
+import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
 import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
@@ -32,7 +33,11 @@ export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now())
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
 export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
     let btn: HTMLButtonElement | undefined;
-    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
+    // The focused pane's in a split (/context opens it).
+    const pane = usePane();
+    const [open, setOpen] = [() => contextCardOpen() && pane.focused(), setContextCardOpen];
+    // Another session picked (by a key, say: a click elsewhere already closes it): the card was this one's.
+    createEffect(on(() => app.activeId, () => setOpen(false), { defer: true }));
     const panelId = `composer-usage-${createUniqueId()}`;
     let panel: HTMLDivElement | undefined;
     const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
@@ -42,7 +47,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const provider = () => state()?.model?.provider ?? p.provider;
     const providerInfo = () => app.providers.find((x) => x.id === provider());
     const accountId = () => state()?.accounts?.[provider() ?? ""] ?? providerInfo()?.agentCli?.defaultAccount ?? "default";
-    const limits = () => app.limits[planLimitKey(provider() ?? "", accountId())];
+    // This computer's plan limits: none shown for another machine's session opened here (its machine has its own).
+    const limits = () => (awayMachine(p.sessionId) !== undefined ? undefined : app.limits[planLimitKey(provider() ?? "", accountId())]);
     const meter = createMemo(() => meterOf(limits(), now()));
     const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
     const alternatives = () => limitAlternatives(accounts(), accountId());

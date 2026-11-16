@@ -545,6 +545,7 @@
     border-radius: 50%;
     background: var(--accent);
     animation: uq-joining 1.2s steps(12) infinite;
+    animation-play-state: var(--loops);
 }
 
 @keyframes uq-joining {
@@ -1118,6 +1119,11 @@ button.att-card:hover {
 .composer.shell textarea {
     font-family: var(--font-mono);
     font-size: 0.929rem;
+}
+
+/* Its text's height, up to the modest one (Composer.tsx sizes it where the engine can't). */
+.composer:not(.expanded) textarea {
+    field-sizing: content;
 }
 
 /* Large: as tall as Composer.tsx makes it. */
@@ -3167,7 +3173,7 @@ button.att-card:hover {
 
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
-:where(.main[data-narrow~="600"]) {
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) {
     .ask .pbtn kbd {
         display: none;
     }

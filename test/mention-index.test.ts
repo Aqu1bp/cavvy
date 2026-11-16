@@ -1,0 +1,254 @@
+// @-mention completion over a project's files (src/ui/mentions.ts FileIndex): what it offers, in its order, is what
+// scoring every path with fuzzyScore and sorting them gave, however it gets there (a mask passes paths over, a query
+// typed on from the last looks only where that one was found).
+import { expect, test } from "bun:test";
+import { FileIndex } from "../src/ui/mentions";
+import { fuzzyScore } from "../src/ui/components";
+
+/** What search did before: every path scored, all of them sorted (but a path the query isn't in at all, which it offered). */
+function reference(dirs: string[], files: string[], query: string, limit: number): string[] {
+    const q = query.replace(/^\.\//, "");
+    const scored: { p: string; s: number }[] = [];
+    for (const p of [...dirs, ...files]) {
+        const base = p.replace(/\/$/, "").split("/").pop() ?? p;
+        const b = fuzzyScore(q, base);
+        const s = Math.max(fuzzyScore(q, p), b >= 0 ? b + 50 : -1);
+        if (s > 0) scored.push({ p, s: s - p.length * 0.05 });
+    }
+    scored.sort((a, b) => b.s - a.s);
+    return scored.slice(0, limit).map((x) => x.p);
+}
+
+/** Its paths, in its order. */
+const pathsOf = (idx: FileIndex): string[] => Array.from({ length: (idx as any).index.size }, (_, i) => (idx as any).index.path(i));
+
+function index(files: string[]) {
+    const idx = new FileIndex("/nonexistent");
+    void (idx as any).take(files);
+    // Listed: not again.
+    (idx as any).builtAt = Date.now();
+    return idx;
+}
+
+test("it offers what scoring every path did, in the same order, typed on or asked afresh, made at once or in slices", async () => {
+    let seed = 9;
+    const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+    const words = ["src", "Lib", "components", "Server", "agent", "tools", "util", "test", "README", "index", "main", "app.config", "a_b", "x-y", "ünï", "café", "İzmir", "İstanbul"];
+    const files = Array.from({ length: 3000 }, (_, i) => {
+        const parts = Array.from({ length: 1 + Math.floor(r() * 4) }, () => words[Math.floor(r() * words.length)]!);
+        return `${parts.join("/")}/${words[Math.floor(r() * words.length)]}${i % 7 ? "" : " copy"}.${["ts", "md", "json"][i % 3]}`;
+    });
+    const dirs = [...new Set(files.flatMap((f) => f.split("/").slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join("/") + "/")))];
+    const idx = index(files);
+    expect(pathsOf(idx).slice(0, dirs.length).sort()).toEqual([...dirs].sort());
+    // Made in slices (as the server's are, and a worker's): each character's best, and each two's, worked out ahead.
+    const sliced = new FileIndex("/nonexistent");
+    await (sliced as any).take(files, () => Promise.resolve());
+    (sliced as any).builtAt = Date.now();
+    const queries = ["s", "sr", "src", "src/", "src/c", "src/co", "srv", "Serv", "server", "mai", "main.", "main.t", "./ind", "ap", "app.c", "a_", "x-", "ün", "café", "zzz", "comp ts", "/", "md", "ME", "e", "", "2", "29", "copy", "izm", "istanbul", "notes", "ts"];
+    for (const limit of [12, 8, 1]) {
+        for (const q of queries) {
+            // Asked afresh, and typed one letter at a time (each a search, as the composer asks).
+            const fresh = index(files);
+            const order = new Map(pathsOf(fresh).map((p, i) => [p, i]));
+            const want = reference(dirs.filter((d) => order.has(d)).sort((a, b) => order.get(a)! - order.get(b)!), files, q, limit);
+            expect([q, limit, fresh.search(q, limit)]).toEqual([q, limit, want]);
+            expect([q, limit, "sliced", sliced.search(q, limit)]).toEqual([q, limit, "sliced", want]);
+            for (let k = 1; k <= q.length; k++) idx.search(q.slice(0, k), limit);
+            expect([q, limit, "typed", idx.search(q, limit)]).toEqual([q, limit, "typed", want]);
+        }
+    }
+});
+
+test("a repository of a million files is all in it, and a keystroke doesn't score every path", () => {
+    const files = Array.from({ length: 1_000_000 }, (_, i) => `pkg${i % 997}/src/module${i % 13}/file_${i}.ts`);
+    const idx = index(files);
+    expect(idx.search("file_999999", 12)[0]).toBe(`pkg${999999 % 997}/src/module${999999 % 13}/file_999999.ts`);
+    // Nothing it's in: nothing offered (not every folder).
+    expect(idx.search("zzz", 12)).toEqual([]);
+});
+
+// A big project's paths on worker threads (mention-shards.ts), each with a part of them: what they offer together is
+// what one index of all of them offers, in its order (folders split between parts included).
+test("on workers, each with a part of the paths, it offers what one index of them all does", async () => {
+    const { MentionShards, mentionSharding } = await import("../src/ui/mention-shards");
+    const { PathIndex } = await import("../src/ui/path-index");
+    let seed = 5;
+    const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+    const words = ["src", "Lib", "components", "Server", "index", "main", "a_b", "x-y", "ünï", "café", "test"];
+    const files = Array.from({ length: 4000 }, (_, i) => {
+        const parts = Array.from({ length: 1 + Math.floor(r() * 4) }, () => words[Math.floor(r() * words.length)]!);
+        return `${parts.join("/")}/${words[Math.floor(r() * words.length)]}_${i}.${["ts", "md"][i % 2]}`;
+    });
+    const one = new PathIndex();
+    void one.take(files);
+    const listing = new TextEncoder().encode(files.join("\n") + "\n");
+    const saved = { ...mentionSharding };
+    for (const parts of [2, 3, 4]) {
+        Object.assign(mentionSharding, { perPart: Math.ceil(listing.length / parts), most: parts });
+        const shards = new MentionShards();
+        try {
+            expect(await shards.take(listing)).toBe(true);
+            for (const limit of [12, 5, 1]) {
+                for (const q of ["s", "src", "src/", "lib/c", "serv", "main_", "_4", "x-", "ün", "café/", "md", "e", "", "zzz", "/", "index/main"]) {
+                    expect([parts, limit, q, await shards.search(q, limit)]).toEqual([parts, limit, q, one.find(q, limit)]);
+                }
+            }
+            // The same listing again: each part kept as it was, and the same offered.
+            expect(await shards.take(listing)).toBe(true);
+            expect(await shards.search("src", 12)).toEqual(one.find("src", 12));
+        } finally {
+            shards.stop();
+        }
+    }
+    Object.assign(mentionSharding, saved);
+}, 60_000);
+
+test("a project's index on workers lists it with git and finds in it, and here again once they're let go of", async () => {
+    const { mentionSharding } = await import("../src/ui/mention-shards");
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { join } = await import("path");
+    const { tmpdir } = await import("os");
+    const root = mkdtempSync(join(tmpdir(), "cavvy-mention-shards-"));
+    const saved = { ...mentionSharding };
+    try {
+        for (const d of ["src/server", "src/gui", "docs"]) mkdirSync(join(root, d), { recursive: true });
+        for (const f of ["src/server/engine.ts", "src/server/find.ts", "src/gui/app.tsx", "docs/plan.md", "README.md"]) writeFileSync(join(root, f), "x");
+        Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+        // Any listing goes to workers, two of them.
+        Object.assign(mentionSharding, { from: 0, perPart: 40, most: 2 });
+        const idx = new FileIndex(root);
+        expect(await idx.searchSoon("find", 12)).toEqual(["src/server/find.ts"]);
+        expect((idx as any).shards?.parts).toBe(2);
+        expect(await idx.searchSoon("src/s", 3)).toEqual(["src/server/", "src/server/find.ts", "src/server/engine.ts"]);
+        // Its workers stopped (one failing does the same): indexed here, and the same offered.
+        (idx as any).shards.stop();
+        expect(await idx.searchSoon("src/s", 3)).toEqual(["src/server/", "src/server/find.ts", "src/server/engine.ts"]);
+        expect((idx as any).shards).toBeUndefined();
+        idx.dispose();
+    } finally {
+        Object.assign(mentionSharding, saved);
+        rmSync(root, { recursive: true, force: true });
+    }
+}, 60_000);
+
+// The terminal searches where it is, at once (search): its index is never handed to workers, which only the server's
+// asking (searchSoon) reads. Listed again after 30 s in a big project, it was, and offered nothing from then on.
+// A search on workers isn't left waiting when the listing shrinks to fewer parts (a worker let go of mid-search), and
+// a project's index let go of while it's listed doesn't start workers after.
+test("the terminal's index stays its own, a shrinking listing answers every search, and one let go of starts no workers", async () => {
+    const { MentionShards, mentionSharding } = await import("../src/ui/mention-shards");
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { join } = await import("path");
+    const { tmpdir } = await import("os");
+    const root = mkdtempSync(join(tmpdir(), "cavvy-mention-terminal-"));
+    const saved = { ...mentionSharding };
+    try {
+        for (const d of ["src/server", "docs"]) mkdirSync(join(root, d), { recursive: true });
+        for (const f of ["src/server/engine.ts", "src/server/find.ts", "docs/plan.md"]) writeFileSync(join(root, f), "x");
+        Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+        Object.assign(mentionSharding, { from: 0, perPart: 20, most: 2 });
+        const tui = new FileIndex(root);
+        expect(tui.search("find", 12)).toEqual(["src/server/find.ts"]);
+        // Listed again (it's been 30 s), in the background: still answered here.
+        (tui as any).builtAt = 1;
+        tui.search("find", 12);
+        await (tui as any).building;
+        expect((tui as any).shards).toBeUndefined();
+        expect(tui.search("find", 12)).toEqual(["src/server/find.ts"]);
+        tui.dispose();
+
+        // Let go of while it's being listed: no workers after.
+        const gone = new FileIndex(root);
+        const asked = gone.searchSoon("find", 12);
+        gone.dispose();
+        await asked.catch(() => undefined);
+        expect((gone as any).shards).toBeUndefined();
+
+        // A search under way as the listing shrinks from 2 parts to 1: answered (or failed), not left waiting.
+        const shards = new MentionShards();
+        const listing = (n: number) => new TextEncoder().encode(Array.from({ length: n }, (_, i) => `dir${i % 7}/file_${i}.ts`).join("\n") + "\n");
+        Object.assign(mentionSharding, { perPart: 4096, most: 2 });
+        expect(await shards.take(listing(2000))).toBe(true);
+        const searches = Array.from({ length: 20 }, () => shards.search("file_1", 5).then(() => "answered", () => "failed"));
+        expect(await shards.take(listing(100))).toBe(true);
+        const settled = await Promise.race([Promise.all(searches), Bun.sleep(3000).then(() => "waiting")]);
+        expect(settled).not.toBe("waiting");
+        expect(await shards.search("file_1", 3)).toEqual(["dir1/file_1.ts", "dir3/file_10.ts", "dir4/file_11.ts"]);
+        shards.stop();
+    } finally {
+        Object.assign(mentionSharding, saved);
+        rmSync(root, { recursive: true, force: true });
+    }
+}, 60_000);
+
+// A search under way as a project's listing shrinks to fewer parts (files deleted, another branch checked out): the
+// part it asked of is let go of, which isn't a worker stopping. It's asked again; the project stays on workers (it was
+// moved to the server's own thread for good, there to hold every session's replies at each keystroke).
+test("a search as the listing shrinks is asked again, and the project stays on its workers", async () => {
+    const { mentionSharding } = await import("../src/ui/mention-shards");
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { join } = await import("path");
+    const { tmpdir } = await import("os");
+    const root = mkdtempSync(join(tmpdir(), "cavvy-mention-shrink-"));
+    const saved = { ...mentionSharding };
+    try {
+        for (let d = 0; d < 10; d++) mkdirSync(join(root, `dir${d}`), { recursive: true });
+        for (let i = 0; i < 600; i++) writeFileSync(join(root, `dir${i % 10}`, `file_${i}.ts`), "x");
+        Bun.spawnSync(["git", "init", "-q"], { cwd: root });
+        Object.assign(mentionSharding, { from: 0, perPart: 4096, most: 2 });
+        const idx = new FileIndex(root);
+        expect(await idx.searchSoon("file_1", 3)).toHaveLength(3);
+        expect((idx as any).shards?.parts).toBe(2);
+        // A search whose part was let go of (failed, the workers going on): asked again, and they're kept.
+        const shards = (idx as any).shards;
+        const search = shards.search.bind(shards);
+        let once = true;
+        shards.search = (q: string, n: number) => (once ? ((once = false), Promise.reject(new Error("That part of the file index was let go of."))) : search(q, n));
+        expect(await idx.searchSoon("file_1", 3)).toHaveLength(3);
+        expect((idx as any).noShards).toBe(false);
+        expect((idx as any).shards).toBe(shards);
+        shards.search = search;
+        // Fewer files: one part's worth. Listed again while searches are asked.
+        for (let i = 100; i < 600; i++) rmSync(join(root, `dir${i % 10}`, `file_${i}.ts`));
+        (idx as any).builtAt = 1;
+        const asked = [idx.searchSoon("file_1", 3)];
+        // Asked all the while it's listed and indexed again.
+        while ((idx as any).building) {
+            asked.push(idx.searchSoon("file_1", 3));
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        const found = await Promise.all(asked);
+        expect(found.every((f) => f.length > 0)).toBe(true);
+        expect((idx as any).noShards).toBe(false);
+        expect((idx as any).shards?.parts).toBe(1);
+        idx.dispose();
+    } finally {
+        Object.assign(mentionSharding, saved);
+        rmSync(root, { recursive: true, force: true });
+    }
+}, 60_000);
+
+// Made from git's listing as it came (on a worker: no string for each path), it's the same index as made from its paths.
+test("made from the listing's bytes, it's what it is made from its paths", async () => {
+    const { PathIndex } = await import("../src/ui/path-index");
+    let seed = 13;
+    const r = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+    const words = ["src", "Lib", "components", "Server", "index", "main", "a_b", "x-y", "ünï", "café", "test", "/lead"];
+    const files = Array.from({ length: 3000 }, (_, i) => {
+        const parts = Array.from({ length: Math.floor(r() * 4) }, () => words[Math.floor(r() * words.length)]!);
+        return `${parts.join("/")}${parts.length ? "/" : ""}${words[Math.floor(r() * words.length)]}_${i}${i % 9 ? "" : " copy"}.${["ts", "MD"][i % 2]}`;
+    });
+    const listing = new TextEncoder().encode(files.join("\n") + "\n\n");
+    for (const o of [{}, { first: 7, slice: () => Promise.resolve() }]) {
+        const made = new PathIndex();
+        await made.take(files, o);
+        const fromBytes = new PathIndex();
+        await fromBytes.takeBytes(listing, o);
+        const all = (x: any) => Array.from({ length: x.size }, (_, i) => [x.path(i), x.keys?.[i]]);
+        expect(all(fromBytes)).toEqual(all(made));
+        for (const q of ["s", "src", "src/", "lib/c", "serv", "_4", "x-", "ün", "café/", "md", "e", "", "/", "/l", "copy", "zz"]) {
+            for (const limit of [12, 3]) expect([q, limit, fromBytes.top(q, limit)]).toEqual([q, limit, made.top(q, limit)]);
+        }
+    }
+});

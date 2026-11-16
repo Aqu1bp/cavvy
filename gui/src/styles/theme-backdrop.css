@@ -2,7 +2,10 @@
    The stage is 1600 × 1000, scaled to cover the window; each layer moves on the compositor alone
    (lib/theme-motion.ts), and the veil, the theme's background, lies over all of it. */
 
+/* Each layer's play state (lib/theme-motion.ts): decoration, so only while Cavvy can be seen and has the focus
+   (lib/loops.ts), and with nobody at the window it stops where it is (ThemeBackdrop.tsx away). */
 .theme-backdrop {
+    --scene-play: var(--decor);
     position: absolute;
     inset: 0;
     overflow: hidden;
@@ -58,10 +61,8 @@
     background-size: 100% 100%;
 }
 
-/* Nobody at the window: each layer stops where it is, and carries on from there (ThemeBackdrop.tsx away). Over the
-   layer's own animation shorthand, which sets it running. */
-.theme-backdrop[data-away] .tb-layer > img {
-    animation-play-state: paused !important;
+.theme-backdrop[data-away] {
+    --scene-play: paused;
 }
 
 /* Animate off, or the system asks for less motion: every layer rests at its first keyframe. */

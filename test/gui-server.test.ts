@@ -11,6 +11,7 @@ import { FAKE, isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
+const { slimEdits } = await import("../src/server/runtime");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -804,10 +805,18 @@ describe("connecting", () => {
                 const alive = () => {
                     try {
                         process.kill(pid, 0);
-                        return true;
                     } catch (e) {
                         if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
                         throw e;
+                    }
+                    // Killed after git, the hook is an orphan: until its new parent reaps it, it's a zombie that has
+                    // stopped all the same. A container's init may never reap it.
+                    if (!existsSync("/proc/self/stat")) return true;
+                    try {
+                        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+                        return stat[stat.lastIndexOf(")") + 2] !== "Z";
+                    } catch {
+                        return false;
                     }
                 };
                 for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
@@ -3037,13 +3046,20 @@ describe("reopening a Claude Code session", () => {
             const c2 = new Client(TOKEN, {}, restarted.port);
             await c2.opened();
             const snap = await c2.call<SessionSnapshot>("session.open", { id });
+            // A finished turn's thoughts come without their text: each as the window asks for it, opened.
+            for (const t of snap.turns) {
+                for (const [i, b] of t.blocks.entries()) {
+                    if (b.t === "thinking" && b.omitted) t.blocks[i] = await c2.call<Block>("session.block", { id, turnId: t.id, blockId: b.id });
+                }
+            }
             c2.close();
             return snap;
         } finally {
             await restarted.stop();
         }
     }
-    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, b.input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
+    // Its input as a window is sent it whole (an edit's change once, in its diff: runtime.ts slimEdits).
+    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, (slimEdits([structuredClone(b)])[0] as ToolBlock).input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
 
     test("its turns come back as they were shown: the steps, the sub-agents and what they did, the mode, model and context", async () => {
         try {
@@ -3568,10 +3584,10 @@ describe("reopening a Claude Code session", () => {
 
 /**
  * The shell the terminal tests run: named, not /bin/sh (bash on macOS, dash on Ubuntu), so they
- * run the same everywhere. Its prompt, "$ ", says it's reading.
+ * run the same everywhere. Its prompt, "$ " ("# " as root), says it's reading.
  */
 const TEST_SHELL = "/bin/dash";
-const PROMPT = /\$ $/;
+const PROMPT = process.getuid?.() === 0 ? /# $/ : /\$ $/;
 /** Closes every terminal the window has, from a connection of its own, even ones another connection has. */
 async function closeWindowTerminals(window: string) {
     const sweep = await client(window);

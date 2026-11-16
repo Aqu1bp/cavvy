@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { app, awayMachine, connFor, handleFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, homeDraft, setHomeDraft, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -12,6 +12,7 @@ import type { MatchResult } from "../../../src/keybindings/core";
 import { ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
+import { usePane } from "../state/split";
 import { InteractionTab } from "./InteractionDock";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
@@ -48,6 +49,9 @@ const fileName = (path: string) => path.replace(/\/$/, "").split("/").pop()! + (
 /** The folder it's in, said after its name: `src/auth` of `src/auth/email.ts`; "" at the top. */
 const fileDir = (path: string) => path.replace(/\/$/, "").split("/").slice(0, -1).join("/");
 
+/** The field grows with its text in CSS (field-sizing: content, composer.css), where the engine has it. */
+const SIZED_BY_CSS = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
+
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
@@ -60,6 +64,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
     const draftKey = () => p.sessionId ?? "home";
+    // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
+    const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);
     const { text, setText, attachments, setAttachments } = draft;
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
@@ -115,11 +121,32 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta.style.height = `${largeHeight()}px`;
             return;
         }
+        // Sized by its text in CSS where it can be (composer.css): nothing laid out here at each key. Measured there,
+        // in a frame of its own, a key's letter was drawn a frame late about half the time (headless, Event Timing).
+        if (SIZED_BY_CSS) {
+            ta.style.height = "";
+            if (atMost) setOverflows(ta.scrollHeight > ta.clientHeight + 1);
+            return;
+        }
         ta.style.height = "auto";
         // Up to the modest height composer.css gives it; past that it scrolls.
         ta.style.height = `${ta.scrollHeight}px`;
         setOverflows(ta.scrollHeight > ta.clientHeight + 1);
     };
+    /** At its modest height's cap (a ResizeObserver says): only then can more text overflow it, and is it measured. */
+    let atMost = false;
+    onMount(() => {
+        if (!SIZED_BY_CSS || !ta || typeof ResizeObserver === "undefined") return;
+        const field = ta;
+        const ro = new ResizeObserver(() => {
+            if (expanded()) return;
+            const cap = parseFloat(getComputedStyle(field).maxHeight);
+            atMost = Number.isFinite(cap) && field.offsetHeight >= cap - 1;
+            setOverflows(atMost && field.scrollHeight > field.clientHeight + 1);
+        });
+        ro.observe(field);
+        onCleanup(() => ro.disconnect());
+    });
     // What will run, in color: while the text has a /command or a $skill, a layer behind it draws the same lines with
     // them in the accent and what the command takes after it, and the textarea's own letters go clear. The caret,
     // selection, typing and spellcheck stay the textarea's.
@@ -159,7 +186,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.focus();
     };
 
-    createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
+    // Sized by CSS, a key needs nothing more unless it's at its cap (then whether it overflows, a frame later).
+    createEffect(on([draftKey, text], () => {
+        if (!SIZED_BY_CSS || atMost || expanded() || ta?.style.height) requestAnimationFrame(resize);
+    }));
     // Every change, whatever made it: typing, history, a send clearing the box.
     createEffect(() => p.onText?.(text()));
     // The modest height is a few lines of the text size, or a share of the column: either changing moves it.
@@ -178,8 +208,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             cancelAnimationFrame(frame);
         });
     });
-    // A message being written means the user is back: the server holds off compacting while idle.
-    const writing = () => Boolean(text().trim() || attachments().length);
+    // A message being written means the user is back: the server holds off compacting while idle. Told when that
+    // changes, not at each key: read through the text, it was told twice a key (61 requests for 31 keys).
+    const writing = createMemo(() => Boolean(text().trim() || attachments().length));
     createEffect(on([() => p.sessionId, writing, () => h()?.ready?.()], ([id, present, ready]) => {
         if (!id || !ready) return;
         void rpc.call("session.draft", { id, present }).catch(() => undefined);
@@ -187,7 +218,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     }));
     // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
-        if (provider && provider !== was) setModelPickerOpen(true);
+        if (!provider || provider === was) return;
+        // Another machine's session opened here: its accounts are that machine's, picked in a window there.
+        const away = awayMachine(p.sessionId);
+        if (away !== undefined) return toast(`Pick its account on ${away || "this computer"}`, "warn", { label: "Go there", run: () => void serversUi().then((m) => m.switchMachine(away || undefined, p.sessionId), reportError) });
+        setModelPickerOpen(true);
     }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {
@@ -204,7 +239,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
             resize();
-            if (!settingsTab()) ta?.focus();
+            if (!settingsTab() && pane.focused()) ta?.focus();
         });
     });
     // Text handed to a new session's composer (Settings → Theme → Make one), put after anything typed.
@@ -223,12 +258,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         });
     }
     // Not while Settings covers it (App.tsx keeps it mounted there).
-    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && ta?.focus()), { defer: true }));
+    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && pane.focused() && ta?.focus()), { defer: true }));
 
     /** Takes focus on the next frame, as on opening, unless something else is being typed in or a dialog is open. */
     const focusSoon = () => {
         const frame = requestAnimationFrame(() => {
-            if (settingsTab() || window.matchMedia("(max-width: 760px)").matches) return;
+            if (settingsTab() || !pane.focused() || window.matchMedia("(max-width: 760px)").matches) return;
             const active = document.activeElement;
             if (active !== ta && active?.matches("input, textarea, select, [contenteditable='true']")) return;
             if (document.querySelector('[role="dialog"]')) return;
@@ -244,8 +279,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenuDismissedFor(undefined);
         focusSoon();
     }));
-    // Back from Settings, which keeps this mounted under it: focused as when it opened.
+    // Back from Settings, which keeps this mounted under it, or shown again after being kept out of sight (Panes.tsx):
+    // focused as when it opened.
     createEffect(on(settingsTab, (tab, was) => { if (was && !tab) focusSoon(); }, { defer: true }));
+    createEffect(on(pane.parked, (parked, was) => { if (was && !parked) focusSoon(); }, { defer: true }));
     createEffect(() => {
         const selected = menuSel();
         const items = menu();
@@ -352,7 +389,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             mentionTimer = setTimeout(async () => {
                 try {
                     const [found, resources] = await Promise.all([
-                        rpc.call("fs.mentions", { cwd, query: tok.query }),
+                        // Of the folder on the session's machine (another machine's, opened here: rpcFor).
+                        rpcFor(sid).call("fs.mentions", { cwd, query: tok.query }),
                         hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
@@ -421,7 +459,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [flipped, setFlipped] = createSignal(false);
     const shown = () => followUp(flipped());
     const submit = async (opposite = false) => {
-        if (app.conn !== "open") return toast("Not sent: not connected");
+        if (connFor(p.sessionId) !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
@@ -448,11 +486,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
+        // A plain message to a session that isn't working: on screen at once, the box cleared, as its turn will be; put
+        // back if the send fails.
+        const quick = !picks && sessionId && !busy() && !atts.length && !sentComments.length && !message.trimStart().startsWith("/") && !shell() ? showSending(sessionId, message) : undefined;
+        if (quick) sent();
         const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
             // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
             if (sentComments.length) reviewComments.removeSent(id, sentComments);
         } });
+        if (quick) {
+            // Answered: its turn came with the answer (it's in its place now), or none will (it went in a queue).
+            quick(Boolean(ok));
+            if (!ok) draft.putBack(submitted);
+        }
         if (ok) {
             if (picks) {
                 composerStorage.remember(submitted.key, t);
@@ -677,7 +724,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
      * that sends this way and the one that sends the other; with nothing written, the key that stops it.
      */
     const sendHint = (): [string, string][] | undefined => {
-        if (runPicks() || app.conn !== "open") return undefined;
+        if (runPicks() || connFor(p.sessionId) !== "open") return undefined;
         if (canStop(st()) && !hasContent()) {
             const k = shortcut("app:interrupt");
             return [[k === "Esc" ? "esc" : k ?? "", busy() ? "Stop" : "Pause the goal"]];
@@ -713,13 +760,18 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
     // The model (with its effort) and the permission mode, in the card's bar; and the context.
+    // Worked out once, here: a prop like `open={a() && b()}` makes a memo each time it's read, and the pickers read it
+    // from their listeners too (a click, the page's pointerdown), where nothing owns it: each was kept for good, and with
+    // it this composer and its conversation (ui/Popover.tsx).
+    const modelOpen = createMemo(() => modelPickerOpen() && pane.focused());
+    const modeOpen = createMemo(() => modePickerOpen() && pane.focused());
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                sessionId={p.sessionId} current={st()?.model} currentRef={app.settings.model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;
@@ -997,10 +1049,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         fallback={
                             <button
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
-                                disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
+                                disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
-                                aria-description={app.conn !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
+                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                aria-description={connFor(p.sessionId) !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>

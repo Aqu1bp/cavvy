@@ -118,6 +118,8 @@ const FRAME_RULES: Record<string, RegExp> = {
     // or a tile (--tb-scale, the tile's own scale). No text sits on it.
     "theme-backdrop.css": /^\.tb-stage$/,
     "theme-gallery.css": /^\.tg-stage$/,
+    // The bar between two sessions side by side: a hairline in a band to press, as the inspector's edge is.
+    "stage.css": /^\.split-bar(::before|::after)?$/,
 };
 
 /** The px lengths in a value outside var() (a fallback there is another property's default). */

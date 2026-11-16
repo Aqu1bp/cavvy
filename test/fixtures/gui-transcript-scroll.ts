@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
+import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
-import { finishEntrances } from "../../gui/src/lib/entrances";
+import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
-import { DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, DrawnAgain } from "../../gui/src/lib/reveal";
+import { KeyedList } from "../../gui/src/lib/keyed-list";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
 // at the DOM boundary let these regressions run without listening on a socket.
@@ -46,10 +47,10 @@ let rowShift = 0;
 let dockGlide = false;
 /** Some streamed text is still coming out (lib/reveal.ts revealing()). */
 let revealingNow = false;
-/** Words came out a moment ago (lib/reveal.ts wordsFlowing()). */
-let flowingNow = true;
+/** Words came out a moment ago (lib/reveal.ts wordsFlowing(): a signal, as there, so what waits for the words to stop hears it). */
+const [flowingNow, setFlowingNow] = solid.createSignal(true);
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-staged"] !== undefined ? 0 : n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -109,6 +110,7 @@ const decorate = (n: Node): any => Object.assign(n, {
     addEventListener: (type: string, fn: (e: any) => void) => { (n as any).listeners[type] = fn; },
     removeEventListener: (type: string) => { delete (n as any).listeners[type]; },
     removeAttribute: (name: string) => { delete n.props[name]; },
+    setAttribute: (name: string, value: string) => { n.props[name] = value; },
     toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
 const elements = (n?: Node) => (n?.children ?? []).filter((c) => c.tag !== "#text");
@@ -144,14 +146,19 @@ let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undef
 const renews = new Map<string, () => (() => void) | void>();
 /** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
 const workOpen = new Map<string, boolean>();
+/** What the conversation let go of (state/app.ts forgetEarlier): how many turns it kept each time. */
+const forgets: number[] = [];
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
+    forgetEarlier: (_h: any, keep: number) => void forgets.push(keep),
+    loadTurn: async () => {},
+    rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
+    AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, BuiltFromEnd, KeyedList,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
@@ -175,6 +182,12 @@ const scope = {
         // Its callback stays with it, as in WebKit, where an observer with a root outlives disconnect().
         disconnect() { io.targets.clear(); }
     },
+    // The far turns' observer (lib/settling-observer.ts), as a plain one: when it lets go of its targets is its own test's.
+    settlingObserver: (cb: (entries: any[]) => void, options: any) => {
+        io.cb = cb;
+        io.options = options;
+        return { observe: (target: Node) => io.targets.add(target), unobserve: (target: Node) => io.targets.delete(target), disconnect: () => io.targets.clear(), wake() {} };
+    },
     ResizeObserver: class {
         constructor(private cb: () => void) {}
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
@@ -182,7 +195,7 @@ const scope = {
     },
     observeWorkRendering: () => () => {},
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
     takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
@@ -200,7 +213,8 @@ const scope = {
         onFolds.set(p.turn.id, p.onFold);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
         const part = create("div"); part.props["data-find"] = "prompt";
-        part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(n) + partShift, bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) - partShift });
+        // Drawn where a running move on it or on its turn has it (the end of a turn settles each part on its own).
+        part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(part) + partShift, bottom: absolute(n) - top + drawn(part) + height(n), height: height(n) - partShift });
         renderer.insert(n, part);
         if (rowAnchors && p.turn.id === "turn-5") {
             part.props["data-find"] = "reply";
@@ -208,7 +222,7 @@ const scope = {
                 const row = create("div"); row.props["data-work-row"] = "sized";
                 if (rowAnchors === "tool") row.props["data-find"] = `tool-${i}`;
                 row.getBoundingClientRect = () => {
-                    const at = absolute(n) - top + partShift + rowShift + i * 40;
+                    const at = absolute(n) - top + drawn(row) + partShift + rowShift + i * 40;
                     return { top: at, bottom: at + 40, height: 40 };
                 };
                 renderer.insert(part, row);
@@ -319,6 +333,9 @@ try {
     const before = turn("turn-5").getBoundingClientRect().top;
     button("earlier").props.onClick();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "paging including button removal preserves the old turn");
+    // The rest of the page goes in a few at a time, each above the place read: it stays put.
+    settle();
+    assert.equal(turn("turn-5").getBoundingClientRect().top, before, "and stays put as the rest of the page goes in");
     resize();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "resize does not fight the paging correction");
     scroller().props.onScroll();
@@ -639,8 +656,9 @@ try {
     assert.ok(ran);
     assert.equal(top, bottom(), "at the end at once, the answer where it was");
     const foldMoves = glides.slice(beforeFold);
-    assert.deepEqual(foldMoves.map((g) => g.el), [turn("turn-43"), turn("turn-42"), turn("turn-41"), folded.children[0]], "the turns above in reach and the prompt; not the turn (its answer) or the end's room");
-    assert.ok(foldMoves.every((g) => g.from === -400 && g.duration === 240), "each drawn 400px up, where it was, and gliding down");
+    // The room under the answer goes in the same move (the turn is done): all of it comes down, part by part.
+    assert.deepEqual(foldMoves.map((g) => g.el), Array.from({ length: 9 }, (_, i) => turn(`turn-${36 + i}`).children[0]), "each part in sight, the turn's prompt included");
+    assert.ok(foldMoves.every((g) => g.from === -400 && g.duration === 380), "each drawn 400px up, where it was, and settling down (Transcript.tsx SETTLE_MS)");
     assert.equal(folded.children[0].getBoundingClientRect().top - 400, promptWas, "the prompt drawn where it was");
     // The reader scrolls up while the fold runs (halfway: drawn 200px up), and it ends: what's read stays put.
     shiftNow = -200;
@@ -755,15 +773,25 @@ try {
     assert.deepEqual(io.options, { root: scroller(), rootMargin: "100% 0px" }, "for whether it's within a screen of the view");
     scroll(0);
     button("earlier").props.onClick();
+    assert.ok(io.targets.size < 80, "a page shown earlier goes in a few turns at a time, not in one frame");
+    settle();
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
     // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
     // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
     const ended: string[] = [];
-    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
-    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
-    report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    // The page's animations, asked for once for all of them (lib/entrances.ts): two in turn-12, one in a turn in view.
+    const animation = (name: string, iterations: number, target: unknown) => ({ effect: { target, getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    const twelve = turn("turn-12") as any;
+    twelve.contains ??= (t: unknown) => all(twelve).includes(t as never);
+    const hadDocument = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [animation("fade", 1, twelve), animation("spin", Infinity, twelve), animation("in-view", 1, turn("turn-50"))] };
+    try {
+        report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    } finally {
+        (globalThis as any).document = hadDocument;
+    }
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
     assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
@@ -795,7 +823,7 @@ try {
     turnRects = 0; scroller().props.onScroll();
     assert.equal(turnRects, 0, "following the end, a scroll measures no turn");
     scroll(0);
-    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
     assert.equal(articles().length, 400);
     turnRects = 0; scroll(60000);
     assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "read from turn-300");
@@ -820,6 +848,27 @@ try {
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
+    // Read all the way up, then back at the end: a while after, what's above its first page goes, from the page and from
+    // what the window holds (forgetEarlier), not while a reply comes.
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+    assert.equal(articles().length, 400);
+    forgets.length = 0;
+    settle();
+    assert.deepEqual(forgets, [], "read up there: kept");
+    button("jump").props.onClick();
+    settle(); scroller().props.onScroll(); settle();
+    assert.deepEqual(forgets, [40], "back at the end a while: let go of, but for its first page");
+    assert.equal(articles().length, 40);
+    assert.ok(turn("turn-399"), "the end still there");
+    // Find showing a turn far above what's drawn: a page around it, not every turn down to it; the rest after, a few a frame.
+    setFindShown(true);
+    findProps.show("turn-10");
+    assert.ok(turn("turn-10"), "the turn found is drawn");
+    assert.ok(articles().length <= 40, `a page around it, not all ${400 - 10} turns down to it (${articles().length})`);
+    assert.equal(turn("turn-399"), undefined, "those far below go in after");
+    for (let i = 0; i < 4; i++) settle();
+    assert.ok(articles().length > 40, "and they do");
+    setFindShown(false);
     dispose();
 
     // A conversation that fits (nothing to scroll): a wheel up there scrolls nothing, so it stops nothing, and the
@@ -1006,13 +1055,15 @@ for (const mode of ["prose", "tool"] as const) {
         assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
         assert.equal(workOpen.get("turn-20"), true, "its work log open, as it was");
         assert.equal(workOpen.get("turn-22"), false, "not the one that has its old id");
-        // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
+        // Find open, and a reconnect comes with fewer turns than it had: no turns are asked for. Those the window
+        // hasn't are searched where they are (FindBar's `elsewhere`, session.find), and brought in as it steps to them.
         const more: unknown[] = [];
         loadMore = async (_h, how) => (more.push(how), true);
         setFindShown(true);
         assert.deepEqual(more, [], "all there: nothing to ask for");
         setEarlier(3);
-        assert.deepEqual(more, [{ all: true }], "find counts every turn again");
+        assert.deepEqual(more, [], "find asks for no turns: it counts those it hasn't where they are");
+        assert.equal(findProps.earlier(), 3, "find knows how many it hasn't");
         setFindShown(false);
     } finally { dispose(); loadTo = () => undefined; loadMore = async () => false; }
 
@@ -1084,7 +1135,7 @@ for (const mode of ["prose", "tool"] as const) {
         const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
         // Words coming out (lib/reveal.ts revealing(), wordsFlowing(), the turn ending in its text), or stopped.
         const ends = (t: string) => { (reply.view.turns[44] as any).blocks = [{ t, id: t }]; };
-        const words = (on: boolean) => { revealingNow = flowingNow = on; ends(on ? "text" : "tool"); };
+        const words = (on: boolean) => { revealingNow = on; setFlowingNow(on); ends(on ? "text" : "tool"); };
         words(true);
         glides.forEach((g) => g.anim.cancel());
         // A reply's first words: no room yet; they glide in as any line.
@@ -1111,54 +1162,52 @@ for (const mode of ["prose", "tool"] as const) {
         assert.ok(glides.length > glided, "gliding there");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
-        // The words stop for a tool: the room goes, in a glide; the tool's row glides in.
+        // The words stop for a tool: the room stays while the turn runs, and the tool's row lands in it (taken back, the
+        // room would move the conversation down, and up again as the words go on). Nothing moves.
         words(false);
-        const waiting = glides.length;
+        let g0 = glides.length, t0 = top;
+        const w0 = scrollWrites;
         grow(30);
-        assert.equal(roomOf(), 0, "no room stands empty under a wait");
+        assert.deepEqual([roomOf(), top, glides.length, scrollWrites], [full - 30, t0, g0, w0], "a tool's row lands in the room, the conversation holding still");
         assert.equal(top, bottom(), "the end in view");
-        assert.ok(glides.length > waiting, "gliding there");
-        glides.forEach((g) => g.anim.cancel());
-        // A sentence before the next tool: it glides in, and no room opens to go again when it stops.
+        // A sentence before the next tool: into the room as well.
         words(true);
         grow(24);
-        assert.equal(roomOf(), 0, "no room for a sentence");
-        assert.equal(top, bottom(), "it glides in");
-        glides.forEach((g) => g.anim.cancel());
-        // Rows landing just after it (the words a moment ago) aren't words: still no room.
+        assert.deepEqual([roomOf(), top, glides.length], [full - 54, t0, g0], "a sentence lands in the room too");
+        // More than is left of it: what doesn't fit moves the conversation up, in a glide, and the room is made again.
         revealingNow = false; ends("tool");
         grow(full);
-        assert.equal(roomOf(), 0, "rows landing between words open no room");
-        assert.equal(top, bottom(), "they glide in");
+        assert.equal(roomOf(), full, "the room made again");
+        assert.equal(top, bottom(), "the view at the end");
+        assert.ok(top > t0 && glides.length > g0, "gliding up");
         glides.forEach((g) => g.anim.cancel());
         words(false);
-        const sentence = [top, glides.length];
+        g0 = glides.length; t0 = top;
         grow(30);
-        assert.equal(roomOf(), 0, "(none to go)");
-        assert.equal(top, bottom(), "the tool's row glides in");
-        assert.ok(top > sentence[0]! && glides.length > sentence[1]!, "up, as any row: nothing comes back down");
-        glides.forEach((g) => g.anim.cancel());
+        assert.deepEqual([roomOf(), top, glides.length], [full - 30, t0, g0], "the next tool's row in the room");
         // The words again, steadily: room again.
         words(true);
         grow(20); grow(full);
         assert.equal(roomOf(), full, "words again, room again");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
-        // The reply ends (its working line goes): the room goes, and the conversation settles onto the end in a glide.
+        // The reply ends: the room stays a moment, for its work to fold (which would take the room with it); what goes
+        // from the end meanwhile is given to the room. Then the room goes, and all of it settles onto the end in one move.
         reply.view.turns[44]!.status = "done";
         words(false);
-        const settled = glides.length, was = top;
+        const was = top;
+        g0 = glides.length;
         grow(-20);
+        assert.deepEqual([roomOf(), top, glides.length], [full + 20, was, g0], "kept a moment, with what went from the end");
+        settle();
         assert.equal(roomOf(), 0, "a finished reply keeps no room under it");
         assert.equal(top, bottom(), "it rests on the end");
-        assert.ok(top < was, "(come down by what the room was)");
-        assert.ok(glides.length > settled, "gliding there");
-        assert.equal(glides.at(-1)!.from, Math.max(-GLIDE_MAX, top - was), "from where it was");
-        // Its footer lands while it settles: the same glide goes on to the new end.
-        const landing = glides.length;
+        assert.equal(top, was - (full + 20), "come down by what the room was");
+        const moves = glides.slice(g0);
+        assert.ok(moves.length > 0 && moves.every((g) => g.from === -(full + 20) && g.duration === 380), "each part in sight settling from where it was (Transcript.tsx SETTLE_MS)");
+        // Its footer landing after: followed.
         grow(30);
         assert.equal(top, bottom(), "what lands at its end is followed");
-        assert.ok(glides.length > landing, "in the glide");
         glides.forEach((g) => g.anim.cancel());
         // The room again with the next reply.
         reply.view.turns[44]!.status = "running";
@@ -1171,5 +1220,7 @@ for (const mode of ["prose", "tool"] as const) {
         scroll(0); resize(); flush();
         assert.equal(roomOf(), 0, "below the view, the room goes");
         assert.equal(top, 0, "and what's read doesn't move");
+        settle();
+        assert.equal(top, 0, "nor when the wait for the fold is over");
     } finally { dispose(); }
 }

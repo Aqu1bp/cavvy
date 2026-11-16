@@ -193,7 +193,7 @@ try {
     const js = async (expression: string) => (await page.cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, 30_000)).result?.result?.value;
     const mainTarget = ((await fetch("http://127.0.0.1:9345/json/list").then((r) => r.json(), () => [])) as { webSocketDebuggerUrl: string }[])[0];
     const main = mainTarget ? await connect(mainTarget.webSocketDebuggerUrl) : undefined;
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
     // Experiments: --reduced-motion as macOS's Reduce motion setting; --css <rules> added to the page and --js <code> run
     // in it, after the theme (a reload would drop them).
     if (args.includes("--reduced-motion")) await page.cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
@@ -343,7 +343,7 @@ try {
         measuring = false;
         const heap = await js(`(() => { const m = performance.memory; return m ? { usedMB: Math.round(m.usedJSHeapSize / 1048576), totalMB: Math.round(m.totalJSHeapSize / 1048576) } : null; })()`);
         // What's animating: by animation (CSS name, or a script's), its element and its state.
-        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript [data-turn]').length, farTurns: document.querySelectorAll('.transcript [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, busyTurns: document.querySelectorAll('.turn[aria-busy="true"]').length, layered: [...document.querySelectorAll('.transcript .turn')].filter((t) => getComputedStyle(t).willChange === 'transform').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
+        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length, farTurns: document.querySelectorAll('.transcript:not([data-parked] *) [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, busyTurns: document.querySelectorAll('.turn[aria-busy="true"]').length, layered: [...document.querySelectorAll('.transcript:not([data-parked] *) .turn')].filter((t) => getComputedStyle(t).willChange === 'transform').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
         const wsKB = Math.round((wsBytes - b0) / 1024 / wall), wsN = Math.round((wsFrames - f0) / wall);
         // With --shot <dir>: what the window showed, to check a change looks the same.
         if (arg("--shot")) {
@@ -455,13 +455,13 @@ try {
     }
     // A 40 KB reply at about 400 tokens a second, on screen: each second's cost, with the reply's length so far.
     await show(long);
-    if (want("growth")) await streamWhile([[long, "perfstream text 30 400"]], () => phase("growth", 24, { perSecond: `[...document.querySelectorAll('.transcript [data-turn]')].at(-1)?.textContent?.length ?? 0` }));
+    if (want("growth")) await streamWhile([[long, "perfstream text 30 400"]], () => phase("growth", 24, { perSecond: `[...document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]')].at(-1)?.textContent?.length ?? 0` }));
     // With --mounted 40,200,480: a reply streaming in the long session with that many of its turns drawn ("Show
     // earlier" clicked until they are), followed at the end ("Latest").
     for (const n of (arg("--mounted") ?? "").split(",").filter(Boolean).map(Number)) {
         await show(long);
-        for (let i = 0; i < 40 && (await js(`document.querySelectorAll('.transcript [data-turn]').length`)) < n; i++) {
-            if (!(await js(`(() => { const b = document.querySelector('.transcript .earlier'); b?.click(); return !!b; })()`))) break;
+        for (let i = 0; i < 40 && (await js(`document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length`)) < n; i++) {
+            if (!(await js(`(() => { const b = document.querySelector('.transcript:not([data-parked] *) .earlier'); b?.click(); return !!b; })()`))) break;
             await sleep(1000);
         }
         await js(`document.querySelector('.jump')?.click()`);

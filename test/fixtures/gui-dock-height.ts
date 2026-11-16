@@ -1,4 +1,4 @@
-// SessionView (App.tsx) rendered with real Solid reactivity in an in-memory DOM (run by
+// SessionView (components/Panes.tsx) rendered with real Solid reactivity in an in-memory DOM (run by
 // gui-layout-sizes.test.ts): the composer dock's measured height reaches the transcript as its
 // `dock` prop, which sets it on the boxes that keep room for the dock and gives it to find
 // (gui-transcript-scroll checks that side). --dock-h isn't inherited, so nothing else carries it.
@@ -16,14 +16,16 @@ const between = (path: string, from: string, to: string) => {
 test("the composer dock's measured height is the transcript's dock prop, and the window's", () => {
     const observed: { cb: () => void; targets: any[] }[] = [];
     let transcript: { dock?: number } | undefined;
-    const windowDock: number[] = [];
-    const SessionView = component(between("../../gui/src/App.tsx", "function SessionView(", "/** The docked inspector's left edge"), "SessionView", {
+    const windowDock: (number | undefined)[] = [];
+    const [parked, setParked] = solid.createSignal(false);
+    const SessionView = component(between("../../gui/src/components/Panes.tsx", "function SessionView(", "/** A pane whose session isn't open"), "SessionView", {
+        usePane: () => ({ focused: () => true, parked, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         Header: () => node("header"),
         Transcript: (p: { dock?: number }) => { transcript = p; return node("transcript"); },
         FloatingBrowser: () => node("floating-browser"),
         Composer: () => node("composer"),
         ErrorCards: () => node("error-cards"),
-        setDockHeight: (h: number) => windowDock.push(h),
+        paneDock: (_key: object, h?: number) => windowDock.push(h),
         ResizeObserver: class {
             targets: any[] = [];
             constructor(public cb: () => void) { observed.push(this); }
@@ -43,7 +45,10 @@ test("the composer dock's measured height is the transcript's dock prop, and the
         dock.offsetHeight = 244;
         observed[0]!.cb();
         expect(transcript!.dock).toBe(244);
-        expect(windowDock).toEqual([112, 244]);
+        // Kept out of sight (Panes.tsx): its dock isn't the window's; shown again, it is.
+        setParked(true);
+        setParked(false);
+        expect(windowDock).toEqual([112, 244, undefined, 244]);
     } finally {
         dispose();
     }
@@ -59,7 +64,7 @@ test("a sub-agent's view measures its dock for the window too, so a floating dif
     const AgentView = component(source.replace(/^import [\s\S]*?;\n/gm, "").replace(/^export /gm, ""), "AgentView", {
         ...stubs,
         groupBlocks: () => [], duration: () => "1s", now: () => 0, clock: () => "", plural: () => "", sessionTitle: () => "Session",
-        setDockHeight: (h: number) => windowDock.push(h),
+        paneDock: (_key: object, h?: number) => windowDock.push(h ?? 0),
         ResizeObserver: class {
             targets: any[] = [];
             constructor(public cb: () => void) { observed.push(this); }

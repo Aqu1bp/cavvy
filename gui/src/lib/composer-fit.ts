@@ -56,6 +56,14 @@ export function fitComposerBar(bar: HTMLElement): () => void {
     // What the controls say. `data-fit` is an attribute, so setting it isn't seen here.
     const content = new MutationObserver(fit);
     content.observe(bar, { childList: true, characterData: true, subtree: true });
-    void document.fonts?.ready.then(fit);
+    void fontsReady()?.then(fit);
     return () => (sizes.disconnect(), content.disconnect());
 }
+
+/**
+ * The page's fonts loaded, asked for once. Reading document.fonts.ready brings the page's style and layout up to date
+ * there and then: read as a session's composer is put in, with its conversation just put in too, that was the switch's
+ * frame laid out twice (26 ms of a session ending in a 60 KB reply, headless).
+ */
+let fonts: Promise<unknown> | undefined;
+const fontsReady = () => (fonts ??= typeof document === "undefined" ? undefined : document.fonts?.ready);

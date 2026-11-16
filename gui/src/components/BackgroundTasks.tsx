@@ -6,10 +6,10 @@
 // running ones, with how they ended, until cleared. The Agents tab lists each
 // sub-agent once (lib/background.ts agentRows), and a click opens it.
 
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Bot, ChevronRight, Radar, Terminal, Workflow } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
-import { app } from "../state/app";
+import { app, loadAgentList } from "../state/app";
 import { clearBackground, openAgents, stopAgent, stopBackground } from "../state/actions";
 import { agentRows, backgroundOf, clearKey, commandRows, endedAllCleared, kindName, rowLive, rowMeta, rowProvider, rowTone, runnerName, stopAllOf, stopTarget, workSection, type Placed, type WorkRow, type WorkTab } from "../lib/background";
 import { shortModelRef } from "../lib/tool-words";
@@ -104,12 +104,20 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
     const [held, setHeld] = createSignal<ReadonlySet<string>>();
     const sec = createMemo(() => workSection(p.rows, held()));
     const expanded = () => showDone() ?? sec().running.length === 0;
+    // Finished sub-agents the window was only told the number of (of turns it hasn't been sent): their rows are
+    // asked for as the fold shows them.
+    const more = () => (p.tab === "agents" ? p.handle.view.agentsMore : undefined);
+    createEffect(() => {
+        if (more() && expanded()) void loadAgentList(p.handle);
+    });
     const what = () => (p.tab === "agents" ? "agent" : "command");
     const stopAll = async () => {
         const { tasks, agents } = stopAllOf(sec().running.map((x) => x.row));
         await Promise.all([...(tasks.length ? [stopBackground(p.handle.id, tasks, p.tab === "commands")] : []), ...agents.map((id) => stopAgent(p.handle.id, id))]);
     };
-    const clear = () => {
+    const clear = async () => {
+        // All of them, those not here yet too.
+        if (more()) await loadAgentList(p.handle);
         const id = p.handle.id;
         const keys = [...(cleared()[id] ?? []), ...sec().finished.map((x) => clearKey(x.row))];
         setCleared((c) => ({ ...c, [id]: keys }));
@@ -118,7 +126,7 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
         if (endedAllCleared([...agentRows(tasks, p.handle.view.agents), ...commandRows(tasks)], new Set(keys))) void clearBackground(id);
     };
     return (
-        <Show when={p.rows.length}>
+        <Show when={p.rows.length || more()}>
             <div class="work" role="group" aria-label={p.tab === "agents" ? "Agents" : "Background commands"} onPointerEnter={() => setHeld(new Set(workSection(p.rows).finished.filter((x) => !x.depth).map((x) => x.row.key)))} onPointerLeave={() => setHeld(undefined)}>
                 <Show when={sec().running.length}>
                     <div class="grp">
@@ -134,15 +142,15 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
                         <Rows handle={p.handle} placed={sec().running} />
                     </div>
                 </Show>
-                <Show when={sec().finished.length}>
+                <Show when={sec().finished.length || more()}>
                     <div class="grp">
                         <button class="divi" aria-expanded={expanded()} onClick={() => setShowDone(!expanded())}>
                             <span>
-                                Finished<span class="n">{sec().finished.length}</span>
+                                Finished<span class="n">{sec().finished.length + (more()?.count ?? 0)}</span>
                             </span>
                             <i />
-                            <Show when={sec().failed}>
-                                <span class="tag">{sec().failed} failed</span>
+                            <Show when={sec().failed + (more()?.failed ?? 0)}>
+                                <span class="tag">{sec().failed + (more()?.failed ?? 0)} failed</span>
                             </Show>
                             <ChevronRight size={14} class="chev" />
                         </button>

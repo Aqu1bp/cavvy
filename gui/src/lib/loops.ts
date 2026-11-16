@@ -1,0 +1,116 @@
+// Looping motion (a spinner, the label's light, a pulse) has the window draw a frame at each of its steps for as long as
+// it runs: on a Mac, about 100 ms of CPU a second for one small ring. So it runs only when someone can see it, and costs
+// nothing otherwise:
+// - the window can be seen: not minimized or hidden (macOS keeps drawing a minimized window; the desktop app says when);
+// - it's in view: not scrolled out of the conversation, nor in a panel put away;
+// - for what's only decoration (the label's light, --decor), Cavvy has the focus;
+// - reduced motion is off (the stylesheets).
+// Every endless animation's play state is var(--loops) or var(--decor) (test/perf-rules.test.ts): paused here by
+// attributes, and started again from its start when it can be seen again, never mid-motion. A theme's scene
+// (data-loop-keeps) is the exception: its layers drift in and out of the window as they move, so they aren't watched
+// for it, and they carry on from where they stopped, on the grid, rather than all jumping back to their start.
+
+import { electron } from "./platform";
+import { STEP_MS } from "./stream-clock";
+
+let seen = true;
+let focused = true;
+
+const endless = (a: Animation): boolean => a.effect?.getComputedTiming().iterations === Infinity;
+
+const KEEPS = "[data-loop-keeps]";
+const keeps = (a: Animation): boolean => Boolean((a.effect as KeyframeEffect | null)?.target?.closest(KEEPS));
+
+/** The next step of the stream clock's grid. */
+function nextStep(): number | undefined {
+    const now = document.timeline.currentTime;
+    return typeof now === "number" ? Math.ceil(now / STEP_MS) * STEP_MS : undefined;
+}
+
+/** From their start, on the stream clock's grid: a light coming back crosses from the label's left edge. */
+function restart(anims: Animation[]) {
+    const at = nextStep();
+    if (at === undefined) return;
+    for (const a of anims) if (endless(a) && a.playState === "running") keeps(a) ? keepOn(a, at) : (a.startTime = at);
+}
+
+/** From where it stopped, put back on the grid: what it shows moves at most a step. */
+function keepOn(a: Animation, at: number) {
+    const t = a.currentTime;
+    if (typeof t === "number") a.startTime = at - Math.floor(t / STEP_MS) * STEP_MS;
+}
+
+/** Those of `anims` running again (a scene's, after nobody was at the window) carry on from where they stopped, on the grid. */
+export function carryOn(anims: Animation[]) {
+    const at = nextStep();
+    if (at === undefined) return;
+    for (const a of anims) if (endless(a) && a.playState === "running") keepOn(a, at);
+}
+
+function apply() {
+    const root = document.documentElement;
+    const loops = seen && document.visibilityState !== "hidden";
+    const decor = loops && focused;
+    const back = (loops && root.hasAttribute("data-loops-off")) || (decor && root.hasAttribute("data-decor-off"));
+    root.toggleAttribute("data-loops-off", !loops);
+    root.toggleAttribute("data-decor-off", !decor);
+    // getAnimations() brings styles up to date first: what was paused is running again when it's started over.
+    if (back) restart(document.getAnimations());
+}
+
+/** What `sight` watches: one taken out of the page while out of view brings no news, so it's let go at the next start. */
+const watched = new Set<Element>();
+
+/** Out of view, one is paused where it is; back in view, it starts over. */
+const sight =
+    typeof IntersectionObserver === "function"
+        ? new IntersectionObserver((entries) => {
+              for (const e of entries) {
+                  const el = e.target as HTMLElement;
+                  if (!el.isConnected) {
+                      sight!.unobserve(el);
+                      watched.delete(el);
+                      continue;
+                  }
+                  const out = el.hasAttribute("data-loop-out");
+                  if (e.isIntersecting && out) {
+                      el.removeAttribute("data-loop-out");
+                      restart(el.getAnimations());
+                  } else if (!e.isIntersecting && !out) el.setAttribute("data-loop-out", "");
+              }
+          })
+        : undefined;
+
+/** Watches each endless animation as it starts, and the window. Once, at startup. */
+export function gateLoops() {
+    document.addEventListener(
+        "animationstart",
+        (e) => {
+            const el = e.target as Element;
+            if (!sight || watched.has(el) || el.closest(KEEPS) || !el.getAnimations(e.pseudoElement ? { subtree: true } : undefined).some((a) => (a as CSSAnimation).animationName === e.animationName && endless(a))) return;
+            for (const w of watched) {
+                if (w.isConnected) continue;
+                sight.unobserve(w);
+                watched.delete(w);
+            }
+            watched.add(el);
+            sight.observe(el);
+        },
+        true,
+    );
+    document.addEventListener("visibilitychange", apply);
+    if (electron?.onWindowState) {
+        electron.onWindowState((s) => {
+            seen = s.seen;
+            focused = s.focused;
+            apply();
+        });
+    } else {
+        // In a browser: its tab's focus. (The desktop app's own say is the window's: focus in a browser tab inside it,
+        // a frame of the page's own, isn't the window losing it.)
+        focused = document.hasFocus();
+        addEventListener("focus", () => ((focused = true), apply()));
+        addEventListener("blur", () => ((focused = false), apply()));
+    }
+    apply();
+}

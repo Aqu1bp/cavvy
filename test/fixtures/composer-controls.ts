@@ -60,6 +60,8 @@ const runSheet = createRunSheet({
 });
 const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
+/** Files looked up over a session's own connection (rpcFor): the session asked for, and the one on screen then. */
+const askedFor: [string | undefined, string | undefined][] = [];
 let commandLists = 0;
 let holdCommands = false;
 let holdSend: Promise<void> | undefined;
@@ -93,16 +95,20 @@ const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
-    createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
+    createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false, showSending: () => () => undefined,
     fitComposerBar: () => noop,
     app: appState,
     handleFor: (id?: string) => id ? ({ id, view: { state: sessionState, turns }, draft: handedBack, setDraft: setHandedBack }) : undefined,
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
-    focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false, settingsTab: () => undefined, columnHeight: () => "800px",
+    usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false, settingsTab: () => undefined, columnHeight: () => "800px",
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     readAttachment: async (f: { name: string }) => ({ kind: "image", name: f.name, size: 3, mediaType: "image/png", data: "cG5n" }),
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++, far: {},
     send: async (text: string, attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); sentAttachments.push(attachments); if (holdSend) await holdSend; opts.accepted(session()); return true; }, toast: noop, reportError: noop,
+    // A session of another machine asks over its own connection (state/app.ts rpcFor): here, all are this one, and
+    // which asked through it is noted.
+    get rpcFor() { return (sessionId?: string) => ({ call: (method: string, params: unknown) => (askedFor.push([sessionId, session()]), this.rpc.call(method, params)) }); },
+    connFor: () => appState.conn, awayMachine: () => undefined, serversUi: async () => ({}),
     rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; if (holdCommands) return new Promise(() => {}); return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }, { name: "compact", description: "Summarize", noAttachments: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined, documentElement: { getBoundingClientRect: () => ({ top: 0, bottom: 800 }) } },
@@ -425,6 +431,11 @@ setSession(undefined);
     input("@READ");
     await Bun.sleep(80);
     assert.deepEqual(calls.slice(before).map((c) => [c.method, c.params]), [["fs.mentions", { cwd: "/workspace", query: "READ" }]]);
+    // Over the session's own connection: its machine's files, when it's another machine's.
+    assert.ok(askedFor.length > 0, "fs.mentions asked over rpcFor");
+    // Each over the connection of the session on screen, sessions' and Home's alike.
+    assert.ok(askedFor.some(([, on]) => on !== undefined), "asked in a session");
+    for (const [asked, on] of askedFor) assert.equal(asked, on, "over the connection of the session on screen");
     replies.at(-1)!.resolve(["README.md"]);
     await Bun.sleep(0);
     assert.equal(ta.props["aria-expanded"], true);

@@ -86,6 +86,11 @@ export class Rpc {
         return () => this.listeners.delete(fn);
     }
 
+    /** Something heard over another connection (another machine's, for its session open here), told as if heard here. */
+    hear(e: ServerEvent) {
+        for (const fn of this.listeners) fn(e);
+    }
+
     onState(fn: (s: ConnectionState, attempt: number) => void): () => void {
         this.stateListeners.add(fn);
         return () => this.stateListeners.delete(fn);
@@ -183,6 +188,11 @@ export class Rpc {
         this.retryTimer = setTimeout(() => void this.connect(), delay);
     }
 
+    /** Nothing under way: not asking for its sign-in, no socket open or opening (waiting to try again, say). */
+    get idle(): boolean {
+        return !this.closed && !this.connecting && !this.ws;
+    }
+
     /** Retry the connection, never a request: a lost reply may still have taken effect. */
     reconnectNow() {
         // A browser login code is single-use; let its credential exchange finish.
@@ -200,6 +210,9 @@ export class Rpc {
 
     /** The desktop app asks the sidecar for credentials each time, so a stale token is never the problem there. */
     retriesCredentials = false;
+
+    /** Run before an answer is handed over. */
+    beforeAnswer?: () => void;
 
     private receive(raw: string) {
         let msg: ServerMessage;
@@ -223,6 +236,8 @@ export class Rpc {
         this.pending.delete(msg.id);
         this.ages.remove(msg.id);
         this.updateNotice();
+        // Events put off a moment (state/app.ts upsertSoon) are in before what an answer is awaited for reads.
+        this.beforeAnswer?.();
         if ("error" in msg) p.reject(new RpcError(msg.error.message, msg.error.code, msg.error.folder));
         else p.resolve(msg.result);
     }

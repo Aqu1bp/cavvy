@@ -552,6 +552,7 @@ export class Engine {
     // Sending
 
     broadcast(ev: ServerEvent) {
+        if (ev.type === "sessions.remove") this.summarySent.delete(ev.id);
         for (const c of this.clients) c.send(ev);
     }
 
@@ -684,8 +685,15 @@ export class Engine {
             const saved = s.runs?.flatMap((r) => r.sessions).find((m) => m.id === rt.id);
             if (saved) saved.outcome = outcome;
         });
-        this.broadcast({ type: "sessions.upsert", session: this.summaryOf(rt) });
+        // Not again as it was last sent (a turn's end told twice: its status, then its notice).
+        const session = this.summaryOf(rt);
+        const said = JSON.stringify(session);
+        if (this.summarySent.get(rt.id) === said) return;
+        this.summarySent.set(rt.id, said);
+        this.broadcast({ type: "sessions.upsert", session });
     }
+    /** Each open session's row as last sent to the windows (sessionChanged): forgotten as it's closed or removed. */
+    private summarySent = new Map<string, string>();
 
     workspaceChanged(ws: Workspace) {
         for (const r of this.runtimes.values()) if (r.ws === ws) r.workspaceChanged();
@@ -936,6 +944,7 @@ export class Engine {
         for (const [cwd, ws] of idle) {
             if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
             this.workspaces.delete(cwd);
+            ws.files.dispose();
             void ws.mcp.closeAll().catch(() => undefined);
         }
         return result;
@@ -1030,6 +1039,7 @@ export class Engine {
             limit: Math.max(1, Math.min(Math.floor(limit), 200)),
             include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
             stale: () => this.searches.get(client) !== seq || this.stopping,
+            open: new Set(this.runtimes.keys()),
         });
         if (r.stale) return { hits: [], partial: true, stale: true };
         return {
@@ -1143,6 +1153,7 @@ export class Engine {
      * speed, mode and effort.
      */
     async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+        await original.allTurns();
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
@@ -1328,6 +1339,7 @@ export class Engine {
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        this.summarySent.delete(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
@@ -1427,6 +1439,7 @@ export class Engine {
             try {
                 if (rt) {
                     this.runtimes.delete(id);
+                    this.summarySent.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
@@ -2601,6 +2614,10 @@ export class Engine {
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
+            case "server.lag":
+                return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
+            case "server.memory":
+                return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":
                 return this.terminals.list(client);
             case "terminal.attach":
@@ -2714,6 +2731,9 @@ export class Engine {
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const loaded = this.runtimes.has(id);
                 const rt = this.openSession(id);
+                // What's waiting to go out goes to the windows that have it open now, before this one is among them: one
+                // back after a drop (since) is sent it in what it missed (resume), and would have it twice otherwise.
+                if (loaded) rt.flush();
                 this.watch(client, rt.id);
                 if (!loaded) {
                     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2722,16 +2742,63 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
-                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined);
+                // Open in this window before its connection dropped: only what it missed, when that's all still here.
+                const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
+                const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
+                if (resumed) return resumed;
+                // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
+                const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
+                const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                try {
+                    return await rt.snapshotSoon(last, budget, p.fold === true);
+                } catch (e) {
+                    // A turn of its store turned out damaged as it was sent (TurnStore.get): when no other window has it,
+                    // it's let go of and opened again, built from its logs (its store isn't read or indexed again).
+                    // Not one at work (letting it go would stop that), nor as the server stops: the error, as before.
+                    const idle = rt.idle && !rt.scheduled && !rt.watching && !this.stopping;
+                    if (!rt.storeDamaged || !idle || this.runtimes.get(id) !== rt || [...this.clients].some((c) => c !== client && c.subs.has(id))) throw e;
+                    client.subs.delete(id);
+                    await this.unload(rt);
+                    if (this.stopping) throw e;
+                    const again = this.openSession(id);
+                    this.watch(client, again.id);
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    await Promise.race([again.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
+                    clearTimeout(timer);
+                    return await again.snapshotSoon(last, budget, p.fold === true);
+                }
             }
             case "session.turns": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 // Only a session this window has open: its ops come to it, so what it's sent stays right.
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
-                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true });
+                // The turns asked for are earlier ones: there, once a first open has built them (Runtime.allTurns).
+                await rt.allTurns();
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true, upTo: typeof p.upTo === "number" && p.upTo > 0 ? Math.min(Math.floor(p.upTo), 1000) : undefined, after: typeof p.after === "string" ? p.after : undefined });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
+            }
+            case "session.find": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                const also = Array.isArray(p.turns) ? (p.turns as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 10_000) : undefined;
+                const g = p.gap as { after?: unknown; before?: unknown } | undefined;
+                const gap = g && typeof g === "object" && typeof g.after === "string" && typeof g.before === "string" ? { after: g.after, before: g.before } : undefined;
+                await rt.allTurns();
+                return { matches: await rt.find(str(p.query, "query"), typeof p.before === "string" ? p.before : undefined, also, gap) };
+            }
+            case "session.agentList": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                await rt.allTurns();
+                return rt.agentList();
+            }
+            case "session.agent": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                await rt.allTurns();
+                return rt.agentWhole(str(p.agentId, "agentId"));
             }
             case "cliSessions.list":
                 return this.cliSessionsList(str(p.cwd, "cwd"));
@@ -2750,7 +2817,10 @@ export class Engine {
             }
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
-                if (client.shown) this.runtimes.get(client.shown)?.flush();
+                const rt = client.shown ? this.runtimes.get(client.shown) : undefined;
+                rt?.flush();
+                // On screen, it's likely to be sent to: its folder's first snapshot taken now, not as the prompt waits.
+                rt?.warmSnapshots();
                 return null;
             }
             case "session.send": {
@@ -2833,15 +2903,18 @@ export class Engine {
             case "session.rewindTargets": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                await rt.allTurns();
                 return rt.rewindTargets();
             }
             case "session.rewindPlan": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                await rt.allTurns();
                 return rt.rewindPlan(num(p.index, -1));
             }
             case "session.rewind":
                 await this.runtime(p.id).yieldIdleCompaction();
+                await this.runtime(p.id).allTurns();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
@@ -2904,6 +2977,16 @@ export class Engine {
                     }
                 }
                 return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
+            }
+            case "session.turn": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.turnWhole(str(p.turnId, "turnId"));
+            }
+            case "session.block": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                return rt.blockWhole(str(p.turnId, "turnId"), str(p.blockId, "blockId"));
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
@@ -3138,7 +3221,9 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
-                client.machine = name;
+                // The window is on that server now: what that server says, it hears from there. Not for a connection of
+                // its own to it (`link`): the window stays here, and what it isn't told from there it's told from here.
+                if (p.link !== true) client.machine = name;
                 return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
             }
             case "servers.update": {
@@ -3253,14 +3338,18 @@ export class Engine {
                 const cwd = resolve(str(p.cwd, "cwd"));
                 const query = str(p.query ?? "", "query");
                 const ws = this.workspaces.get(cwd);
-                if (ws) return ws.files.search(query, 12);
+                if (ws) return await ws.files.searchSoon(query, 12);
                 // Home, before a session opens there: the folder's file names (listed, as for a session, nothing read).
                 if (!isDir(cwd) || [...this.removing].some((dir) => within(dir)(cwd))) return [];
                 const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
                 this.homeFiles.delete(cwd);
                 this.homeFiles.set(cwd, index);
-                for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
-                return index.search(query, 12);
+                for (const [old, dropped] of this.homeFiles) {
+                    if (this.homeFiles.size <= 4) break;
+                    this.homeFiles.delete(old);
+                    dropped.dispose();
+                }
+                return await index.searchSoon(query, 12);
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));

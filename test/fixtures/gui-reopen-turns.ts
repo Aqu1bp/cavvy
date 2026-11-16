@@ -1,5 +1,6 @@
 // A long session read with "Show earlier", opened again: on a reconnect, a reload, and after the window let it go (and
-// the server read it in anew: its turn ids numbered anew, an old one another turn's).
+// the server read it in anew: its turn ids numbered anew, an old one another turn's). Each time it comes with its last
+// turns, as fit its first screens, not every turn the window had: the place read comes back with them (loadEarlierTo).
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 
@@ -17,7 +18,7 @@ const sessions = new Map<string, number>([["long", 130]]);
 let numbering = 2;
 const turnsOf = (id: string) => Array.from({ length: sessions.get(id) ?? 0 }, (_, i) => ({ id: `${id}-${i + numbering}`, status: "done", blocks: [], prompt: { text: `prompt ${i}` }, pos: { seg: 0, index: 2 * i }, startedAt: 1000 + i }));
 /** What each session.open, and each session.turns, asked for. */
-const opens: { id: string; last?: number }[] = [];
+const opens: { id: string; last?: number; budget?: number; fold?: boolean }[] = [];
 const pages: Record<string, unknown>[] = [];
 let server: ServerSocket | undefined;
 
@@ -28,7 +29,7 @@ class ServerSocket extends Socket {
         const { id, method, params } = JSON.parse(raw);
         const reply = (result: unknown) => queueMicrotask(() => this.message({ id, result }));
         if (method === "session.open") {
-            opens.push({ id: params.id, last: params.last });
+            opens.push({ id: params.id, last: params.last, budget: params.budget, fold: params.fold });
             const all = turnsOf(params.id);
             const from = Math.max(0, all.length - (params.last ?? all.length));
             reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: false, interactions: [] }, turns: all.slice(from), agents: [], ...(from ? { earlier: from } : {}) });
@@ -36,13 +37,21 @@ class ServerSocket extends Socket {
             pages.push(params);
             const all = turnsOf(params.id);
             const at = all.findIndex((t) => t.id === params.before);
+            // A gap's next page, after the turn `after` (Runtime.turnsBefore).
+            if (params.after) {
+                const start = all.findIndex((t) => t.id === params.after) + 1;
+                const end = Math.min(at, start + (params.count ?? 40));
+                return reply({ turns: all.slice(start, end), earlier: start, skipped: at - end, seq: 0 });
+            }
             let from = params.all ? 0 : Math.max(0, at - (params.count ?? 40));
             // Back to the turn holding that message, as the server does (Runtime.turnsBefore).
             if (params.through) {
                 const holder = all.findLastIndex((t, i) => i < at && !placeBefore(params.through, t.pos));
                 if (holder >= 0) from = Math.min(from, holder);
             }
-            reply({ turns: all.slice(from, at), earlier: from, seq: 0 });
+            // A page from there, not every turn down to those it has (upTo): the rest skipped.
+            const end = params.upTo && !params.all ? Math.min(at, from + params.upTo) : at;
+            reply({ turns: all.slice(from, end), earlier: from, seq: 0, ...(end < at ? { skipped: at - end } : {}) });
         } else if (method === "hello" || method === "settings.get") reply({});
         else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
@@ -51,7 +60,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, openSession, loadEarlier, loadEarlierTo, handleFor } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, loadEarlier, loadEarlierTo, handleFor, fillGap, forgetEarlier, OPEN_TURNS, OPEN_BYTES } = await import("../../gui/src/state/app");
 const { keyedTurn, placeBefore, turnKey } = await import("../../gui/src/lib/transcript-scroll");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 const lastOpen = () => opens.filter((o) => o.id === "long").at(-1)!;
@@ -70,24 +79,27 @@ try {
     assert.equal(h.view.turns.length, 130);
     assert.equal(h.view.earlier, 0);
 
-    // The connection drops and comes back: the session comes again with every turn the window had.
+    // The connection drops and comes back: the session comes again with its last turns, as fit its first screens, not
+    // the 130 the window had (after Find had them all, that was the whole session again on each reconnect).
     Socket.instances.at(-1)!.close();
     rpc.reconnectNow();
     await settle();
     Socket.instances.at(-1)!.open();
     await settle();
     assert.equal(opens.filter((o) => o.id === "long").length, 2, "opened again on the reconnect");
-    assert.ok(lastOpen().last! >= 130, `a reconnect asks for the turns the window had, not ${lastOpen().last}`);
-    assert.equal(h.view.turns.length, 130);
-    assert.equal(h.view.turns[0]!.id, "long-2", "the turns read with Show earlier are still there");
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+    assert.equal(h.view.turns.length, 100);
+    assert.equal(h.view.earlier, 30);
 
     // Reloaded by the server (a failed delete closed it): the same.
     server!.message({ event: { type: "session.reload", sessionId: "long" } });
     await settle();
     assert.equal(opens.filter((o) => o.id === "long").length, 3);
-    assert.ok(lastOpen().last! >= 130, `a reload asks for the turns the window had, not ${lastOpen().last}`);
-    assert.equal(h.view.turns[0]!.id, "long-2");
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
 
+    // Read back up to its first again ("Show earlier"), and the place read is up there.
+    assert.ok(await loadEarlier(h, { count: 40 }));
+    assert.equal(h.view.turns.length, 130);
     // Eight other sessions opened since: the window lets it go. Three turns come meanwhile.
     const read = turnKey(h.view.turns, 1);
     h.lastUsed = 0;
@@ -101,14 +113,17 @@ try {
     sessions.set("long", 133);
     numbering = 0;
     const again = await openSession("long");
-    assert.ok(lastOpen().last! >= 130, `picked again, it's asked for the turns the window had, not ${lastOpen().last}`);
-    assert.equal(again.view.turns.length, 130);
+    assert.deepEqual(lastOpen(), { id: "long", last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+    assert.equal(again.view.turns.length, 100);
     // The place read was in a turn the new ones pushed out: brought back first, in one request, and no more than it.
     assert.equal(keyedTurn(again.view.turns, read), undefined);
-    assert.equal(again.view.turns.find((t) => t.id === read.id)?.prompt?.text, "prompt 3", "its old id is another turn's now");
+    // Its old id may be another turn's now: one here with it isn't taken for it.
+    assert.notEqual(again.view.turns.find((t) => t.id === read.id)?.prompt?.text, "prompt 1");
     pages.length = 0;
+    const first = again.view.turns[0]!.id;
     assert.ok(await loadEarlierTo(again, read));
-    assert.deepEqual(pages, [{ id: "long", before: "long-3", through: { seg: 0, index: 2 }, count: 1 }]);
+    // (Its work folded, as it opened: what only an opened row shows comes as it's shown.)
+    assert.deepEqual(pages, [{ id: "long", before: first, through: { seg: 0, index: 2 }, count: 1, upTo: 40, fold: true }]);
     assert.equal(keyedTurn(again.view.turns, read)?.prompt?.text, "prompt 1");
     assert.equal(again.view.turns[0]!.prompt?.text, "prompt 1");
     // Here already: nothing asked.
@@ -119,6 +134,30 @@ try {
     assert.equal(await loadEarlierTo(again, { ...read, pos: { seg: 0, index: 1 }, near: { seg: 0, index: 1 } }), true);
     assert.equal(pages.length, 1);
     assert.equal(keyedTurn(again.view.turns, { ...read, pos: { seg: 0, index: 1 } }), undefined);
+
+    // A jump to a turn far up: a page from it, the rest a gap the window fills a page at a time, not every turn down
+    // to those it has.
+    sessions.set("deep", 1000);
+    const deep = await openSession("deep");
+    assert.equal(deep.view.turns.length, 100);
+    pages.length = 0;
+    assert.ok(await loadEarlier(deep, { through: { seg: 0, index: 20 }, upTo: 12 }));
+    assert.equal(deep.view.turns.length, 112);
+    assert.equal(deep.view.turns[0]!.prompt?.text, "prompt 10");
+    assert.equal(deep.view.earlier, 10);
+    assert.deepEqual(deep.view.gap, { after: deep.view.turns[11]!.id, count: 878 });
+    let put = 0;
+    assert.ok(await fillGap(deep, 40, (n) => (put = n)));
+    assert.equal(put, 40);
+    assert.equal(deep.view.turns.length, 152);
+    assert.equal(deep.view.turns[12]!.prompt?.text, "prompt 22");
+    assert.deepEqual(deep.view.gap, { after: deep.view.turns[51]!.id, count: 838 });
+    // Back at the end, the page and the gap are earlier turns again: what's kept is the end.
+    forgetEarlier(deep, 100);
+    assert.equal(deep.view.turns.length, 100);
+    assert.equal(deep.view.turns[0]!.prompt?.text, "prompt 900");
+    assert.equal(deep.view.earlier, 900);
+    assert.equal(deep.view.gap, undefined);
 } finally {
     rpc.close();
 }

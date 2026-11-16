@@ -177,6 +177,16 @@ function createWindow() {
         },
     });
     host.watch(win.webContents);
+    // Whether the window can be seen and has the focus, for the page's looping motion (gui/src/lib/loops.ts): macOS
+    // keeps drawing a minimized window.
+    {
+        const w = win;
+        const tell = () => {
+            if (!w.isDestroyed()) w.webContents.send("window_state", { seen: w.isVisible() && !w.isMinimized(), focused: w.isFocused() });
+        };
+        for (const e of ["minimize", "restore", "hide", "show", "focus", "blur"] as const) w.on(e as "focus", tell);
+        w.webContents.on("did-finish-load", tell);
+    }
     opened = state;
     keepWindowState(win);
     if (glass) {

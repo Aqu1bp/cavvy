@@ -4,16 +4,18 @@
 // Everything is passed through the redactor before it touches disk.
 
 import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, renameSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
 import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
+import { noteSessionWrite, sessionWriteCount, writtenAfter } from "./session-writes";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
+import { eachLine, linesFromEnd } from "../util/lines";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
 
@@ -258,6 +260,10 @@ export class Session {
     title?: string;
     /** The latest compaction summary (/summary). */
     summary?: string;
+    /** Its file's segments: one, and one more after each compaction (as readSegments makes them). */
+    segments = 1;
+    /** Its last compaction kept the prompt under way (it goes on in the segment after: Segment.kept). */
+    lastCompactKept = false;
     /** USD spent in this session (estimates included). */
     cost = 0;
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
@@ -444,6 +450,7 @@ export class Session {
             for (; saved < lines.length; saved++) {
                 appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
                 this.torn = false;
+                noteSessionWrite(this.file);
             }
             if (this.failing) {
                 this.failing = false;
@@ -842,6 +849,8 @@ export class Session {
         this.parked = [];
         this.summary = summary;
         this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
+        this.segments++;
+        this.lastCompactKept = kept;
         for (const m of messages) this.push(m);
     }
 
@@ -868,13 +877,90 @@ export class Session {
         return Session.read(file, false);
     }
 
+    /** What it is, as read from its file (Session.read): its checkpoint's state (readCheckpoint). */
+    private toState(): SessionState {
+        return {
+            meta: this.meta,
+            messages: this.messages,
+            notices: this.notices,
+            backends: [...this.backends],
+            backendPlaces: [...this.backendPlaces],
+            parked: this.parked,
+            summary: this.summary,
+            segments: this.segments,
+            lastCompactKept: this.lastCompactKept,
+            model: this.model,
+            fastMode: this.savedFastMode,
+            title: this.title,
+            workdir: this.workdir,
+            goal: this.goal,
+            plans: this.plans,
+            planLinks: this.planLinks,
+            imported: this.imported,
+            cost: this.cost,
+            costUnknown: this.costUnknown,
+            usageByModel: [...this.usageByModel],
+            backgroundTasks: [...this.backgroundTasks],
+            schedules: this.savedSchedules,
+            accounts: this.accounts,
+            workedAt: this.workedAt,
+        };
+    }
+
+    /** As its checkpoint has it (toState), before what's been written since is read. */
+    private restoreState(st: SessionState) {
+        this.messages = st.messages;
+        this.notices = st.notices;
+        this.backends = new Map(st.backends);
+        this.backendPlaces = new Map(st.backendPlaces);
+        this.parked = st.parked;
+        this.summary = st.summary;
+        this.segments = st.segments;
+        this.lastCompactKept = st.lastCompactKept;
+        this.model = st.model;
+        this.fastMode = this.savedFastMode = st.fastMode;
+        this.title = st.title;
+        this.workdir = st.workdir;
+        this.goal = st.goal;
+        this.plans = st.plans;
+        this.planLinks = st.planLinks;
+        this.imported = st.imported;
+        this.cost = st.cost;
+        this.costUnknown = st.costUnknown;
+        this.usageByModel = new Map(st.usageByModel);
+        for (const [k, v] of st.backgroundTasks) this.backgroundTasks.set(k, v);
+        this.savedSchedules = st.schedules;
+        this.schedules = JSON.parse(st.schedules) as ScheduledJob[];
+        this.accounts = st.accounts;
+        this.workedAt = this.savedWorkedAt = st.workedAt;
+    }
+
+    /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
+    private loadedLines?: readonly Line[];
+
+    /** The lines this session was just loaded from, once, while that's still the task that loaded it. */
+    takeLoadedLines(): readonly Line[] | undefined {
+        const lines = this.loadedLines;
+        this.loadedLines = undefined;
+        return lines;
+    }
+
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
-        const text = readFileSync(file, "utf-8");
-        let meta: SessionMeta | undefined;
+        // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
+        const cp = readCheckpoint(file);
+        let meta: SessionMeta | undefined = cp?.state.meta;
         const lines: Line[] = [];
-        for (const raw of text.split("\n")) {
-            if (!raw.trim()) continue;
+        let empty = !cp;
+        // A line at a time (lib eachLine): a session of any size, never all of it as one string.
+        const { endsWithNewline, end } = eachLine(file, (raw) => {
+            empty = false;
+            if (!raw.trim()) return;
+            // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
+            if (raw.startsWith(MSG_LINE)) {
+                lines.push(lazyMessage(raw));
+                return;
+            }
             try {
                 const l = JSON.parse(raw) as Line;
                 if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
@@ -882,11 +968,21 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        }
+        }, undefined, cp?.offset ?? 0);
         if (!meta) throw new Error(`Not a session file: ${file}`);
         const s = new Session(meta, { file, persist });
         s.started = true;
+        if (cp) s.restoreState(cp.state);
+        // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
+        // past it, or a session loaded for anything else would hold every line it ever had. (Read from a checkpoint,
+        // they aren't all of them: readSegments reads the file.)
+        if (!cp) {
+            s.loadedLines = lines;
+            queueMicrotask(() => (s.loadedLines = undefined));
+        }
         for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
+        // (And as of its checkpoint.)
+        if (cp?.state.workedAt !== undefined) s.workedAt = Math.max(s.workedAt ?? -Infinity, cp.state.workedAt);
         // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
         if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);
         s.savedWorkedAt = s.workedAt;
@@ -894,19 +990,29 @@ export class Session {
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load. (Written through write(), so one from before worked lines
         // keeps its time.)
-        if (persist && text && !text.endsWith("\n")) {
+        if (persist && !empty && !endsWithNewline) {
             try {
                 if (s.workedAt === undefined) appendFileSync(file, "\n" + redactedJson({ t: "worked", at: writtenAt }) + "\n");
                 else appendFileSync(file, "\n");
+                noteSessionWrite(file);
                 s.workedAt ??= writtenAt;
                 s.savedWorkedAt ??= writtenAt;
             } catch {
                 // read-only file: nothing will be appended either
             }
         }
-        for (const l of lines) {
-            if (l.t === "msg") s.messages.push(l.m);
+        // Before the last compaction: nothing it clears (the messages and all that's about them) is read.
+        const lastCompact = lines.findLastIndex((l) => l.t === "compact");
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i]!;
+            if (i < lastCompact && CLEARED_BY_COMPACT.has(l.t)) continue;
+            if (l.t === "msg") {
+                const m = l.m as Message | undefined;
+                if (m) s.messages.push(m);
+            }
             else if (l.t === "compact") {
+                s.segments++;
+                s.lastCompactKept = l.kept === true;
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
@@ -975,6 +1081,9 @@ export class Session {
                 s.savedSchedules = JSON.stringify(s.schedules);
             }
         }
+        // Read far past where it was read from before (or all of it): from here, next time. As it is now, read: what
+        // happens to it from here (a repair below) is written to it, and read from it next time.
+        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState());
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
@@ -1011,6 +1120,137 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
 }
 
 /** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+/**
+ * A session as read from its file up to `offset` (Session.read), kept beside it (state/<id>.json) so it's read from
+ * there next time: a long session's file is mostly what its last compaction cleared, read and dropped each time it's
+ * opened (40 MB of a 30,000-item session). Used only if the file is the one it was read from (its inode) and still
+ * has, just before `offset`, the bytes it had then: it's only ever appended to.
+ */
+interface Checkpoint {
+    v: number;
+    offset: number;
+    ino: number;
+    /** The TAIL_BYTES before `offset`, base64. */
+    tail: string;
+    state: SessionState;
+}
+
+/** What a checkpoint keeps of a session (Session.toState). */
+interface SessionState {
+    meta: SessionMeta;
+    messages: Message[];
+    notices: TurnNotice[];
+    backends: [string, BackendSession][];
+    backendPlaces: [string, AccountPlace][];
+    parked: ParkedBackend[];
+    summary?: string;
+    segments: number;
+    lastCompactKept: boolean;
+    model?: string;
+    fastMode?: boolean;
+    title?: string;
+    workdir?: string;
+    goal?: GoalRecord;
+    plans: PresentedPlan[];
+    planLinks: PlanLink[];
+    imported?: ImportRecord;
+    cost: number;
+    costUnknown: boolean;
+    usageByModel: [string, { usage: Usage; cost: number; unknown?: boolean }][];
+    backgroundTasks: [string, BackgroundTaskInfo][];
+    /** As saved (JSON). */
+    schedules: string;
+    accounts: Record<string, string>;
+    workedAt?: number;
+}
+
+const CHECKPOINT_VERSION = 2;
+/**
+ * `after`: read this far past a session's checkpoint (or with none), it's written anew. `most`: and kept only if it's
+ * at most this much of what it's read in place of. (Tests set them low to checkpoint short sessions.)
+ */
+export const checkpointing = { after: 1024 * 1024, most: 0.5 };
+const CHECKPOINT_TAIL = 256;
+
+export function checkpointFile(file: string): string {
+    return join(dirname(file), "state", basename(file).replace(/\.jsonl$/, ".json"));
+}
+
+/** The bytes of `file` (open as `fd`) before `offset`, as a checkpoint keeps them. */
+function tailBefore(fd: number, offset: number): string {
+    const n = Math.min(CHECKPOINT_TAIL, offset);
+    const b = Buffer.alloc(n);
+    readSync(fd, b, 0, n, offset - n);
+    return b.toString("base64");
+}
+
+function readCheckpoint(file: string): Checkpoint | undefined {
+    let cp: Checkpoint;
+    try {
+        cp = JSON.parse(readFileSync(checkpointFile(file), "utf-8")) as Checkpoint;
+    } catch {
+        return undefined;
+    }
+    if (cp?.v !== CHECKPOINT_VERSION || typeof cp.offset !== "number" || !cp.state?.meta) return undefined;
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const st = fstatSync(fd);
+        if (st.ino !== cp.ino || st.size < cp.offset || tailBefore(fd, cp.offset) !== cp.tail) return undefined;
+        return cp;
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+function writeCheckpoint(file: string, offset: number, state: SessionState) {
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const cp: Checkpoint = { v: CHECKPOINT_VERSION, offset, ino: fstatSync(fd).ino, tail: tailBefore(fd, offset), state };
+        const json = JSON.stringify(cp);
+        // Kept only if it's read in place of much more (a session never compacted keeps all its messages: no saving).
+        if (json.length > offset * checkpointing.most) return;
+        const out = checkpointFile(file);
+        ensureDir(dirname(out));
+        const tmp = `${out}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+        writeFileSync(tmp, json, { mode: 0o600 });
+        renameSync(tmp, out);
+    } catch {
+        // Read whole next time, as without it.
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+/** How a message's line starts (write: redactedJson keeps the key order). */
+const MSG_LINE = '{"t":"msg",';
+/** What a compaction empties, or only changes what it empties: lines of these before the last one needn't be read. */
+const CLEARED_BY_COMPACT = new Set<string>(["msg", "rewind", "withdraw", "notice", "imagesRefused"]);
+
+/** A message's line, parsed when its message is first read (undefined: a torn line). */
+function lazyMessage(raw: string): Line {
+    let m: Message | undefined;
+    let read = false;
+    return {
+        t: "msg",
+        get m() {
+            if (!read) {
+                read = true;
+                try {
+                    const l = JSON.parse(raw) as Line;
+                    if (l.t === "msg") m = l.m;
+                } catch {
+                    // a torn final line from a crash
+                }
+            }
+            return m as Message;
+        },
+    } as Line;
+}
+
 function markRefused(m: Message, model: string) {
     if (m.role !== "user" || m.meta?.imagesRefused?.includes(model)) return;
     m.meta = { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), model] };
@@ -1676,33 +1916,9 @@ export function heldSessionFolders(): string[] {
 export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number; capped?: () => void } = {}): SessionSummary[] {
     const root = paths.projectsDir();
     if (!existsSync(root)) return [];
-    const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
-    let dirs: string[] = [];
-    try {
-        dirs = readdirSync(root);
-    } catch {
-        return [];
-    }
-    for (const d of dirs) {
-        const dir = join(root, d);
-        let names: string[];
-        try {
-            names = readdirSync(dir);
-        } catch {
-            continue;
-        }
-        for (const f of names) {
-            if (!f.endsWith(".jsonl")) continue;
-            const file = join(dir, f);
-            try {
-                const st = statSync(file);
-                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, createdAt: st.birthtimeMs || st.ctimeMs });
-            } catch {
-                // vanished or unreadable
-            }
-        }
-    }
-    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+    const files = sessionFiles(root);
+    if (!files) return [];
+    const out = newestByWork(files.slice(), limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
         const s: SessionSummary = {
@@ -1719,6 +1935,142 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
     }, o.maxRead, o.capped);
     saveSessionHeads();
     return out;
+}
+
+type ListedFile = { f: string; file: string; mtimeMs: number; size: number; createdAt: number };
+/** Every session file as last listed whole, newest first, with each project folder's mtime then and when. */
+let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, number>; at: number; writes: number } | undefined;
+/**
+ * Listed whole more than this long ago, it's listed whole again after the call, for the next. Until then, only the
+ * newest RELISTED_RECENT files are looked at again (what's being written to is among them; a file put in or taken out
+ * changes its folder's mtime). Statted whole at each call, 10,000 sessions held the server 22-34 ms each time a window
+ * opened or the sidebar was listed (measured): as long as history grows.
+ */
+const RELIST_MS = 1000;
+const RELISTED_RECENT = 64;
+
+let relistTimer: ReturnType<typeof setTimeout> | undefined;
+
+const folderTime = (dir: string) => {
+    try {
+        return statSync(dir).mtimeMs;
+    } catch {
+        return -1;
+    }
+};
+
+/** The session files under `root`, newest first (undefined: it couldn't be read). */
+function sessionFiles(root: string): ListedFile[] | undefined {
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return undefined;
+    }
+    const was = listedFiles;
+    if (was && was.root === root && dirs.length === was.folders.size && dirs.every((d) => was.folders.get(d) === folderTime(join(root, d)))) {
+        if (performance.now() - was.at >= RELIST_MS && !relistTimer) {
+            relistStarted = performance.now();
+            relistTimer = setTimeout(() => {
+                void listWholeLater(root).finally(() => (relistTimer = undefined));
+            }, 0);
+            relistTimer.unref?.();
+        }
+        let changed = false;
+        // Those this process wrote to since too, wherever they were (one far down, reopened and written to, is the
+        // newest now). Another process's write is seen by the next whole listing, at most RELIST_MS on.
+        const writes = sessionWriteCount();
+        const written = writtenAfter(was.writes);
+        was.writes = writes;
+        const files = was.files.map((x, i): ListedFile | undefined => {
+            if (i >= RELISTED_RECENT && !written?.has(x.file)) return x;
+            try {
+                const st = statSync(x.file);
+                if (st.mtimeMs === x.mtimeMs && st.size === x.size) return x;
+                changed = true;
+                return st.isFile() ? { ...x, mtimeMs: st.mtimeMs, size: st.size } : undefined;
+            } catch {
+                changed = true;
+                return undefined;
+            }
+        });
+        if (changed) listedFiles = { ...was, files: files.filter((x): x is ListedFile => x !== undefined).sort((a, b) => b.mtimeMs - a.mtimeMs) };
+        return listedFiles!.files;
+    }
+    return listWhole(root, dirs);
+}
+
+/** As listWhole, letting the server's other work run every RELIST_SLICE files (what's listed is the same). */
+const RELIST_SLICE = 500;
+async function listWholeLater(root: string): Promise<void> {
+    const writes = sessionWriteCount();
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return;
+    }
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    let since = 0;
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            if (++since >= RELIST_SLICE) {
+                since = 0;
+                await new Promise((r) => setImmediate(r));
+            }
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // Listed whole meanwhile (a folder changed, say): that's the newer.
+    if (listedFiles && listedFiles.root === root && listedFiles.at > relistStarted) return;
+    listedFiles = { root, files, folders, at: performance.now(), writes };
+}
+let relistStarted = 0;
+
+function listWhole(root: string, dirs: string[]): ListedFile[] {
+    const writes = sessionWriteCount();
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    listedFiles = { root, files, folders, at: performance.now(), writes };
+    return files;
 }
 
 /** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */
@@ -1793,18 +2145,18 @@ export function loadPromptHistory(cwd: string, limit = 500): string[] {
     const file = paths.history();
     if (!existsSync(file)) return [];
     try {
-        const lines = readFileSync(file, "utf-8").split("\n");
         const out: string[] = [];
-        for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
-            const raw = lines[i];
-            if (!raw) continue;
+        // From its end, as far back as it takes: it's every project's, kept for good.
+        linesFromEnd(file, (raw) => {
+            if (!raw) return;
             try {
                 const e = JSON.parse(raw) as { cwd: string; text: string };
                 if (e.cwd === cwd && e.text && out[out.length - 1] !== e.text) out.push(e.text);
             } catch {
                 // ignore
             }
-        }
+            return out.length < limit;
+        });
         return out.reverse();
     } catch {
         return [];

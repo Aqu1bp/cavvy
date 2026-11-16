@@ -2,13 +2,14 @@
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
 
-import { batch, createEffect, createRoot, createSignal } from "solid-js";
+import { batch, createEffect, createRoot, createSignal, untrack } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { ThemeEntry, ThemeReplaced, ThemeReport } from "@shared/protocol";
-import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
+import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { activeTheme, prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
@@ -27,6 +28,7 @@ import { composerStorage } from "../lib/drafts";
 import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
+import { waitedOn } from "../lib/waited-on";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
@@ -34,6 +36,169 @@ export const serversUi = () => import("../components/Servers");
 /** Why a window on a server isn't connected, in a few words, for the banner that says it's reconnecting. */
 export const [connNote, setConnNote] = createSignal<string>();
 export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversUi()).machineCredentials(stream) : credentials, windowKey);
+
+/**
+ * Sessions of another machine opened in this window (activate), by id: the connection to that machine's Cavvy
+ * (lib/machine-links.ts) that what's asked of each goes over, and what it says of each comes back on.
+ */
+const away = new Map<string, Rpc>();
+/** And the machine each is on ("" for this computer). */
+const awayOn = new Map<string, string>();
+rpc.route = (method, params) => {
+    // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`. Others'
+    // ids (an account's, a terminal's) aren't sessions', whatever they're called.
+    const p = params as { id?: unknown; sessionId?: unknown } | undefined;
+    const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
+    const link = id !== undefined ? away.get(id) : undefined;
+    return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
+};
+/**
+ * What machine `id` is on: its row's, or (its row not listed yet, after a reload) the one the window was showing it
+ * from (cavvy.navigation's `on`); else the window's own.
+ */
+function machineOf(id: string): string | undefined {
+    // Opened here from another machine (a fork made there may not be listed yet).
+    if (awayOn.has(id)) return awayOn.get(id) || undefined;
+    const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
+    if (at) return at.machine;
+    if (restoredOn && restoredOn.id === id) return restoredOn.on || undefined;
+    return machine;
+}
+/** The other machine `sessionId` is opened here from, if it is (a server's name; "" this computer, in a window on a server). */
+export function awayMachine(sessionId: string | undefined): string | undefined {
+    return sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+}
+/** A new session from `sessionId` (its project, New session while it's shown) goes on its machine: this is it, when that isn't the window's. */
+export function machineFor(sessionId: string | undefined): { machine?: string } | undefined {
+    const on = awayMachine(sessionId);
+    return on === undefined ? undefined : { machine: on || undefined };
+}
+/** The folder Home shows once `id`, on screen, is gone: its own, unless it's another machine's (it names nothing on the window's); then the window's latest project. */
+export function homeCwdAfter(id: string): string | undefined {
+    return awayOn.has(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
+}
+/** A session made on another machine from one of its sessions opened here (a fork, a plan carried out): on there too. */
+export function sameMachine(from: string, made: string) {
+    const link = away.get(from);
+    if (!link) return;
+    away.set(made, link);
+    awayOn.set(made, awayOn.get(from)!);
+}
+/** The last row the pointer came to (warmFor): coming to it again asks nothing more. */
+let warmed: string | undefined;
+/**
+ * The pointer is on a session's row: one of another machine's, its machine is connected to now, so a click opens it
+ * without waiting for that too (an address and a sign-in, then the connection: rounds trips before its own).
+ */
+export function warmFor(id: string) {
+    if (id === warmed || away.has(id)) return;
+    warmed = id;
+    const at = app.sessions.find((s) => s.id === id);
+    if (!at || at.machine === machine) return;
+    const on = at.machine;
+    void linkFor(on).catch(() => {
+        // Not reached: it isn't kept trying for a row only pointed at. A click tries again, and says why.
+        if (![...awayOn.values()].includes(on ?? "")) dropLink(on);
+    });
+}
+
+/** The connection to ask about `sessionId` over what isn't named by it (the files in its folder: fs.mentions). */
+export function rpcFor(sessionId: string | undefined): Rpc {
+    return (sessionId !== undefined && away.get(sessionId)) || rpc;
+}
+/** Each other machine's models, as its Cavvy lists them: for its sessions opened in this window (modelsFor). */
+const [machineModels, setMachineModels] = createStore<Record<string, ProviderModels[]>>({});
+/** The models to offer in `sessionId`: its machine's. */
+export function modelsFor(sessionId: string | undefined): ProviderModels[] {
+    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    return on === undefined ? app.models : (machineModels[on] ?? []);
+}
+/** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
+function machineModelsAgain(on: string, link: Rpc, refresh = false) {
+    void link.call("models.list", { refresh }).then((m) => setMachineModels(on, reconcile(m, { key: "provider" })), () => undefined);
+}
+/** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
+export function refreshModelsFor(sessionId: string | undefined, refresh = false): Promise<void> {
+    const link = sessionId !== undefined ? away.get(sessionId) : undefined;
+    if (!link) return refreshModels(refresh);
+    machineModelsAgain(awayOn.get(sessionId!)!, link, refresh);
+    return Promise.resolve();
+}
+/** Each other machine's connection, as it is now: for its sessions opened here (connFor). */
+const [linkStates, setLinkStates] = createStore<Record<string, ConnectionState>>({});
+/** Why each other machine's connection is down, while it is: for the banner of its session on screen (problemFor). */
+const [linkIssues, setLinkIssues] = createStore<Record<string, LinkProblem | undefined>>({});
+/** Why the connection `sessionId` is shown over (another machine's) is down, if it is and that's known. */
+export function problemFor(sessionId: string | undefined): (LinkProblem & { machine: string }) | undefined {
+    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    const issue = on !== undefined && connFor(sessionId) !== "open" ? linkIssues[on] : undefined;
+    return issue && { ...issue, machine: on! };
+}
+/** The state of the connection `sessionId` is shown over: its machine's, or the window's own. */
+export function connFor(sessionId: string | undefined): ConnectionState {
+    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    return on === undefined ? app.conn : (linkStates[on] ?? "connecting");
+}
+/**
+ * What another machine says that's for this window: what's said of its sessions opened here. Not its lists, its
+ * toasts, its settings: those are the window's own machine's. Nor its notifications but a background task's end
+ * (said in its session's view): this computer's Cavvy says them, for that machine's sessions opened here or not.
+ */
+function forUs(e: ServerEvent): boolean {
+    if (e.type === "notify") return e.kind === "background";
+    // Its browser's and simulator's state: what the agent opened there is said here (its pictures aren't: the panes offer
+    // a window on that machine for them, RightPanel).
+    return e.type === "session.ops" || e.type === "session.reload" || e.type === "draft" || e.type === "browser.state" || e.type === "simulator.state";
+}
+/** The session on screen (start), undefined while the window is hidden. */
+let shownNow: () => string | undefined = () => undefined;
+/**
+ * Each machine's Cavvy is told which of its sessions is on screen, and the others that none of theirs is: so each
+ * wakes this window less for what isn't (a session left on another machine streams at the hidden pace there).
+ */
+function tellShown() {
+    const id = shownNow();
+    const there = id !== undefined ? away.get(id) : undefined;
+    if (app.conn === "open") void rpc.call("session.shown", { id: there ? undefined : id }).catch(() => undefined);
+    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: there === link ? id : undefined }).catch(() => undefined);
+}
+/** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
+const heard = new WeakSet<Rpc>();
+
+/** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
+async function linkFor(name: string | undefined): Promise<Rpc> {
+    // This computer's Cavvy says where a server's is. In a window on a server it's another connection of the window's.
+    const home = machine ? (await import("../lib/machines")).home : undefined;
+    const on = name ?? "";
+    const theirs = (e: ServerEvent, from: Rpc) => {
+        const sessionId = (e as { sessionId?: unknown }).sessionId;
+        // As if heard on the window's own connection: what listens there (onEvent, the browser's state) has it.
+        if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
+        // Its models changed (a key added there): asked for again, if they were asked for.
+        else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
+    };
+    const link = linkTo(name, home ?? rpc, home, theirs);
+    if (!heard.has(link)) {
+        heard.add(link);
+        // This window's own, if it's this computer's connection in a window on a server: heard there by the servers code too.
+        if (link === home) link.onEvent((e) => theirs(e, link));
+        setLinkStates(on, link.state);
+        // Dropped and back: its sessions here have what they missed (session.open's since), as the window's own do.
+        link.onState((s) => {
+            batch(() => {
+                setLinkStates(on, s);
+                setLinkIssues(on, s === "open" ? undefined : linkProblem(link));
+            });
+            const mine = [...handles.values()].filter((h) => away.get(h.id) === link);
+            if (s !== "open") return void mine.forEach((h) => h.setReady(false));
+            void Promise.all(mine.map((h) => reopen(h)));
+            if (mine.length && on in machineModels) machineModelsAgain(on, link);
+            tellShown();
+        });
+    }
+    await opened(link);
+    return link;
+}
 rpc.retriesCredentials = isDesktop;
 
 // ---------------------------------------------------------------------------
@@ -234,10 +399,16 @@ export interface AppState {
 const SEEN_KEY = "cavvy.seen";
 const NAVIGATION_KEY = "cavvy.navigation";
 
+/**
+ * The session the window was showing as it loaded, and the machine it's on ("" this computer), when that isn't the
+ * window's: it's opened from there again (machineOf), its row maybe not listed yet.
+ */
+let restoredOn: { id: string; on: string } | undefined;
 /** Per webview/tab, separate from device-wide preferences and auth links. */
 function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
     try {
         const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
+        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn = { id: saved.activeId, on: saved.on };
         return {
             activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
             homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
@@ -280,7 +451,10 @@ export const noModel = () => Boolean(app.modelsLoaded && app.models.every((g) =>
 // Observe the store so all navigation paths (Home, send, import, deletion and
 // sidebar activation) persist together, including direct setApp callers.
 createRoot(() => createEffect(() => {
-    const saved = JSON.stringify({ activeId: app.activeId, homeCwd: app.homeCwd });
+    const id = app.activeId;
+    // Another machine's: which, to open it from there again after a reload (machineOf). Read once as it's picked.
+    const on = id !== undefined ? untrack(() => machineOf(id)) : undefined;
+    const saved = JSON.stringify({ activeId: id, homeCwd: app.homeCwd, ...(on !== machine ? { on: on ?? "" } : {}) });
     try {
         sessionStorage.setItem(NAVIGATION_KEY, saved);
     } catch {
@@ -339,6 +513,8 @@ export interface SessionHandle {
     view: SessionView;
     set: SetStoreFunction<SessionView>;
     seq: number;
+    /** Whose `seq` it is (SessionSnapshot.epoch): a reconnect asks for what it missed since, from it. */
+    epoch?: string;
     queue: SessionOp[];
     scheduled: boolean;
     draft: () => Draft | undefined;
@@ -349,22 +525,31 @@ export interface SessionHandle {
 }
 
 const handles = new Map<string, SessionHandle>();
-/** A session opens with its last this many turns; the rest come as they're asked for (loadEarlier). */
+/**
+ * A session opens with its last this many turns at most, and no more than fit OPEN_BYTES (its first screens: with their
+ * work folded, 7 to 17 of a long session's turns, against 100 that were 2.4 MB). The rest of its first page comes after
+ * its first frame (Transcript), and the rest as they're asked for (loadEarlier).
+ */
 export const OPEN_TURNS = 100;
+export const OPEN_BYTES = 64 * 1024;
 /** Each handle's fetch of earlier turns under way: one at a time, so a page is never put in twice. */
 const loadingEarlier = new Map<string, Promise<boolean>>();
 const [handleVersion, setHandleVersion] = createSignal(0);
 const KEEP_OPEN = 8;
-/** How many turns each session this window let go of had, when more than it opens with ("Show earlier"). */
-const closedWith = new Map<string, number>();
-
+/** Sessions on screen besides the one in view (two side by side, state/split.ts sets it): kept open, as that one is. */
+export const onScreen: { beside: () => readonly string[] } = { beside: () => [] };
 /**
- * How many turns to open a session with again (a reconnect, a reload, one let go of and picked again): as many as this
- * window has or had of it, so the turns read with "Show earlier", and the place read in them, are still there.
+ * What a session is opened with, the first time and again (a reconnect, a reload, one let go of and picked again): its
+ * last turns, as fit its first screens. Not every turn the window had of it: after "Show earlier" or Find had them all,
+ * that was the whole session again each time. The place read comes back with them (Transcript: loadEarlierTo).
  */
-function turnsToOpen(id: string): number {
-    return Math.max(OPEN_TURNS, handles.get(id)?.view.turns.length ?? closedWith.get(id) ?? 0);
-}
+/**
+ * How a window opens a session: its last turns, as many as fit OPEN_BYTES; finished ones with their work folded (what
+ * only an opened row shows comes as the work is shown: loadTurn), unless work is shown expanded.
+ */
+const opening = (id: string) => ({ id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: !prefs.expandActivity });
+/** Opened afresh: its snapshot (asked without `since`, that's what comes). */
+const openFresh = (id: string) => rpc.call("session.open", opening(id)) as Promise<SessionSnapshot>;
 
 export function handleFor(id: string | undefined): SessionHandle | undefined {
     handleVersion();
@@ -379,30 +564,53 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
     sessionPresent(id);
-    closedWith.delete(id);
     const existing = handles.get(id);
     if (existing) {
         existing.seq = snap.seq;
+        existing.epoch = snap.epoch;
         existing.queue = [];
         const after = [...(renewing.get(id) ?? [])].map((fn) => fn());
         batch(() => {
-            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         for (const fn of after) fn?.();
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 });
+        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0, agentsMore: snap.agentsMore });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
         const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])], after: prev.after || d.after } : d));
-        return { id, ready, setReady, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
+        return { id, ready, setReady, view, set, seq: snap.seq, epoch: snap.epoch, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
-    trim();
+    trim(id);
     setHandleVersion((v) => v + 1);
+    return h;
+}
+
+/** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
+function reopen(h: SessionHandle): Promise<unknown> {
+    return rpc.call("session.open", { ...opening(h.id), ...(h.epoch ? { since: { epoch: h.epoch, seq: h.seq } } : {}) })
+        .then((r) => ("resumed" in r ? caughtUp(h, r) : adopt(r)), (e) => reopenFailed(h.id, e));
+}
+
+/**
+ * A session this window had open, back after its connection dropped with only what it missed (SessionResumed): those
+ * ops, after any still waiting, on the view as it is; where it was read, the turns it had paged in, all kept.
+ */
+function caughtUp(h: SessionHandle, r: SessionResumed): SessionHandle {
+    const after = [...(renewing.get(h.id) ?? [])].map((fn) => fn());
+    h.queue.push(...r.ops);
+    h.seq = r.seq;
+    flush(h);
+    // Ops missed may have created files.
+    if (mayCreateFiles(r.ops)) paths.forgetMissing(h.id);
+    sessionPresent(h.id);
+    h.setReady(true);
+    for (const fn of after) fn?.();
     return h;
 }
 
@@ -424,20 +632,72 @@ export function onRenew(h: SessionHandle, fn: () => (() => void) | void): () => 
     };
 }
 
-/** No longer open here: how many turns it had is kept for when it's opened again. */
+/** No longer open here. */
 function letGo(h: SessionHandle) {
     handles.delete(h.id);
-    if (h.view.turns.length > OPEN_TURNS) closedWith.set(h.id, h.view.turns.length);
 }
 
-/** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
-function trim() {
-    if (handles.size <= KEEP_OPEN) return;
-    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
-    for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
+/**
+ * Few sessions stay subscribed; the rest are closed (the server keeps running them). Those working or waiting on the
+ * user stay, and aren't counted: KEEP_OPEN is of the others. Counted, twelve waiting on plans had every other session
+ * closed, the one just left too, each opened afresh on the way back (another machine's: 119-137 ms, against 14-19).
+ * Not one holding a message handed back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to
+ * be shown (not yet the one in view): with the others all working or waiting on the user, it was the one closed, and
+ * what was typed into it went nowhere.
+ */
+function trim(opened: string) {
+    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined;
+    let idle = 0;
+    for (const h of handles.values()) if (!kept(h)) idle++;
+    if (idle <= KEEP_OPEN) return;
+    const shown = onScreen.beside();
+    const old = [...handles.values()].filter((h) => h.id !== opened && h.id !== app.activeId && !shown.includes(h.id) && !kept(h)).sort((a, b) => a.lastUsed - b.lastUsed);
+    for (const h of old.slice(0, idle - KEEP_OPEN)) {
         letGo(h);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
     }
+}
+
+/**
+ * A message shown as sent before the server has it (showSending): its turn, by session, until the server's own comes.
+ * Shown only once the server's turn came, the prompt was on screen a round trip after Enter (13-16 ms here; a remote
+ * link's round trip there).
+ */
+const sending = new Map<string, string>();
+let sendingIds = 0;
+
+/** `text`, sent to session `id` that isn't working, shown at once as its turn: undone by what's returned. */
+export function showSending(id: string, text: string): (taken: boolean) => void {
+    const h = handles.get(id);
+    if (!h) return () => undefined;
+    const turnId = `sending-${++sendingIds}`;
+    // One still shown (taken, its turn not here yet) gives way: two at once would leave the first for good.
+    const was = sending.get(id);
+    if (was) dropSending(h, was);
+    sending.set(id, turnId);
+    h.set(produce((v) => {
+        v.turns.push({ id: turnId, status: "running", prompt: { text }, blocks: [], startedAt: Date.now() });
+    }));
+    // Answered: what came before the answer (its turn, as a rule) is applied first, so no frame has neither. Taken but
+    // its turn not here yet (a session still starting answers first): it stays until its turn or its place in the
+    // queue comes (flush), for a moment at most.
+    return (taken) => {
+        if (h.queue.length) flush(h);
+        if (!taken) return dropSending(h, turnId);
+        if (sending.get(h.id) === turnId) setTimeout(() => dropSending(h, turnId), SENDING_WAIT_MS);
+    };
+}
+
+/** How long a message shown as sent waits for its turn after the server took it. */
+const SENDING_WAIT_MS = 15_000;
+
+function dropSending(h: SessionHandle, turnId: string) {
+    if (sending.get(h.id) !== turnId) return;
+    sending.delete(h.id);
+    h.set(produce((v) => {
+        const i = v.turns.findIndex((t) => t.id === turnId);
+        if (i >= 0) v.turns.splice(i, 1);
+    }));
 }
 
 function flush(h: SessionHandle) {
@@ -445,6 +705,9 @@ function flush(h: SessionHandle) {
     if (!h.queue.length) return;
     const ops = h.queue;
     h.queue = [];
+    // The server's turn for a message shown as sent takes its place, in the same update.
+    const shown = sending.get(h.id);
+    if (shown && ops.some((op) => op.op === "turn" || op.op === "reset" || (op.op === "state" && "queued" in op.patch))) batch(() => dropSending(h, shown));
     batch(() =>
         h.set(
             produce((v) => {
@@ -458,8 +721,17 @@ function schedule(h: SessionHandle) {
     if (h.scheduled) return;
     h.scheduled = true;
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
-    if (document.visibilityState === "visible") onStep(() => flush(h));
-    else setTimeout(() => flush(h), 200);
+    if (document.visibilityState !== "visible") setTimeout(() => flush(h), 200);
+    // On screen: in step with the frames. Not on screen: at once, asking for no frame (10 streaming out of sight drew
+    // 20 frames a second that showed nothing).
+    else if (h.id === app.activeId || onScreen.beside().includes(h.id)) onStep(() => flush(h));
+    else setTimeout(() => flush(h), 0);
+}
+
+/** At the next frame, with whatever came before it (in order). */
+function flushSoon(h: SessionHandle) {
+    if (document.visibilityState !== "visible") return schedule(h);
+    requestAnimationFrame(() => flush(h));
 }
 
 /** The server closed the session (archived with its worktree): this window no longer has it open. */
@@ -468,12 +740,25 @@ export function dropHandle(id: string) {
     setHandleVersion((v) => v + 1);
 }
 
-export async function openSession(id: string): Promise<SessionHandle> {
+/** Each open under way: one asked for again meanwhile (the other of two side by side, state/split.ts) waits for it. */
+const openingNow = new Map<string, Promise<SessionHandle>>();
+
+export function openSession(id: string): Promise<SessionHandle> {
     const h = handles.get(id);
     if (h) {
         h.lastUsed = Date.now();
-        return h;
+        return Promise.resolve(h);
     }
+    const going = openingNow.get(id);
+    if (going) return going;
+    const opened = openNow(id);
+    openingNow.set(id, opened);
+    const done = () => { if (openingNow.get(id) === opened) openingNow.delete(id); };
+    opened.then(done, done);
+    return opened;
+}
+
+async function openNow(id: string): Promise<SessionHandle> {
     // Asked for already, with the lists (openAhead): that answer, whatever it was.
     const early = aheadFor(id);
     if (early) {
@@ -482,8 +767,7 @@ export async function openSession(id: string): Promise<SessionHandle> {
         // Let go since (the server had it opened again, and that was refused): it's asked for anew.
         if (handles.get(id) === taken) return taken;
     }
-    const snap = await rpc.call("session.open", { id, last: turnsToOpen(id) });
-    return adopt(snap);
+    return adopt(await openFresh(id));
 }
 
 /**
@@ -501,8 +785,9 @@ const aheadFor = (id: string | undefined) => (ahead && ahead.id === id && ahead.
 function openAhead() {
     ahead = undefined;
     const id = app.activeId;
-    if (!id || handles.has(id)) return;
-    const opened = rpc.call("session.open", { id, last: turnsToOpen(id) }).then(adopt);
+    // Another machine's is opened over a connection of its own (activate).
+    if (!id || handles.has(id) || machineOf(id) !== machine) return;
+    const opened = openFresh(id).then(adopt);
     // Its failure is restoreActiveSession's to show.
     opened.catch(() => undefined);
     ahead = { id, connection: connectionVersion, opened };
@@ -513,20 +798,35 @@ function openAhead() {
  * the turn holding message `through`, or `all` of them. False when they couldn't be had (the session's turns were
  * replaced meanwhile, as by a rewind: then it has them all already) or the server didn't answer.
  */
-export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean } = {}): Promise<boolean> {
+export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean; upTo?: number } = {}): Promise<boolean> {
     const going = loadingEarlier.get(h.id);
     // One at a time: the next asks from where that one left off.
     const run = (going ?? Promise.resolve(true)).then(async () => {
+        // A page far up asked for while one is here already (with its gap): that one goes back into the gap first.
+        if (how.upTo !== undefined && h.view.gap) dropPage(h);
         if (!h.view.earlier) return true;
         const first = h.view.turns[0]?.id;
         if (!first) return false;
-        const page = await rpc.call("session.turns", { id: h.id, before: first, ...how });
+        const page = await rpc.call("session.turns", { id: h.id, before: first, fold: !prefs.expandActivity, ...how });
         // Ops sent before this answer are in it: those still queued go first, to the turns already here.
         flush(h);
         if (h.view.turns[0]?.id !== first) return false;
         batch(() => h.set(produce((v) => {
             v.turns.unshift(...page.turns);
             v.earlier = page.earlier;
+            if (page.skipped && page.turns.length) v.gap = { after: page.turns.at(-1)!.id, count: page.skipped };
+            // Their sub-agents whole: the window had only what its list shows of them (AgentRun.partial), or only
+            // counted them (agentsMore).
+            for (const a of page.agents ?? []) {
+                const i = v.agents.findIndex((x) => x.id === a.id);
+                // (One listed, of a turn sent folded, doesn't take the place of one whole.)
+                if (i >= 0) {
+                    if (!a.partial || v.agents[i]!.partial) v.agents[i] = a;
+                } else {
+                    v.agents.push(a);
+                    if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
+                }
+            }
         })));
         return true;
     });
@@ -534,6 +834,212 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
     loadingEarlier.set(h.id, settled);
     void settled.finally(() => { if (loadingEarlier.get(h.id) === settled) loadingEarlier.delete(h.id); });
     return settled;
+}
+
+/** The page before a gap let go of: its turns are the gap's (earlier than them, `earlier`'s), and no gap is left. */
+function dropPage(h: SessionHandle) {
+    const gap = h.view.gap;
+    if (!gap) return;
+    const at = h.view.turns.findIndex((t) => t.id === gap.after);
+    batch(() => h.set(produce((v) => {
+        v.turns.splice(0, at + 1);
+        v.earlier = (v.earlier ?? 0) + at + 1 + gap.count;
+        v.gap = undefined;
+    })));
+}
+
+/** The gap's next page (those after the page fetched far up), in one request: false when it couldn't be had, "moved" when the gap changed meanwhile. */
+const fillingGap = new Map<string, Promise<boolean | "moved">>();
+/** `put`: told, in the same update, how many turns went in (a view counting what it shows from the end shows them too). */
+export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void): Promise<boolean | "moved"> {
+    const going = fillingGap.get(h.id);
+    if (going) return going;
+    const run = (async () => {
+        const gap = h.view.gap;
+        if (!gap) return true;
+        const at = h.view.turns.findIndex((t) => t.id === gap.after);
+        const next = h.view.turns[at + 1]?.id;
+        if (at < 0 || !next) return "moved";
+        const page = await rpc.call("session.turns", { id: h.id, before: next, after: gap.after, count, fold: !prefs.expandActivity });
+        flush(h);
+        const now = h.view.gap;
+        if (!now || now.after !== gap.after || h.view.turns[at + 1]?.id !== next) return "moved";
+        batch(() => {
+            put?.(page.turns.length);
+            h.set(produce((v) => {
+            v.turns.splice(at + 1, 0, ...page.turns);
+            v.gap = page.skipped && page.turns.length ? { after: page.turns.at(-1)!.id, count: page.skipped } : undefined;
+            for (const a of page.agents ?? []) {
+                const i = v.agents.findIndex((x) => x.id === a.id);
+                if (i >= 0) {
+                    if (!a.partial || v.agents[i]!.partial) v.agents[i] = a;
+                } else {
+                    v.agents.push(a);
+                    if (v.agentsMore) v.agentsMore = lessAgents(v.agentsMore, a);
+                }
+            }
+            }));
+        });
+        return true;
+    })().catch(() => false);
+    fillingGap.set(h.id, run);
+    void run.finally(() => { if (fillingGap.get(h.id) === run) fillingGap.delete(h.id); });
+    return run;
+}
+
+/** Whole before its view opens (a sub-agent of a turn the window doesn't have): the view's first frame is all of it. */
+export function agentReady(agentId: string): Promise<void> {
+    for (const h of handles.values()) {
+        const a = h.view.agents.find((x) => x.id === agentId);
+        if (a) return a.partial ? loadAgent(h, agentId) : Promise.resolve();
+    }
+    return Promise.resolve();
+}
+
+/**
+ * The window keeps only the last `keep` of a session's turns (the reader's back at its end after reading far up): the
+ * rest are as the session opened without them (`earlier`, session.turns has them), and their sub-agents as their list
+ * shows them. What it holds stays what's on screen, not all it was ever scrolled through.
+ */
+export function forgetEarlier(h: SessionHandle, keep: number) {
+    const drop = h.view.turns.length - keep;
+    // Not while a page of them is coming: it's put in before the first it has.
+    if (drop <= 0 || loadingEarlier.has(h.id)) return;
+    batch(() => h.set(produce((v) => {
+        // Past a gap: what's let go of before it, and the gap with it, are earlier ones now.
+        const gapAt = v.gap ? v.turns.findIndex((t) => t.id === v.gap!.after) : -1;
+        const gone = new Set(v.turns.splice(0, drop).map((t) => t.id));
+        v.earlier = (v.earlier ?? 0) + drop;
+        if (v.gap && gapAt >= 0 && drop > gapAt) {
+            v.earlier += v.gap.count;
+            v.gap = undefined;
+        }
+        v.agents = v.agents.map((a) => {
+            if (!gone.has(a.turnId) || a.partial || a.status === "running" || a.status === "waiting") return a;
+            const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
+            return { ...listed, blocks: [], partial: true };
+        });
+    })));
+}
+
+/** A count of sub-agents not sent, less one that has come (with its turn). */
+function lessAgents(more: AgentsMore, a: AgentRun): AgentsMore | undefined {
+    const count = more.count - 1;
+    return count > 0 ? { count, failed: Math.max(0, more.failed - (a.status === "failed" ? 1 : 0)) } : undefined;
+}
+
+/** Each session's fetch of its sub-agents' list under way (loadAgentList). */
+const loadingAgentList = new Map<string, Promise<void>>();
+
+/**
+ * The sub-agents a session's window was only told the number of (agentsMore: finished, of turns it hasn't been sent),
+ * as their rows show them: for its Agents list's Finished fold, as that's shown.
+ */
+export function loadAgentList(h: SessionHandle): Promise<void> {
+    const going = loadingAgentList.get(h.id);
+    if (going) return going;
+    const run = rpc.call("session.agentList", { id: h.id }).then((list) => {
+        h.set(produce((v) => {
+            const have = new Set(v.agents.map((a) => a.id));
+            // In the server's order (as they started), those the window has kept where they are.
+            for (const a of list) if (!have.has(a.id)) v.agents.push(a);
+            v.agentsMore = undefined;
+        }));
+    }, () => undefined).finally(() => loadingAgentList.delete(h.id));
+    loadingAgentList.set(h.id, run);
+    return run;
+}
+
+/** Each turn's fetch under way (loadTurn). */
+const loadingTurn = new Map<string, Promise<void>>();
+
+/**
+ * A turn whole, and its sub-agents, for one sent with its work folded (Turn.folded), put in its place: as its work is
+ * about to be shown (opened, found in), which waits for it.
+ */
+export function loadTurn(h: SessionHandle | undefined, turnId: string): Promise<void> {
+    if (!h || !h.view.turns.some((t) => t.id === turnId && t.folded)) return Promise.resolve();
+    const key = `${h.id}:${turnId}`;
+    const going = loadingTurn.get(key);
+    if (going) return going;
+    const run = rpc.call("session.turn", { id: h.id, turnId }).then((r) => {
+        if (!r) return;
+        // Ops sent before this answer are in it: those still queued go first.
+        flush(h);
+        batch(() => h.set(produce((v) => {
+            // Filled in where it is (the same turn: its view isn't made again).
+            const t = v.turns.find((x) => x.id === turnId);
+            if (t?.folded) {
+                Object.assign(t, r.turn);
+                delete t.folded;
+            }
+            for (const a of r.agents) {
+                const j = v.agents.findIndex((x) => x.id === a.id);
+                if (j < 0) v.agents.push(a);
+                else if (v.agents[j]!.partial) v.agents[j] = a;
+            }
+        })));
+    }, () => undefined).finally(() => loadingTurn.delete(key));
+    loadingTurn.set(key, run);
+    return run;
+}
+
+/** Each block's fetch under way (loadBlock). */
+const loadingBlock = new Map<string, Promise<void>>();
+
+/**
+ * A block of a turn the window has whole, for one sent without all of itself (a finished turn's thought, without its
+ * text: ThinkingBlock.omitted), put in its place.
+ */
+export function loadBlock(sessionId: string, blockId: string): Promise<void> {
+    const h = handles.get(sessionId);
+    // Only one still without its text: a whole one has nothing more to bring.
+    const turn = h?.view.turns.findLast((t) => t.blocks.some((b) => b.id === blockId && b.t === "thinking" && b.omitted));
+    if (!h || !turn) return Promise.resolve();
+    const key = `${sessionId}:${blockId}`;
+    const going = loadingBlock.get(key);
+    if (going) return going;
+    const turnId = turn.id;
+    const run = rpc.call("session.block", { id: sessionId, turnId, blockId }).then((b) => {
+        if (!b) return;
+        h.set(produce((v) => {
+            const t = v.turns.findLast((x) => x.id === turnId);
+            const i = t ? t.blocks.findIndex((x) => x.id === blockId) : -1;
+            // Still without it (not sent again whole since).
+            const was = t?.blocks[i];
+            if (was?.t === "thinking" && was.omitted) t!.blocks[i] = b;
+        }));
+    }, () => undefined).finally(() => loadingBlock.delete(key));
+    loadingBlock.set(key, run);
+    return run;
+}
+
+/** Each sub-agent's fetch under way (loadAgent): one at a time. */
+const loadingAgent = new Map<string, Promise<void>>();
+
+/**
+ * A sub-agent whole, for one the window has only what its list shows of (AgentRun.partial: its turn wasn't sent): its
+ * steps, instructions and report, put in its place. Nothing when it's whole already or the server no longer has it.
+ */
+export function loadAgent(h: SessionHandle, agentId: string): Promise<void> {
+    const key = `${h.id}:${agentId}`;
+    const going = loadingAgent.get(key);
+    if (going) return going;
+    const run = rpc.call("session.agent", { id: h.id, agentId }).then((a) => {
+        if (!a) return;
+        h.set(produce((v) => {
+            const i = v.agents.findIndex((x) => x.id === agentId);
+            // Whole by now (its turn came, or it ran again): that's the latest.
+            if (i >= 0 && v.agents[i]!.partial) v.agents[i] = a;
+        }));
+    }, () => undefined).finally(() => loadingAgent.delete(key));
+    loadingAgent.set(key, run);
+    return run;
+}
+
+/** The fetch of earlier turns under way for this session, if one is (one fetched ahead, say): done when it is. */
+export function earlierArriving(h: SessionHandle): Promise<boolean> {
+    return loadingEarlier.get(h.id) ?? Promise.resolve(true);
 }
 
 /**
@@ -545,7 +1051,7 @@ export function loadEarlierTo(h: SessionHandle, key: TurnKey): Promise<boolean> 
     if (!near || !h.view.earlier || keyedTurn(h.view.turns, key)) return undefined;
     const first = h.view.turns.find((t) => t.pos)?.pos;
     if (first && !placeBefore(near, first)) return undefined;
-    return loadEarlier(h, { through: near, count: 1 });
+    return loadEarlier(h, { through: near, count: 1, upTo: 40 });
 }
 
 /** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */
@@ -577,6 +1083,7 @@ createRoot(() => createEffect(() => {
 /** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
 export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
     const snap = await rpc.call("session.fork", { id, ...at });
+    sameMachine(id, snap.state.id);
     const h = adopt(snap);
     await activate(h.id);
     return h;
@@ -584,9 +1091,10 @@ export async function forkSession(id: string, at: { index: number; text: string;
 
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
-    // One on another machine: the window goes there, and opens it.
-    const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
-    if (at && at.machine !== machine) return void serversUi().then((m) => m.switchMachine(at.machine, id), reportError);
+    // One on another machine: opened here, over a connection to that machine's Cavvy (linkFor), as one of the window's
+    // own is. (The window went there instead, loading again: 0.5-0.8 s each way, its sessions opened afresh each time.)
+    const on = id ? machineOf(id) : machine;
+    const elsewhere = id !== undefined && on !== machine && !away.has(id);
     if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();
@@ -620,6 +1128,14 @@ export async function activate(id: string | undefined, cwd?: string) {
     const current = () => version === openingVersion && connection === connectionVersion && app.activeId === id && app.homeCwd === project;
     pending.start();
     try {
+        if (elsewhere) {
+            const link = await linkFor(on);
+            if (!current()) return;
+            away.set(id, link);
+            awayOn.set(id, on ?? "");
+            if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
+            tellShown();
+        }
         const h = await openSession(id);
         if (!current()) return;
         await pending.finish();
@@ -642,6 +1158,12 @@ export async function activate(id: string | undefined, cwd?: string) {
             });
             else if (prior && !wasDeleted(prior.id)) void activate(prior.id, prior.cwd);
             return;
+        }
+        // That machine needs the user's word first (its host key, an update, starting its Cavvy): the window goes
+        // there, where it's asked (lib/machines.ts), and opens the session once it's given.
+        if (e instanceof LinkError && e.problem && e.problem.status !== "failed") {
+            setApp("opening", undefined);
+            return void serversUi().then((m) => m.switchMachine(on, id), reportError);
         }
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
@@ -703,6 +1225,8 @@ export async function refreshSessions() {
     // The other machines' sessions go on being listed: none in the place of one of this machine's own.
     const mine = new Set([...list, ...archived].map((s) => s.id));
     for (const s of others.list?.() ?? []) if (!mine.has(s.id)) (s.archived ? archived : list).push(s);
+    // (What came before the list is in it.)
+    upsertsFirst();
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -892,12 +1416,13 @@ const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 export function forgetSession(id: string) {
+    // One due to be put in (changed just before) goes in first, so it doesn't come back after.
+    upsertsFirst();
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     composerStorage.delete(id);
-    closedWith.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
     if (handles.delete(id)) setHandleVersion((v) => v + 1);
@@ -906,7 +1431,10 @@ export function forgetSession(id: string) {
         setApp("seen", id, undefined!);
         saveSeen();
     }
-    if (app.activeId === id) setApp("activeId", undefined);
+    if (app.activeId === id) batch(() => {
+        setApp("homeCwd", homeCwdAfter(id));
+        setApp("activeId", undefined);
+    });
 }
 
 /** Opening it again failed: deleted meanwhile, kept while disconnected (the reconnect reopens it), or dropped. */
@@ -922,25 +1450,64 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 export function upsertSession(s: SessionSummary) {
-    sessionPresent(s.id);
-    const seen = seenBeforeDelete.get(s.id);
-    if (seen !== undefined) {
-        seenBeforeDelete.delete(s.id);
-        if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    upsertsFirst();
+}
+
+/** Into the lists in one update: the sidebar and the palette are worked out again once, not once each. */
+function upsertSessions(all: readonly SessionSummary[]) {
+    if (!all.length) return;
+    for (const s of all) {
+        sessionPresent(s.id);
+        const seen = seenBeforeDelete.get(s.id);
+        if (seen !== undefined) {
+            seenBeforeDelete.delete(s.id);
+            if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+        }
     }
-    const key = s.archived ? "archived" : "sessions";
-    const other = s.archived ? "sessions" : "archived";
-    batch(() => {
-        setApp(other, (list) => list.filter((x) => x.id !== s.id));
+    const put = (key: "sessions" | "archived", these: readonly SessionSummary[], gone: ReadonlySet<string>) =>
         setApp(key, (list) => {
-            const i = list.findIndex((x) => x.id === s.id);
-            if (i < 0) return orderSessions([s, ...list]);
-            const next = list.slice();
-            next[i] = s;
-            return orderSessions(next);
+            const by = new Map(these.map((s) => [s.id, s]));
+            if (!by.size && !list.some((x) => gone.has(x.id))) return list;
+            const next = list.flatMap((x) => (by.has(x.id) ? [by.get(x.id)!] : gone.has(x.id) ? [] : [x]));
+            const have = new Set(list.map((x) => x.id));
+            return orderSessions([...these.filter((s) => !have.has(s.id)), ...next]);
         });
+    const archived = all.filter((s) => s.archived);
+    const live = all.filter((s) => !s.archived);
+    batch(() => {
+        put("sessions", live, new Set(archived.map((s) => s.id)));
+        put("archived", archived, new Set(live.map((s) => s.id)));
     });
-    if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+    for (const s of all) if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
+}
+
+/**
+ * Sessions the server changed, put in at the next frame together (or a moment on, in a hidden window): 30 finishing in
+ * the same second each worked the sidebar out again, 6 ms a time (headless), so the last showed done 400-700 ms late.
+ */
+const upsertsDue = new Map<string, SessionSummary>();
+let upsertFrame: number | undefined;
+let upsertTimer: ReturnType<typeof setTimeout> | undefined;
+rpc.beforeAnswer = () => upsertsDue.size && upsertsFirst();
+function upsertSoon(s: SessionSummary) {
+    // Back, if it was deleted (an Undo): at once, as what's asked of it next goes by that.
+    sessionPresent(s.id);
+    upsertsDue.delete(s.id);
+    upsertsDue.set(s.id, s);
+    if (upsertTimer !== undefined) return;
+    upsertTimer = setTimeout(upsertsFirst, 100);
+    if (typeof requestAnimationFrame === "function") upsertFrame = requestAnimationFrame(upsertsFirst);
+}
+/** What's due goes in now (first, where what follows reads or changes the lists). */
+export function upsertsFirst() {
+    if (upsertFrame !== undefined) cancelAnimationFrame(upsertFrame);
+    clearTimeout(upsertTimer);
+    upsertFrame = upsertTimer = undefined;
+    const due = [...upsertsDue.values()];
+    upsertsDue.clear();
+    upsertSessions(due);
 }
 
 // ---------------------------------------------------------------------------
@@ -953,20 +1520,21 @@ function onEvent(ev: ServerEvent) {
             if (!h || ev.seq <= h.seq) return;
             h.seq = ev.seq;
             h.queue.push(...ev.ops);
-            schedule(h);
+            if (waitedOn(ev.ops)) flushSoon(h);
+            else schedule(h);
             // A file named before it existed becomes a link once it may (an edit landed, or the turn ended).
             if (mayCreateFiles(ev.ops)) paths.forgetMissing(ev.sessionId);
             return;
         }
         case "sessions.upsert":
-            upsertSession(own(ev.session));
+            upsertSoon(own(ev.session));
             return;
         case "sessions.remove":
             forgetSession(ev.id);
             return;
         case "session.reload":
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
-            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId, last: turnsToOpen(ev.sessionId) }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
+            if (handles.has(ev.sessionId)) void openFresh(ev.sessionId).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
@@ -1079,9 +1647,10 @@ export function start() {
     // The server's told what's on screen, so it can wake this window less for what isn't.
     const [hidden, setHidden] = createSignal(document.hidden);
     document.addEventListener("visibilitychange", () => setHidden(document.hidden));
+    shownNow = () => (hidden() ? undefined : app.activeId);
     createRoot(() => createEffect(() => {
-        const id = hidden() ? undefined : app.activeId;
-        if (app.conn === "open") void rpc.call("session.shown", { id }).catch(() => undefined);
+        shownNow();
+        if (app.conn === "open") tellShown();
     }));
     // And which theme it shows, so an agent asked to change "this theme" knows which (ThemeList). A window on a
     // server has no theme tools there.
@@ -1094,7 +1663,7 @@ export function start() {
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
         batch(() => {
-            if (s !== "open") for (const h of handles.values()) h.setReady(false);
+            if (s !== "open") for (const h of handles.values()) if (!away.has(h.id)) h.setReady(false);
             setApp("conn", s);
         });
         // A screen that won't change by itself (a link that needs the terminal, a server that's gone) shows at once.
@@ -1105,6 +1674,10 @@ export function start() {
                 // To a server's Cavvy this window is a page like any other: what the desktop app lends its own Cavvy
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
+                // After a reconnect, the sessions it had open, all at once, with the lists: each with only what it
+                // missed while the connection was down when the server still has that (a round trip and those bytes),
+                // else from a fresh snapshot. (Another machine's, opened here, are on a connection of their own.)
+                const reopened = Promise.all([...handles.values()].filter((h) => !h.ready() && !away.has(h.id)).map(reopen));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
@@ -1121,8 +1694,7 @@ export function start() {
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
-                // After a reconnect, the open sessions start over from fresh snapshots.
-                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id, last: turnsToOpen(h.id) }).then(adopt, (e) => reopenFailed(h.id, e));
+                await reopened;
                 await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();

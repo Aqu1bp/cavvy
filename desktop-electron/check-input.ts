@@ -27,13 +27,13 @@ try {
         return { ws, send, js };
     };
     const g = await connect(gui.webSocketDebuggerUrl);
-    for (let i = 0; !(await g.js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 300) throw new Error("no composer"); await sleep(100); }
+    for (let i = 0; !(await g.js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 300) throw new Error("no composer"); await sleep(100); }
     // The agent opens the demo site.
-    await g.js(`(() => { const box = document.querySelector('textarea[aria-label="Message"]'); box.value = 'check the app in the browser'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await g.js(`(() => { const box = document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)'); box.value = 'check the app in the browser'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await g.js(`document.querySelector('button[aria-label="Send"]').click()`);
     for (let i = 0; i < 200 && !(await g.js(`!!document.querySelector('button[title="Allow once"]')`)); i++) await sleep(50);
     await g.js(`document.querySelector('button[title="Allow once"]')?.click()`);
-    for (let i = 0; i < 300 && !(await g.js(`/Subscribed \\(1\\)/.test(document.querySelector('.transcript')?.innerText ?? '')`)); i++) await sleep(50);
+    for (let i = 0; i < 300 && !(await g.js(`/Subscribed \\(1\\)/.test(document.querySelector('.transcript:not([data-parked] *)')?.innerText ?? '')`)); i++) await sleep(50);
     const tabTarget = (await targets()).find((t) => t.type === "webview");
     if (!tabTarget) throw new Error("no tab");
     const t = await connect(tabTarget.webSocketDebuggerUrl);
@@ -44,21 +44,21 @@ try {
     rpc.onmessage = (e) => { const x = JSON.parse(String(e.data)); if (x.id) { rp.get(x.id)?.(x); rp.delete(x.id); } };
     const call = (method: string, params: unknown) => new Promise<any>((r) => { const id = ++rseq; rp.set(id, r); rpc.send(JSON.stringify({ id, method, params })); setTimeout(() => { if (rp.delete(id)) r({}); }, 15_000); });
     const sid = ((await call("sessions.list", {})).result as { id: string }[])[0]!.id;
-    const messagesBefore = await g.js(`document.querySelectorAll('.transcript [data-role="user"], .transcript .user-msg, .transcript .msg-user').length`);
+    const messagesBefore = await g.js(`document.querySelectorAll('.transcript:not([data-parked] *) [data-role="user"], .transcript:not([data-parked] *) .user-msg, .transcript:not([data-parked] *) .msg-user').length`);
     // The page's search box takes focus in the page (as the agent's type action clicks it first).
     const box = await t.js(`(() => { const r = document.getElementById('q').getBoundingClientRect(); return { x: r.x + 20, y: r.y + r.height / 2 }; })()`);
     await call("browser.input", { id: sid, input: { kind: "mouse", type: "down", x: box.x, y: box.y, button: "left", buttons: 1, clickCount: 1 } });
     await call("browser.input", { id: sid, input: { kind: "mouse", type: "up", x: box.x, y: box.y, button: "left", buttons: 0, clickCount: 1 } });
     // The person goes back to the composer and starts a draft.
-    await g.js(`(() => { const c = document.querySelector('textarea[aria-label="Message"]'); c.focus(); c.value = 'my draft'; c.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await g.js(`(() => { const c = document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)'); c.focus(); c.value = 'my draft'; c.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     report.focusBefore = await g.js(`document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName`);
     // Text and Enter for the tab, by the same path as the agent's type action.
     await call("browser.input", { id: sid, input: { kind: "text", text: "Stress test" } });
     await call("browser.input", { id: sid, input: { kind: "key", type: "down", key: "Enter", code: "Enter" } });
     await call("browser.input", { id: sid, input: { kind: "key", type: "up", key: "Enter", code: "Enter" } });
     await sleep(1500);
-    report.composer = await g.js(`document.querySelector('textarea[aria-label="Message"]')?.value`);
-    report.transcriptHasStressTest = await g.js(`(document.querySelector('.transcript')?.innerText ?? '').includes('Stress test')`);
+    report.composer = await g.js(`document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')?.value`);
+    report.transcriptHasStressTest = await g.js(`(document.querySelector('.transcript:not([data-parked] *)')?.innerText ?? '').includes('Stress test')`);
     report.pageBox = await t.js(`document.getElementById('q').value`);
     report.pageSearched = await t.js(`document.getElementById('found').textContent`);
     report.focusAfter = await g.js(`document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName`);

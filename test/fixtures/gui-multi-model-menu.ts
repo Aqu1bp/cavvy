@@ -19,7 +19,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true, more: { groups?: any[]; providers?: any[]; limits?: Record<string, any> } = {}) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; limits?: Record<string, any>; away?: string } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -93,7 +93,10 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
         Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
-        app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
+        // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
+        app: { models: [], providers: more.providers ?? [], limits: more.limits ?? {} },
+        refreshModelsFor() {}, connFor: () => "open", awayMachine: () => more.away,
+        modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
@@ -118,6 +121,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
     return { root, doc, trigger, key, open, comparePicks, chosen, warnings, accountPicks, find,
         tabs: () => all(root).filter((n) => n.props.role === "tab").map(adapt),
         accountButton: () => find((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-btn")),
+        accountButtons: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-btn")).length,
         accountItems: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-it")).map(adapt),
         search: () => find((n) => n.props.role === "combobox"),
         toggle: () => find((n) => n.props.role === "switch"),
@@ -248,4 +252,12 @@ test("a subscription's account is a button in its heading, opening its accounts:
     expect(f.accountPicks).toEqual(["cli:p"]);
     expect(f.accountItems()).toEqual([]);
     expect(f.doc.activeElement).toBe(button);
+});
+
+test("another machine's session opened here isn't offered this computer's accounts", () => {
+    const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
+    const accounts = [{ id: "default", name: "Work" }, { id: "p", name: "Personal" }];
+    const f = picker(true, { groups: [{ provider: "cli", providerName: "CLI", models: [cli] }], providers: [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }], away: "box" });
+    f.tabs()[2].click();
+    expect(f.accountButtons()).toBe(0);
 });

@@ -392,3 +392,30 @@ oldMounted.setAttachments(files);
 oldMounted.setText("too late");
 assert.equal(composerStorage.draft("mounted-replacement"), "new typed work");
 composerStorage.flush();
+
+// A message shown as sent at once (its box cleared before the server has it), its send failing: what was sent comes
+// back; on top of the stashed drafts if something was typed since, and to its own session's box if another's shown.
+const quick = mount("quick");
+quick.setText("sent at once");
+const quickSent = quick.capture();
+quick.clearSent(quickSent);
+assert.equal(quick.text(), "");
+quick.putBack(quickSent);
+assert.equal(quick.text(), "sent at once");
+quick.clearSent(quick.capture());
+quick.setText("typed meanwhile");
+quick.putBack(quickSent);
+assert.equal(quick.text(), "typed meanwhile");
+assert.equal(quick.stashes()[0]?.text, "sent at once");
+quick.dispose();
+const elsewhere = mount("quick-gone");
+elsewhere.setText("sent before leaving");
+const elsewhereSent = elsewhere.capture();
+elsewhere.clearSent(elsewhereSent);
+elsewhere.dispose();
+// Unmounted (switched away) when the send failed: its box has it when it's shown again.
+elsewhere.putBack(elsewhereSent);
+const back = mount("quick-gone");
+assert.equal(back.text(), "sent before leaving");
+back.dispose();
+composerStorage.flush();

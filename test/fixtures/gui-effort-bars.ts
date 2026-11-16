@@ -126,7 +126,8 @@ test("the model picker's effort: a change the server refuses goes back to the le
         app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub,
         noModel: () => false,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
-        ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
+        agentReady: async () => {},
+        ...names(["activate", "connFor", "createSession", "homeCwdAfter", "machineFor", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
     }));
     // No servers here: the window is on this computer.
     mock.module("../../gui/src/lib/platform", () => ({ ...names(["copyText", "pickFolder"]), machine: undefined }));
@@ -134,12 +135,13 @@ test("the model picker's effort: a change the server refuses goes back to the le
     mock.module("../../gui/src/state/ui", () => ({
         ...names(["freeRail", "railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
         shellLayout: () => ({ railMode: "dock" }),
+        splitActions: {},
     }));
     const { setEffort } = await import("../../gui/src/state/actions");
     // The model picker holds the effort now: it opens on the slider, under the model's name, and the level in force
     // follows the name on the button ("Opus 5.5 xhigh").
     const Picker = component(source(), "ModelPicker", {
-        app, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
+        app, modelsFor: () => app.models, refreshModelsFor: stub, connFor: () => "open", awayMachine: () => undefined, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
         Menu: (p: { open: boolean; children: unknown }) => solid.createMemo(() => (p.open ? p.children : null)),
         menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined,
         now: () => 0, sendsAccountPick: () => false, setAccount: stub, prefs: { favoriteModels: [] }, setPrefs: stub, handleFor: () => undefined, noModel: () => false, refreshModels: stub, setModel: stub,

@@ -21,6 +21,7 @@ import { redact, registerSecret } from "../util/redact";
 import { encodeBrowserFrame, encodeSimulatorFrame } from "./browser-wire";
 import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
+import { orderedSender, streamCoalescer, type OrderedSender } from "./ws-send";
 
 export interface ServeOptions extends EngineOptions {
     host?: string;
@@ -70,6 +71,15 @@ export interface RunningServer {
 const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "cavvy://app"];
 const SUBPROTOCOL = "cavvy.v1";
 const CODE_TTL_MS = 120_000;
+/**
+ * How long a window on another machine's streamed text is held to go with what follows, and how much of it goes as soon
+ * as it's there (ws-send.ts streamCoalescer). Over an ssh tunnel a message costs about 62 bytes whatever it holds (its
+ * frame, the ssh packet, the TCP acknowledgement back), and the text about 0.64 a character compressed (a Mac, through
+ * a VPS's tunnel): 1.2 bytes a character at 600 characters a second needs a message about every 190 ms. The window
+ * shows a stream that comes in bursts at an even pace, as far behind as they're apart (lib/reveal.ts MAX_LAG_MS 300).
+ */
+const STREAM_HOLD_MS = 250;
+const STREAM_HOLD_CHARS = 2000;
 
 const TYPES: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
@@ -102,6 +112,12 @@ interface Conn {
     desktop?: { host?: DesktopHost };
     held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
     client: EngineClient;
+    /** Everything this socket sends, in order and none dropped (ws-send.ts). */
+    out?: OrderedSender;
+    /** A window on another machine: what it's sent is compressed (permessage-deflate), streamed text held a moment. */
+    compress?: boolean;
+    /** What's held of a stream for it (compress): sent before anything else is. */
+    flushHeld?: () => void;
 }
 
 export async function startServer(o: ServeOptions = {}): Promise<RunningServer> {
@@ -220,7 +236,11 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
+                // A window on another machine (signed in through a tunnel, or reaching an address that isn't loopback):
+                // its messages compressed. A reply streamed at a model's pace was 5.1 bytes a character as message text,
+                // 0.78 on the wire (measured; test/ws-compress.test.ts). This machine's own windows aren't: no link to save.
+                const remote = url.pathname === "/ws" && (who !== undefined || (host !== "127.0.0.1" && host !== "localhost" && req.headers.get("host")?.toLowerCase() === `${host}:${port}`));
+                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}), ...(remote ? { compress: true } : {}) };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -254,33 +274,42 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
         },
         websocket: {
             maxPayloadLength: 48 * 1024 * 1024,
+            // Offered, used only for windows on another machine (Conn.compress). A context of its own per connection
+            // (64 KB): each message's frame and keys are then nearly free (a shared one: 4.2 bytes a character).
+            perMessageDeflate: { compress: "64KB", decompress: false },
             idleTimeout: 120,
             sendPings: true,
             open(ws: ServerWebSocket<Conn>) {
                 sockets.add(ws);
+                const out = (ws.data.out = orderedSender(ws, undefined, ws.data.compress));
                 if (ws.data.desktop) {
-                    ws.data.desktop.host = attachDesktopHost({ send: (t) => void ws.send(t), close: (code, reason) => ws.close(code, reason) });
+                    ws.data.desktop.host = attachDesktopHost({ send: (t) => out.send(t), close: (code, reason) => ws.close(code, reason) });
                     log("the desktop app's browser connected");
                     return;
                 }
                 const c = ws.data.client;
-                c.send = (ev: ServerEvent) => {
+                const sendNow = (ev: ServerEvent) => {
                     if (ws.readyState !== 1) return;
                     // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
-                    if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() > 1024 * 1024) {
+                    if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() + out.queued > 1024 * 1024) {
                         ws.close(1013, "Browser viewer is too slow; reconnect");
                         return;
                     }
                     if (ws.data.browser && ev.type === "browser.frame") {
                         const { sessionId, frameId, tab, width, height, data } = ev;
-                        ws.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
+                        out.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
                     } else if (ws.data.browser && ev.type === "simulator.frame") {
                         // Binary as the helper made it: no base64 on the way.
                         const { sessionId, frameId, width, height, data } = ev;
-                        ws.send(encodeSimulatorFrame({ sessionId, frameId, width, height }, typeof data === "string" ? Buffer.from(data, "base64") : data));
-                    } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") ws.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
-                    else ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
+                        out.send(encodeSimulatorFrame({ sessionId, frameId, width, height }, typeof data === "string" ? Buffer.from(data, "base64") : data));
+                    } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") out.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
+                    else out.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
+                if (ws.data.compress) {
+                    const held = streamCoalescer((ev) => sendNow(ev as ServerEvent), STREAM_HOLD_MS, STREAM_HOLD_CHARS);
+                    ws.data.flushHeld = held.flush;
+                    c.send = (ev) => held.send(ev);
+                } else c.send = sendNow;
                 engine.clients.add(c);
             },
             async message(ws: ServerWebSocket<Conn>, raw) {
@@ -320,7 +349,13 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
                     reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
-                if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
+                if (!notification && ws.readyState === 1) {
+                    ws.data.flushHeld?.();
+                    ws.data.out!.send(JSON.stringify(reply, wireReplacer));
+                }
+            },
+            drain(ws: ServerWebSocket<Conn>) {
+                ws.data.out?.drain();
             },
             close(ws: ServerWebSocket<Conn>) {
                 sockets.delete(ws);

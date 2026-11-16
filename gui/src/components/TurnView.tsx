@@ -18,7 +18,7 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app } from "../state/app";
+import { activate, app, handleFor, loadTurn } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -365,6 +365,11 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const [all, setAll] = createSignal(false);
     // The other worktrees the turn worked in (sub-agents' own, one it entered): with its own folder, the card's places.
     const places = () => (captured() ? recorded()?.places ?? [] : []);
+    // Who worked where is read from each one's calls: a turn sent folded hasn't all of them (long commands), nor its
+    // sub-agents' steps. Asked for when there's more than its own folder to say it of.
+    createEffect(() => {
+        if (places().length && p.turn.folded) void loadTurn(handleFor(p.sessionId), p.turn.id);
+    });
     const own = createMemo<OwnPlace | undefined>(() => (files().length ? { files: files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), ...total() } : undefined));
     const shape = () => cardShape(own(), places());
     const rows = createMemo(() => placeRows(own(), places()));
@@ -620,8 +625,11 @@ function TurnViewContent(p: TurnViewProps) {
     const unfold = (open: boolean) => { setUnfolded(open); p.onWorkOpen?.(open); };
     // Fading out before it folds: the work's last moment on screen, then "Worked for".
     const [folding, setFolding] = createSignal(false);
+    /** It finished here, in view of the reader: "Worked for" comes in (not on a turn built finished: a page of them). */
+    const [arrived, setArrived] = createSignal(false);
     // Run before DOM effects can remove the work the reader is inspecting.
     createComputed(on(foldable, (value, previous) => {
+        if (previous === false && value) setArrived(true);
         if (previous !== false || !value || untrack(unfolded)) return;
         if (p.keepWorkOpen?.()) return unfold(true);
         const ms = motionMs(200);
@@ -630,6 +638,15 @@ function TurnViewContent(p: TurnViewProps) {
         setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
+    // Sent with its work folded (Turn.folded): its rows are there, what they show opened comes whole (session.turn).
+    // Asked for as the pointer or focus comes to "Worked for", so it's usually here by the click (a round trip and up to
+    // 760 KB over a remote link); else as the work is shown, its rows at once and the rest filled in as it comes.
+    const wholeTurn = () => {
+        if (p.turn.folded) void loadTurn(handleFor(p.state.id), p.turn.id);
+    };
+    createEffect(() => {
+        if (showWork()) wholeTurn();
+    });
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
@@ -717,7 +734,7 @@ function TurnViewContent(p: TurnViewProps) {
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
                     <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
-                        <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
+                        <button class="fold acts-h worked" classList={{ arrived: arrived() }} aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();

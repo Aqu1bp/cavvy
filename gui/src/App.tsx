@@ -1,46 +1,38 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
+import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
-import { FloatingBrowser } from "./components/FloatingBrowser";
 
 /** Loaded with the first theme chosen: a window with none carries none of it. */
 const ThemeBackdrop = lazy(() => import("./components/ThemeBackdrop").then((m) => ({ default: m.ThemeBackdrop })));
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
-import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
+import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
+import { besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
 import { Header, RailButtons } from "./components/Header";
-import { Transcript } from "./components/Transcript";
-import { Composer } from "./components/Composer";
+import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { ReviewPane } from "./components/ReviewPane";
-import { TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
+import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsNav, SettingsPage } from "./components/Settings";
-import { RewindDialog } from "./components/RewindDialog";
-import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
-import { PlanDialogs } from "./components/PlanDialogs";
-import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
-import { CommitDialog } from "./components/CommitDialog";
-import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Disconnected() {
@@ -77,46 +69,10 @@ function Disconnected() {
     );
 }
 
-/** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
-function SessionView(p: { handle: SessionHandle }) {
-    let dock: HTMLDivElement | undefined;
-    // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
-    const [dockH, setDockH] = createSignal<number>();
-    onMount(() => {
-        // The transcript scrolls under the composer and keeps that much room at its end;
-        // a floating inspector ends above it.
-        const ro = new ResizeObserver(() => {
-            const h = dock?.offsetHeight ?? 0;
-            setDockH(h);
-            setDockHeight(h);
-        });
-        if (dock) ro.observe(dock);
-        onCleanup(() => {
-            ro.disconnect();
-            setDockHeight(0);
-        });
-    });
-    return (
-        <>
-            <Header handle={p.handle} />
-            <div class="stage">
-                <Transcript handle={p.handle} dock={dockH()} />
-                <FloatingBrowser handle={p.handle} />
-                <div class="composer-dock" ref={dock}>
-                    <div class="composer-col">
-                        <ErrorCards place="composer" />
-                        <Composer sessionId={p.handle.id} />
-                    </div>
-                </div>
-            </div>
-        </>
-    );
-}
-
 /** The docked inspector's left edge: drag (or arrow keys) to resize; double-click for the default. */
 function InspectorResizer() {
     const [dragging, setDragging] = createSignal(false);
-    const clamp = (w: number) => clampInspectorWidth(w, shellLayout().sheet.w);
+    const clamp = (w: number) => clampInspectorWidth(w, shellLayout().sheet.w, conversationLeast(Boolean(split())));
     const set = (w: number) => setInspectorWidth(clamp(w));
     /** Ends the drag under way, if any: on release, and when the handle goes away in the middle of one. */
     let stop: (() => void) | undefined;
@@ -203,6 +159,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         if (saved) setInspectorWidth(saved);
     } catch { /* private mode: the default width */ }
     onMount(() => {
+        onCleanup(watchCodeMetrics());
         const resized = () => setWin(size());
         window.addEventListener("resize", resized);
         onCleanup(() => window.removeEventListener("resize", resized));
@@ -226,6 +183,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         terminalPreferred: terminalDrag() ?? prefs.terminalHeight,
         terminalMax: terminalMax(),
         dock: dockHeight(),
+        split: Boolean(split()),
     }));
 
     createEffect(() => setShellLayout(layout()));
@@ -266,8 +224,9 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     }));
 
     // Shrinking the window past the docking point closes a docked inspector (the diff reader fills the sheet instead).
-    createEffect(on(() => layout().inspector.mode, (mode, from) => {
-        if (closesOnShrink(from, mode, prefs.panel, p.review)) setPrefs("panel", false);
+    // Not a second session coming beside the first: the panel you had open stays, floating if it no longer fits.
+    createEffect(on([() => layout().inspector.mode, () => Boolean(split())] as const, ([mode, splitNow], was) => {
+        if (was && was[1] === splitNow && closesOnShrink(was[0], mode, prefs.panel, p.review)) setPrefs("panel", false);
     }));
     // A request arriving closes a floating inspector too short to sit above it.
     let cleared: string | undefined;
@@ -299,12 +258,35 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
 function Reconnecting() {
     return (
         <>
-            <Show when={app.conn !== "open"}>
+            {/* The window's own connection, or the one the session on screen is shown over (another machine's). */}
+            <Show when={app.conn !== "open" || connFor(app.activeId) !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> {connNote() ?? "Not connected"} · Reconnecting…
-                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>
-                        Reconnect now
-                    </button>
+                    <Show
+                        when={app.conn === "open" && problemFor(app.activeId)}
+                        fallback={
+                            <>
+                                <Spinner size={12} /> {(app.conn !== "open" && connNote()) || "Not connected"} · Reconnecting…
+                                <button class="link-btn" onClick={() => (app.conn !== "open" ? rpc : rpcFor(app.activeId)).reconnectNow()}>
+                                    Reconnect now
+                                </button>
+                            </>
+                        }
+                    >
+                        {(issue) => (
+                            <>
+                                {/* Tried again by itself; or that machine needs the user's word (its key, an update, starting it), asked there. */}
+                                <Show when={issue().status === "failed"}><Spinner size={12} /></Show> {issue().message}
+                                <Show
+                                    when={issue().status !== "failed"}
+                                    fallback={<button class="link-btn" onClick={() => rpcFor(app.activeId).reconnectNow()}>Reconnect now</button>}
+                                >
+                                    <button class="link-btn" onClick={() => void serversUi().then((m) => m.switchMachine(issue().machine || undefined, app.activeId), reportError)}>
+                                        Go to {issue().machine}
+                                    </button>
+                                </Show>
+                            </>
+                        )}
+                    </Show>
                 </div>
             </Show>
             <Show when={app.conn === "open" && app.slowRequest}>
@@ -316,7 +298,50 @@ function Reconnecting() {
     );
 }
 
+/**
+ * Settings and what only it shows (plugins, usage, accounts): a chunk of their own, not loaded before anything is on
+ * screen. Fetched once the window is idle after it opens (App), so opening Settings is as quick as when it came with it.
+ */
+const settingsModule = () => import("./components/Settings");
+const SettingsNav = lazy(() => settingsModule().then((m) => ({ default: m.SettingsNav })));
+const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.SettingsPage })));
+/** The diff reader: shown when a diff is opened, not with the window. */
+const reviewModule = () => import("./components/ReviewPane");
+const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
+/** Dialogs opened now and then (MCP servers, a plan): chunks of their own, fetched at idle like Settings. */
+const mcpModule = () => import("./components/McpDialog");
+const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
+const planModule = () => import("./components/PlanDialogs");
+const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
+const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) => ({ default: m.ArchiveDialog })));
+const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
+const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
+const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+
 export function App() {
+    // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
+    // there by the time either is first opened.
+    onMount(() => {
+        const fetch = () => {
+            // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog]) void c.preload().catch(() => undefined);
+            void preloadTerminal().catch(() => undefined);
+        };
+        if (typeof requestIdleCallback === "function") {
+            const idle = requestIdleCallback(fetch, { timeout: 4000 });
+            onCleanup(() => cancelIdleCallback(idle));
+        } else {
+            const t = setTimeout(fetch, 2000);
+            onCleanup(() => clearTimeout(t));
+        }
+    });
+    // Put in the first time each opens, and kept (to close as it closes).
+    const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
+    const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
+    const archiveShown = createMemo<boolean>((was) => was || Boolean(archiveRequest()), false);
+    const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
+    const rewindShown = createMemo<boolean>((was) => was || rewindOpen(), false);
+    const imageShown = createMemo<boolean>((was) => was || Boolean(viewedImage()), false);
     /** Whether a theme has been chosen since the window started: from then on the scene stays, empty while none is. */
     let themed = false;
     const sceneWanted = () => (themed ||= Boolean(prefs.themeId));
@@ -340,22 +365,34 @@ export function App() {
     });
     const stage = () => shown()?.h;
     /** Another session is opening while the last one is held on the stage (shown). */
-    const holding = () => Boolean(stage() && stage() !== active());
-    /** The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's. */
-    const openingScreen = () => app.opening !== undefined && app.opening.id === app.activeId && !holding();
+    const holding = () => !split() && Boolean(stage() && stage() !== active());
+    /**
+     * The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's.
+     * Not once it's here and "Opening session…" never showed: that's only to be kept up its least time (state/app.ts),
+     * and in between the stage would be let go of and made again (the session left with it, not kept: Panes.tsx).
+     */
+    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding() && (app.opening.visible || !active());
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
-    // Another session: its own view, not the last one's sub-agent or review.
+    // Another session: its own view, not the last one's sub-agent or review. Between a split's two, each one's own
+    // comes back (state/split.ts); anywhere else, the split ends.
+    // (Not `defer`: a deferred first run doesn't keep the id it saw, and the first change would come from nowhere.)
+    let seen = false;
     createEffect(
         on(
             () => app.activeId,
-            () => {
+            (to, from) => {
+                if (!seen) return void (seen = true);
+                if (focusMoved(from, to)) return;
                 setAgentFocus(undefined);
                 setReview(undefined);
             },
-            { defer: true },
         ),
     );
+    // One of a split's two deleted, here or elsewhere: its pane closes.
+    createEffect(() => prune());
+    // After a reload, the split's other session opens too, once the lists say what's there.
+    createEffect(on(() => app.sessionsLoaded, (loaded) => loaded && restoreSplit()));
 
     // Enter-sends decides what Enter and Mod+Enter are bound to.
     createEffect(() => setEnterSends(prefs.enterSends));
@@ -465,7 +502,10 @@ export function App() {
     // The inspector column shows the diff reader while a review is open, else the session's panel.
     const reviewing = () => Boolean(review() && active() && !settingsTab());
     // Its column stays while a session opens (empty until it comes), rather than closing and opening again.
-    const panelShown = () => Boolean(prefs.panel && (openingScreen() ? !app.opening?.error : stage()) && !agent() && !settingsTab());
+    // In a split it shows the focused session's views, a sub-agent's view in its pane or not.
+    // In a split, the other session's diff reader holds it open and as wide (state/split.ts besideReads).
+    const heldOpen = () => Boolean(split() && besideReads() && !settingsTab());
+    const panelShown = () => Boolean((prefs.panel || heldOpen()) && (split() || (openingScreen() ? !app.opening?.error : stage())) && (split() || !agent()) && !settingsTab());
     const layout = () => shellLayout();
     const drawerOpen = () => layout().railMode === "overlay" && railOpen();
     // The drawer takes focus as it opens, so nothing behind it keeps it.
@@ -478,21 +518,26 @@ export function App() {
     // Closing, the panel keeps what's in it until it has slid away: emptied at once, a blank panel slid shut.
     // `panelGone`: it's closed and has finished closing (so it's still false at the moment it's told to close).
     const [panelGone, setPanelGone] = createSignal(!prefs.panel);
-    createEffect(on(() => prefs.panel, (open) => {
+    // Wanted open: by you, or (in a split) by the other session's diff reader.
+    const panelWanted = () => prefs.panel || heldOpen();
+    createEffect(on(panelWanted, (open) => {
         if (open) return void setPanelGone(false);
         // Its move has begun once this update is in the DOM: its column closing (docked), or the panel itself (floating).
         queueMicrotask(() => {
-            void Promise.allSettled(moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p)).map((a) => a.finished)).then(() => { if (!prefs.panel) setPanelGone(true); });
+            void Promise.allSettled(moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p)).map((a) => a.finished)).then(() => { if (!panelWanted()) setPanelGone(true); });
         });
     }, { defer: true }));
-    const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());
+    const panelKept = () => Boolean((prefs.panel || !panelGone()) && panelFor() && (split() || !agent()) && !openingScreen());
+    /** The session the panel is for: the focused one in a split (empty while it opens), else the one on the stage. */
+    const panelFor = () => (split() ? active() : stage());
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
     // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
     // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
     // The steps of the column's size that its contents' styles read (shell.css .main); none until it's measured.
-    const narrow = createMemo(() => (layout().sheet.w ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
+    // In a split each pane has its own (components/Panes.tsx).
+    const narrow = createMemo(() => (layout().sheet.w && !split() ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
     const short = createMemo(() => (layout().sheet.h ? columnSteps(layout().column.h, COLUMN_SHORT) : undefined));
 
     return (
@@ -569,7 +614,7 @@ export function App() {
                                             </>
                                         }
                                     >
-                                        <Match when={openingScreen() && app.opening}>
+                                        <Match when={!split() && openingScreen() && app.opening}>
                                             {(opening) => <>
                                                 <Header title={(app.sessions.find((s) => s.id === opening().id) ?? app.archived.find((s) => s.id === opening().id))?.title} />
                                                 <div class="session-opening" aria-busy={!opening().error}>
@@ -580,11 +625,12 @@ export function App() {
                                                 </div>
                                             </>}
                                         </Match>
-                                        <Match when={active() && agent()}>
+                                        <Match when={!split() && active() && agent()}>
                                             <AgentView handle={active()!} agent={agent()!} />
                                         </Match>
-                                        <Match when={stage()} keyed>
-                                            {(h) => <SessionView handle={h} />}
+                                        {/* Not keyed: a second session coming or going leaves the first one's pane as it was. */}
+                                        <Match when={split() || stage()}>
+                                            <Panes single={stage()} />
                                         </Match>
                                         <Match when={app.activeId}>
                                             <Header />
@@ -598,7 +644,7 @@ export function App() {
                             </div>
                         </main>
                         <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} inert={holding() || undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
-                            <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
+                            <Show when={panelShown() && !reviewing() && !heldOpen() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
                             </Show>
                             {/* Full screen covers the title bar: with the sidebar hidden, its two buttons stay here (shell.css). */}
@@ -610,7 +656,7 @@ export function App() {
                             <Show
                                 when={reviewKept()}
                                 fallback={
-                                    <Show when={panelKept() && stage()} keyed>
+                                    <Show when={panelKept() && panelFor()} keyed>
                                         {(h) => <RenderBoundary resetKey={() => app.activeId}><RightPanel handle={h} /></RenderBoundary>}
                                     </Show>
                                 }
@@ -627,19 +673,19 @@ export function App() {
                         <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
                     </div>
                 </div>
-                <LayoutKeeper panel={panelShown()} review={reviewing()} />
+                <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
             <CommandPalette />
-            <RewindDialog />
-            <McpDialog />
+            <Show when={rewindShown()}><RewindDialog /></Show>
+            <Show when={mcpShown()}><McpDialog /></Show>
             <FolderPicker />
             <TrustDialog />
-            <PlanDialogs />
-            <ArchiveDialog />
+            <Show when={planShown()}><PlanDialogs /></Show>
+            <Show when={archiveShown()}><ArchiveDialog /></Show>
             <RecentlyDeleted />
             <RunSheet />
-            <CommitDialog />
-            <ImageViewer />
+            <Show when={commitShown()}><CommitDialog /></Show>
+            <Show when={imageShown()}><ImageViewer /></Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
             </Show>
