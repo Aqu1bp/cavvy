@@ -217,7 +217,7 @@ export function FindBar(p: {
             if (a && waitsFor(a) && !untrack(answered)) return;
             const again = q === counted;
             // With a gap, where to start is known once the server's said what's in it.
-            if (q && !again && untrack(p.gap) && !untrack(answered)) return;
+            if (q && !again && untrack(p.gap) && !untrack(answered)) return void setCur(-1);
             counted = q;
             if (takeAnchor(ms)) return;
             if (!q) {

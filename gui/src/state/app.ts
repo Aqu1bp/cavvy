@@ -664,10 +664,10 @@ function dropPage(h: SessionHandle) {
     })));
 }
 
-/** The gap's next page (those after the page fetched far up), in one request: false when it couldn't be had. */
-const fillingGap = new Map<string, Promise<boolean>>();
+/** The gap's next page (those after the page fetched far up), in one request: false when it couldn't be had, "moved" when the gap changed meanwhile. */
+const fillingGap = new Map<string, Promise<boolean | "moved">>();
 /** `put`: told, in the same update, how many turns went in (a view counting what it shows from the end shows them too). */
-export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void): Promise<boolean> {
+export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void): Promise<boolean | "moved"> {
     const going = fillingGap.get(h.id);
     if (going) return going;
     const run = (async () => {
@@ -675,11 +675,11 @@ export function fillGap(h: SessionHandle, count = 40, put?: (n: number) => void)
         if (!gap) return true;
         const at = h.view.turns.findIndex((t) => t.id === gap.after);
         const next = h.view.turns[at + 1]?.id;
-        if (at < 0 || !next) return false;
+        if (at < 0 || !next) return "moved";
         const page = await rpc.call("session.turns", { id: h.id, before: next, after: gap.after, count, fold: !prefs.expandActivity });
         flush(h);
         const now = h.view.gap;
-        if (!now || now.after !== gap.after || h.view.turns[at + 1]?.id !== next) return false;
+        if (!now || now.after !== gap.after || h.view.turns[at + 1]?.id !== next) return "moved";
         batch(() => {
             put?.(page.turns.length);
             h.set(produce((v) => {

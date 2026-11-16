@@ -1350,7 +1350,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
  * time as they're read down to, a screen before they're in sight, or at the click. Not on their own while this is in
  * sight: they'd push the turns below it away from the reader (2 runs in 3 moved them 530-2,380 px, headless).
  */
-function LaterTurns(p: { count: number; fill: () => Promise<boolean>; root: () => HTMLElement | undefined }) {
+function LaterTurns(p: { count: number; fill: () => Promise<boolean | "moved">; root: () => HTMLElement | undefined }) {
     let el: HTMLButtonElement | undefined;
     const [busy, setBusy] = createSignal(false);
     let near = false;
@@ -1365,8 +1365,10 @@ function LaterTurns(p: { count: number; fill: () => Promise<boolean>; root: () =
         };
         void p.fill().then(
             (ok) => {
-                if (!ok) return failed();
+                if (ok === false) return failed();
                 setBusy(false);
+                // Its gap went meanwhile (another jump, the session renewed): nothing to say or do.
+                if (ok === "moved") return;
                 // The page that came may be short of the screen. One that didn't come waits to be read down to again,
                 // or a click: asked again at once, a dropped connection's at-once refusal would never let go.
                 lookAgain();
