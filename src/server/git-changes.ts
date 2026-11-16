@@ -1111,22 +1111,36 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     inTime();
     // Those not read, now read where they're listed: one back as it was (since git looked) isn't a change, and those
     // after it move up; one gone is deleted.
+    let oldBlobs: Promise<Map<string, Buffer>> | undefined;
     while (unreadChanges.size) {
         const due = changes.slice(0, MAX_FILES).filter((c) => unreadChanges.has(c));
         if (!due.length) break;
         const same = new Set<Change>();
-        await eachLimit(due, 32, async (c) => {
-            inTime();
-            unreadChanges.delete(c);
-            const was = c.old!;
-            const now = await wt.entry(c.path, was);
-            if (!now) {
-                c.change = "deleted";
-                c.now = undefined;
-                c.kind = kindOf(was.mode);
-            } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
-            else c.now = now;
-        });
+        // Their old sides, which the listing shows, are asked for meanwhile: sizes, then contents.
+        const sized = blobSizes(root, due.map((c) => c.old!), deadline);
+        if (!oldBlobs) {
+            oldBlobs = sized.then(() => {
+                const take = due.map((c) => c.old!).filter((e) => isFileMode(e.mode) && (e.size ?? Infinity) <= MAX_DIFF_INPUT);
+                return blobs(root, [...new Set(take.map((e) => e.oid))], deadline);
+            });
+            // One that fails is asked again with the rest.
+            oldBlobs.catch(() => {});
+        }
+        await Promise.all([
+            sized,
+            eachLimit(due, 32, async (c) => {
+                inTime();
+                unreadChanges.delete(c);
+                const was = c.old!;
+                const now = await wt.entry(c.path, was);
+                if (!now) {
+                    c.change = "deleted";
+                    c.now = undefined;
+                    c.kind = kindOf(was.mode);
+                } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
+                else c.now = now;
+            }),
+        ]);
         if (!same.size) break;
         removeWhere(changes, (c) => same.has(c));
     }
@@ -1152,7 +1166,13 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const unseen = listed.filter((c) => c.change !== "deleted" && !c.indexed && !c.kind && !attrs.has(c.path)).map((c) => c.path);
     if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
     if (differ) await blobSizes(root, listed.flatMap((c) => (c.old ? [c.old] : [])), deadline);
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols });
+    const readBlobs = oldBlobs && (async (oids: string[], deadline: number) => {
+        const have = (await oldBlobs!.catch(() => undefined)) ?? new Map<string, Buffer>();
+        const rest = oids.filter((o) => !have.has(o));
+        if (rest.length) for (const [oid, b] of await blobs(root, rest, deadline)) have.set(oid, b);
+        return have;
+    });
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols, readBlobs });
     let added = 0;
     let removed = 0;
     for (const f of files) {
