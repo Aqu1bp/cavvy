@@ -22,7 +22,6 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
@@ -286,11 +285,18 @@ function Reconnecting() {
 const settingsModule = () => import("./components/Settings");
 const SettingsNav = lazy(() => settingsModule().then((m) => ({ default: m.SettingsNav })));
 const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.SettingsPage })));
+/** The diff reader: shown when a diff is opened, not with the window. */
+const reviewModule = () => import("./components/ReviewPane");
+const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
 
 export function App() {
-    // Settings' chunk (above), once nothing more pressing is left to do after the window opened.
+    // Settings' and the diff reader's chunks (above), once nothing more pressing is left to do after the window opened:
+    // there by the time either is first opened.
     onMount(() => {
-        const fetch = () => void settingsModule().catch(() => undefined);
+        const fetch = () => {
+            void settingsModule().catch(() => undefined);
+            void reviewModule().catch(() => undefined);
+        };
         if (typeof requestIdleCallback === "function") {
             const idle = requestIdleCallback(fetch, { timeout: 4000 });
             onCleanup(() => cancelIdleCallback(idle));
