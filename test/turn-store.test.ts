@@ -2,7 +2,7 @@
 // there next time: what the window is sent then is what building it from its logs would send, and a session whose
 // logs changed since is built from them again.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentRun, SessionSnapshot, Turn } from "../src/server/protocol";
@@ -194,6 +194,34 @@ test("a turn taken after opening from the store is kept, and the session opens a
     const rebuilt = await everything(t.id);
     const outline = (x: { turns: Turn[] }) => x.turns.map((t) => [t.prompt?.text, t.status, t.blocks.map((b) => b.t)]);
     expect(outline(stored)).toEqual(outline(rebuilt));
+    await close(t.id);
+}, 60_000);
+
+test("a session opened and closed with nothing changed leaves its index as it was; a change writes it again", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-same-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 9 });
+    const index = storeOf(t.file, t.id);
+    const stat = () => { const s = statSync(index); return `${s.ino}:${s.mtimeMs}`; };
+    await open(t.id);
+    await close(t.id);
+    for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
+    const first = stat();
+    // Opened from it, read, closed: nothing to write (an index is written whole, by a new file put in its place).
+    await open(t.id);
+    await call("session.find", { id: t.id, query: "" });
+    await close(t.id);
+    await Bun.sleep(300);
+    expect(stat()).toBe(first);
+    // A turn more: written again, and opens with it.
+    await open(t.id);
+    await call("session.send", { id: t.id, text: "One more thing" });
+    await until(t.id, (v) => v.turns.at(-1)?.prompt?.text === "One more thing" && v.turns.at(-1)!.status === "done" && !v.state.busy);
+    await close(t.id);
+    for (let i = 0; i < 200 && stat() === first; i++) await Bun.sleep(10);
+    expect(stat()).not.toBe(first);
+    const again = await open(t.id);
+    expect(again.turns.at(-1)?.prompt?.text).toBe("One more thing");
     await close(t.id);
 }, 60_000);
 
