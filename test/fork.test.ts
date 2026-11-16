@@ -10,7 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: CAVVY_HOME, cleanup } = isolate();
 const { Session, cliLinks, listSessions } = await import("../src/agent/session");
-const { forkSession, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
+const { forkSession, forkSessionSoon, readForkSource, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
 const { forkUiLog, forkUiLogSoon, promptKey, readSegments, UiLog } = await import("../src/server/history");
 const { FileHistory } = await import("../src/agent/checkpoints");
 const { App } = await import("../src/ui/app");
@@ -19,6 +19,7 @@ const { stripAnsi } = await import("../src/ui/ansi");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { MODE_INFO } = await import("../src/permissions/modes");
 import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
+import { textOf } from "../src/providers/types";
 
 beforeAll(() => {
     process.env.CAVVY_HOME = CAVVY_HOME;
@@ -410,6 +411,47 @@ describe("the fork's file", () => {
         expect(beforeFork(f.meta, f.messages[4], 4)).toBe(true);
         expect(beforeFork(f.meta, prompt("later", f.meta.forkOf!.at), 6)).toBe(false);
         expect(beforeFork(s.meta, s.messages[0], 0)).toBe(false);
+    });
+});
+
+describe("forked a slice at a time (as the server does)", () => {
+    /** A fork's records without what's its own (its id and when it was made). */
+    const records = (file: string) => readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).map((l) => (l.t === "meta" ? { ...l, id: "<id>", createdAt: 0, forkOf: { ...l.forkOf, at: 0 } } : l));
+
+    test("writes what forkSession writes, and opens the same", async () => {
+        const s = original();
+        const a = forkSession(s, { cut: 4 });
+        a.release();
+        const { session: b, keep } = await forkSessionSoon(s, { cut: 4, source: await readForkSource(s.path) });
+        keep();
+        expect(records(b.path)).toEqual(records(a.path));
+        expect(b.messages).toEqual(a.messages);
+        expect(b.title).toBe(a.title);
+        // Kept for its runtime: not read from the file again.
+        expect(b.takeLoadedLines()?.length).toBeGreaterThan(0);
+        b.release();
+        expect(statSync(b.path).mode & 0o777).toBe(0o600);
+        expect(filesIn(dirname(b.path)).filter((n) => n.includes(".tmp"))).toEqual([]);
+    });
+
+    test("reads the original's records as forkSession does, a torn line and a last line without its newline included", async () => {
+        const s = original();
+        appendFileSync(s.path, '{"t":"title","title":"torn\n{"t":"title","title":"Last one"}');
+        const source = await readForkSource(s.path);
+        expect(source.filter((l) => l.t === "title").map((l) => (l as { title: string }).title)).toEqual(["Layout questions", "Last one"]);
+        const a = forkSession(s, { cut: 6 });
+        a.release();
+        const { session: b } = await forkSessionSoon(s, { cut: 6, source });
+        b.release();
+        expect(records(b.path)).toEqual(records(a.path));
+    });
+
+    test("one whose saved conversation doesn't match isn't made, and leaves nothing behind", async () => {
+        const s = original();
+        const source = await readForkSource(s.path);
+        const before = filesIn(dirname(s.path));
+        await expect(forkSessionSoon(s, { cut: 6, source: source.map((l) => (l.t === "msg" && l.m.role === "assistant" && textOf(l.m) === "one" ? { ...l, m: reply("not one") } : l)) })).rejects.toThrow(/doesn't match/);
+        expect(filesIn(dirname(s.path))).toEqual(before);
     });
 });
 
