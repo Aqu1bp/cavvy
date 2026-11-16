@@ -915,7 +915,9 @@ svg.lucide {
    body starts inside the strip: so the body's own box is a hole, which holds its rows wherever they show. */
 .app.electron::before {
     content: "";
-    position: fixed;
+    /* Not fixed: a fixed strip made what's drawn after it a window-sized layer of its own (div.win). .app fills
+       the window and doesn't scroll, so it's in the same place. */
+    position: absolute;
     inset: 0 0 auto 0;
     /* No lower than the title bar's end: compact density's is shorter. */
     height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));
