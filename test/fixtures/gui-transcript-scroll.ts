@@ -824,17 +824,19 @@ try {
     assert.equal(turnRects, 0, "following the end, a scroll measures no turn");
     scroll(0);
     for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
-    assert.equal(articles().length, 400);
-    turnRects = 0; scroll(60000);
-    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "read from turn-300");
-    assert.ok(turnRects <= 12, `a scroll measures a few of the 400 turns, not each one before where it's read (${turnRects})`);
+    // Read up there, three pages are drawn: those far below are held back (Transcript.tsx DRAWN_MAX).
+    assert.equal(articles().length, 120, "read 9 pages up: three pages drawn, not all 400");
+    assert.ok(turn("turn-0") && !turn("turn-120"), "the first three pages");
+    turnRects = 0; scroll(20000);
+    assert.equal(turn("turn-100").getBoundingClientRect().top, 0, "read from turn-100");
+    assert.ok(turnRects <= 12, `a scroll measures a few of the turns drawn, not each one before where it's read (${turnRects})`);
     turnSearches = 0; partShift += 12; resize(); partShift -= 12; resize();
     assert.equal(turnSearches, 0, "the anchor is found by its id");
     // Opened again, it shows the pages down from where it was read, not all it had shown...
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
-    assert.equal(articles().length, 120, "reopened, it shows the pages down from where it was read");
-    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "at the same place");
+    assert.ok(articles().length <= 120 && turn("turn-100") && !turn("turn-399"), `reopened, it shows the pages around where it was read, not down to the end (${articles().length})`);
+    assert.equal(turn("turn-100").getBoundingClientRect().top, 0, "at the same place");
     // Opened again there, "Latest" before the turns below the place read are all in goes to the real end at once,
     // not through them a few at a time.
     dispose(); dispose = mount(b);
@@ -851,7 +853,22 @@ try {
     // Read all the way up, then back at the end: a while after, what's above its first page goes, from the page and from
     // what the window holds (forgetEarlier), not while a reply comes.
     for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
-    assert.equal(articles().length, 400);
+    assert.equal(articles().length, 120);
+    // Read down to the last drawn: the next page held below goes in, the place read staying where it is; further down,
+    // a page above goes as one goes in below.
+    const lastDrawn = () => Number(articles().at(-1)!.props["data-turn"].slice(5));
+    const downToLast = () => { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); settle(); };
+    downToLast();
+    assert.equal(lastDrawn(), 159, "a page more below");
+    assert.ok(turn("turn-0"), "nothing above gone yet");
+    downToLast();
+    assert.equal(lastDrawn(), 199, "and another");
+    assert.ok(!turn("turn-39") && turn("turn-40"), "a page above gone as it went in");
+    assert.ok(articles().length <= 160, `no more than four pages drawn (${articles().length})`);
+    for (let i = 0; i < 20 && lastDrawn() < 399; i++) downToLast();
+    assert.equal(lastDrawn(), 399, "read down, the end comes");
+    assert.equal(turn("turn-100"), undefined, "and what's far above goes");
+    for (let i = 0; i < 12 && button("earlier"); i++) { scroll(0); button("earlier").props.onClick(); settle(); }
     forgets.length = 0;
     settle();
     assert.deepEqual(forgets, [], "read up there: kept");
