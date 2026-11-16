@@ -1820,6 +1820,12 @@
     transform: scale(1.06);
 }
 
+/* Its place while it comes: nothing to see, nothing beside it moves when it's there. */
+.tool-thumb.wait {
+    box-shadow: none;
+    cursor: default;
+}
+
 .tool-thumb img {
     display: block;
     width: 100%;
