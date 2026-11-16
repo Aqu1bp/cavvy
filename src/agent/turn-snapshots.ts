@@ -399,7 +399,31 @@ function storedAsIsIn(root: string) {
  * for every session in the folder.
  */
 interface Located { root: string; algo: "sha1" | "sha256"; index?: string; stamps: string[]; paths: string[] }
+
+/** What a capture from `git status` needs first (TurnSnapshots.statusPrep). */
+interface StatusPrep {
+    /** Git's index file as it was before it was read. */
+    before: Stats;
+    /** What's outside the folder that decides what's ignored, as it was before `git status` read it (ignoreKeyOf). */
+    ignoreKey: string;
+    index: Promise<IndexPrep | undefined>;
+    /**
+     * Whether `index`'s say is taken before `git status` is started: once it has settled, or where it refused last time
+     * (an index with something staged and no commit since, say, refuses each capture: `git status` would be thrown away).
+     */
+    indexFirst: () => boolean;
+}
+/** What Git's index records (index-scan.ts), the tree Git worked out for it, and its .gitattributes files. */
+interface IndexPrep {
+    contentKey: string;
+    cacheRoot: string;
+    attributes: string[];
+}
 const locations = new Map<string, Located>();
+/** Each repository's .gitattributes files, as its index last listed them: asked of before `git status` is (statusPrep). */
+const attributesSeen = new Map<string, string[]>();
+/** Repositories whose index refused `git status`'s list last time it was read (statusPrep). */
+const indexRefused = new Set<string>();
 
 /** Each repository's worktrees, listed again only once something that decides them changes (for every session in it). */
 const worktreeLists = new Map<string, WorktreeList>();
@@ -489,6 +513,55 @@ function objectId(type: string, buf: Buffer, algo: "sha1" | "sha256"): string {
 const convertsByRoot = new Map<string, { key: string; converts: boolean; excludes?: string }>();
 /** Cache-tree roots whose every tree git was found to have (fromCacheTree): they aren't looked for again. */
 const treesFound = new Set<string>();
+
+/** The tree with nothing in it, which git knows without having it stored. */
+const EMPTY_TREE = { sha1: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha256: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" };
+
+/**
+ * How `git status` is run in `root` so that it runs no program: undefined where that can't be made sure of, and
+ * `git status` isn't to be used. Asked just before it runs. Two guards, each enough where it holds:
+ * - For each filter Git's config defines (git-lfs's, which `git lfs install` puts in the user's config, for one),
+ *   settings that make its programs none and its failing no error, so that whatever attributes name it, it runs
+ *   nothing. A filter is only ever run for an attribute that names one Git's config defines, and the repository's
+ *   own config files are out of an agent's reach (sandbox.ts). A file the repository's config includes (`include.path`,
+ *   `includeIf`) can be anywhere, its folder too, and rewritten after this looked: an include from the repository's
+ *   config, or the command's, refuses. One the user's or the system's config includes is theirs. So does a filter the
+ *   command's own config defines (GIT_CONFIG_PARAMETERS), and GIT_CONFIG, which would point `git config` alone at
+ *   another file. Older git, without --show-scope, says nothing plainly: refused.
+ * - The folder's .gitattributes files, which an agent can write, read from the empty tree instead
+ *   (GIT_ATTR_SOURCE): none of them can name a filter. Git before 2.41 doesn't know it, and the first guard stands
+ *   alone. A capture from `git status` takes only what attributes don't change (TurnSnapshots.converts), so they
+ *   change nothing it says.
+ * And no hooks, though `git status` that doesn't write Git's index runs none, and no fsmonitor (gitArgv).
+ */
+export async function statusGuard(root: string, algo: "sha1" | "sha256", deadline: number): Promise<{ args: string[]; env: Record<string, string> } | undefined> {
+    if (gitEnvironment().GIT_CONFIG !== undefined) return undefined;
+    const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+    if (found.cut || (found.code && found.code !== 1)) return undefined;
+    const names = new Set<string>();
+    // scope NUL key LF value NUL, for each.
+    // Decoded strictly: a name that isn't UTF-8 would come back as another (U+FFFD for its bytes), and be the one turned off.
+    let text = "";
+    try {
+        text = found.code === 1 ? "" : new TextDecoder("utf-8", { fatal: true }).decode(found.out);
+    } catch {
+        return undefined;
+    }
+    const fields = text ? text.split("\0") : [];
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+        const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!, lower = key.toLowerCase();
+        if (lower.startsWith("filter.")) {
+            // filter.<name>.clean or .process: the name as it's spelled (its case counts), to be spelled again in `-c`,
+            // which takes what's before its first "=" for the key.
+            const name = key.slice("filter.".length, key.lastIndexOf("."));
+            if (scope === "command" || !name || name.includes("=") || (!names.has(name) && names.size >= 64)) return undefined;
+            names.add(name);
+        } else if (scope !== "global" && scope !== "system") return undefined;
+    }
+    const args = ["-c", "core.hooksPath=/dev/null"];
+    for (const name of names) args.push(...["clean", "smudge", "process"].flatMap((program) => ["-c", `filter.${name}.${program}=`]), "-c", `filter.${name}.required=false`);
+    return { args, env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_SOURCE: EMPTY_TREE[algo] } };
+}
 
 /**
  * What says, outside the folder, which files are ignored (its info/exclude, core.excludesFile, and the config files
@@ -648,7 +721,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number; /** STOP_WAIT_MS, for tests. */ stopWaitMs?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number; /** STOP_WAIT_MS, for tests. */ stopWaitMs?: number; /** The folder's watch isn't taken as up until this settles too: for tests. */ holdWatch?: Promise<void> } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -1475,8 +1548,9 @@ export class TurnSnapshots {
         // Git's index written since: still the base, if what it records is the same (scanIndexPaths says).
         const indexStamp = stampKey(stamped), rewritten = indexStamp !== base.indexStamp;
         if (ignoreKeyOf(root, indexPath) !== base.ignoreKey || (await this.converts(root, indexPath, base.attributes, deadline))) return false;
-        // Events arrive a moment after a change (unchanged waits the same).
-        if (Date.now() - this.settledAt > 10) await this.settle(ending);
+        // Events arrive a moment after a change (unchanged waits the same). Not for what `git status` said: its count was
+        // taken before it looked, so whatever's yet to come in is looked at next time.
+        if (!given && Date.now() - this.settledAt > 10) await this.settle(ending);
         inTime();
         if (!w.healthy) return false;
         // Given (a first capture from what `git status` said): as of when it began, so what changed since is looked at next.
@@ -1624,6 +1698,59 @@ export class TurnSnapshots {
     }
 
     /**
+     * What a capture from `git status` (captureFromStatus) needs before it runs, none of it the folder's files but its
+     * attributes files (converts, which goes by what it found only while their stamps hold): read while the folder's
+     * watch is set up. No attribute in the top folder's .gitattributes, Git's or the user's that stores other bytes than
+     * a file's (git-lfs's, for one: what `git status` says couldn't be taken then); and Git's index, stamped before it's
+     * read, with what it records (`index`, wanted once `git status` has said what differs: read alongside). Undefined
+     * where `git status` isn't to be used.
+     */
+    private async statusPrep(indexPath: string, deadline: number): Promise<StatusPrep | undefined> {
+        const root = this.root!;
+        if (!msTimesExact(indexPath)) return undefined;
+        // A small repository's whole capture is quicker here than starting git for it.
+        if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return undefined;
+        const before = lstatSync(indexPath, { throwIfNoEntry: false });
+        if (!before) return undefined;
+        // Most repositories' attributes are all in the top folder's file, where it's kept (and taken again below). Asked
+        // before the index is read: where they store other bytes (git-lfs's), that read would only be thrown away.
+        // So are those its index listed last time (in folders below it too): where they store other bytes, `git status`
+        // would only be thrown away, every capture.
+        const top = lstatSync(join(root, ".gitattributes"), { throwIfNoEntry: false }) ? [".gitattributes"] : [];
+        const known = [...new Set([...top, ...(attributesSeen.get(root) ?? [])])];
+        if (await this.converts(root, indexPath, known, deadline)) return undefined;
+        let indexDone = false;
+        const refusedLast = indexRefused.has(root);
+        const index = (async (): Promise<IndexPrep | undefined> => {
+            const scan = await scanIndexPaths(root, indexPath, this.algo === "sha1" ? 20 : 32, [], true, deadline).catch(() => undefined);
+            if (!scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return undefined;
+            if (!treesFound.has(scan.cacheRoot)) {
+                const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: `${scan.cacheRoot}\n`, privateEnv: this.readEnv(), deadline });
+                if (check.code || check.cut || check.out.toString().trim() !== "tree") return undefined;
+                if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
+                treesFound.add(scan.cacheRoot);
+            }
+            const attributes = scan.attributes ?? [];
+            if (attributesSeen.size >= 64 && !attributesSeen.has(root)) attributesSeen.delete(attributesSeen.keys().next().value!);
+            attributesSeen.set(root, attributes);
+            if (await this.converts(root, indexPath, attributes, deadline)) return undefined;
+            return { contentKey: scan.contentKey, cacheRoot: scan.cacheRoot, attributes };
+        })();
+        index.then(
+            (ok) => {
+                indexDone = true;
+                indexRefused.delete(root);
+                if (!ok) {
+                    if (indexRefused.size >= 64) indexRefused.delete(indexRefused.values().next().value!);
+                    indexRefused.add(root);
+                }
+            },
+            () => (indexDone = true),
+        );
+        return { before, index, indexFirst: () => indexDone || refusedLast, ignoreKey: ignoreKeyOf(root, indexPath) };
+    }
+
+    /**
      * A capture from what `git status` says differs from Git's index, on the tree Git last worked out for the index (its
      * cache-tree): what a later capture does with the watch's paths (captureNarrowed), with git's list instead. `git status`
      * is a process of its own, as the agents' are (on a busy machine it isn't queued behind every session's work here),
@@ -1631,61 +1758,45 @@ export class TurnSnapshots {
      * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
      * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
      * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then, as it
-     * is wherever Git's config defines a filter (`git status` would run its program), or the repository's config
-     * includes another file (noFilters).
+     * is where `git status` can't be kept from running a program (statusGuard, asked just before it runs). What it needs
+     * first, but the folder's files, is read while the folder's watch is set up (statusPrep, `prepared`).
      */
-    /**
-     * Whether no config defines a filter for `git status` to run. `git status` reads the config again, later: a file
-     * the repository's config includes (`include.path`, `includeIf`) can be rewritten in between, so one included
-     * from the repository's own config, or the command's, counts as a filter; one the user's or the system's
-     * config includes is theirs. Older git, without --show-scope, says nothing plainly: no.
-     */
-    private async noFilters(root: string, deadline: number): Promise<boolean> {
-        const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
-        if (found.cut) return false;
-        if (found.code === 1) return true;
-        if (found.code) return false;
-        // scope NUL key LF value NUL, for each.
-        const fields = found.out.toString("utf-8").split("\0");
-        for (let i = 0; i + 1 < fields.length; i += 2) {
-            const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!.toLowerCase();
-            if (key.startsWith("filter.")) return false;
-            if (scope !== "global" && scope !== "system") return false;
-        }
-        return true;
-    }
-
-    private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
+    private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean, prepared?: Promise<StatusPrep | undefined>): Promise<boolean> {
         const w = this.watch, root = this.root!;
-        if (!w?.healthy || !msTimesExact(indexPath)) return false;
-        // A small repository's whole capture is quicker here than starting git for it.
-        if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return false;
-        // Any config's, the user's too: git-lfs's, for one, runs what the repository's config says. Exit 1: none.
-        // GIT_CONFIG would point `git config` alone at another file.
-        if (gitEnvironment().GIT_CONFIG !== undefined) return false;
-        if (!(await this.noFilters(root, deadline))) return false;
-        const before = lstatSync(indexPath, { throwIfNoEntry: false });
-        if (!before) return false;
+        if (!w?.healthy) return false;
         const started = Date.now();
+        const prep = await (prepared ?? this.statusPrep(indexPath, deadline));
+        inTime();
+        if (!prep || !w.healthy) return false;
+        // The index read while the watch was set up, where it has been by now or refused last time: what it says refuses,
+        // before git is started. (Otherwise side by side: the first capture in a repository whose attributes below its top
+        // store other bytes starts a `git status` that's thrown away.)
+        if (prep.indexFirst() && !(await prep.index)) return false;
+        const guard = await statusGuard(root, this.algo, deadline);
+        inTime();
+        if (!guard) return false;
         // What changes from here on is looked at by the next capture.
         const gen = w.gen;
-        const hashBytes = this.algo === "sha1" ? 20 : 32;
-        const [status, scan] = await Promise.all([
-            // Not writing the index (a refresh it would otherwise save), nor looking into submodules (none, below).
-            git(root, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }),
-            scanIndexPaths(root, indexPath, hashBytes, [], true, deadline).catch(() => undefined),
+        // The tracked files as `git status` compares them, not writing the index (a refresh it would otherwise save), nor
+        // looking into submodules (none, below), nor running a filter; and the untracked ones as git lists them, side by
+        // side: `git status` lists them one after the other, and each half takes about as long.
+        const [status, others] = await Promise.all([
+            git(root, [...guard.args, "--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=no", "--no-renames", "--ignore-submodules=all"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: guard.env }),
+            git(root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }),
         ]);
+        const index = await prep.index;
         inTime();
-        if (status.code || status.cut || status.err.trim() || !scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return false;
+        // A folder that couldn't be read is a warning: that list can't say what's gone.
+        if (status.code || status.cut || status.err.trim() || others.code || others.cut || others.err.trim() || !index) return false;
+        // Git's index as it was before it was read: what `git status` compared with is what the tree was worked out for.
         const after = lstatSync(indexPath, { throwIfNoEntry: false });
-        if (!after || stampKey(after) !== stampKey(before)) return false;
-        const paths: string[] = [];
+        if (!after || stampKey(after) !== stampKey(prep.before)) return false;
+        // Untracked (a nested repository's folder ends in a slash).
+        const paths = others.out.toString("utf-8").split("\0").filter(Boolean).map((p) => p.replace(/\/$/, ""));
         const dirty = new Set<string>();
         for (const record of status.out.toString("utf-8").split("\0")) {
             if (!record) continue;
-            // Untracked (a nested repository's folder ends in a slash).
-            if (record.startsWith("? ")) paths.push(record.slice(2).replace(/\/$/, ""));
-            else if (record.startsWith("1 ")) {
+            if (record.startsWith("1 ")) {
                 // "1 XY sub mH mI mW hH hI path": only what differs on disk from the index (Y); staged alone, the index's tree has it.
                 const fields = record.split(" ");
                 if (fields.length < 9 || fields[1]!.length !== 2) return false;
@@ -1696,23 +1807,17 @@ export class TurnSnapshots {
             } else return false;
         }
         if (paths.length > NARROW_MAX_PATHS) return false;
-        if (!treesFound.has(scan.cacheRoot)) {
-            const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: `${scan.cacheRoot}\n`, privateEnv: this.readEnv(), deadline });
-            if (check.code || check.cut || check.out.toString().trim() !== "tree") return false;
-            if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
-            treesFound.add(scan.cacheRoot);
-        }
-        const base: NonNullable<typeof this.indexedBase> = {
+        const base: NonNullable<TurnSnapshots["indexedBase"]> = {
             watch: w,
             gen,
-            indexStamp: stampKey(before),
-            contentKey: scan.contentKey,
-            cacheRoot: scan.cacheRoot,
-            ignoreKey: ignoreKeyOf(root, indexPath),
-            attributes: scan.attributes ?? [],
+            indexStamp: stampKey(prep.before),
+            contentKey: index.contentKey,
+            cacheRoot: index.cacheRoot,
+            ignoreKey: prep.ignoreKey,
+            attributes: index.attributes,
             differs: new Map(),
             gone: new Set(),
-            tree: scan.cacheRoot,
+            tree: index.cacheRoot,
             skipped: pathMap(),
             narrowed: 0,
             fullAt: Date.now(),
@@ -1724,7 +1829,7 @@ export class TurnSnapshots {
         this.folders = undefined;
         this.scan = undefined;
         this.index = undefined;
-        this.lastTree = scan.cacheRoot;
+        this.lastTree = index.cacheRoot;
         if (await this.captureNarrowed(result, read, indexPath, deadline, inTime, ending, { paths, gen, dirty })) {
             Object.assign(base, { narrowed: 0, fullMs: Date.now() - started });
             this.statusCount++;
@@ -2130,26 +2235,34 @@ export class TurnSnapshots {
                 this.watchTried = Date.now();
                 this.watch = acquireWatch(this.root, where.index ? dirname(where.index) : undefined);
             }
-            // Started on its worker (it walks every folder): what's read from here is what later captures go on from,
-            // so a change can't come before it's watched. A first capture runs on past the turn's budget anyway.
-            if (this.watch && !this.watch.healthy && !this.watch.broken) await settlesBy(this.watch.ready, deadline);
+            this.algo = where.algo;
+            // Started on its worker (it walks every folder): the folder's files are read from when it's up, so a change
+            // can't come before it's watched. A first capture runs on past the turn's budget anyway. Meanwhile, what
+            // Git's own files say: the repository's other worktrees in its folder (places of their own, turn-places.ts,
+            // not contents left out), this session's store, and what a capture from `git status` needs first.
+            const watching = this.watch && !this.watch.broken && (!this.watch.healthy || this.options.holdWatch) ? settlesBy(Promise.all([this.watch.ready, this.options.holdWatch]), deadline) : undefined;
+            const prepared = where.index && !this.indexedBase && this.watch && !this.watch.broken ? this.statusPrep(where.index, deadline) : undefined;
+            prepared?.catch(() => {});
+            const [listed] = await Promise.all([
+                worktreeListOf(this.root).get(this.root, deadline),
+                (async () => {
+                    this.ensure();
+                    await this.measureStore(inTime);
+                })(),
+                watching,
+            ]);
             genAtStart = this.watch?.healthy ? this.watch.gen : undefined;
             result.root = this.root;
-            // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
-            const listed = await worktreeListOf(this.root).get(this.root, deadline);
             this.worktreesListed = listed !== undefined;
             this.worktrees = listed ? nearby(listed, this.root) : [];
             this.nested = insideRoot(this.worktrees, this.root);
-            this.algo = where.algo;
-            this.ensure();
-            await this.measureStore(inTime);
             // Only what the folder's watch saw change since the last capture from Git's index, where that's enough.
             if (where.index && (await this.captureNarrowed(result, read, where.index, deadline, inTime, ending))) {
                 narrowed = true;
                 return result;
             }
             // Else from what `git status` says differs, where it can say: the first capture, and a refresh.
-            if (where.index && (await this.captureFromStatus(result, read, where.index, deadline, inTime, ending))) {
+            if (where.index && (await this.captureFromStatus(result, read, where.index, deadline, inTime, ending, prepared))) {
                 narrowed = true;
                 return result;
             }

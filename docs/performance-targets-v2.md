@@ -174,7 +174,7 @@ performance-plan.md, from builds before this work). "Out of reach" only once a m
 | E. Memory: no creep | Not measured by footprint | Plan, Mac: by RSS it kept 304 MB after its sessions closed. |
 | E. Soak | Not met | Plan, Mac: keeps 304 MB after its sessions close. |
 | F. Composer ready | Not met warm | Mac perf-bench (f1f0e45): 261–271 ms. Linux, 10,000 in history: 158–181 ms. |
-| F. First snapshot | Not met | Plan, Linux: 0.55 s vs 0.35 s for `git status`. |
+| F. First snapshot | Not met | Plan, Linux: 0.55 s vs 0.35 s for `git status`. Now (f54c909) the first capture is taken from `git status` even with a filter in the user's config (git-lfs): it runs no filter, hook or fsmonitor, and the index is read while the folder's watch starts. Linux, 100,000 files, an lfs filter in the config: 311 -> 158 ms, against about 95 ms for `git status` alone; 50,000 files: 139 ms median. A repository whose index can't be used that way (attributes below its top that store other bytes, something staged since the last commit) is read whole, as before; the first capture in such a repository still runs a `git status` it then throws away (about +14% CPU there, the same wall time), those after don't. |
 | F. @-mention, 1,000,000 files | Met (Linux) | Plan: 1–4 ms median, 35–42 ms worst. |
 | F. Turn changing 10,000 files | Met (Linux) | Plan: 1.4–1.5 s vs 7.4 s for `git add`. |
 | F. File watchers | Nearly | Plan: 0.12 ms of CPU a second. |
