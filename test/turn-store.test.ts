@@ -13,7 +13,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { writeThread } = await import("../scripts/perf-thread");
 const { TurnStore } = await import("../src/server/turn-store");
-const { findSessionAnywhere } = await import("../src/agent/session");
+const { findSessionAnywhere, Session } = await import("../src/agent/session");
 const { turnStoring, turnBuilding, storedFirst } = await import("../src/server/runtime");
 // An open from the store reads only its last turns' heads (the rest as they're asked for): as few as it reads, so that
 // these sessions (60 to 150 turns) have earlier turns left to read.
@@ -593,6 +593,39 @@ test("a session whose store is damaged opens anyway, built from its logs", async
 
 // One of its earlier turns damaged (read only as it's sent: an open sends a session whole here): found as it's sent, the
 // session is let go of and opened again from its logs, at once; its store isn't indexed again over the damage either.
+// Its earlier turns lost to a damaged index, the first prompt the store kept names it; rewound to that prompt and sent
+// another, the new one does.
+test("a session whose earlier turns couldn't be read is named after its first prompt, the one after a rewind to it too", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-first-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const s = Session.create(cwd);
+    s.setModel("mock:mock-opus");
+    for (let i = 0; i < 30; i++) {
+        s.push({ role: "user", content: [{ type: "text", text: `Prompt ${i}` }], meta: { kind: "prompt" } } as never);
+        s.push({ role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: `Reply ${i}` }] } as never);
+    }
+    const id = s.meta.id;
+    await open(id);
+    await close(id);
+    for (let i = 0; i < 200 && !existsSync(storeOf(s.path, id)); i++) await Bun.sleep(10);
+    // The index's first line (its earliest turn) damaged: its end still reads.
+    const fd = openSync(storeOf(s.path, id), "r+");
+    writeSync(fd, Buffer.from("garbage!!"), 0, 9, 0);
+    closeSync(fd);
+    await open(id, { last: 5 });
+    const rt = () => (srv as any).engine.runtimes.get(id);
+    await expect(call("session.rewindTargets", { id })).rejects.toThrow("Couldn't load earlier turns.");
+    expect(rt().firstPrompt()).toBe("Prompt 0");
+    const targets = (await call("session.rewindTargets", { id })).sort((a: any, b: any) => a.index - b.index);
+    expect(targets[0].index).toBe(0);
+    const plan = await call("session.rewindPlan", { id, index: 0 });
+    await call("session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+    await call("session.send", { id, text: "A brand new first prompt" });
+    for (let i = 0; i < 100 && !rt().view.turns.length; i++) await Bun.sleep(10);
+    expect(rt().firstPrompt()).toBe("A brand new first prompt");
+    await close(id);
+}, 120_000);
+
 test("a session whose store has an earlier turn damaged opens whole", async () => {
     const cwd = join(tempDir("cavvy-turn-store-damaged-early-"), "project");
     mkdirSync(cwd, { recursive: true });

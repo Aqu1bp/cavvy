@@ -4987,6 +4987,8 @@ export class Runtime {
     }
 
     private rebuildAll() {
+        // Every turn from the logs: the first prompt is theirs, whatever the store said.
+        this.storedFirst = undefined;
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
