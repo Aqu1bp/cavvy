@@ -424,6 +424,8 @@ export class MarkdownRenderer {
                 const open = exact && tailIndex === tokens.length - 1 && tokens[tailIndex]!.type === "paragraph" && !hasLinks(tokens) && OPEN_LINE.test(text.slice(tailStart, tailStart + 3)) && !/[\r\n]/.test(text.slice(tailStart));
                 const was = append && base?.list?.from === tailStart ? base.list : undefined;
                 const list = streaming && !hasLinks(tokens) ? (openList(text, tokens, tailIndex, tailStart, last, was) ?? openTable(text, tokens, tailIndex, tailStart, last, was)) : undefined;
+                const line = (spliced as { line?: ItemLine } | undefined)?.line;
+                if (list && line && list.at === line.at && list.head === undefined) list.line = line;
                 this.lexed = { text, streaming, tokens, tailIndex, tailStart, ...(open ? { line: { start: tailStart, frozen: tailStart, scan: tailStart, open: [], html: "", inline: [], answers: new Map(), refs: 0, linked: Boolean(lookup), dead: false } } : {}), ...(list ? { list } : {}) };
             }
             // A late reference definition must also invalidate cached HTML.
@@ -509,51 +511,7 @@ export class MarkdownRenderer {
         if (lookup) for (const [p, a] of line.answers) if (lookup(p) !== a) return undefined;
         const next: OpenLine = { ...line, open: [...line.open], answers: new Map(line.answers) };
         if (!next.dead) {
-            // Read up to the last space: a run of markers before it has what follows it.
-            let end = text.length;
-            while (end > next.scan && !/\s/.test(text[end - 1]!)) end--;
-            let freeze = next.frozen;
-            for (let i = next.scan; i < end; ) {
-                const c = text[i]!;
-                if (REACHES.test(c)) {
-                    next.dead = true;
-                    break;
-                }
-                if (c === "`") {
-                    let j = i;
-                    while (text[j] === "`") j++;
-                    const run = j - i;
-                    // Its end: the next run of exactly as many (marked's code span), before the last space.
-                    let close = -1;
-                    for (let k = j; k < end; ) {
-                        if (text[k] !== "`") { k++; continue; }
-                        let m = k;
-                        while (text[m] === "`") m++;
-                        if (m - k === run) { close = m; break; }
-                        k = m;
-                    }
-                    if (close < 0 || close > end) break;
-                    i = close;
-                    next.scan = i;
-                    continue;
-                }
-                if (c === "*" || c === "_") {
-                    let j = i;
-                    while (text[j] === c) j++;
-                    const run = text.slice(i, j);
-                    const before = text[i - 1] ?? " ";
-                    const after = text[j] ?? " ";
-                    i = j;
-                    next.scan = i;
-                    if (c === "_" && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after)) continue;
-                    if (next.open.at(-1) === run && !/\s/.test(before)) next.open.pop();
-                    else if (!/\s/.test(after)) next.open.push(run);
-                    continue;
-                }
-                i++;
-                next.scan = i;
-                if (/\s/.test(c) && !next.open.length) freeze = i;
-            }
+            const freeze = freezePoint(next, text);
             const piece = text.slice(next.frozen, freeze);
             // settle() closes what it reads as open over the whole line: none of it may be open after this piece either.
             if (piece && openMarkers(piece).length) next.dead = true;
@@ -632,6 +590,60 @@ export class MarkdownRenderer {
 }
 
 /**
+ * Reads a line being written (`text`) on from `next.scan` to its last space: where what's before it renders the same
+ * whatever follows (returned), with what's open there and how far it's read moved on in `next`. Nothing past a
+ * character that can reach back over what follows is frozen (`dead`).
+ */
+function freezePoint(next: { frozen: number; scan: number; open: string[]; dead: boolean }, text: string): number {
+    // Read up to the last space: a run of markers before it has what follows it.
+    let end = text.length;
+    while (end > next.scan && !/\s/.test(text[end - 1]!)) end--;
+    let freeze = next.frozen;
+    for (let i = next.scan; i < end; ) {
+        const c = text[i]!;
+        if (REACHES.test(c)) {
+            next.dead = true;
+            break;
+        }
+        if (c === "`") {
+            let j = i;
+            while (text[j] === "`") j++;
+            const run = j - i;
+            // Its end: the next run of exactly as many (marked's code span), before the last space.
+            let close = -1;
+            for (let k = j; k < end; ) {
+                if (text[k] !== "`") { k++; continue; }
+                let m = k;
+                while (text[m] === "`") m++;
+                if (m - k === run) { close = m; break; }
+                k = m;
+            }
+            if (close < 0 || close > end) break;
+            i = close;
+            next.scan = i;
+            continue;
+        }
+        if (c === "*" || c === "_") {
+            let j = i;
+            while (text[j] === c) j++;
+            const run = text.slice(i, j);
+            const before = text[i - 1] ?? " ";
+            const after = text[j] ?? " ";
+            i = j;
+            next.scan = i;
+            if (c === "_" && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after)) continue;
+            if (next.open.at(-1) === run && !/\s/.test(before)) next.open.pop();
+            else if (!/\s/.test(after)) next.open.push(run);
+            continue;
+        }
+        i++;
+        next.scan = i;
+        if (/\s/.test(c) && !next.open.length) freeze = i;
+    }
+    return freeze;
+}
+
+/**
  * A reply's last paragraph while it's one line: what of it is rendered for good (`frozen`, as `html`), and how far it's
  * been read for where that can move to (`scan`, with the emphasis still `open` there).
  */
@@ -676,7 +688,22 @@ interface OpenList {
     scan: Scan;
     /** A table's instead: its header and delimiter rows, lexed with its last row (`at`) and what follows. */
     head?: string;
+    /** Its last item while that's one line of text: lexed a piece at a time (itemLine). */
+    line?: ItemLine;
 }
+
+/** A list's last item while it's one line of text: its marker's end (`body`), and its text lexed for good so far. */
+interface ItemLine {
+    at: number;
+    body: number;
+    frozen: number;
+    scan: number;
+    open: string[];
+    inline: Token[];
+    dead: boolean;
+}
+/** An item's line: its marker and the spaces after it (up to four: more and its text is indented code). */
+const ITEM_MARKER = /^(?:[-*+]|\d{1,9}[.)]) {1,4}(?! )/;
 /** A fence settle() reads as open; `within`: opened in a list item, it ends with the item, at a line indented less. */
 type Fence = { char: string; len: number; within?: number };
 /** What settle() reads line by line: the fence open, and the columns the text of the list items it's in starts at. */
@@ -798,11 +825,13 @@ const ANY_LINE = /\n.*\n/;
  * The tail of `previous` with `text` appended, its list's last item lexed again (OpenList) and the earlier ones as
  * they were: the same tokens the tail lexed whole would be. Undefined where they mightn't be: lexed whole.
  */
-function listTail(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string): { source: string; tail: Token[] & { links?: unknown } } | undefined {
+function listTail(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string): { source: string; tail: Token[] & { links?: unknown }; line?: ItemLine } | undefined {
     const mark = previous.list;
     if (!mark || mark.at === Infinity || mark.from !== previous.tailStart) return undefined;
     const prior = previous.tokens[mark.index] as Tokens.List;
     const settled = settle(text.slice(mark.at));
+    const fast = itemLine(previous, mark, prior, text, settled);
+    if (fast) return fast;
     const lexed = lexOnce(settled);
     const head = lexed[0] as Tokens.List | undefined;
     if (head?.type !== "list" || head.ordered !== prior.ordered || hasLinks(lexed)) return undefined;
@@ -821,7 +850,51 @@ function listTail(previous: NonNullable<MarkdownRenderer["lexed"]>, text: string
     }
     const list: Tokens.List = { ...head, loose, start: prior.start, raw: text.slice(mark.start, mark.at) + head.raw, items: [...items, ...head.items] };
     const tail = Object.assign([...previous.tokens.slice(previous.tailIndex, mark.index), list, ...lexed.slice(1)], { links: lexed.links });
-    return { source: text.slice(previous.tailStart, mark.at) + settled, tail };
+    // Its last item one line of text: from now, lexed a piece at a time as it grows (itemLine).
+    const item = head.items.length === 1 ? head.items[0]! : undefined;
+    const marker = ITEM_MARKER.exec(settled)?.[0];
+    const plain = item && marker && !loose && !item.task && item.tokens.length === 1 && item.tokens[0]!.type === "text" && !/[\n\r\t]/.test(settled) && OPEN_LINE.test(settled.slice(marker.length)) && item.text === settled.slice(marker.length).trimEnd();
+    const body = mark.at + (marker?.length ?? 0);
+    return { source: text.slice(previous.tailStart, mark.at) + settled, tail, ...(plain ? { line: { at: mark.at, body, frozen: body, scan: body, open: [], inline: [], dead: false } } : {}) };
+}
+
+/**
+ * The tail of `previous` with `text` appended, where its list's last item was one line of text and still is: that
+ * item's text lexed as a paragraph's last line is (appendLine), what of it nothing written after can change lexed once
+ * (freezePoint), and the item made as marked makes one, from one of a single character with the same marker and the
+ * same spaces after (how they're trimmed is marked's). Undefined: lexed as usual.
+ */
+function itemLine(previous: NonNullable<MarkdownRenderer["lexed"]>, mark: OpenList, prior: Tokens.List, text: string, settled: string): { source: string; tail: Token[] & { links?: unknown }; line: ItemLine } | undefined {
+    const was = mark.line;
+    if (!was || was.at !== mark.at || !previous.streaming || !text.startsWith(previous.text) || /[\n\r\t]/.test(settled)) return undefined;
+    const marker = settled.slice(0, was.body - was.at);
+    const body = settled.slice(marker.length);
+    const trimmed = body.trimEnd();
+    if (ITEM_MARKER.exec(settled)?.[0] !== marker || !OPEN_LINE.test(trimmed)) return undefined;
+    const next: ItemLine = { ...was, open: [...was.open] };
+    const end = was.body + trimmed.length;
+    try {
+        if (!next.dead && text.slice(was.at, end) === settled.slice(0, end - was.at)) {
+            const freeze = freezePoint(next, text.slice(0, end));
+            const piece = text.slice(next.frozen, freeze);
+            if (piece && openMarkers(piece).length) next.dead = true;
+            else if (piece) {
+                next.inline = next.inline.concat(md.Lexer.lexInline(piece, md.defaults));
+                next.frozen = freeze;
+            }
+        }
+        const shapeLexed = lexOnce(`${marker}x${body.slice(trimmed.length)}`);
+        const shape = shapeLexed[0] as Tokens.List | undefined;
+        const one = shape?.type === "list" && shape.items.length === 1 ? shape.items[0]! : undefined;
+        if (!shape || !one || one.raw !== `${marker}x` || one.task || one.loose || shape.loose || prior.loose || shape.ordered !== prior.ordered || hasLinks(shapeLexed)) return undefined;
+        const inline = next.inline.concat(md.Lexer.lexInline(settled.slice(next.frozen - was.at, end - was.at), md.defaults));
+        const item: Tokens.ListItem = { ...one, raw: marker + trimmed, text: trimmed, tokens: [{ type: "text", raw: trimmed, text: trimmed, tokens: inline } as Tokens.Text] };
+        const list: Tokens.List = { ...shape, start: prior.start, raw: text.slice(mark.start, mark.at) + marker + trimmed + shape.raw.slice(marker.length + 1), items: [...prior.items.slice(0, -1), item] };
+        const tail = Object.assign([...previous.tokens.slice(previous.tailIndex, mark.index), list, ...shapeLexed.slice(1)], { links: shapeLexed.links });
+        return { source: text.slice(previous.tailStart, mark.at) + settled, tail, line: next };
+    } catch {
+        return undefined;
+    }
 }
 
 function hasLinks(tokens: { links?: unknown }): boolean {

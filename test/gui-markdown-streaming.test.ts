@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
 import { LAG_MS, lagFor, MAX_LAG_MS, nextGap, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
-import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
+import { Lexer, Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
 const visible = (r: MarkdownRenderer, text: string, streaming = true) => r.segments(text, streaming).map((s) => s.kind === "html" ? { kind: s.kind, html: s.html } : { kind: s.kind, lang: s.lang, code: s.code, open: s.open });
 
@@ -120,6 +120,24 @@ test("code that reads like a link definition, an open code block, and the end of
         expect(stream(blocks)).toBeLessThan(6);
     } finally {
         Marked.prototype.lexer = lexer;
+    }
+});
+
+test("a list's last item, one line of text, is lexed a piece at a time as it's written", () => {
+    // Lexed whole with each chunk (as marked lexes an item), a list of long items was read 3.6 times a character.
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    const lexInline = (Lexer as any).lexInline;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    (Lexer as any).lexInline = (src: string, options: unknown) => { chars += src.length; return lexInline(src, options); };
+    try {
+        const text = "The steps:\n\n" + Array.from({ length: 40 }, (_, i) => `- **Step ${i}**: read \`src/part${i}.ts\` and say what it changes and why, in a sentence that runs to a long line.\n`).join("") + "\nDone.";
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        expect(chars / text.length).toBeLessThan(3);
+    } finally {
+        Marked.prototype.lexer = lexer;
+        (Lexer as any).lexInline = lexInline;
     }
 });
 
