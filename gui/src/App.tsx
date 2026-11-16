@@ -23,10 +23,9 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest, rewindOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { RewindDialog } from "./components/RewindDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { ArchiveDialog } from "./components/ArchiveDialog";
@@ -290,6 +289,7 @@ const mcpModule = () => import("./components/McpDialog");
 const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
 const planModule = () => import("./components/PlanDialogs");
 const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
+const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
 
 export function App() {
@@ -298,7 +298,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog, RewindDialog]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -312,6 +312,7 @@ export function App() {
     // Put in the first time each opens, and kept (to close as it closes).
     const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
     const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
+    const rewindShown = createMemo<boolean>((was) => was || Boolean(rewindOpen()), false);
     const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
@@ -640,7 +641,7 @@ export function App() {
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
             <CommandPalette />
-            <RewindDialog />
+            <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
             <FolderPicker />
             <TrustDialog />
