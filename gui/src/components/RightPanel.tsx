@@ -23,7 +23,6 @@ import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../
 import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
-import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
 import { browserUnseen, loadBrowserState } from "../state/browser";
