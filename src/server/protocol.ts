@@ -2045,7 +2045,8 @@ export interface LoopLag {
     p95: number;
     p99: number;
     max: number;
-    worst: { at: number; ms: number }[];
+    /** `cpuMs`, `waits`, `preempted`: what the process did over that tick (src/server/loop-lag.ts). */
+    worst: { at: number; ms: number; cpuMs?: number; waits?: number; preempted?: number }[];
 }
 
 export interface Methods {

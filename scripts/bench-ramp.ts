@@ -499,7 +499,7 @@ async function step(n: number) {
         endAt = performance.now();
         stat1 = cpuStat();
         const lag = await driver.lag?.().catch(() => undefined);
-        if (lag) rep.serverLagMs = { p50: lag.p50, p95: lag.p95, p99: lag.p99, max: lag.max, ticks: lag.samples, worst: lag.worst.map((w) => ({ secondsIn: r1((w.at / 1000 - launchedEpoch)), ms: w.ms })) };
+        if (lag) rep.serverLagMs = { p50: lag.p50, p95: lag.p95, p99: lag.p99, max: lag.max, ticks: lag.samples, worst: lag.worst.map((w) => ({ secondsIn: r1((w.at / 1000 - launchedEpoch)), ms: w.ms, cpuMs: w.cpuMs, waits: w.waits, preempted: w.preempted })) };
         if (HOLD > 0) {
             // Idle: sessions open, their CLIs alive, nothing asked. Each role's CPU over it, from the samples.
             const from = samples.length, statHeld = cpuStat();
