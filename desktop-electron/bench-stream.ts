@@ -424,6 +424,22 @@ try {
         await streamWhile([[short, "hangforever"]], () => phase("waitingOnScreen", SECONDS));
     }
 
+    // The same with the window visible but another app in front (on a Mac, Finder): what still draws without the focus.
+    if (want("waitingUnfocused") && main) {
+        await show(short);
+        const win = (expression: string) => main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows().find((w) => w.isVisible()); ${expression}; return !!w; })()`, returnByValue: true });
+        await streamWhile([[short, "hangforever"]], async () => {
+            if (MAC) Bun.spawnSync(["open", "-a", "Finder"]);
+            else await win("w?.blur()");
+            await sleep(2000);
+            const focus = await js(`({ page: document.hasFocus(), decorOff: document.documentElement.hasAttribute('data-decor-off'), loopsOff: document.documentElement.hasAttribute('data-loops-off') })`);
+            await phase("waitingUnfocused", SECONDS);
+            report.phases.waitingUnfocused.focus = focus;
+            await win(MAC ? "app.focus({ steal: true }); w?.focus()" : "w?.focus()");
+            await sleep(1000);
+        });
+    }
+
     // Idle, the long session on screen.
     await show(long);
     await sleep(3000);
