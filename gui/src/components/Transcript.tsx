@@ -1356,17 +1356,22 @@ function LaterTurns(p: { count: number; fill: () => Promise<boolean>; root: () =
     let near = false;
     /** Asks the observers where it is now (observing again reports at once): more, if it's still a screen away. */
     let lookAgain = () => {};
-    const go = () => {
+    const go = (clicked?: boolean) => {
         if (busy()) return;
         setBusy(true);
+        const failed = () => {
+            setBusy(false);
+            if (clicked) toast("Couldn't load later turns.");
+        };
         void p.fill().then(
             (ok) => {
+                if (!ok) return failed();
                 setBusy(false);
                 // The page that came may be short of the screen. One that didn't come waits to be read down to again,
                 // or a click: asked again at once, a dropped connection's at-once refusal would never let go.
-                if (ok) lookAgain();
+                lookAgain();
             },
-            () => setBusy(false),
+            failed,
         );
     };
     onMount(() => {
@@ -1398,7 +1403,7 @@ function LaterTurns(p: { count: number; fill: () => Promise<boolean>; root: () =
         });
     });
     return (
-        <button ref={el} class="earlier later" onClick={go} disabled={busy()}>
+        <button ref={el} class="earlier later" onClick={() => go(true)} disabled={busy()}>
             Show {Math.min(40, p.count)} later {p.count === 1 ? "turn" : "turns"}
         </button>
     );

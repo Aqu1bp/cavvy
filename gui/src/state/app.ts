@@ -491,6 +491,9 @@ export function showSending(id: string, text: string): (taken: boolean) => void 
     const h = handles.get(id);
     if (!h) return () => undefined;
     const turnId = `sending-${++sendingIds}`;
+    // One still shown (taken, its turn not here yet) gives way: two at once would leave the first for good.
+    const was = sending.get(id);
+    if (was) dropSending(h, was);
     sending.set(id, turnId);
     h.set(produce((v) => {
         v.turns.push({ id: turnId, status: "running", prompt: { text }, blocks: [], startedAt: Date.now() });
@@ -506,7 +509,7 @@ export function showSending(id: string, text: string): (taken: boolean) => void 
 }
 
 /** How long a message shown as sent waits for its turn after the server took it. */
-const SENDING_WAIT_MS = 3000;
+const SENDING_WAIT_MS = 15_000;
 
 function dropSending(h: SessionHandle, turnId: string) {
     if (sending.get(h.id) !== turnId) return;
@@ -1242,6 +1245,8 @@ let upsertFrame: number | undefined;
 let upsertTimer: ReturnType<typeof setTimeout> | undefined;
 rpc.beforeAnswer = () => upsertsDue.size && upsertsFirst();
 function upsertSoon(s: SessionSummary) {
+    // Back, if it was deleted (an Undo): at once, as what's asked of it next goes by that.
+    sessionPresent(s.id);
     upsertsDue.delete(s.id);
     upsertsDue.set(s.id, s);
     if (upsertTimer !== undefined) return;
