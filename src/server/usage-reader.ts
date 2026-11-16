@@ -6,7 +6,8 @@ import { listAccounts } from "../providers/accounts";
 import type { Usage } from "../providers/types";
 import { UsageJson } from "./usage-json";
 
-export const usageBounds = { maxFiles: 5000, maxBytes: 512 * 1024 * 1024, maxMs: 4000 };
+/** Per scan (maxMs, maxBytes: a paused scan resumes on the next); `totalMs`: how long a summary keeps scanning. */
+export const usageBounds = { maxFiles: 5000, maxBytes: 512 * 1024 * 1024, maxMs: 4000, totalMs: 120_000 };
 export type Source = "claude-code" | "codex" | "api";
 export interface UsageRecord {
     at: number; approx: boolean; model: string; usage: Usage; cost: number; unknown: boolean;
@@ -90,6 +91,8 @@ function parse(l: any, f: File, s: State): UsageRecord | undefined {
         cost = n(l.cost); unknown = l.unknown === true;
     } else if (f.source === "claude-code") {
         if (l.type !== "assistant" || !l.message?.usage || !str(l.message.model)) return;
+        // Claude Code's own notes (an API error, a limit reached, "No response requested."): no model, no tokens.
+        if (l.message.model === "<synthetic>") return;
         const u = l.message.usage;
         model = `claude-code:${str(l.message.model)}`;
         s.session = str(l.sessionId) || s.session;
@@ -215,10 +218,13 @@ export function scanUsage(since = 0) {
 }
 async function scan(since: number) {
     const start = Date.now();
-    let bytes = 0, truncated: string | undefined;
+    // `paused`: stopped by this scan's time or bytes, so the next one goes on. `capped`: by the file count, so it won't.
+    // `note`: what's left out whatever the next scan does.
+    let bytes = 0, truncated: string | undefined, note: string | undefined, paused = false, capped = false;
+    const lasting = (why: string) => { note ??= why; truncated ??= why; };
     const spent = () => {
-        if (Date.now() - start > usageBounds.maxMs) return truncated ??= "Reading the sessions took too long; earlier ones are left out.";
-        if (bytes >= usageBounds.maxBytes) return truncated ??= "There was too much to read; earlier sessions are left out.";
+        if (Date.now() - start > usageBounds.maxMs) { paused = true; return truncated ??= "Reading the sessions took too long; earlier ones are left out."; }
+        if (bytes >= usageBounds.maxBytes) { paused = true; return truncated ??= "There was too much to read; earlier sessions are left out."; }
     };
     const roots = [{ root: paths.projectsDir(), source: "api" as Source, account: "default" }, ...(["claude-code", "codex"] as const).flatMap(source => listAccounts(source).filter(a => !a.invalid).flatMap(a => (source === "codex" ? ["sessions", "archived_sessions"] : ["projects"]).map(sub => ({ root: join(a.folder, sub), source, account: a.id }))))];
     const key = JSON.stringify(roots);
@@ -228,28 +234,30 @@ async function scan(since: number) {
         discovery = { key, since, walker: discover(roots), files: new Map(), missing: new Set(cache.keys()), done: false };
     }
     const fresh = new Set<string>();
+    let walked = 0, consumed = 0;
     // Reserve half the time for reading. A paused iterator resumes next refresh.
     while (!discovery.done && Date.now() - start <= usageBounds.maxMs / 2) {
         const next = await discovery.walker.next();
         if (next.done) { discovery.done = true; break; }
+        walked++;
         const f = next.value;
-        if (typeof f === "string") truncated ??= f;
+        if (typeof f === "string") lasting(f);
         else if (f) {
             discovery.missing.delete(f.file);
             fresh.add(f.file);
             // Old history must not consume the current range's file budget.
             if (f.mtimeMs >= since) discovery.files.set(f.file, f);
         }
-        if (discovery.files.size > usageBounds.maxFiles) { truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`; break; }
+        if (discovery.files.size > usageBounds.maxFiles) { capped = true; lasting(`Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`); break; }
     }
-    if (!discovery.done) truncated ??= "Reading the sessions took too long; earlier ones are left out.";
+    if (!discovery.done) { paused = true; truncated ??= "Reading the sessions took too long; earlier ones are left out."; }
     else for (const file of discovery.missing) cache.delete(file);
     // Read pending discoveries first, using metadata already obtained this
     // refresh. Then rotate through cached files in LRU order. Stat and read each
     // file together so a slow metadata pass cannot starve all transcript reads.
     const files = [...discovery.files.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
     for (const [path, entry] of cache) if (entry.file.mtimeMs >= since && !discovery.files.has(path)) files.push(entry.file);
-    if (files.length > usageBounds.maxFiles) truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`;
+    if (files.length > usageBounds.maxFiles) { capped = true; lasting(`Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`); }
     // Files not known to be read to their end this refresh. Cavvy's session files go first: they say which account
     // ran each CLI thread (attribute()), so a transcript isn't read ahead of the record of who ran it.
     const unread = new Set(files.map(f => f.file));
@@ -270,7 +278,7 @@ async function scan(since: number) {
                     let resume = !!entry && f.size > entry.file.size && f.ino === entry.file.ino && f.dev === entry.file.dev;
                     if (resume && entry!.guard.length) {
                         if (usageBounds.maxBytes - bytes < entry!.guard.length) {
-                            truncated ??= "There was too much to read; earlier sessions are left out.";
+                            paused = true; truncated ??= "There was too much to read; earlier sessions are left out.";
                             break;
                         }
                         const guard = Buffer.alloc(entry!.guard.length);
@@ -307,7 +315,7 @@ async function scan(since: number) {
                             }
                             parser = new UsageJson();
                             const end = nl + 1;
-                            entry.offset = pos + end;
+                            entry.offset = pos + end; consumed++;
                             const guard = end >= 64 ? chunk.subarray(end - 64, end) : Buffer.concat([tail, chunk.subarray(0, end)]).subarray(-64);
                             entry.guard = { digest: digest(guard), length: guard.length };
                             from = end;
@@ -326,13 +334,16 @@ async function scan(since: number) {
             discovery.files.delete(f.file);
         } catch (e: any) {
             if (e.code === "ENOENT") { cache.delete(f.file); discovery.files.delete(f.file); }
-            else truncated ??= "Some transcript files or folders could not be read.";
+            else lasting("Some transcript files or folders could not be read.");
         }
     }
     // Unprocessed cached entries remain useful even after either budget expires.
     while (discovery.files.size > Math.max(0, usageBounds.maxFiles)) discovery.files.delete(discovery.files.keys().next().value!);
+    // Another scan goes on only from where this one got to: one that finished no line and walked nothing (a line
+    // longer than a scan's bytes, say) would do the same again.
+    const more = paused && !capped && (consumed > 0 || (walked > 0 && !discovery.done));
     if (discovery.done && !discovery.files.size) discovery = undefined;
-    return { files: attribute(since, unread), truncated, bytesRead: bytes };
+    return { files: attribute(since, unread), truncated, note, more, bytesRead: bytes };
 }
 /**
  * The cached files' records by account. `scope`: the account whose folder the file was read from, the same for every

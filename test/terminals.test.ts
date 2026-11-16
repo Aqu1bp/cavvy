@@ -11,6 +11,8 @@ import type { ServerEvent } from "../src/server/protocol";
 // (bash on macOS, dash on Ubuntu): dash has job control, and so Ctrl-C and resizes reach the
 // foreground job, only when the PTY is its controlling terminal, where bash would hide its absence.
 const SHELL = "/bin/dash";
+/** dash's prompt: it's reading. */
+const PROMPT = process.getuid?.() === 0 ? "# " : "$ ";
 const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
 beforeAll(() => {
     process.env.SHELL = SHELL;
@@ -150,7 +152,7 @@ describe("embedded terminals", () => {
             shells.open(owner, "early-ctrl-c", iso.home, 80, 24);
             shells.write(owner, "early-ctrl-c", "\x03");
             // dash's prompt. Then a pause before typing: in CI on Linux, a line sent in the same write as the Ctrl-C never ran.
-            await until(() => owner.output().endsWith("$ "));
+            await until(() => owner.output().endsWith(PROMPT));
             await Bun.sleep(300);
             expect(owner.events.some((e) => e.type === "terminal.exit")).toBe(false);
             shells.write(owner, "early-ctrl-c", "printf '__%s__\\n' alive\n");

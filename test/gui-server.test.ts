@@ -805,10 +805,18 @@ describe("connecting", () => {
                 const alive = () => {
                     try {
                         process.kill(pid, 0);
-                        return true;
                     } catch (e) {
                         if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
                         throw e;
+                    }
+                    // Killed after git, the hook is an orphan: until its new parent reaps it, it's a zombie that has
+                    // stopped all the same. A container's init may never reap it.
+                    if (!existsSync("/proc/self/stat")) return true;
+                    try {
+                        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+                        return stat[stat.lastIndexOf(")") + 2] !== "Z";
+                    } catch {
+                        return false;
                     }
                 };
                 for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
@@ -3576,10 +3584,10 @@ describe("reopening a Claude Code session", () => {
 
 /**
  * The shell the terminal tests run: named, not /bin/sh (bash on macOS, dash on Ubuntu), so they
- * run the same everywhere. Its prompt, "$ ", says it's reading.
+ * run the same everywhere. Its prompt, "$ " ("# " as root), says it's reading.
  */
 const TEST_SHELL = "/bin/dash";
-const PROMPT = /\$ $/;
+const PROMPT = process.getuid?.() === 0 ? /# $/ : /\$ $/;
 /** Closes every terminal the window has, from a connection of its own, even ones another connection has. */
 async function closeWindowTerminals(window: string) {
     const sweep = await client(window);
