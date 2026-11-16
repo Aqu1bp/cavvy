@@ -576,15 +576,19 @@ export class MarkdownRenderer {
         const answers = new Map(next.answers);
         let html: string;
         ctx = lookup && { lookup, answers, refs: next.refs, inLink: false };
+        let inline: Token[];
         try {
-            html = `<p>${next.html}${md.parseInline(live) as string}</p>\n`;
+            const tail = md.Lexer.lexInline(live, md.defaults);
+            html = `<p>${next.html}${md.Parser.parseInline(tail, md.defaults)}</p>\n`;
+            inline = next.inline.concat(tail);
         } catch {
             return undefined;
         } finally {
             ctx = undefined;
         }
         const raw = text.slice(next.start, next.frozen) + live;
-        const token = { type: "paragraph", raw, text: raw, tokens: [] } as unknown as Token;
+        // Its words as rendered: rendered again from them when an answer changes (a path found to be a file).
+        const token = { type: "paragraph", raw, text: raw, tokens: inline } as Tokens.Paragraph;
         const tokens = Object.assign([...previous.tokens.slice(0, previous.tailIndex), token], { links: previous.tokens.links });
         this.ready = { token, html, answers: [...answers] };
         this.lexed = { text, streaming, tokens, tailIndex: previous.tailIndex, tailStart: previous.tailStart, line: next };
