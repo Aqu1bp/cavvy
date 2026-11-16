@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { app, handleFor, reportError, rpc, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -466,11 +466,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
+        // A plain message to a session that isn't working: on screen at once, the box cleared, as its turn will be; put
+        // back if the send fails.
+        const quick = !picks && sessionId && !busy() && !atts.length && !sentComments.length && !message.trimStart().startsWith("/") && !shell() ? showSending(sessionId, message) : undefined;
+        if (quick) sent();
         const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
             // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
             if (sentComments.length) reviewComments.removeSent(id, sentComments);
         } });
+        if (quick) {
+            // Answered: its turn came with the answer (it's in its place now), or none will (it went in a queue).
+            quick();
+            if (!ok) draft.putBack(submitted);
+        }
         if (ok) {
             if (picks) {
                 composerStorage.remember(submitted.key, t);

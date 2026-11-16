@@ -478,11 +478,47 @@ function trim(opened: string) {
     }
 }
 
+/**
+ * A message shown as sent before the server has it (showSending): its turn, by session, until the server's own comes.
+ * Shown only once the server's turn came, the prompt was on screen a round trip after Enter (13-16 ms here; a remote
+ * link's round trip there).
+ */
+const sending = new Map<string, string>();
+let sendingIds = 0;
+
+/** `text`, sent to session `id` that isn't working, shown at once as its turn: undone by what's returned. */
+export function showSending(id: string, text: string): () => void {
+    const h = handles.get(id);
+    if (!h) return () => undefined;
+    const turnId = `sending-${++sendingIds}`;
+    sending.set(id, turnId);
+    h.set(produce((v) => {
+        v.turns.push({ id: turnId, status: "running", prompt: { text }, blocks: [], startedAt: Date.now() });
+    }));
+    // Answered: what came before the answer (its turn, as a rule) is applied first, so no frame has neither.
+    return () => {
+        if (h.queue.length) flush(h);
+        dropSending(h, turnId);
+    };
+}
+
+function dropSending(h: SessionHandle, turnId: string) {
+    if (sending.get(h.id) !== turnId) return;
+    sending.delete(h.id);
+    h.set(produce((v) => {
+        const i = v.turns.findIndex((t) => t.id === turnId);
+        if (i >= 0) v.turns.splice(i, 1);
+    }));
+}
+
 function flush(h: SessionHandle) {
     h.scheduled = false;
     if (!h.queue.length) return;
     const ops = h.queue;
     h.queue = [];
+    // The server's turn for a message shown as sent takes its place, in the same update.
+    const shown = sending.get(h.id);
+    if (shown && ops.some((op) => op.op === "turn" || op.op === "reset")) batch(() => dropSending(h, shown));
     batch(() =>
         h.set(
             produce((v) => {
