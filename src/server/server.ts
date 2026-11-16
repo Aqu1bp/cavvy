@@ -73,11 +73,13 @@ const SUBPROTOCOL = "cavvy.v1";
 const CODE_TTL_MS = 120_000;
 /**
  * How long a window on another machine's streamed text is held to go with what follows, and how much of it goes as soon
- * as it's there (ws-send.ts streamCoalescer): 1.2 bytes a character needs about 70 a message over an ssh tunnel. The
- * window shows a stream that comes in bursts at an even pace (lib/reveal.ts), this far behind.
+ * as it's there (ws-send.ts streamCoalescer). Over an ssh tunnel a message costs about 62 bytes whatever it holds (its
+ * frame, the ssh packet, the TCP acknowledgement back), and the text about 0.64 a character compressed (a Mac, through
+ * a VPS's tunnel): 1.2 bytes a character at 600 characters a second needs a message about every 190 ms. The window
+ * shows a stream that comes in bursts at an even pace, as far behind as they're apart (lib/reveal.ts MAX_LAG_MS 300).
  */
-const STREAM_HOLD_MS = 150;
-const STREAM_HOLD_CHARS = 80;
+const STREAM_HOLD_MS = 250;
+const STREAM_HOLD_CHARS = 2000;
 
 const TYPES: Record<string, string> = {
     ".html": "text/html; charset=utf-8",

@@ -96,6 +96,6 @@ test.skipIf(process.platform !== "linux")("a slow stream goes to another machine
     const local = await streamed("127.0.0.1", "perfreply 3000 20 33");
     expect(remote.text).toBe(local.text);
     expect(remote.chars).toBeGreaterThan(2500);
-    expect(remote.chars / remote.messages).toBeGreaterThanOrEqual(60);
+    expect(remote.chars / remote.messages).toBeGreaterThanOrEqual(120);
     expect(local.chars / local.messages).toBeLessThan(30);
 }, 30_000);
