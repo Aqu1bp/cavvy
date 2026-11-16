@@ -541,8 +541,11 @@ function schedule(h: SessionHandle) {
     if (h.scheduled) return;
     h.scheduled = true;
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
-    if (document.visibilityState === "visible") onStep(() => flush(h));
-    else setTimeout(() => flush(h), 200);
+    if (document.visibilityState !== "visible") setTimeout(() => flush(h), 200);
+    // On screen: in step with the frames. Not on screen: at once, asking for no frame (10 streaming out of sight drew
+    // 20 frames a second that showed nothing).
+    else if (h.id === app.activeId || onScreen.beside().includes(h.id)) onStep(() => flush(h));
+    else setTimeout(() => flush(h), 0);
 }
 
 /** At the next frame, with whatever came before it (in order). */
