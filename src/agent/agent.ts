@@ -26,7 +26,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf, assistantText } from "../providers/types";
-import { desktopEnabled, type Effort, type Settings } from "../config/settings";
+import type { Effort, Settings } from "../config/settings";
 import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
@@ -79,6 +79,7 @@ import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBr
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { DesktopSession } from "../desktop/session";
 import { desktopGuardWanted } from "../backends/claude-helper-guard";
+import { codexFallsBack } from "../backends/codex-computer-use";
 import { DESKTOP_INSTRUCTIONS, DesktopControlTool, desktopServerTools, nativeDesktopCall, servedDesktopName } from "../tools/desktop-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
@@ -1702,8 +1703,9 @@ export class Agent {
             desktopGuard: (this.model.provider === "claude-code" || this.model.provider === "codex") && desktopGuardWanted(s),
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
-            // Codex's own computer use goes with Cavvy's Mac apps setting (src/backends/codex-computer-use.ts).
-            ...(desktopEnabled(s) ? { desktop: true } : {}),
+            // Codex's own computer use goes with Cavvy's Mac apps setting, or Cavvy's tools once the session has fallen
+            // back to them (src/backends/codex-computer-use.ts).
+            ...(this.model.provider === "codex" && offered(DesktopControlTool, s) ? { desktop: true, orchestratorNow: () => this.orchestrator() } : {}),
             agents: this.nativeAgents(trusted),
             signal,
             sessionKey: this.session.meta.id,
@@ -1762,9 +1764,9 @@ export class Agent {
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to both, on a Mac with Xcode.
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
-        // The user's Mac apps, once the user has turned them on: for Claude Code, which has no computer use of its own
-        // (Codex has, and never gets these).
-        const desktop = caller === "claude-code" && offered(DesktopControlTool, this.o.settings());
+        // The user's Mac apps, once the user has turned them on: for Claude Code, which has no computer use of its own,
+        // and for a Codex session that fell back from its own (src/backends/codex-computer-use.ts).
+        const desktop = offered(DesktopControlTool, this.o.settings()) && (caller === "claude-code" || (caller === "codex" && codexFallsBack(this.session.meta.id, this.session.accountId(caller)) !== undefined));
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).

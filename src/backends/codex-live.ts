@@ -391,6 +391,8 @@ export class CodexLiveConnection extends CodexTurn {
         if (typeof overrides === "string") throw new Error(overrides);
         // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
         const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
+        // Fallen back to Cavvy's Mac app tools (it isn't set up here): its server serves them from the start.
+        orch = this.withDesktopTools(t, orch);
         if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
             this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way in this session${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
             this.nativeHooks = false;

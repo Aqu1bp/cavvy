@@ -1,7 +1,12 @@
 // Codex's own computer use, as the ChatGPT app sets it up in Codex's home (its unified-computer-use plugin): left on
-// for a Codex thread when desktop.enabled is on, turned off otherwise (whatever the person's Codex config says); its
-// per-app approvals go to the person; its calls show as using the app. Cavvy starts nothing of the app's itself.
+// for a Codex thread when desktop.enabled is on and it's set up there, turned off otherwise (whatever the person's
+// Codex config says); its per-app approvals go to the person; its calls show as using the app. Cavvy starts nothing
+// of the app's itself. Where it isn't set up, or fails to start, the session falls back to Cavvy's own Mac app tools
+// (served over Cavvy's MCP server, as to Claude Code) for good: one way per session, never both.
 
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { NEVER_OFFERED, neverOffered, type NeverReason } from "../desktop/apps";
 
 /**
@@ -30,6 +35,92 @@ export function computerUseSetUp(effective: unknown, turnedOff?: ThreadConfig): 
     return on && !off;
 }
 
+/**
+ * The ChatGPT app's computer-use service, which its plugin reaches under the HOME Codex runs with (not CODEX_HOME):
+ * measured with ChatGPT 26.1106 and Codex 0.169, it serves a Codex Cavvy starts only with the person's own HOME.
+ */
+export function computerUseServiceApp(home = process.env.HOME || homedir()): string {
+    return join(home, ".codex", "computer-use", "Codex Computer Use.app");
+}
+
+/**
+ * What can be known of it before Codex starts: on the default account (the app sets it up for the person's own Codex;
+ * what it would do under another account's CODEX_HOME is unchecked), with its service there.
+ */
+function computerUsePossible(accountId: string | undefined): boolean {
+    return (accountId ?? "default") === "default" && serviceThere();
+}
+
+/** Where tests have the service (none: it isn't there). Tests never look in the person's own HOME. */
+let testServiceApp: string | undefined;
+export function setComputerUseServiceApp(path: string | undefined): void {
+    testServiceApp = path;
+}
+function serviceThere(): boolean {
+    if (process.env.CAVVY_TEST === "1") return testServiceApp !== undefined && existsSync(testServiceApp);
+    return existsSync(computerUseServiceApp());
+}
+
+/**
+ * Whether a Codex thread can use the ChatGPT app's computer use: computerUsePossible, and set up in its Codex home
+ * (computerUseSetUp, from Codex's own config/read). Otherwise the session falls back to Cavvy's Mac app tools.
+ */
+export function computerUseReady(effective: unknown, turnedOff: ThreadConfig | undefined, accountId: string | undefined): boolean {
+    return computerUsePossible(accountId) && computerUseSetUp(effective, turnedOff);
+}
+
+/** Why a session's Codex uses Cavvy's Mac app tools: its own computer use isn't set up for it, or failed to start. */
+export type DesktopFallback = "setup" | "failed";
+
+/** The Cavvy sessions whose Codex fell back to Cavvy's Mac app tools, for the rest of the session (until Cavvy quits). */
+const fellBack = new Map<string, { why: DesktopFallback; said?: boolean }>();
+
+/** Whether, and why, a session's Codex uses Cavvy's Mac app tools in place of its own computer use. */
+export function codexDesktopFallback(sessionKey: string | undefined): DesktopFallback | undefined {
+    return sessionKey === undefined ? undefined : fellBack.get(sessionKey)?.why;
+}
+
+/**
+ * codexDesktopFallback before a turn, with Mac apps on: a session that can't have its own computer use
+ * (computerUsePossible) falls back now, so its first app-server already serves Cavvy's tools. One that isn't set up
+ * in Codex's config falls back as its thread opens (Codex's computerUseConfig).
+ */
+export function codexFallsBack(sessionKey: string, accountId: string | undefined): DesktopFallback | undefined {
+    const now = codexDesktopFallback(sessionKey);
+    if (now || computerUsePossible(accountId)) return now;
+    fellBack.set(sessionKey, { why: "setup" });
+    return "setup";
+}
+
+/** The session falls back to Cavvy's Mac app tools, for good (the first reason stays). */
+export function fallBackToCavvyTools(sessionKey: string, why: DesktopFallback): void {
+    if (!fellBack.has(sessionKey)) fellBack.set(sessionKey, { why });
+}
+
+/** Whether the session's line saying it fell back is still to be shown: true once. */
+export function fallbackToSay(sessionKey: string): boolean {
+    const f = fellBack.get(sessionKey);
+    if (!f || f.said) return false;
+    f.said = true;
+    return true;
+}
+
+/** For tests: sessions start over. */
+export function resetDesktopFallbacks(): void {
+    fellBack.clear();
+}
+
+/**
+ * Whether a computer-use call's error says its service couldn't be started: its first line, "… native pipe startup
+ * failed", as a `js` call ends when the service doesn't serve this Codex (measured with ChatGPT 26.1106 and Codex
+ * 0.169, a HOME other than the person's). Not an app the person declined ("… was not approved to use …"), nor the
+ * model's code failing: those are ordinary errors the model sees.
+ */
+export function computerUseStartFailed(text: string): boolean {
+    const first = text.trimStart().split("\n", 1)[0] ?? "";
+    return /\bnative pipe startup failed\b/i.test(first);
+}
+
 /** What Codex is told about apps by bundle id: every one never offered is denied. */
 export function deniedBundleIds(): Record<string, "deny"> {
     return Object.fromEntries(NEVER_OFFERED.map((a) => [a.bundleId, "deny" as const]));
@@ -53,6 +144,12 @@ export function computerUseOffConfig(effective: unknown): ThreadConfig {
     const serversOff = CODEX_CU_SERVERS.filter((n) => Object.hasOwn(servers, n));
     const off = (names: readonly string[]) => Object.fromEntries(names.map((n) => [n, { enabled: false as const }]));
     return { ...(pluginsOff.length ? { plugins: off(pluginsOff) } : {}), ...(serversOff.length ? { mcp_servers: off(serversOff) } : {}) };
+}
+
+/** computerUseOffConfig as thread config to add: none when there's nothing to turn off. */
+export function computerUseOff(effective: unknown): ThreadConfig | undefined {
+    const c = computerUseOffConfig(effective);
+    return Object.keys(c).length ? c : undefined;
 }
 
 /** Two thread configs as one: their MCP servers and plugins merged (the second's win), anything else the second's. */

@@ -1,7 +1,10 @@
 // Codex's own computer use (src/backends/codex-computer-use.ts): what its approvals ask, from the shapes measured with
 // Codex 0.167 and ChatGPT 26.1106 (and the older ones t3code handles), and the thread config that keeps it on or off.
-import { describe, expect, test } from "bun:test";
-import { appNameFromId, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseSetUp, computerUseTitle, mergeThreadConfig, neverOfferedApp, toolSurfaceApp } from "../src/backends/codex-computer-use";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync } from "fs";
+import { join } from "path";
+import { appNameFromId, codexDesktopFallback, codexFallsBack, computerUseAsk, computerUseOff, computerUseOffConfig, computerUseOnConfig, computerUseReady, computerUseSetUp, computerUseStartFailed, computerUseTitle, fallBackToCavvyTools, fallbackToSay, mergeThreadConfig, neverOfferedApp, resetDesktopFallbacks, setComputerUseServiceApp, toolSurfaceApp } from "../src/backends/codex-computer-use";
+import { tempDir } from "./helpers/isolate";
 import { codexPolicy } from "../src/backends/codex";
 import { approvalChoices } from "../gui/src/lib/approval";
 
@@ -154,5 +157,67 @@ describe("the approval card", () => {
         const c = approvalChoices([yes, session, always, no], true);
         expect(c.keys.map((o) => o.id)).toEqual(["yes", "session", "always"]);
         expect(c.row.map((r) => `${r.o.id}:${r.key}`)).toEqual(["yes:1", "session:2", "always:3", "no:0"]);
+    });
+});
+
+describe("where it can't be used, Cavvy's Mac app tools", () => {
+    const PLUGIN = "unified-computer-use@openai-bundled";
+    const setUp = { plugins: { [PLUGIN]: { enabled: true } } };
+    const installed = () => {
+        const app = join(tempDir("cu-service-"), "Codex Computer Use.app");
+        mkdirSync(app);
+        setComputerUseServiceApp(app);
+    };
+    afterEach(() => {
+        setComputerUseServiceApp(undefined);
+        resetDesktopFallbacks();
+    });
+
+    test("set up: its plugin on, its service installed, and the default account", () => {
+        installed();
+        expect(computerUseReady(setUp, undefined, undefined)).toBe(true);
+        expect(computerUseReady(setUp, undefined, "default")).toBe(true);
+        // Another account's Codex home, the plugin off or turned off for the thread, or no service: not set up.
+        expect(computerUseReady(setUp, undefined, "work")).toBe(false);
+        expect(computerUseReady({ plugins: { [PLUGIN]: { enabled: false } } }, undefined, undefined)).toBe(false);
+        expect(computerUseReady(setUp, { plugins: { [PLUGIN]: { enabled: false } } }, undefined)).toBe(false);
+        setComputerUseServiceApp(join(tempDir("cu-none-"), "Codex Computer Use.app"));
+        expect(computerUseReady(setUp, undefined, undefined)).toBe(false);
+        // Tests never look for it in the person's own HOME.
+        setComputerUseServiceApp(undefined);
+        expect(computerUseReady(setUp, undefined, undefined)).toBe(false);
+    });
+
+    test("before a turn: another account, or no service, falls back at once; for good, said once", () => {
+        installed();
+        expect(codexFallsBack("own", undefined)).toBeUndefined();
+        expect(codexFallsBack("second", "work")).toBe("setup");
+        expect(codexDesktopFallback("second")).toBe("setup");
+        expect(codexDesktopFallback("own")).toBeUndefined();
+        // A failure later: the session falls back, and stays so whatever comes after.
+        fallBackToCavvyTools("own", "failed");
+        expect(codexFallsBack("own", undefined)).toBe("failed");
+        fallBackToCavvyTools("own", "setup");
+        expect(codexDesktopFallback("own")).toBe("failed");
+        expect(fallbackToSay("own")).toBe(true);
+        expect(fallbackToSay("own")).toBe(false);
+        expect(fallbackToSay("never")).toBe(false);
+        setComputerUseServiceApp(undefined);
+        expect(codexFallsBack("other", undefined)).toBe("setup");
+    });
+
+    test("a startup failure is the service that can't be reached, not an app declined or the code failing", () => {
+        // As measured with Codex 0.169 and ChatGPT 26.1106, a HOME other than the person's: the call's first line.
+        expect(computerUseStartFailed("Sky Computer Use native pipe startup failed\n## Computer Use\n\nControl native apps.")).toBe(true);
+        expect(computerUseStartFailed("  Sky Computer Use native pipe startup failed")).toBe(true);
+        expect(computerUseStartFailed("Computer Use was not approved to use Calculator")).toBe(false);
+        expect(computerUseStartFailed("TypeError: cua.getApp is not a function")).toBe(false);
+        // Said further down (the model's own output quoting it), it isn't the call failing to start.
+        expect(computerUseStartFailed("Result:\nnative pipe startup failed")).toBe(false);
+    });
+
+    test("off: nothing to add when nothing of it is on", () => {
+        expect(computerUseOff({})).toBeUndefined();
+        expect(computerUseOff(setUp)).toEqual({ plugins: { [PLUGIN]: { enabled: false } } });
     });
 });

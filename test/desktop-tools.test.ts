@@ -13,6 +13,7 @@ const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, staleLi
 const { helperSource } = await import("../src/desktop/helper");
 const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
+const { setComputerUseServiceApp } = await import("../src/backends/codex-computer-use");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { loadSettings, desktopEnabled } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
@@ -660,7 +661,7 @@ describe("Claude Code", () => {
         ]);
     });
 
-    test("Cavvy's MCP server offers them to Claude Code with the setting on; never to Codex, and not with it off", async () => {
+    test("Cavvy's MCP server offers them to Claude Code with the setting on; to Codex only in place of its own computer use, and not with it off", async () => {
         // As on a Mac, wherever the test runs (CI runs on Linux, where the tools are never offered).
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
         Object.defineProperty(process, "platform", { value: "darwin" });
@@ -668,6 +669,13 @@ describe("Claude Code", () => {
         const served = async (provider: string, settings: object) => ((await makeAgent(settings, "default", provider)).agent as any).orchestrator()?.tools ?? [];
         const names = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
         expect(await served("claude-code", on)).toEqual(expect.arrayContaining(names));
+        // Codex where the ChatGPT app's computer use isn't installed (as in tests): Cavvy's in its place.
+        expect(await served("codex", on)).toEqual(expect.arrayContaining(names));
+        // Where it is: its own, never both.
+        const app = join(tempDir("cu-service-"), "Codex Computer Use.app");
+        mkdirSync(app);
+        setComputerUseServiceApp(app);
+        afterEach(() => setComputerUseServiceApp(undefined));
         for (const [provider, settings] of [
             ["claude-code", {}],
             ["codex", on],

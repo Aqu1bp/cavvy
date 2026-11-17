@@ -333,10 +333,14 @@ export interface BackendTurn {
      */
     readOnly?: boolean;
     /**
-     * desktop.enabled is on: Codex may use the Mac's apps through the ChatGPT app's computer use, each one asked of
-     * the person (src/backends/codex-computer-use.ts). Off, Codex's computer use is turned off. Others ignore it.
+     * Mac apps is on (desktop.enabled, on a Mac): Codex uses the Mac's apps through the ChatGPT app's computer use where
+     * it's set up, each one asked of the person, and otherwise, or once it has failed to start, through Cavvy's Mac app
+     * tools for the rest of the session (src/backends/codex-computer-use.ts). Off, Codex's computer use is turned off.
+     * Others ignore it.
      */
     desktop?: boolean;
+    /** Cavvy's MCP server as it is now: Codex has just fallen back to Cavvy's Mac app tools, which it then serves. */
+    orchestratorNow?: () => OrchestratorServer | undefined;
     /**
      * Cavvy's agent definitions for Claude Code to run with its own
      * Agent tool (src/backends/claude-agents.ts). Codex ignores them.

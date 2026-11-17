@@ -58,7 +58,9 @@
 //                     and ChatGPT 26.1106) Codex's own approval of the call, then the server's approval of an app
 //                     (FAKE_CU_APP bundle id, FAKE_CU_APP_NAME), or (FAKE_CU_URL=1) a link to open; FAKE_CU_TWICE=1
 //                     makes a second call that asks for the same app; FAKE_CU_CODE is the call's code; FAKE_CU_UNKNOWN=1 asks something of a shape not
-//                     known (no app named) in its place; each answer is logged as {cuAnswer}
+//                     known (no app named) in its place; each answer is logged as {cuAnswer}. FAKE_CU_FAIL=pipe: the
+//                     call fails as its service can't be reached (its text as measured with Codex 0.169, a HOME other
+//                     than the person's), asking for no app; FAKE_CU_FAIL=server: cua_repl is reported as failed to start
 // FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
 // FAKE_ONE_TURN=1     turn/start is refused while a turn of the thread runs ("a turn is already running")
@@ -753,6 +755,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     } else if (scenario === "computer-use") {
         const app = process.env.FAKE_CU_APP ?? "com.apple.TextEdit";
         const name = process.env.FAKE_CU_APP_NAME ?? "TextEdit";
+        if (process.env.FAKE_CU_FAIL === "server") notify("mcpServer/startupStatus/updated", { threadId: null, name: "cua_repl", status: "failed", error: "MCP client for `cua_repl` failed to start", failureReason: null });
         for (let n = 0; n < (process.env.FAKE_CU_TWICE === "1" ? 2 : 1); n++) {
             const item = { type: "mcpToolCall", id: `exec-${turnId}-${n}`, server: "cua_repl", tool: "js", arguments: { code: process.env.FAKE_CU_CODE ?? "await sky.get_app_state({ app })", title: "Type a note" }, status: "inProgress", result: null, error: null, pluginId: null };
             // Cavvy's PreToolUse hook, where Codex runs it, sees the call first (as Codex 0.167 runs it for MCP tools too).
@@ -765,6 +768,10 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             // Codex's own question about the call: in auto mode its reviewer answers it (measured), otherwise Cavvy.
             const call = policy.approvalsReviewer === "auto_review" ? { action: "accept", content: {}, _meta: null } : await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
             log({ cuAnswer: call });
+            if (process.env.FAKE_CU_FAIL === "pipe" && call?.action === "accept") {
+                notify("item/completed", { threadId, turnId, item: { ...item, status: "failed", result: { content: [{ type: "text", text: "Sky Computer Use native pipe startup failed" }, { type: "text", text: "## Computer Use\n\nControl native apps." }], structuredContent: null, isError: true } } });
+                continue;
+            }
             const asked =
                 process.env.FAKE_CU_UNKNOWN === "1"
                     ? { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", persist: ["session", "always"], tool_name: "take_over", tool_params: {} }, message: "Allow Computer Use to take over the screen?", requestedSchema: { type: "object", properties: {} } }

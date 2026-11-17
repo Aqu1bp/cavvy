@@ -30,13 +30,14 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
-import { appNameFromId, computerUseAsk, computerUseOffConfig, computerUseOnConfig, computerUseSetUp, computerUseTitle, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
+import { appNameFromId, codexDesktopFallback, computerUseAsk, computerUseOff, computerUseOnConfig, computerUseReady, computerUseStartFailed, computerUseTitle, fallBackToCavvyTools, fallbackToSay, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
 import { neverOfferedMessage } from "../desktop/apps";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
+import { DESKTOP_SERVER_TOOLS, servedDesktopTool } from "../tools/desktop-tools";
 import { servedSessionTool } from "../tools/session-tools";
 import { servedWorktreeTool } from "../tools/worktree-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
@@ -606,6 +607,8 @@ export class CodexTurn {
     protected rpc!: Rpc;
     /** Codex may use the Mac's apps in this thread, through the ChatGPT app's computer use (codex-computer-use.ts). */
     protected computerUse = false;
+    /** Its computer use failed to start in this thread: Cavvy's Mac app tools take its place from the next message. */
+    protected computerUseGone = false;
     /** Commands naming Cavvy's helper for Mac apps go to the person (guardsDesktopHelper): Codex's PreToolUse hook asks. */
     protected guardsHelper = false;
     /** Calls the person allowed from that hook: Codex's own approval of the same call isn't asked again. */
@@ -898,6 +901,8 @@ export class CodexTurn {
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
             const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
+            // Fallen back to Cavvy's Mac app tools (it isn't set up here): its server serves them from the start.
+            o = this.withDesktopTools(t, o);
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
@@ -1382,6 +1387,8 @@ export class CodexTurn {
             this.sink.emit({ type: "notice", level: "error", message: "Your PreToolUse hooks couldn't run for a Codex tool call, so the turn was stopped." });
             this.interrupt(this.origin(p));
         }
+        // The ChatGPT app's computer use whose server didn't start (the app-server's servers serve all its threads).
+        if (method === "mcpServer/startupStatus/updated" && p?.status === "failed" && isComputerUseServer(p?.name)) this.computerUseFailed(undefined, typeof p.error === "string" ? p.error : undefined);
         if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
         const modelThread = thread ?? this.threadId;
         if (method === "model/rerouted" && typeof p?.toModel === "string" && modelThread) {
@@ -1807,6 +1814,11 @@ export class CodexTurn {
                 const appName = app ? (this.appNames.get(app.toLowerCase()) ?? appNameFromId(app)) : undefined;
                 if (appName) open.title = computerUseTitle(String(item.tool ?? ""), open.input, appName);
                 this.endItem(id, open, content, Boolean(item.error) || failed, undefined, Boolean(appName), !refused);
+                // Its service couldn't be started: Cavvy's Mac app tools take its place.
+                if (this.computerUse && isComputerUseServer(item.server) && (Boolean(item.error) || failed || item.result?.isError === true) && computerUseStartFailed(content)) {
+                    const thread = sub ? [...this.subs].find(([, s]) => s === sub)?.[0] : undefined;
+                    this.computerUseFailed(thread ? { thread, turnId: sub!.turnId, sub } : undefined, content.trimStart().split("\n", 1)[0]);
+                }
                 // Never offered, it was refused when asked for: one used anyway (a yes Codex kept from elsewhere) stops the turn.
                 const why = app && appName ? neverOfferedApp({ name: appName, bundleId: app }) : undefined;
                 if (why) {
@@ -1980,6 +1992,8 @@ export class CodexTurn {
             this.refusedCall(id, call, reason, from);
             return preToolUseAnswer({ deny: reason, context });
         };
+        // Its computer use failed to start in this thread: off for the rest of the session, never used beside Cavvy's tools.
+        if (this.computerUseGone && isComputerUseServer(/^mcp__(.+?)__/.exec(call.toolName)?.[1])) return deny(`The ChatGPT app's computer use is off for the rest of this session: ${APP_TITLE}'s Mac app tools take its place from the person's next message.`);
         if (h?.stop) {
             this.sink.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
             this.interrupt(from);
@@ -2075,7 +2089,7 @@ export class CodexTurn {
     /** Cavvy's Monitor, browser, worktree and session tools run the hooks themselves, as Monitor, BashOutput, KillShell, BrowserAct, EnterWorktree or SendToSession: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
-        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName) || servedSimulatorTool(server, toolName) || servedWorktreeTool(server, toolName) || servedSessionTool(server, toolName);
+        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName) || servedSimulatorTool(server, toolName) || servedDesktopTool(server, toolName) || servedWorktreeTool(server, toolName) || servedSessionTool(server, toolName);
     }
 
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */
@@ -2093,25 +2107,46 @@ export class CodexTurn {
     }
 
     /**
-     * Codex's computer use for the thread (setting `computerUse`): with desktop.enabled, left on as the ChatGPT app set
-     * it up in Codex's home (the apps never offered denied); otherwise off, the person's own Codex config included. A
-     * read-only agent never has it. Thread config to add, if any.
+     * Codex's computer use for the thread (setting `computerUse`): with Mac apps on, left on where the ChatGPT app set
+     * it up for this Codex (computerUseReady; the apps never offered denied); otherwise off, the person's own Codex
+     * config included. Where it isn't set up the session falls back to Cavvy's Mac app tools, for good, as it does
+     * once it has failed to start. A read-only agent never has either. Thread config to add, if any.
      */
     protected computerUseConfig(t: BackendTurn, overrides: { config?: ThreadConfig; effective?: unknown; missingProvenance?: boolean }): ThreadConfig | undefined {
         this.computerUse = false;
-        const off = () => {
-            const c = computerUseOffConfig(overrides.effective);
-            return Object.keys(c).length ? c : undefined;
-        };
+        this.computerUseGone = false;
+        const off = () => computerUseOff(overrides.effective);
         if (!t.desktop || t.readOnly) return off();
-        if (!computerUseSetUp(overrides.effective, overrides.config)) {
-            // Said only where it isn't set up: one Cavvy turned off (a project's, or without provenance, with its own warning) is.
-            if (process.platform === "darwin" && !computerUseSetUp(overrides.effective) && !notSetUpSaid.has(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: "To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app." });
-            notSetUpSaid.add(t.sessionKey);
+        // Not set up in Codex's config (its plugin off, or turned off as a project's): this thread falls back as it
+        // opens, Cavvy's server getting the tools (withDesktopTools), and a new app-server is started next time with them.
+        if (!codexDesktopFallback(t.sessionKey) && !computerUseReady(overrides.effective, overrides.config, t.accountId)) fallBackToCavvyTools(t.sessionKey, "setup");
+        if (codexDesktopFallback(t.sessionKey)) {
+            if (fallbackToSay(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: FALLBACK_LINE });
             return off();
         }
         this.computerUse = true;
         return computerUseOnConfig();
+    }
+
+    /** Cavvy's server for the thread: with its Mac app tools, once the session has fallen back to them. */
+    protected withDesktopTools(t: BackendTurn, o: OrchestratorServer | undefined): OrchestratorServer | undefined {
+        if (!o || !t.desktop || !codexDesktopFallback(t.sessionKey) || o.tools.some((n) => DESKTOP_SERVER_TOOLS.includes(n))) return o;
+        return t.orchestratorNow?.() ?? o;
+    }
+
+    /**
+     * The ChatGPT app's computer use failed to start in this thread (computerUseStartFailed, or its server didn't
+     * start): the session falls back to Cavvy's Mac app tools for good, said once in a line. The thread keeps it until
+     * the next message, whose app-server serves Cavvy's tools instead: until then what it asks is declined, its calls
+     * refused, and the model is told.
+     */
+    protected computerUseFailed(from?: Origin, error?: string) {
+        if (!this.computerUse || this.computerUseGone) return;
+        this.computerUseGone = true;
+        fallBackToCavvyTools(this.t.sessionKey, "failed");
+        if (fallbackToSay(this.t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: FALLBACK_LINE });
+        const said = error ? ` ("${error.slice(0, 120)}")` : "";
+        this.steer(`<system-reminder>\nThe ChatGPT app's computer use failed to start${said}, and is off for the rest of this session: don't call it again. ${APP_TITLE}'s own Mac app tools (desktop_control and the rest) take its place from the person's next message: say so, and leave what needs the Mac's apps until then.\n</system-reminder>`, false, from);
     }
 
     /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
@@ -2237,6 +2272,9 @@ export class CodexTurn {
         const meta = p._meta && typeof p._meta === "object" && !Array.isArray(p._meta) ? p._meta : {};
         const computerUse = computerUseAsk(p);
         if (computerUse) return this.computerUseAnswer(computerUse, from, agentLabel);
+        // Codex's own approval of a call to its computer use while that's off here (Mac apps off, or Cavvy's tools in
+        // its place): declined, never answered by a mode or a rule.
+        if ((!this.computerUse || this.computerUseGone) && isComputerUseServer(server)) return reply("decline");
         if (typeof meta.codex_approval_kind === "string") {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
             // In bypass Codex asks only so its computer use's app approvals reach the person (codexPolicy): the mode decides the rest.
@@ -2277,7 +2315,7 @@ export class CodexTurn {
     protected async computerUseAnswer(ask: ComputerUseAsk, from: Origin | undefined, agentLabel: string | undefined): Promise<unknown> {
         const reply = (action: "accept" | "decline" | "cancel", persist?: "session" | "always") => ({ action, content: action === "accept" ? {} : null, _meta: persist ? { persist } : null });
         if (ask.kind === "url") return reply("cancel");
-        if (ask.kind === "audio" || !this.computerUse) return reply("decline");
+        if (ask.kind === "audio" || !this.computerUse || this.computerUseGone) return reply("decline");
         if (ask.kind === "unknown") {
             // Not a shape Cavvy knows: the person answers its question, in every mode, as for an app (never the mode,
             // a rule, a hook or a reviewer); a yes is for this once. Nobody to ask: declined.
@@ -2561,8 +2599,9 @@ export function codexHookEvents(hooked: (e: CodexHookEvent) => boolean, guardsHe
     return CODEX_HOOK_EVENTS.filter((e) => hooked(e) || (e === "PreToolUse" && guardsHelper));
 }
 
-/** The sessions told once that Codex's computer use is set up in the ChatGPT app. */
-const notSetUpSaid = new Set<string>();
+/** The line a session shows once, when its Codex falls back to Cavvy's Mac app tools. */
+const FALLBACK_LINE = `Using ${APP_TITLE}'s Mac app tools instead`;
+
 /**
  * The Mac apps the person let Codex use for the rest of a Cavvy session ("Allow for this session"), by session: asked
  * again, Codex gets the same yes. Until Cavvy quits, as the Desktop tools' grants.
