@@ -336,7 +336,7 @@ try {
      * One stretch: CPU by role over `seconds` (nothing of ours attached meanwhile), memory at its end, then 3 s of both
      * JS profiles and a trace for where the time goes. `perSecond` also samples each second.
      */
-    const phase = async (name: string, seconds: number, opts: { perSecond?: string } = {}) => {
+    const phase = async (name: string, seconds: number, opts: { perSecond?: string; hidden?: boolean } = {}) => {
         if (only && !only.includes(name)) return;
         await putWindow();
         await sleep(1000);
@@ -426,7 +426,7 @@ try {
             gate: gateAtEnd,
             dom,
             wsKBPerSecond: wsKB,
-            ...(visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
+            ...(opts.hidden ? (visibleAtStart === "visible" ? { invalid: "window still visible" } : {}) : visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
             wsFramesPerSecond: wsN,
             trace: summarizeTrace(events, uiPid, 3),
             ...(series.length ? { series } : {}),
@@ -467,6 +467,20 @@ try {
             report.phases.waitingUnfocused.focus = focus;
             await win(MAC ? "app.focus({ steal: true }); w?.focus()" : "w?.focus()");
             await sleep(1000);
+        });
+    }
+
+    // The same with the window hidden, then minimized: nothing of it on screen, so nothing should draw.
+    for (const [name, away, back] of [["waitingHidden", "w?.hide()", "w?.show()"], ["waitingMinimized", "w?.minimize()", "w?.restore()"]] as const) {
+        if (!want(name) || !main) continue;
+        await show(short);
+        const win = (expression: string) => main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getTitle() !== "DevTools"); ${expression}; return !!w; })()`, returnByValue: true });
+        await streamWhile([[short, "hangforever"]], async () => {
+            await win(away);
+            await sleep(2000);
+            await phase(name, SECONDS, { hidden: true });
+            await win(MAC ? `${back}; app.focus({ steal: true }); w?.focus()` : `${back}; w?.focus()`);
+            await sleep(1500);
         });
     }
 

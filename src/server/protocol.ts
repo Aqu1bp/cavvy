@@ -970,6 +970,8 @@ export interface SessionSummary {
      * sets it, from where it heard of each (gui/src/components/OtherMachines.tsx).
      */
     machine?: string;
+    /** Never sent: the row a window shows for a fork it shows before it's made (gui/src/state/app.ts forkSession). */
+    making?: true;
 }
 
 export type RunOutcome = "working" | "done" | "stopped";
