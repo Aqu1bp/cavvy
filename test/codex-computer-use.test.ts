@@ -139,6 +139,9 @@ describe("its calls", () => {
         expect(computerUseTitle("js", { code: "…" }, "TextEdit")).toBe("Use TextEdit");
         expect(computerUseTitle("js", { code: "…" })).toBe("Use an app on your Mac");
         expect(computerUseTitle("js_reset", {})).toBe("Mac apps: start over");
+        // A call that only reports how the work ended reads as that report, not as using an app.
+        expect(computerUseTitle("js", { completion_summary: "Couldn't reach Calculator" })).toBe("Mac apps: Couldn't reach Calculator");
+        expect(computerUseTitle("js", { code: "…", completion_summary: "Done" })).toBe("Use an app on your Mac");
     });
 });
 

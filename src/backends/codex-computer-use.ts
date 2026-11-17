@@ -160,10 +160,12 @@ export function appNameFromId(bundleId: string): string {
 
 /**
  * How a computer-use call reads in the transcript: what it does (the call's own title) and, once known, in which app.
- * "TextEdit: Type the note", "Mac apps: Type the note", "Use TextEdit".
+ * "TextEdit: Type the note", "Mac apps: Type the note", "Use TextEdit". A call that runs no code and only reports how
+ * the work ended (`completion_summary`) reads as that report.
  */
 export function computerUseTitle(tool: string, args: unknown, app?: string): string {
-    const title = record(args) && typeof args.title === "string" ? args.title.trim().replace(/\s+/g, " ") : "";
+    const text = (k: string) => (record(args) && typeof args[k] === "string" ? args[k].trim().replace(/\s+/g, " ") : "");
+    const title = text("title") || (text("code") ? "" : text("completion_summary"));
     if (tool === "js_reset") return app ? `${app}: start over` : "Mac apps: start over";
     if (title) return `${app ?? "Mac apps"}: ${title.length > 120 ? `${title.slice(0, 120)}…` : title}`;
     return app ? `Use ${app}` : "Use an app on your Mac";
