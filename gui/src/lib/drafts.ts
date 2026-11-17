@@ -18,6 +18,8 @@ const privateText = (text: string) => /^\s*\/login\b/im.test(text) || /\bsk-[A-Z
 const keptStash = (texts: string[] | undefined) => (texts?.length ? texts : undefined);
 const safe = (e: Entry): Entry => ({ ...e, draft: privateText(e.draft) ? "" : e.draft, stash: keptStash(e.stash?.filter((text) => !privateText(text))), history: e.history.filter((text) => !privateText(text)) });
 const clearPriority = (e: Entry) => e.draft || e.stash?.length ? 0 : e.history.length ? 1 : 2;
+/** The same entry: what a tab wrote, read back. */
+const same = (a: Entry, b: Entry) => a.updated === b.updated && a.draft === b.draft && a.history.join("\n") === b.history.join("\n") && (a.stash ?? []).join("\n") === (b.stash ?? []).join("\n");
 const hasPrivateText = (e: Entry) => privateText(e.draft) || Boolean(e.stash?.some(privateText)) || e.history.some(privateText);
 
 export function createComposerStorage(storage: () => Storage | undefined, now = Date.now) {
@@ -26,6 +28,8 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
     // Sensitive or over-budget edits remain usable in this tab, but never go back on disk.
     const memoryOnly = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // What this tab last wrote of each entry: still there, no other tab has written it since.
+    const written = new Map<string, Entry>();
 
     function read(target: Storage) {
         const raw = target.getItem(COMPOSER_STORAGE_KEY);
@@ -75,9 +79,12 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
                 const remote = merged.get(key);
                 if (now() - local.updated >= COMPOSER_MAX_AGE) continue;
                 // A clear wins a same-millisecond tie. Empty entries are tombstones: an older
-                // pending edit must not resurrect a sent/deleted draft on a later unload.
+                // pending edit must not resurrect a sent/deleted draft on a later unload. Unless the clear is this tab's
+                // own, still as it wrote it: then the edit came after it (a sent message remembered just after its draft
+                // was cleared and saved).
                 const value = safe(local);
-                if (!remote || value.updated > remote.updated || (value.updated === remote.updated && (clearPriority(value) >= clearPriority(remote)))) {
+                const ours = remote && written.has(key) && same(written.get(key)!, remote);
+                if (!remote || value.updated > remote.updated || (value.updated === remote.updated && (ours || clearPriority(value) >= clearPriority(remote)))) {
                     merged.set(key, value);
                     applied.add(key);
                 }
@@ -93,6 +100,11 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
                 if (json !== raw) target.setItem(COMPOSER_STORAGE_KEY, json);
             } else if (raw !== null) target.removeItem(COMPOSER_STORAGE_KEY);
             const persisted = new Map(saved);
+            for (const key of applied) {
+                const e = persisted.get(key);
+                if (e) written.set(key, e);
+                else written.delete(key);
+            }
             for (const key of dirty) {
                 if (applied.has(key) && (hasPrivateText(entries.get(key)!) || !persisted.has(key))) memoryOnly.add(key);
                 else memoryOnly.delete(key);
