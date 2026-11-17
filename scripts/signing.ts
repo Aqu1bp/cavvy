@@ -21,6 +21,16 @@ export function accountHome(): string {
 
 export const loginKeychain = (): string => join(accountHome(), "Library", "Keychains", "login.keychain-db");
 
+/**
+ * What `security` and `codesign` run with: HOME as the account's own. Naming the login keychain isn't enough with HOME
+ * elsewhere: the certificate is found there but taken as not valid, since its issuer is looked up in the keychains
+ * HOME's settings list, which are none (measured on macOS 27.0: 0 valid identities with a test HOME, 1 with the
+ * account's).
+ */
+export function signingEnv(): Record<string, string | undefined> {
+    return { ...process.env, HOME: accountHome() };
+}
+
 /** With HOME elsewhere, the login keychain named outright, to look in and to sign from. */
 export function keychainArgs(): string[] {
     return resolve(homedir()) !== resolve(accountHome()) && existsSync(loginKeychain()) ? [loginKeychain()] : [];
