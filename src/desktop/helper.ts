@@ -1,11 +1,16 @@
-// The helper that reads and acts in the person's Mac apps (helper.swift): built on first use with `xcrun swiftc`
-// (Xcode or its command line tools) and kept in Cavvy's home under one name and path, Cavvy Desktop Control, since
-// that's what macOS shows in Privacy & Security and keeps the person's grants for. The same source built again comes
-// out the same (measured: the same code hash), so a grant lasts until the helper's source changes.
+// The helper that reads and acts in the person's Mac apps (helper.swift), as an app of its own, Cavvy Desktop Control,
+// since that's what macOS shows in Privacy & Security and keeps the person's grants for. The desktop app carries it,
+// signed with the app; Cavvy runs a copy of it put outside the app, in the account's Application Support, since macOS
+// gives Screen Recording to the outermost app a program sits in, which would be Cavvy rather than the helper. Without
+// the app (the terminal), it's built on first use with `xcrun swiftc` (Xcode or its command line tools) and kept in
+// Cavvy's home; the same source built again comes out the same (measured: the same code hash), so a grant lasts until
+// the helper's source changes.
 
 import { createHash, randomBytes } from "crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
-import { basename, join } from "path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
+import { lstat, readdir, readFile } from "fs/promises";
+import { homedir } from "os";
+import { basename, dirname, join } from "path";
 import { paths } from "../config/paths";
 import { run } from "../simulator/simctl";
 import { NEVER_OFFERED, NEVER_OFFERED_NAME_PATTERNS } from "./apps";
@@ -145,23 +150,48 @@ function builtFrom(app: string): string | undefined {
 
 /**
  * The helper Cavvy.app carries (Contents/Helpers, built by desktop-electron/pack.ts and signed with the app at
- * install), when Cavvy runs from the app and it's of this source: signed with the app's certificate, the person's
- * grants outlast a new version.
+ * install), when Cavvy runs from the app and it's of this source. Never run from there: copied out first (placed()).
  */
-function carried(execPath = process.execPath): string | undefined {
+export function carried(execPath = process.execPath): string | undefined {
     const app = /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
     if (!app) return undefined;
     // The helper's own, or a test copy's.
     return IDENTITIES.map((id) => join(app, "Contents", "Helpers", appOf(id))).find((helper) => builtFrom(helper) === sourceHash());
 }
 
-/** The helper bundle Cavvy uses: the app's own, else the one built in Cavvy's home (`execPath`: the server's, for tests). */
+let account: Promise<string> | undefined;
+
+/**
+ * The account's own home, from its user record, whatever HOME says (a test launch may set it elsewhere): where the
+ * carried helper's copy goes, so that it's one path, and one entry in System Settings, for the account.
+ */
+export function accountHome(): Promise<string> {
+    return (account ??= run(["/usr/bin/id", "-P"], { timeoutMs: 10_000 })
+        .then((r) => r.stdout.trim().split(":")[8])
+        .catch(() => undefined)
+        .then((home) => (home?.startsWith("/") ? home : homedir())));
+}
+
+/** Account home, as last found: for what's said about where the helper is before it's first started. */
+let knownHome: string | undefined;
+
+/**
+ * Where the carried helper's copy goes: the account's Application Support, in Cavvy's folder (a test copy's, "Cavvy
+ * Test"), the same whatever HOME and CAVVY_HOME are. Outside the app, macOS takes the helper for the app it's in when
+ * it gives Screen Recording, so the grant is its own; signed with the app's certificate, it outlasts a new version.
+ */
+export function placeFor(identity: HelperIdentity, home: string): string {
+    return join(home, "Library", "Application Support", identity === TEST_HELPER_IDENTITY ? "Cavvy Test" : "Cavvy", appOf(identity));
+}
+
+/** The helper bundle Cavvy runs: the carried one's copy, else the one built in Cavvy's home (`execPath`: the server's, for tests). */
 export function helperApp(execPath = process.execPath): string {
-    return carried(execPath) ?? join(dir(), APP);
+    const own = carried(execPath);
+    return own ? placeFor(helperIdentity(own), knownHome ?? homedir()) : join(dir(), APP);
 }
 
 /** Who the helper Cavvy uses is to macOS, as its Info.plist says: one of the two identities, else the helper's own. */
-export function helperIdentity(app = helperApp()): HelperIdentity {
+export function helperIdentity(app = carried() ?? helperApp()): HelperIdentity {
     let id: string | undefined;
     try {
         id = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(join(app, "Contents", "Info.plist"), "utf8"))?.[1];
@@ -171,26 +201,85 @@ export function helperIdentity(app = helperApp()): HelperIdentity {
     return IDENTITIES.find((i) => i.bundleId === id) ?? HELPER_IDENTITY;
 }
 
-/** The helper, built in Cavvy's home when the app carries none of this source and it isn't built yet (a few seconds). */
-export function helperBinary(): Promise<string> {
-    try {
-        refuseRealInTests();
-    } catch (e) {
-        return Promise.reject(e);
-    }
+/**
+ * The helper's executable, as it's started: the carried one's copy, put in place or put back if it isn't the same as
+ * the carried one (so that a copy changed since is never run); else built in Cavvy's home when the source changed.
+ */
+export async function helperBinary(): Promise<string> {
+    refuseRealInTests();
     const own = carried();
-    if (own) return Promise.resolve(inUse(own));
+    if (own) {
+        refuseRealInTests("copy the helper into Application Support");
+        knownHome = await accountHome();
+        return inUse(await placed(own, placeFor(helperIdentity(own), knownHome)));
+    }
     const app = join(dir(), APP);
-    if (builtFrom(app) === sourceHash() && existsSync(executableIn(app))) return Promise.resolve(inUse(app));
+    if (builtFrom(app) === sourceHash() && existsSync(executableIn(app))) return inUse(app);
     return (building ??= buildIn(dir())
         .then(inUse)
         .finally(() => (building = undefined)));
+}
+
+let placing: Promise<string> | undefined;
+
+/**
+ * `target`, the same as `from` (each file and folder, byte for byte): copied there again with ditto when it isn't,
+ * through a folder beside it and a rename, so that one being started is never half copied. Comparing costs about a
+ * millisecond (the helper is some 260 KB; measured 0.4 ms warm, 3 ms cold), against 20 ms for asking codesign.
+ */
+export function placed(from: string, target: string): Promise<string> {
+    return (placing ??= (async () => {
+        if (await sameTree(from, target)) return target;
+        const parent = dirname(target);
+        mkdirSync(parent, { recursive: true, mode: 0o700 });
+        const tag = randomBytes(4).toString("hex");
+        const tmpDir = join(parent, `${COPYING}${tag}`);
+        const copy = join(tmpDir, basename(target));
+        try {
+            const r = await run(["/usr/bin/ditto", from, copy], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
+            if (r.code !== 0 || !(await sameTree(from, copy))) throw new DesktopError(`Couldn't put ${basename(target, ".app")} in ${parent}: ${(r.stderr || r.stdout).trim().split("\n")[0] || "the copy isn't the same"}`);
+            const old = join(parent, `${REPLACED}${tag}`);
+            try {
+                if (existsSync(target)) renameSync(target, old);
+                renameSync(copy, target);
+            } catch (e) {
+                // Another Cavvy put it there in the meantime: fine if it's the same.
+                if (!(await sameTree(from, target))) throw new DesktopError(`Couldn't put ${basename(target, ".app")} in ${parent}: ${(e as Error).message}`);
+            }
+            rmSync(old, { recursive: true, force: true });
+            return target;
+        } finally {
+            rmSync(tmpDir, { recursive: true, force: true });
+        }
+    })().finally(() => (placing = undefined)));
+}
+
+const COPYING = ".helper-copy-";
+const REPLACED = ".helper-old-";
+
+/** Whether two files or folders are the same, each file byte for byte (and executable or not), nothing more or less. */
+export async function sameTree(a: string, b: string): Promise<boolean> {
+    const [x, y] = await Promise.all([lstat(a), lstat(b)]).catch(() => [undefined, undefined]);
+    if (!x || !y) return false;
+    if (x.isDirectory()) {
+        if (!y.isDirectory()) return false;
+        const [na, nb] = await Promise.all([readdir(a), readdir(b)]);
+        na.sort();
+        nb.sort();
+        if (na.join("\0") !== nb.join("\0")) return false;
+        for (const n of na) if (!(await sameTree(join(a, n), join(b, n)))) return false;
+        return true;
+    }
+    if (!x.isFile() || !y.isFile() || x.size !== y.size || (x.mode & 0o111) !== (y.mode & 0o111)) return false;
+    const [p, q] = await Promise.all([readFile(a), readFile(b)]);
+    return p.equals(q);
 }
 
 /** The helper's executable, noted as the build in use (for what a missing grant's line says), with stale copies gone. */
 function inUse(app: string): string {
     if (record().hash !== sourceHash()) writeRecord({ ...record(), hash: sourceHash() });
     clearStale();
+    clearStaleCopies(dirname(app));
     return executableIn(app);
 }
 
@@ -206,6 +295,30 @@ export function clearStale() {
         return;
     }
     for (const n of names) if (n === HELPER_NAME || ((n.startsWith(".build-") || n.startsWith(".old-")) && !building)) rmSync(join(dir(), n), { recursive: true, force: true });
+}
+
+/**
+ * A copy of the carried helper that stopped halfway, beside where it goes: only these, since the folder is the app's
+ * too, and only an hour old, since another Cavvy may be copying now.
+ */
+export function clearStaleCopies(parent: string, now = Date.now()) {
+    let names: string[];
+    try {
+        names = readdirSync(parent);
+    } catch {
+        return;
+    }
+    for (const n of names) {
+        if (!n.startsWith(COPYING) && !n.startsWith(REPLACED)) continue;
+        const at = (() => {
+            try {
+                return statSync(join(parent, n)).mtimeMs;
+            } catch {
+                return now;
+            }
+        })();
+        if (now - at > 3_600_000) rmSync(join(parent, n), { recursive: true, force: true });
+    }
 }
 
 /**

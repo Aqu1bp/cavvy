@@ -4,13 +4,13 @@
 // live run, with CAVVY_DESKTOP_LIVE=1.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, clearStale, handshake, helperApp, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
+const { DesktopHelper, accountHome, buildIn, carried, clearStale, clearStaleCopies, handshake, helperApp, placeFor, placed, sameTree, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
 const { RESETTABLE_IDS, resetCommand } = await import("../src/desktop/access");
 const { paths } = await import("../src/config/paths");
 
@@ -72,8 +72,10 @@ test("a test copy carries its own helper, and Reset access may name only the two
         mkdirSync(join(helper, "Contents"), { recursive: true });
         writeFileSync(join(helper, "Contents", "Info.plist"), infoPlist(sourceHash(), TEST_HELPER_IDENTITY));
         const server = join(root, "Cavvy Test.app", "Contents", "MacOS", "cavvy");
-        expect(helperApp(server)).toBe(helper);
-        expect(helperIdentity(helperApp(server))).toEqual({ name: "Cavvy Desktop Control (Test)", bundleId: "dev.cavvy.desktop.control.test" });
+        expect(carried(server)).toBe(helper);
+        expect(helperIdentity(helper)).toEqual({ name: "Cavvy Desktop Control (Test)", bundleId: "dev.cavvy.desktop.control.test" });
+        // Run from a copy of its own, apart from the helper's.
+        expect(helperApp(server)).toBe(join(homedir(), "Library", "Application Support", "Cavvy Test", "Cavvy Desktop Control (Test).app"));
         // Release builds keep the helper's own.
         expect(HELPER_IDENTITY).toEqual({ name: "Cavvy Desktop Control", bundleId: HELPER_BUNDLE_ID });
         expect(helperIdentity(join(root, "nothing.app"))).toEqual(HELPER_IDENTITY);
@@ -84,22 +86,103 @@ test("a test copy carries its own helper, and Reset access may name only the two
     }
 });
 
-test("the app's own helper is used when it's of this source; else the one in Cavvy's home", () => {
+test("the app's own helper is used, from its copy in Application Support, when it's of this source; else the one in Cavvy's home", () => {
     const root = mkdtempSync(join(tmpdir(), "cavvy-helper-carried-"));
     try {
         const helper = join(root, "Cavvy.app", "Contents", "Helpers", "Cavvy Desktop Control.app");
         mkdirSync(join(helper, "Contents"), { recursive: true });
         const server = join(root, "Cavvy.app", "Contents", "MacOS", "cavvy");
         writeFileSync(join(helper, "Contents", "Info.plist"), infoPlist(sourceHash()));
-        expect(helperApp(server)).toBe(helper);
+        expect(carried(server)).toBe(helper);
+        // Never run inside the app: macOS would give Screen Recording to Cavvy, the app around it.
+        expect(helperApp(server)).toBe(join(homedir(), "Library", "Application Support", "Cavvy", "Cavvy Desktop Control.app"));
+        expect(placeFor(HELPER_IDENTITY, "/Users/me")).toBe("/Users/me/Library/Application Support/Cavvy/Cavvy Desktop Control.app");
+        expect(placeFor(TEST_HELPER_IDENTITY, "/Users/me")).toBe("/Users/me/Library/Application Support/Cavvy Test/Cavvy Desktop Control (Test).app");
         // Another version's: built in Cavvy's home instead.
         writeFileSync(join(helper, "Contents", "Info.plist"), infoPlist("0000000000000000"));
+        expect(carried(server)).toBeUndefined();
         expect(helperApp(server)).toBe(join(paths.home(), "desktop", "Cavvy Desktop Control.app"));
         // Not run from an app (bun, a checkout).
         expect(helperApp("/usr/local/bin/bun")).toBe(join(paths.home(), "desktop", "Cavvy Desktop Control.app"));
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+/** A stand-in for the carried helper, never run: a bundle's files, the executable a script that does nothing. */
+function fakeBundle(app: string) {
+    mkdirSync(join(app, "Contents", "MacOS"), { recursive: true });
+    mkdirSync(join(app, "Contents", "_CodeSignature"), { recursive: true });
+    writeFileSync(join(app, "Contents", "Info.plist"), infoPlist(sourceHash()));
+    writeFileSync(join(app, "Contents", "_CodeSignature", "CodeResources"), "<plist/>");
+    writeFileSync(join(app, "Contents", "MacOS", "Cavvy Desktop Control"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(app, "Contents", "MacOS", "Cavvy Desktop Control"), 0o755);
+}
+
+test.skipIf(process.platform !== "darwin")("the carried helper is copied out, and copied again before a start whenever its copy differs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cavvy-helper-place-"));
+    try {
+        const from = join(root, "Cavvy.app", "Contents", "Helpers", "Cavvy Desktop Control.app");
+        fakeBundle(from);
+        const target = join(root, "Application Support", "Cavvy", "Cavvy Desktop Control.app");
+        const exe = join(target, "Contents", "MacOS", "Cavvy Desktop Control");
+        expect(await placed(from, target)).toBe(target);
+        expect(await sameTree(from, target)).toBe(true);
+        expect(statSync(exe).mode & 0o111).toBe(0o111);
+        // The same: left as it is, not copied again.
+        const before = statSync(exe).ino;
+        await placed(from, target);
+        expect(statSync(exe).ino).toBe(before);
+        // Changed since (a byte, a file added, one taken away, no longer executable): put back as the app carries it.
+        for (const change of [
+            () => writeFileSync(exe, "#!/bin/sh\nexit 1\n"),
+            () => writeFileSync(join(target, "Contents", "MacOS", "extra"), "x"),
+            () => rmSync(join(target, "Contents", "_CodeSignature"), { recursive: true }),
+            () => chmodSync(exe, 0o644),
+        ]) {
+            change();
+            expect(await sameTree(from, target)).toBe(false);
+            await placed(from, target);
+            expect(await sameTree(from, target)).toBe(true);
+        }
+        // Nothing left beside it: no half copy, no old one.
+        expect(readdirSync(dirname(target))).toEqual(["Cavvy Desktop Control.app"]);
+        // Nothing to copy from: said, and nothing put there.
+        await expect(placed(join(root, "nothing.app"), join(root, "elsewhere", "Cavvy Desktop Control.app"))).rejects.toThrow("Couldn't put Cavvy Desktop Control in");
+        expect(existsSync(join(root, "elsewhere", "Cavvy Desktop Control.app"))).toBe(false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a copy that stopped halfway is cleared after an hour; nothing else in the app's folder is", () => {
+    const root = mkdtempSync(join(tmpdir(), "cavvy-helper-place-"));
+    try {
+        for (const n of [".helper-copy-1a2b3c4d", ".helper-old-1a2b3c4d", ".helper-copy-5e6f7a8b", "Cavvy Desktop Control.app", "Local Storage", "Preferences"]) mkdirSync(join(root, n));
+        const hourAgo = new Date(Date.now() - 3_700_000);
+        for (const n of [".helper-copy-1a2b3c4d", ".helper-old-1a2b3c4d", "Local Storage"]) utimesSync(join(root, n), hourAgo, hourAgo);
+        clearStaleCopies(root);
+        expect(readdirSync(root).sort()).toEqual([".helper-copy-5e6f7a8b", "Cavvy Desktop Control.app", "Local Storage", "Preferences"]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("auto mode's sandbox can't reach the helper's copies either", () => {
+    const { DESKTOP_HELPER_COPIES, sandboxPolicy } = require("../src/permissions/sandbox");
+    expect(DESKTOP_HELPER_COPIES.map((p: string) => join("/Users/me", p))).toEqual([placeFor(HELPER_IDENTITY, "/Users/me"), placeFor(TEST_HELPER_IDENTITY, "/Users/me")]);
+    const home = mkdtempSync(join(tmpdir(), "cavvy-helper-place-"));
+    try {
+        const p = sandboxPolicy([home], { home, cavvyHome: paths.home() });
+        for (const id of [HELPER_IDENTITY, TEST_HELPER_IDENTITY]) expect(p.unreadable).toContain(placeFor(id, require("fs").realpathSync(home)));
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test.skipIf(process.platform !== "darwin")("the copy goes in the account's own home, whatever HOME says", async () => {
+    const home = spawnSync("/usr/bin/id", ["-P"]).stdout.toString().trim().split(":")[8];
+    expect(await accountHome()).toBe(home!);
 });
 
 test("it registers itself with LaunchServices when it starts, so System Settings can list it; not in tests", () => {

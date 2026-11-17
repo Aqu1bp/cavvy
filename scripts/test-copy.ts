@@ -13,7 +13,8 @@
 //
 // Launch it directly with homes of its own:
 //   CAVVY_HOME=<test home> CAVVY_ELECTRON_USER_DATA=<test dir> CAVVY_NO_KEYCHAIN=1 ~/Applications/Cavvy\ Test.app/Contents/MacOS/cavvy-desktop
-// The helper is the copy's own (in the app), so the homes may be anywhere, /tmp included.
+// The copy runs its helper from ~/Library/Application Support/Cavvy Test (the account's), so the homes may be anywhere,
+// /tmp included.
 
 import { existsSync } from "fs";
 import { userInfo } from "os";
@@ -52,7 +53,7 @@ function refuseWhileRunning() {
     }
 }
 
-const { TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
+const { TEST_HELPER_IDENTITY, placeFor } = await import("../src/desktop/helper");
 const helper = join(TEST_COPY, "Contents", "Helpers", `${TEST_HELPER_IDENTITY.name}.app`);
 
 switch (step) {
@@ -102,9 +103,11 @@ switch (step) {
     case "remove": {
         refuseWhileRunning();
         const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-        for (const app of [helper, TEST_COPY]) if (existsSync(app)) Bun.spawnSync([lsregister, "-u", app]);
-        Bun.spawnSync(["rm", "-rf", TEST_COPY]);
-        console.log(`Removed ${TEST_COPY}. Its entries in System Settings (${TEST_HELPER_IDENTITY.name}) stay until you take them out with −.`);
+        const placed = placeFor(TEST_HELPER_IDENTITY, accountHome());
+        for (const app of [helper, placed, TEST_COPY]) if (existsSync(app)) Bun.spawnSync([lsregister, "-u", app]);
+        // Only the helper's copy: the rest of that folder is the app's own data, if it ran without CAVVY_ELECTRON_USER_DATA.
+        Bun.spawnSync(["rm", "-rf", TEST_COPY, placed]);
+        console.log(`Removed ${TEST_COPY} and ${placed}. Its entries in System Settings (${TEST_HELPER_IDENTITY.name}) stay until you take them out with −.`);
         break;
     }
     default:
