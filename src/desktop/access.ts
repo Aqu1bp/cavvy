@@ -4,7 +4,7 @@
 // running process sees change (with a freshly started helper every few seconds too, in case it doesn't), and every two
 // seconds with a freshly started helper for Screen Recording, which macOS tells only a process that starts after it.
 
-import { DesktopError, HELPER_BUNDLE_ID, refuseRealInTests, type Grant } from "./helper";
+import { DesktopError, HELPER_IDENTITY, refuseRealInTests, TEST_HELPER_IDENTITY, type Grant } from "./helper";
 import type { AccessInteraction, InteractionResponse } from "../server/protocol";
 import { run } from "../simulator/simctl";
 
@@ -110,7 +110,7 @@ export async function openSettingsPage(g: Grant): Promise<boolean> {
 }
 
 /** The helper ids Reset access may ever name: the helper's own (and its test copy's). Never another app's. */
-export const RESETTABLE_IDS: readonly string[] = [HELPER_BUNDLE_ID];
+export const RESETTABLE_IDS: readonly string[] = [HELPER_IDENTITY.bundleId, TEST_HELPER_IDENTITY.bundleId];
 
 /** tccutil's name for each grant. */
 const TCC_SERVICES: Record<Grant, string> = { accessibility: "Accessibility", screen: "ScreenCapture" };

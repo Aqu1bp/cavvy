@@ -11,7 +11,7 @@ import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
 import { homedir } from "os";
 import { dirname } from "path";
-import { DesktopError, DesktopHelper, HELPER_NAME, forgetTrusted, helperApp, helperBinary, helperBundleId, noteTrusted, trustedBefore, type DesktopHelperLike, type Grant, type Reply } from "./helper";
+import { DesktopError, DesktopHelper, HELPER_NAME, forgetTrusted, helperApp, helperBinary, helperIdentity, noteTrusted, trustedBefore, type DesktopHelperLike, type Grant, type Reply } from "./helper";
 import { outlineApp, refStill, type DesktopNode, type DesktopRef } from "./outline";
 
 export { DesktopError };
@@ -23,8 +23,10 @@ const PANE = "System Settings → Privacy & Security";
 // version first did isn't known here); earlier ones, under "Accessibility".
 const CONTROL = `${PANE} → Accessibility (on newer macOS, Device Control and Data Access)`;
 const SCREEN = `${PANE} → Screen & System Audio Recording`;
-export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${CONTROL}, then try again.`;
-export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.`;
+/** What to turn on for a grant, and where: the helper by the name System Settings lists (a test copy's has its own). */
+const turnOn = (g: Grant, name = HELPER_NAME) => `Turn on ${name} in ${g === "screen" ? SCREEN : CONTROL}, then try again.`;
+export const ACCESSIBILITY_LINE = turnOn("accessibility");
+export const SCREEN_LINE = turnOn("screen");
 
 /**
  * A new build of the helper, where an earlier one had the grant: macOS shows the switch on but no longer counts it,
@@ -33,7 +35,8 @@ export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.
 export function staleLine(g: "accessibility" | "screen"): string {
     const dir = dirname(helperApp());
     const where = dir.startsWith(`${homedir()}/`) ? `~${dir.slice(homedir().length)}` : dir;
-    return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (${HELPER_NAME}.app, in ${where}) and turn it on, then try again.`;
+    const { name } = helperIdentity();
+    return `${name} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (${name}.app, in ${where}) and turn it on, then try again.`;
 }
 const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
 export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on newer macOS, Device Control and Data Access) and Input Monitoring, then try again.`;
@@ -163,7 +166,7 @@ function grantOf(e: unknown): Grant | undefined {
 /** What to turn on, and where, in one line: for where there's no card, and after one that didn't get it. */
 function grantLine(g: Grant): string {
     if (trustedBefore(g)) return staleLine(g);
-    return g === "screen" ? SCREEN_LINE : ACCESSIBILITY_LINE;
+    return turnOn(g, helperIdentity().name);
 }
 
 /**
@@ -188,7 +191,7 @@ async function access(g: Grant, ask?: SessionAsker): Promise<void> {
     let p = asking.get(g);
     if (!p) {
         const card = ask.card(ask.signal ?? new AbortController().signal);
-        p = obtain(g, card, accessDeps, { name: HELPER_NAME, page: g === "screen" ? SCREEN : CONTROL, line: () => grantLine(g), stale: trustedBefore(g), signal: ask.signal }).finally(() => asking.delete(g));
+        p = obtain(g, card, accessDeps, { name: helperIdentity().name, page: g === "screen" ? SCREEN : CONTROL, line: () => grantLine(g), stale: trustedBefore(g), signal: ask.signal }).finally(() => asking.delete(g));
         asking.set(g, p);
     }
     const seen = await p;
@@ -213,7 +216,7 @@ const accessDeps = {
         }
     },
     async reset(g: Grant): Promise<string | undefined> {
-        const error = await resetter(g, helperBundleId());
+        const error = await resetter(g, helperIdentity().bundleId);
         if (!error) forgetTrusted(g);
         return error;
     },

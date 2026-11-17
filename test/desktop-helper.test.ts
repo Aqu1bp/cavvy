@@ -10,7 +10,8 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, clearStale, handshake, helperApp, helperBinary, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+const { DesktopHelper, buildIn, clearStale, handshake, helperApp, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
+const { RESETTABLE_IDS, resetCommand } = await import("../src/desktop/access");
 const { paths } = await import("../src/config/paths");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
@@ -47,6 +48,41 @@ test.skipIf(!swift)("it builds as an app with its own bundle id and signature, n
         rmSync(dir, { recursive: true, force: true });
     }
 }, 240_000);
+
+test.skipIf(!swift)("a test copy's helper builds with an identity of its own, never run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-helper-compile-"));
+    try {
+        const app = await buildIn(dir, TEST_HELPER_IDENTITY);
+        expect(app).toBe(join(dir, "Cavvy Desktop Control (Test).app"));
+        expect(existsSync(join(app, "Contents", "MacOS", "Cavvy Desktop Control (Test)"))).toBe(true);
+        const plist = readFileSync(join(app, "Contents", "Info.plist"), "utf8");
+        expect(plist).toContain("<key>CFBundleIdentifier</key>\n\t<string>dev.cavvy.desktop.control.test</string>");
+        expect(plist).toContain("<key>CFBundleName</key>\n\t<string>Cavvy Desktop Control (Test)</string>");
+        expect(Bun.spawnSync(["codesign", "-dv", app], { stderr: "pipe" }).stderr.toString()).toContain("Identifier=dev.cavvy.desktop.control.test");
+        expect(helperIdentity(app)).toEqual(TEST_HELPER_IDENTITY);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}, 240_000);
+
+test("a test copy carries its own helper, and Reset access may name only the two helpers' ids", () => {
+    const root = mkdtempSync(join(tmpdir(), "cavvy-helper-carried-"));
+    try {
+        const helper = join(root, "Cavvy Test.app", "Contents", "Helpers", "Cavvy Desktop Control (Test).app");
+        mkdirSync(join(helper, "Contents"), { recursive: true });
+        writeFileSync(join(helper, "Contents", "Info.plist"), infoPlist(sourceHash(), TEST_HELPER_IDENTITY));
+        const server = join(root, "Cavvy Test.app", "Contents", "MacOS", "cavvy");
+        expect(helperApp(server)).toBe(helper);
+        expect(helperIdentity(helperApp(server))).toEqual({ name: "Cavvy Desktop Control (Test)", bundleId: "dev.cavvy.desktop.control.test" });
+        // Release builds keep the helper's own.
+        expect(HELPER_IDENTITY).toEqual({ name: "Cavvy Desktop Control", bundleId: HELPER_BUNDLE_ID });
+        expect(helperIdentity(join(root, "nothing.app"))).toEqual(HELPER_IDENTITY);
+        expect(RESETTABLE_IDS).toEqual(["dev.cavvy.desktop.control", "dev.cavvy.desktop.control.test"]);
+        expect(resetCommand("screen", "dev.cavvy.desktop.control.test")).toEqual(["/usr/bin/tccutil", "reset", "ScreenCapture", "dev.cavvy.desktop.control.test"]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 test("the app's own helper is used when it's of this source; else the one in Cavvy's home", () => {
     const root = mkdtempSync(join(tmpdir(), "cavvy-helper-carried-"));

@@ -5,7 +5,7 @@
 
 import { createHash, randomBytes } from "crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import { paths } from "../config/paths";
 import { run } from "../simulator/simctl";
 import { NEVER_OFFERED, NEVER_OFFERED_NAME_PATTERNS } from "./apps";
@@ -114,8 +114,25 @@ let building: Promise<string> | undefined;
 
 /** Its bundle id: what macOS keeps the person's grants under, with its signature. */
 export const HELPER_BUNDLE_ID = "dev.cavvy.desktop.control";
+
+/** What macOS knows a helper by: the name it lists, and the bundle id it keeps the grants under. */
+export interface HelperIdentity {
+    name: string;
+    bundleId: string;
+}
+
+export const HELPER_IDENTITY: HelperIdentity = { name: HELPER_NAME, bundleId: HELPER_BUNDLE_ID };
+/**
+ * A test copy's (desktop-electron/pack.ts --test-helper, scripts/test-copy.ts): an entry of its own in System Settings,
+ * so trying a build never touches the grants the person gave the helper they use.
+ */
+export const TEST_HELPER_IDENTITY: HelperIdentity = { name: `${HELPER_NAME} (Test)`, bundleId: `${HELPER_BUNDLE_ID}.test` };
+const IDENTITIES = [HELPER_IDENTITY, TEST_HELPER_IDENTITY];
+
 const APP = `${HELPER_NAME}.app`;
-const executableIn = (app: string) => join(app, "Contents", "MacOS", HELPER_NAME);
+const appOf = (id: HelperIdentity) => `${id.name}.app`;
+/** The executable has the bundle's name. */
+const executableIn = (app: string) => join(app, "Contents", "MacOS", basename(app, ".app"));
 
 /** The source a helper bundle was built from (its Info.plist says), if it's there. */
 function builtFrom(app: string): string | undefined {
@@ -134,8 +151,8 @@ function builtFrom(app: string): string | undefined {
 function carried(execPath = process.execPath): string | undefined {
     const app = /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
     if (!app) return undefined;
-    const helper = join(app, "Contents", "Helpers", APP);
-    return builtFrom(helper) === sourceHash() ? helper : undefined;
+    // The helper's own, or a test copy's.
+    return IDENTITIES.map((id) => join(app, "Contents", "Helpers", appOf(id))).find((helper) => builtFrom(helper) === sourceHash());
 }
 
 /** The helper bundle Cavvy uses: the app's own, else the one built in Cavvy's home (`execPath`: the server's, for tests). */
@@ -143,13 +160,15 @@ export function helperApp(execPath = process.execPath): string {
     return carried(execPath) ?? join(dir(), APP);
 }
 
-/** The bundle id of the helper Cavvy uses, as its Info.plist says: what macOS keeps its grants under. */
-export function helperBundleId(app = helperApp()): string {
+/** Who the helper Cavvy uses is to macOS, as its Info.plist says: one of the two identities, else the helper's own. */
+export function helperIdentity(app = helperApp()): HelperIdentity {
+    let id: string | undefined;
     try {
-        return /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(join(app, "Contents", "Info.plist"), "utf8"))?.[1] ?? HELPER_BUNDLE_ID;
+        id = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(join(app, "Contents", "Info.plist"), "utf8"))?.[1];
     } catch {
-        return HELPER_BUNDLE_ID;
+        // Not built yet: it will be the helper's own.
     }
+    return IDENTITIES.find((i) => i.bundleId === id) ?? HELPER_IDENTITY;
 }
 
 /** The helper, built in Cavvy's home when the app carries none of this source and it isn't built yet (a few seconds). */
@@ -190,15 +209,16 @@ export function clearStale() {
 }
 
 /**
- * Builds the helper as an app bundle in `parent` (Cavvy Desktop Control.app, bundle id dev.cavvy.desktop.control),
- * signed ad hoc; returns the bundle. One bundle id at one path is one entry in System Settings; signed ad hoc, macOS
- * counts a grant for that build only, so it lasts until the source changes (the same source builds the same).
+ * Builds the helper as an app bundle in `parent` (Cavvy Desktop Control.app, bundle id dev.cavvy.desktop.control; or
+ * `identity`'s, a test copy's), signed ad hoc; returns the bundle. One bundle id at one path is one entry in System
+ * Settings; signed ad hoc, macOS counts a grant for that build only, so it lasts until the source changes (the same
+ * source builds the same).
  */
-export async function buildIn(parent: string): Promise<string> {
+export async function buildIn(parent: string, identity: HelperIdentity = HELPER_IDENTITY): Promise<string> {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     const tag = randomBytes(4).toString("hex");
     const tmpDir = join(parent, `.build-${tag}`);
-    const app = join(tmpDir, APP);
+    const app = join(tmpDir, appOf(identity));
     const src = join(tmpDir, "helper.swift");
     mkdirSync(join(app, "Contents", "MacOS"), { recursive: true, mode: 0o700 });
     writeFileSync(src, helperSource(), { mode: 0o600 });
@@ -210,11 +230,11 @@ export async function buildIn(parent: string): Promise<string> {
         }
         rmSync(src, { force: true });
         chmodSync(executableIn(app), 0o755);
-        writeFileSync(join(app, "Contents", "Info.plist"), infoPlist(sourceHash()));
-        const signed = await run(["codesign", "--force", "--sign", "-", "--identifier", HELPER_BUNDLE_ID, app], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
+        writeFileSync(join(app, "Contents", "Info.plist"), infoPlist(sourceHash(), identity));
+        const signed = await run(["codesign", "--force", "--sign", "-", "--identifier", identity.bundleId, app], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
         if (signed.code !== 0) throw new DesktopError(`Couldn't sign ${HELPER_NAME}: ${(signed.stderr || signed.stdout).trim().split("\n")[0]}`);
         // In its place. One still running keeps its own copy until it ends.
-        const final = join(parent, APP);
+        const final = join(parent, appOf(identity));
         const old = join(parent, `.old-${tag}`);
         if (existsSync(final)) renameSync(final, old);
         renameSync(app, final);
@@ -226,12 +246,12 @@ export async function buildIn(parent: string): Promise<string> {
 }
 
 /** Its Info.plist: a background app (no Dock icon, no menu bar) under its bundle id, and the source it was built from. */
-export function infoPlist(hash: string): string {
+export function infoPlist(hash: string, identity: HelperIdentity = HELPER_IDENTITY): string {
     const entries: [string, string][] = [
-        ["CFBundleIdentifier", `<string>${HELPER_BUNDLE_ID}</string>`],
-        ["CFBundleName", `<string>${HELPER_NAME}</string>`],
-        ["CFBundleDisplayName", `<string>${HELPER_NAME}</string>`],
-        ["CFBundleExecutable", `<string>${HELPER_NAME}</string>`],
+        ["CFBundleIdentifier", `<string>${identity.bundleId}</string>`],
+        ["CFBundleName", `<string>${identity.name}</string>`],
+        ["CFBundleDisplayName", `<string>${identity.name}</string>`],
+        ["CFBundleExecutable", `<string>${identity.name}</string>`],
         ["CFBundlePackageType", "<string>APPL</string>"],
         ["CFBundleInfoDictionaryVersion", "<string>6.0</string>"],
         ["CFBundleVersion", "<string>1</string>"],

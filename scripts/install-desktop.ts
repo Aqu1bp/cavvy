@@ -22,6 +22,7 @@ import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install";
 import { appInfo, olderThan } from "../desktop-electron/app-info";
+import { appleIssued, keychainArgs, loginKeychain as loginKeychainPath, validIdentities, type SigningIdentity } from "./signing";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS, as the desktop app is for now. Elsewhere, cavvy gui runs the same app in your browser.");
@@ -79,10 +80,7 @@ function writable(dir: string): boolean {
 }
 const dest = join(writable("/Applications") ? "/Applications" : join(homedir(), "Applications"), `${productName}.app`);
 
-interface Identity {
-    hash: string;
-    name: string;
-}
+type Identity = SigningIdentity;
 
 /** Who signed the installed copy's server (the part that reads the keychain). */
 function signedBy(app: string): string | undefined {
@@ -92,28 +90,14 @@ function signedBy(app: string): string | undefined {
     return r.stderr.toString().match(/^Authority=(.+)$/m)?.[1];
 }
 
-/**
- * The account's own home, from its user record, whatever HOME says (a test home, say): its login keychain is there.
- * `security` and `codesign` look for certificates in the keychains HOME's settings list, so with HOME elsewhere they
- * see none, and the build would be signed ad hoc without a word.
- */
-function accountHome(): string {
-    return Bun.spawnSync(["/bin/sh", "-c", 'eval echo "~$(id -un)"'], { stdout: "pipe" }).stdout.toString().trim() || homedir();
-}
-const loginKeychain = join(accountHome(), "Library", "Keychains", "login.keychain-db");
-/** With HOME elsewhere, the login keychain named outright, to look in and to sign from. */
-const keychain = resolve(homedir()) !== resolve(accountHome()) && existsSync(loginKeychain) ? [loginKeychain] : [];
+// With HOME elsewhere (a test home), the login keychain is named outright, to look in and to sign from.
+const loginKeychain = loginKeychainPath();
+const keychain = keychainArgs();
 
 /** A certificate Apple issued, so the keychain's trust carries over to the next build; none means ad hoc. */
 function signingIdentity(): Identity | undefined {
     if (keychain.length) console.log(`HOME isn't your account's home: looking for your certificate in ${loginKeychain}.`);
-    const valid = output(["security", "find-identity", "-v", "-p", "codesigning", ...keychain])
-        .split("\n")
-        .flatMap((l) => {
-            // Revoked and expired ones are listed too, flagged CSSMERR_….
-            const m = l.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"(.*)$/);
-            return m && !m[3]!.includes("CSSMERR") ? [{ hash: m[1]!, name: m[2]! }] : [];
-        });
+    const valid = validIdentities(output(["security", "find-identity", "-v", "-p", "codesigning", ...keychain]));
     const want = process.env.CAVVY_SIGNING_IDENTITY?.trim();
     if (want) {
         const id = valid.find((i) => i.hash === want.toUpperCase() || i.name === want);
@@ -123,7 +107,7 @@ function signingIdentity(): Identity | undefined {
         }
         return id;
     }
-    const apple = valid.filter((i) => /^(Apple Development|Mac Developer|Developer ID Application): /.test(i.name));
+    const apple = valid.filter(appleIssued);
     const before = signedBy(dest);
     return apple.find((i) => i.name === before) ?? apple[0];
 }
