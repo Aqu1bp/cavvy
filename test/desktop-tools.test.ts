@@ -227,6 +227,25 @@ describe("what reaches the Mac", () => {
         return s;
     };
 
+    test("an action ends once the app is still, though the helper lists each element's fields in any order", async () => {
+        const s = new DesktopSession({ settleMs: 1500 });
+        await s.grant("TextEdit");
+        // As Swift's dictionaries come out: the same tree, its keys in another order each read.
+        let reads = 0;
+        const reorder = (v: unknown): unknown => (Array.isArray(v) ? v.map(reorder) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, reorder(x)] as const).sort(() => (reads % 2 ? 1 : -1))) : v);
+        const call = helper.call.bind(helper);
+        helper.call = async (c, t) => {
+            const r = await call(c, t);
+            if (c.op === "look" && r.tree) (reads++, (r.tree = reorder(r.tree)));
+            return r;
+        };
+        const t0 = Date.now();
+        await DesktopActTool.run({ action: "type", text: "hi" }, ctxWith(s));
+        // A pause, then two reads alike: not the whole 1.5 s.
+        expect(Date.now() - t0).toBeLessThan(1000);
+        expect(reads).toBeGreaterThanOrEqual(2);
+    });
+
     test("with no app given, nothing is read or done", async () => {
         const s = session();
         const r = await DesktopSnapshotTool.run({}, ctxWith(s));

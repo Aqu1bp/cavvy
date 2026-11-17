@@ -104,6 +104,14 @@ async function withHelper<T>(fn: (h: DesktopHelperLike) => Promise<T>): Promise<
     }
 }
 
+/**
+ * A tree as text with each node's keys in one order, to tell whether the app changed: the helper's JSON lists them in
+ * any order, read to read (Swift's dictionaries have none), so the same app can come back as different text.
+ */
+function sameKeys(v: unknown): string {
+    return JSON.stringify(v, (_k, x: unknown) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+}
+
 /** Has macOS show its Accessibility prompt (once for each helper), and says in one line what to turn on. */
 async function askAccessibility(h: DesktopHelperLike): Promise<string> {
     if (!promptedAccessibility) {
@@ -349,7 +357,7 @@ export class DesktopSession {
             if (!r || !app) return undefined;
             const reply = await call(h, { op: "look", pid: app.pid, pids: r.pids }).catch(() => undefined);
             if (!reply) return undefined;
-            const tree = JSON.stringify(reply.tree ?? null);
+            const tree = sameKeys(reply.tree ?? null);
             if (tree === before) return { r, app, reply };
             before = tree;
             await pause(200, signal);
