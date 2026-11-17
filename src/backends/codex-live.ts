@@ -70,7 +70,7 @@ import {
     type SubAgent,
     type TurnOutput,
 } from "./codex";
-import { mergeThreadConfig } from "./codex-computer-use";
+import { mergeThreadConfig, type ThreadConfig } from "./codex-computer-use";
 
 /** How long finished background commands are gathered before a turn tells Codex (two ending together make one turn). */
 const NOTE_SETTLE_MS = 50;
@@ -389,26 +389,33 @@ export class CodexLiveConnection extends CodexTurn {
         let orch = t.orchestrator;
         const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [orch?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
         if (typeof overrides === "string") throw new Error(overrides);
-        // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
-        const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
-        // Fallen back to Cavvy's Mac app tools (it isn't set up here): its server serves them from the start.
-        orch = this.withDesktopTools(t, orch);
         if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
             this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way in this session${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
             this.nativeHooks = false;
         }
-        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
         if (orch && overrides.collisions.includes(orch.name)) {
             this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
         }
+        const collided = !orch;
         const baseInstructions = [t.appendSystemPrompt, t.readOnly ? READ_ONLY_LISTENER_NOTE : LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
-        const developerInstructions = [baseInstructions, orch?.instructions].filter(Boolean).join("\n\n") || undefined;
-        let config: Record<string, unknown> | undefined = orch && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(orch).mcp_servers as Record<string, unknown>) } } : off;
-        if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
         const fastTier = o.settings.fastMode && t.model.supportsFastMode ? t.model.fastModeTier : undefined;
         this.threadMode = startMode;
-        const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+        // Computer use and what goes with it: built again for a thread whose computer use didn't load (computerUseLoaded).
+        let off: ThreadConfig | undefined;
+        let threadParams!: Record<string, unknown>;
+        const build = () => {
+            // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
+            off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
+            // Fallen back to Cavvy's Mac app tools (it isn't set up here): its server serves them from the start.
+            if (!collided) orch = this.withDesktopTools(t, orch);
+            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
+            const developerInstructions = [baseInstructions, orch?.instructions].filter(Boolean).join("\n\n") || undefined;
+            let config: Record<string, unknown> | undefined = orch && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(orch).mcp_servers as Record<string, unknown>) } } : off;
+            if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
+            threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+        };
+        build();
         // A Codex that won't take the config of Cavvy's server still gets its thread, without it.
         this.threadParams = threadParams;
         const thread = async (method: string, params: Record<string, unknown>) => {
@@ -431,6 +438,8 @@ export class CodexLiveConnection extends CodexTurn {
                 if (!this.threadId || (o.fork && this.threadId === o.resumeId)) throw new Error("Codex didn't fork the thread");
                 if (typeof r?.model === "string") this.threadModels.set(this.threadId, r.model);
                 this.tierNow = r?.serviceTier;
+                // Not loaded: Cavvy's tools from the next message, whose app-server serves them (its tools differ).
+                await this.computerUseLoaded(t, this.threadId);
             } catch (e) {
                 // Codex refused it (gone, another folder's): the agent starts a new thread, with the conversation as
                 // context. Not when the app-server went meanwhile (Esc while it resumed): the thread is fine.
@@ -438,7 +447,14 @@ export class CodexLiveConnection extends CodexTurn {
                 throw e;
             }
         } else {
-            const r = await thread("thread/start", threadParams);
+            let r = await thread("thread/start", threadParams);
+            // Its computer use set up, but not loaded by this Codex: a thread with Cavvy's tools in its place (one with
+            // no turn yet leaves nothing behind). The next message's app-server is a new one, with them from the start.
+            if (r?.thread?.id && !(await this.computerUseLoaded(t, r.thread.id))) {
+                build();
+                this.threadParams = threadParams;
+                r = await thread("thread/start", threadParams);
+            }
             this.threadId = r?.thread?.id;
             if (!this.threadId) throw new Error("Codex didn't start a thread");
             if (typeof r?.model === "string") this.threadModels.set(this.threadId, r.model);

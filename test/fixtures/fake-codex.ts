@@ -117,6 +117,10 @@
 //                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 // FAKE_USER_PLUGINS / FAKE_PROJECT_PLUGINS  config/read's plugins table per layer (JSON), as Codex 0.163 reports native plugins
+//                     With the ChatGPT app's unified-computer-use plugin on there and not turned off for a thread, the
+//                     thread has its cua_repl: announced as starting just after thread/start (or resume) answers, and
+//                     listed by mcpServerStatus/list (as measured with Codex 0.169). FAKE_CU_NOT_LOADED=1: Codex says the
+//                     plugin is on but doesn't load it (as 0.169 does with CODEX_HOME away from $HOME/.codex).
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 // Hooks: like Codex 0.163, hooks given with -c hooks=… run only when hooks.state trusts them by the hash Codex
 //                     computes (sha256 of the normalized handler as sorted JSON). A trusted PreToolUse mcp_tool hook
@@ -308,6 +312,16 @@ const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const pending = new Map<number, (r: any) => void>();
 let serverSeq = 100;
 let turnSeq = 0;
+/** Threads with the ChatGPT app's computer use loaded (its plugin on in config/read, not turned off for the thread). */
+const cuThreads = new Set<string>();
+function announceComputerUse(threadId: string, config: any) {
+    const plugin = "unified-computer-use@openai-bundled";
+    const on = { ...JSON.parse(process.env.FAKE_USER_PLUGINS ?? "null"), ...JSON.parse(process.env.FAKE_PROJECT_PLUGINS ?? "null") }[plugin]?.enabled === true;
+    if (!on || config?.plugins?.[plugin]?.enabled === false || process.env.FAKE_CU_NOT_LOADED === "1") return cuThreads.delete(threadId);
+    cuThreads.add(threadId);
+    // Just after the answer, as measured.
+    setTimeout(() => notify("mcpServer/startupStatus/updated", { threadId, name: "cua_repl", status: "starting", error: null, failureReason: null }), 15);
+}
 /** Each thread's service tier, as Codex keeps it ("priority", "flex", or null for standard). */
 // Codex keeps a thread's tier with the thread, so it outlives this process: kept beside the log.
 const tierFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".tiers.json" : undefined;
@@ -950,6 +964,13 @@ async function handle(m: any) {
                 nextCursor: null,
             });
         }
+        case "mcpServerStatus/list": {
+            // By name, as Codex 0.169 answers it: at once for a server the thread doesn't have.
+            const has = cuThreads.has(String(p.threadId));
+            const data = has && (!p.serverName || p.serverName === "cua_repl") ? [{ name: "cua_repl", runtimeStatus: "connected", tools: {} }] : [];
+            log({ statusList: p.serverName ?? null });
+            return reply({ data, nextCursor: null });
+        }
         case "thread/start":
             log({ threadMcp: p.config?.mcp_servers ?? null });
             // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
@@ -964,7 +985,8 @@ async function handle(m: any) {
             // A new thread starts with no usage.
             usageOf.delete(fresh);
             rollout(fresh, true);
-            return reply({ thread: { id: fresh }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(fresh) ?? "default" });
+            reply({ thread: { id: fresh }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(fresh) ?? "default" });
+            return announceComputerUse(fresh, p.config);
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);
@@ -976,7 +998,7 @@ async function handle(m: any) {
             reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? "default" });
             // The thread's last usage again, with that earlier turn's id.
             repeatUsage(p.threadId);
-            return;
+            return announceComputerUse(String(p.threadId), p.config);
         case "thread/fork": {
             // A copy of the thread, under a new id. Like Codex 0.163's, it carries on the thread's running
             // usage total (its next report's total includes what the original spent), and reports nothing now.
