@@ -9,7 +9,8 @@ import { randomBytes } from "crypto";
 import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
 import { homedir } from "os";
-import { DesktopError, DesktopHelper, HELPER_NAME, helperBinary, helperDir, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
+import { dirname } from "path";
+import { DesktopError, DesktopHelper, HELPER_NAME, helperApp, helperBinary, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
 import { outlineApp, refStill, type DesktopNode, type DesktopRef } from "./outline";
 
 export { DesktopError };
@@ -29,9 +30,9 @@ export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.
  * and asks nothing (seen on macOS 27.0). Taking it out and adding it again is what works.
  */
 export function staleLine(g: "accessibility" | "screen"): string {
-    const dir = helperDir();
+    const dir = dirname(helperApp());
     const where = dir.startsWith(`${homedir()}/`) ? `~${dir.slice(homedir().length)}` : dir;
-    return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (it's in ${where}) and turn it on, then try again.`;
+    return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (${HELPER_NAME}.app, in ${where}) and turn it on, then try again.`;
 }
 const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
 export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on newer macOS, Device Control and Data Access) and Input Monitoring, then try again.`;

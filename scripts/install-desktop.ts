@@ -116,11 +116,15 @@ function signingIdentity(): Identity | undefined {
 }
 
 // By SHA-1, as names can repeat (a revoked copy). Electron's helpers and frameworks first (--deep), then the server
-// under an identifier of its own (the keychain knows it by that and the certificate), then the app around both again.
+// under an identifier of its own (the keychain knows it by that and the certificate), and the Mac app helper under its
+// bundle id (macOS keeps the person's Accessibility and Screen Recording grants for it by that and the certificate, so
+// they outlast a new version), then the app around them again.
 const id = signingIdentity();
+const desktopHelper = join(built, "Contents", "Helpers", "Cavvy Desktop Control.app");
 if (id) {
     output(["codesign", "--force", "--deep", "--sign", id.hash, "--timestamp=none", built]);
     output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "cavvy")]);
+    if (existsSync(desktopHelper)) output(["codesign", "--force", "--sign", id.hash, "--identifier", "dev.cavvy.desktop.control", "--timestamp=none", desktopHelper]);
     output(["codesign", "--force", "--sign", id.hash, "--timestamp=none", built]);
     output(["codesign", "--verify", "--deep", "--strict", built]);
     console.log(`Signed with ${id.name}`);
