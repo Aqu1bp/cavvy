@@ -19,7 +19,7 @@ export interface Crop {
     density: number;
 }
 
-/** Samples across a layer's longer side, looking for where it draws and how smooth it is. */
+/** Samples across a layer's longer side, at most, looking for where it draws and how smooth it is. */
 const SAMPLES = 512;
 /** How far out a pixel may be, in 0–255 levels, once a coarser drawing is stretched. */
 const LEVELS = 1;
@@ -39,7 +39,8 @@ const WORTH = 0.2;
 /** Where in its box the layer draws, a sample's margin round it, and how fine it needs drawing at most `full` pixels to a unit; undefined when it can't be read. */
 export function cropOf(layer: Layer, img: HTMLImageElement, full: number): Crop | undefined {
     const box = boxOf(layer);
-    const k = Math.max(box.width, box.height) / SAMPLES;
+    // No finer than the screen: a small layer has fewer pixels on it than SAMPLES.
+    const k = Math.max(Math.max(box.width, box.height) / SAMPLES, 1 / full);
     const w = Math.max(1, Math.ceil(box.width / k));
     const h = Math.max(1, Math.ceil(box.height / k));
     const canvas = document.createElement("canvas");
@@ -112,21 +113,25 @@ export function cropOf(layer: Layer, img: HTMLImageElement, full: number): Crop 
 
 /** The samples where the layer changes most from its neighbours, and its middle: where a coarser drawing would show first. */
 function busy(pm: Float32Array, w: number, x0: number, y0: number, x1: number, y1: number): [number, number][] {
-    const scored: [number, number, number][] = [];
-    for (let y = y0 + 1; y < y1; y++) {
-        for (let x = x0 + 1; x < x1; x++) {
-            const i = (y * w + x) * 4;
-            let d = 0;
-            for (let c = 0; c < 4; c++) d += Math.abs(pm[i + 4 + c]! - pm[i - 4 + c]!) + Math.abs(pm[i + w * 4 + c]! - pm[i - w * 4 + c]!);
-            if (d) scored.push([d, x, y]);
-        }
-    }
-    scored.sort((a, b) => b[0] - a[0]);
     const out: [number, number][] = [[Math.round((x0 + x1) / 2), Math.round((y0 + y1) / 2)]];
-    // Spread out: not all on one edge.
-    for (const [, x, y] of scored) {
-        if (out.length >= 4) break;
-        if (out.every(([ox, oy]) => Math.abs(ox - x) + Math.abs(oy - y) > 8)) out.push([x, y]);
+    // The busiest sample not near one already picked, three times: spread out, not all on one edge. (Sorting every
+    // sample took a soft layer, busy nearly everywhere, a tenth of a second.)
+    while (out.length < 4) {
+        let best = 0;
+        let at: [number, number] | undefined;
+        for (let y = y0 + 1; y < y1; y++) {
+            for (let x = x0 + 1; x < x1; x++) {
+                const i = (y * w + x) * 4;
+                let d = 0;
+                for (let c = 0; c < 4; c++) d += Math.abs(pm[i + 4 + c]! - pm[i - 4 + c]!) + Math.abs(pm[i + w * 4 + c]! - pm[i - w * 4 + c]!);
+                if (d > best && out.every(([ox, oy]) => Math.abs(ox - x) + Math.abs(oy - y) > 8)) {
+                    best = d;
+                    at = [x, y];
+                }
+            }
+        }
+        if (!at) break;
+        out.push(at);
     }
     return out;
 }

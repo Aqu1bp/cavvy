@@ -13,7 +13,7 @@ import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette"
 import { parseHex, rgba } from "../../../src/themes/color";
 import { alignOnStart, carryOn, gridOf, layerAnimation, restPose, sceneFrames, screenPx, transformOf, type LayerAnimation } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
-import { cropOf, type Crop } from "../lib/theme-crop";
+import { cropOf, cutSvg, type Crop } from "../lib/theme-crop";
 import { away } from "../lib/away";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
@@ -107,6 +107,46 @@ async function measure(key: string, look: Look, s: Shown, loaded: Awaited<Return
 
 /** Each scene's layers cut to where they draw, and how fine each needs drawing (lib/theme-crop.ts). */
 const cuts = new Map<string, (Crop | undefined)[]>();
+/**
+ * The cuts kept across runs, by scene and screen: working them out takes a blurred scene half a second. Just where
+ * each layer's cut is and how fine: its SVG is cut again from that. The last KEPT_CUTS scenes.
+ */
+const CUTS_KEY = "cavvy.themeCuts.1";
+const KEPT_CUTS = 40;
+type KeptCut = [x: number, y: number, width: number, height: number, density: number] | null;
+
+function keptCuts(): Record<string, KeptCut[]> {
+    try {
+        const v = JSON.parse(localStorage.getItem(CUTS_KEY) ?? "{}");
+        return v && typeof v === "object" ? v : {};
+    } catch {
+        return {};
+    }
+}
+
+function keepCuts(key: string, list: (Crop | undefined)[]) {
+    const all = keptCuts();
+    delete all[key];
+    all[key] = list.map((c) => (c ? [c.x, c.y, c.width, c.height, Number.isFinite(c.density) ? c.density : -1] : null));
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - KEPT_CUTS))) delete all[k];
+    try {
+        localStorage.setItem(CUTS_KEY, JSON.stringify(all));
+    } catch {
+        // Full or private: worked out again next run.
+    }
+}
+
+/** A kept cut as cropOf gave it: its SVG cut again where it's a part of the layer's box. */
+function cutFrom(layer: Layer, kept: KeptCut | undefined): Crop | undefined {
+    if (!Array.isArray(kept) || kept.length !== 5 || !kept.every((n) => typeof n === "number")) return undefined;
+    const [x, y, width, height, d] = kept;
+    const density = d < 0 ? Infinity : d;
+    const box = boxOf(layer);
+    if (x === 0 && y === 0 && width === box.width && height === box.height) return { x, y, width, height, density };
+    const svg = cutSvg(layer.svg, box.width, box.height, { x, y, width, height });
+    return svg ? { x, y, width, height, svg, density } : { x: 0, y: 0, width: box.width, height: box.height, density };
+}
 /** Drawn into a canvas no finer than it needs, a layer that needs less than this much of the screen's own fineness. */
 const SOFT = 0.5;
 
@@ -178,9 +218,20 @@ function LayerView(p: { layer: Layer; index: number; animation?: string; frame: 
 /** Each layer's cut (lib/theme-crop.ts), and a cut SVG decoded, so the layer shows whole when it's put in. */
 async function cutsFor(key: string, layers: Layer[], images: (HTMLImageElement | undefined)[], px: number): Promise<(Crop | undefined)[]> {
     let list = cuts.get(key);
-    if (!list) {
-        list = layers.map((l, i) => (images[i] ? cropOf(l, images[i]!, px) : undefined));
+    const kept = list ? undefined : keptCuts()[`${key}@${px}`];
+    if (!list && Array.isArray(kept) && kept.length === layers.length) {
+        list = layers.map((l, i) => (images[i] && kept[i] ? cutFrom(l, kept[i]) : undefined));
         cuts.set(key, list);
+    }
+    if (!list) {
+        list = [];
+        // One layer a task: the window keeps answering while a scene of many is worked out.
+        for (let i = 0; i < layers.length; i++) {
+            if (i) await new Promise((go) => setTimeout(go, 0));
+            list.push(images[i] ? cropOf(layers[i]!, images[i]!, px) : undefined);
+        }
+        cuts.set(key, list);
+        keepCuts(`${key}@${px}`, list);
     }
     await Promise.all(
         list.map((c, i) => {
