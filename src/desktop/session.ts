@@ -301,7 +301,7 @@ export class DesktopSession {
     refName(ref: string): string | undefined {
         const r = this.refs.get(ref.replace(/^\[|\]$/g, ""));
         if (!r) return undefined;
-        const role = r.role.replace(/^AX/, "").toLowerCase() || "element";
+        const role = r.word ?? (r.role.replace(/^AX/, "").toLowerCase() || "element");
         return r.name && r.name.toLowerCase() !== role ? `${role} ${JSON.stringify(r.name.length > 60 ? `${r.name.slice(0, 60)}…` : r.name)}` : role;
     }
 
@@ -476,6 +476,9 @@ export class DesktopSession {
             let secure = false;
             if (o.ref !== undefined) {
                 const p = await this.at(a, { ref: o.ref });
+                // Select-all and delete empties a text field; anywhere else it may do something else (in Calculator,
+                // it deletes a digit).
+                if (o.clear && p.ref && !p.ref.editable) throw new DesktopError(`Not done: clear empties a text field, and ${p.name} isn't one. Type without clear, or clear it the app's own way.`);
                 secure = Boolean(p.ref?.secure);
                 await a.send({ op: "click", x: p.x, y: p.y, button: "left", count: 1, pids: a.r.pids });
                 await pause(150, signal);

@@ -406,6 +406,21 @@ describe("what reaches the Mac", () => {
         expect(await DesktopActTool.preview!({ action: "click", ref: "e999" }, ctxWith(s))).toEqual({ summary: "Click e999 in TextEdit" });
     });
 
+    test("a static text is named as the outline names it; clear is refused, with nothing sent, where there's no text field", async () => {
+        helper.tree = { role: "AXApplication", title: "Calculator", children: [{ role: "AXWindow", title: "Calculator", frame: [0, 0, 230, 400], children: [{ role: "AXStaticText", label: "Edit field", value: "11,111", frame: [120, 10, 90, 36] }, { role: "AXTextField", title: "Memo", frame: [10, 60, 200, 20] }] }] };
+        const s = await granted("TextEdit");
+        const shown = await s.snapshot();
+        const display = /text "Edit field"[^\n]*\[(e\d+)\]/.exec(shown)![1]!;
+        expect(await DesktopActTool.preview!({ action: "type", ref: display, text: "6*7=", clear: true }, ctxWith(s))).toMatchObject({ summary: expect.stringContaining(`into text "Edit field" (${display})`) });
+        const r = await DesktopActTool.run({ action: "type", ref: display, text: "6*7=", clear: true }, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: `Not done: clear empties a text field, and "Edit field" [${display}] isn't one. Type without clear, or clear it the app's own way.` });
+        expect([...helper.sent("click"), ...helper.sent("press"), ...helper.sent("type")]).toHaveLength(0);
+        // A text field is cleared as before.
+        const memo = /textfield "Memo"[^\n]*\[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        await DesktopActTool.run({ action: "type", ref: memo, text: "x", clear: true }, ctxWith(s));
+        expect(helper.sent("press").map((c) => c.key)).toEqual(["a", "backspace"]);
+    });
+
     test("a ref is refused, with nothing sent, when what it stood for has gone; and is good for one action", async () => {
         const s = await granted("TextEdit");
         let ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
