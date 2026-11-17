@@ -154,7 +154,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         // Answered, the card goes away; if the answer didn't go through, it can be given again.
         if (!(await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined }))) setBusy(false);
     };
-    const choices = () => approvalChoices(p.it.options);
+    const choices = () => approvalChoices(p.it.options, p.it.everyChoice);
     const question = () => approvalQuestion(p.it);
     useKeys((k) => {
         const opt = choices().keys[Number(k) - 1];

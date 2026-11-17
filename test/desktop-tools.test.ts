@@ -645,7 +645,7 @@ describe("the agent", () => {
     });
 });
 
-describe("Claude Code and Codex", () => {
+describe("Claude Code", () => {
     test("gets the tools as mcp__cavvy__desktop_*, mapped back to Cavvy's for the transcript and hooks", () => {
         expect(servedDesktopName("DesktopAct")).toBe("desktop_act");
         expect(servedDesktopName("Read")).toBeUndefined();
@@ -660,7 +660,7 @@ describe("Claude Code and Codex", () => {
         ]);
     });
 
-    test("Cavvy's MCP server offers them to Claude Code and Codex with the setting on, and not with it off", async () => {
+    test("Cavvy's MCP server offers them to Claude Code with the setting on; never to Codex, and not with it off", async () => {
         // As on a Mac, wherever the test runs (CI runs on Linux, where the tools are never offered).
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
         Object.defineProperty(process, "platform", { value: "darwin" });
@@ -668,10 +668,9 @@ describe("Claude Code and Codex", () => {
         const served = async (provider: string, settings: object) => ((await makeAgent(settings, "default", provider)).agent as any).orchestrator()?.tools ?? [];
         const names = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
         expect(await served("claude-code", on)).toEqual(expect.arrayContaining(names));
-        // Codex too: its own computer use (the ChatGPT app's) doesn't serve a Codex the app didn't start.
-        expect(await served("codex", on)).toEqual(expect.arrayContaining(names));
         for (const [provider, settings] of [
             ["claude-code", {}],
+            ["codex", on],
             ["codex", {}],
         ] as const) {
             const tools: string[] = await served(provider, settings);

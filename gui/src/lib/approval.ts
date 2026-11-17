@@ -1,12 +1,17 @@
 import type { PermissionInteraction, PermissionOption } from "@shared/protocol";
 
 /**
- * An approval card's answers. Three at most: Allow once, one broader choice, the one that lasts (always,
+ * An approval card's answers (`every`: the interaction's everyChoice, each shown). Otherwise three at most: Allow once, one broader choice, the one that lasts (always,
  * in this project) before one for the session, and Deny; the server offers no lasting one beside a narrower grant.
  * `keys`: what 1 and 2 answer (Esc denies). `row`: on screen, Allow once first, where the card's question ends and
  * the eye lands, the broader choice after it, and Deny last (the card puts it at the far end); `key` is 0 for Deny.
  */
-export function approvalChoices(options: readonly PermissionOption[]): { keys: PermissionOption[]; row: { o: PermissionOption; key: number }[] } {
+export function approvalChoices(options: readonly PermissionOption[], every = false): { keys: PermissionOption[]; row: { o: PermissionOption; key: number }[] } {
+    // Each its own answer (an app: once, this session, always): all of them, in the server's order, Deny last.
+    if (every) {
+        const keys = options.filter((o) => o.id !== "no");
+        return { keys, row: [...keys, ...options.filter((o) => o.id === "no")].map((o) => ({ o, key: keys.indexOf(o) + 1 })) };
+    }
     const broader = options.find((o) => o.id === "always") ?? options.find((o) => o.id !== "yes" && o.id !== "no");
     const keys = [options.find((o) => o.id === "yes"), broader].filter((o) => o !== undefined);
     return { keys, row: [...keys, ...options.filter((o) => o.id === "no")].map((o) => ({ o, key: keys.indexOf(o) + 1 })) };

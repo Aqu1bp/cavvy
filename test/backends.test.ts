@@ -88,7 +88,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_NO_HOOKS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED", "FAKE_INIT_MODEL", "FAKE_CU_APP", "FAKE_CU_APP_NAME", "FAKE_CU_URL", "FAKE_CU_TWICE", "FAKE_CU_UNKNOWN", "FAKE_NO_HOOKS", "FAKE_CU_CODE"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -4637,76 +4637,255 @@ describe("Claude Code background tasks: #282 review round 4", () => {
     }, 15_000);
 });
 
-describe("Codex: Cavvy's Mac app tools, not the ChatGPT app's computer use", () => {
-    // The ChatGPT app's computer use doesn't serve a Codex the app didn't start (measured with Codex 0.169, the app
-    // open): Codex gets Cavvy's tools over its MCP server, as Claude Code does, and the app's is kept off.
+describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
+    // What the fake sends is what Codex 0.167 and ChatGPT 26.1106 were measured to send (fake-codex.ts, computer-use).
     const threadConfig = () => received().find((m) => m.method === "thread/start" || m.method === "thread/resume")?.params.config ?? {};
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const answers = () => logLines().flatMap((l) => (l.cuAnswer !== undefined ? [l.cuAnswer] : []));
-    const desktopTools = () => (logLines().filter((l) => l.mcpConnected === "cavvy").at(-1)?.tools ?? []).filter((t: string) => t.startsWith("desktop_"));
-    const DESKTOP = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
+    const appAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "DesktopControl");
     const on = { desktop: { enabled: true } };
     const PLUGIN = "unified-computer-use@openai-bundled";
-    // As on a Mac, wherever the test runs (CI runs on Linux, where Cavvy's Mac app tools are never offered).
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     beforeEach(() => {
-        Object.defineProperty(process, "platform", { value: "darwin" });
+        process.env.FAKE_SCENARIO = "computer-use";
         // Set up by the ChatGPT app: its plugin on in the person's own Codex config.
         process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
     });
-    afterEach(() => Object.defineProperty(process, "platform", platform));
 
     test.each([
         ["one app-server for the session", on],
         ["one app-server a turn", { ...on, agentCli: { liveSessions: false } }],
-    ])("on (%s): Codex gets Cavvy's Mac app tools, and the ChatGPT app's computer use is off", async (_, settings) => {
-        const { run } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
+    ])("on (%s): the person's own setup is left as it is, the apps never offered denied, and an app is asked about with Codex's choices", async (_, settings) => {
+        const { run, events, asked } = await makeAgent({ provider: "codex", settings, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
         expect(await run("go")).toBe("done");
-        expect(desktopTools()).toEqual(DESKTOP);
-        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        // No server of Cavvy's own, and the plugin isn't touched.
         expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
-        expect(threadConfig().computer_use).toBeUndefined();
+        expect(threadConfig().plugins?.[PLUGIN]).toBeUndefined();
+        expect(threadConfig().computer_use.macos.bundle_ids).toMatchObject({ "com.apple.Terminal": "deny", "com.1password.1password": "deny", "dev.cavvy.desktop": "deny" });
+        // Codex's own question about the call goes as any MCP call's; the app is asked as one of the Mac's apps.
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cua_repl__js", "DesktopControl"]);
+        const app = appAsks(asked)[0]!;
+        expect(app.input).toEqual({ action: "request_access", app: "TextEdit" });
+        expect(app.decision).toMatchObject({ appGrant: "TextEdit", appPersist: ["session", "always"] });
+        // The question is the app's, without Cavvy's own helper looking it up.
+        expect(app.preview?.summary).toBe("Use TextEdit");
+        expect(answers()).toEqual([
+            { action: "accept", content: {}, _meta: null },
+            { action: "accept", content: {}, _meta: { persist: "session" } },
+        ]);
+        // The call reads as what it does, then in which app.
+        expect(events.find((e) => e.type === "tool_start")).toMatchObject({ title: "Mac apps: Type a note" });
+        expect(toolEnds(events)[0]).toMatchObject({ title: "TextEdit: Type a note" });
     });
 
-    test("off: no Mac app tools, and the person's own computer use is off all the same, servers by its names too", async () => {
-        process.env.FAKE_USER_MCP = JSON.stringify({ node_repl: { command: "node_repl" } });
-        const { run } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
-        await run("go");
-        expect(desktopTools()).toEqual([]);
-        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
-        expect(threadConfig().mcp_servers.node_repl).toEqual({ enabled: false });
-    });
+    test("allowed for the session, the app isn't asked about again; allowed once, it is", async () => {
+        process.env.FAKE_CU_TWICE = "1";
+        const session = await makeAgent({ provider: "codex", settings: on, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
+        expect(await session.run("go")).toBe("done");
+        expect(appAsks(session.asked)).toHaveLength(1);
+        expect(answers().filter((a) => a._meta?.persist === "session")).toHaveLength(2);
 
-    test("Mac apps turned on or off mid-session reach a live Codex session at its next message", async () => {
-        const settings: any = {};
-        const { run } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
-        await run("one");
-        expect(desktopTools()).toEqual([]);
-        settings.desktop = { enabled: true };
         rmSync(LOG, { force: true });
-        await run("two");
-        // A new app-server resumes the thread with Cavvy's server offering them.
-        expect(received().some((m) => m.method === "thread/resume")).toBe(true);
-        expect(desktopTools()).toEqual(DESKTOP);
+        const once = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await once.run("go")).toBe("done");
+        expect(appAsks(once.asked)).toHaveLength(2);
+        expect(answers().filter((a) => a._meta !== null)).toEqual([]);
+    });
+
+    test("bypass, allow rules and nobody to ask never give an app: bypass runs on-request so the question reaches the person", async () => {
+        const settings = { ...on, permissions: { allow: ["DesktopControl", "DesktopControl(request_access)", "mcp__cua_repl"] } };
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings, ask: () => ({ allow: false }) });
+        expect(await bypass.run("go")).toBe("denied");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "dangerFullAccess" } });
+        // Codex's own question about the call: bypass answers it. The app: the person, who said no.
+        expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings });
+        await headless.run("go");
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+    });
+
+    test("something it asks that Cavvy doesn't recognise fails closed: the person answers it in every mode, and nobody to ask declines it", async () => {
+        process.env.FAKE_CU_UNKNOWN = "1";
+        const settings = { ...on, permissions: { allow: ["DesktopControl", "DesktopControl(request_access)", "mcp__cua_repl"] } };
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings, ask: () => ({ allow: true }) });
+        expect(await bypass.run("go")).toBe("done");
+        // Codex's own question about the js call still goes by the mode; the unknown one goes to the person, with its question.
+        expect(bypass.asked.map((r) => r.tool.name)).toEqual(["DesktopControl"]);
+        expect(bypass.asked[0]!.preview?.summary).toBe("Allow Computer Use to take over the screen");
+        expect(bypass.asked[0]!.decision.appGrant).toBeDefined();
+        // A yes is for this once: offered as such, without a line saying it lasts the session.
+        expect(bypass.asked[0]!.decision).toMatchObject({ appPersist: [], reason: undefined });
+        expect(answers()).toEqual([
+            { action: "accept", content: {}, _meta: null },
+            { action: "accept", content: {}, _meta: null },
+        ]);
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings });
+        await headless.run("go");
+        expect(answers().map((a) => a.action)).toEqual(["accept", "decline"]);
+    });
+
+    test("Mac apps turned off or on mid-session reach a live Codex session at its next message", async () => {
+        const settings: any = { ...on };
+        const { run, asked } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
+        expect(await run("one")).toBe("done");
+        expect(appAsks(asked)).toHaveLength(1);
         settings.desktop = { enabled: false };
         rmSync(LOG, { force: true });
+        await run("two");
+        // A new app-server resumes the thread with its computer use off: the app is declined, nobody asked.
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+        settings.desktop = { enabled: true };
+        rmSync(LOG, { force: true });
         await run("three");
-        expect(desktopTools()).toEqual([]);
+        expect(threadConfig().computer_use).toBeDefined();
+        expect(appAsks(asked)).toHaveLength(2);
     });
 
-    test.each(["default", "auto", "bypassPermissions"] as const)("in %s mode, an approval its computer use asks anyway is declined, nobody asked", async (mode) => {
-        process.env.FAKE_SCENARIO = "computer-use";
-        const settings = { ...on, permissions: { allow: ["DesktopControl", "mcp__cua_repl", "mcp__cua_repl__js"] } };
-        const { run, asked } = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: true }) });
+    test("an app allowed for the session isn't asked about again, until a deny rule is added", async () => {
+        const settings: any = { ...on };
+        const { run, asked } = await makeAgent({ provider: "codex", settings, ask: (req) => (req.tool.name === "DesktopControl" ? { allow: true, persist: "session" } : { allow: true }) });
+        await run("one");
+        rmSync(LOG, { force: true });
+        await run("two");
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toEqual({ action: "accept", content: {}, _meta: { persist: "session" } });
+        settings.permissions = { deny: ["DesktopControl"] };
+        rmSync(LOG, { force: true });
+        await run("three");
+        expect(appAsks(asked)).toHaveLength(1);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+    });
+
+    test.if(process.platform === "darwin")("without Codex's config layers, it's off with the warning about them, not a how-to", async () => {
+        process.env.FAKE_NO_CONFIG_LAYERS = "1";
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
         await run("go");
-        expect(asked).toEqual([]);
-        // Codex's own question about its js call, and its server's about an app.
-        expect(answers()).toEqual([
-            { action: "decline", content: null, _meta: null },
-            { action: "decline", content: null, _meta: null },
-        ]);
-        // Bypass is as for any Codex session.
-        if (mode === "bypassPermissions") expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(notices(events).join("\n")).toContain("did not identify its config layers");
+        expect(notices(events).join("\n")).not.toContain("ChatGPT app");
+    });
+
+    test.if(process.platform === "darwin")("set up, but also turned on by the project: off, without telling the person to set it up", async () => {
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(notices(events).join("\n")).not.toContain("ChatGPT app");
+    });
+
+    test.each(["bypassPermissions", "auto"] as const)("in %s mode, a js call whose code names Cavvy's helper goes to the person, once; other code goes by the mode", async (mode) => {
+        const jsAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "mcp__cua_repl__js");
+        const settings = { ...on, permissions: { allow: ["mcp__cua_repl__js", "mcp__cua_repl"] } };
+        process.env.FAKE_CU_CODE = 'require("child_process").execSync("ls ~/.cavvy/desktop")';
+        const no = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: false }) });
+        await no.run("go");
+        expect(jsAsks(no.asked)).toHaveLength(1);
+        expect(jsAsks(no.asked)[0]!.decision).toMatchObject({ personOnly: true });
+        expect(logLines().some((l) => "cuBlocked" in l)).toBe(true);
+        expect(appAsks(no.asked)).toEqual([]);
+
+        rmSync(LOG, { force: true });
+        const yes = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: true }) });
+        await yes.run("go");
+        // The hook asked; Codex's own approval of the same call (bypass) isn't asked again. Then the app, as ever.
+        expect(jsAsks(yes.asked)).toHaveLength(1);
+        expect(appAsks(yes.asked)).toHaveLength(1);
+        expect(answers()[0]).toMatchObject({ action: "accept" });
+
+        delete process.env.FAKE_CU_CODE;
+        rmSync(LOG, { force: true });
+        const other = await makeAgent({ provider: "codex", mode, settings, ask: () => ({ allow: true }) });
+        await other.run("go");
+        expect(jsAsks(other.asked)).toEqual([]);
+        expect(appAsks(other.asked)).toHaveLength(1);
+    });
+
+    test("without Codex's hooks, Codex's own approval of a js call naming the helper goes to the person", async () => {
+        process.env.FAKE_NO_HOOKS = "1";
+        process.env.FAKE_CU_CODE = "fs.readdirSync(process.env.HOME + '/.cavvy/desktop') // ~/.cavvy/desktop";
+        const settings = { ...on, permissions: { allow: ["mcp__cua_repl__js"] } };
+        const { run, asked } = await makeAgent({ provider: "codex", mode: "bypassPermissions", settings, ask: () => ({ allow: false }) });
+        await run("go");
+        const js = asked.filter((r) => r.tool.name === "mcp__cua_repl__js");
+        expect(js).toHaveLength(1);
+        expect(js[0]!.decision).toMatchObject({ personOnly: true });
+        expect(answers()[0]).toMatchObject({ action: "decline" });
+    });
+
+    test("an app never offered is declined unasked, and the model is told why; a link to set it up is cancelled, not declined", async () => {
+        process.env.FAKE_CU_APP = "com.apple.Terminal";
+        process.env.FAKE_CU_APP_NAME = "Terminal";
+        const never = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await never.run("go")).toBe("done");
+        expect(appAsks(never.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "decline", content: null, _meta: null });
+        expect(received().filter((m) => m.method === "turn/steer").map((m) => JSON.stringify(m.params.input)).join("\n")).toContain("Terminal can't be used: it's a terminal.");
+
+        // A two-part bundle id, shown as another app: refused all the same.
+        process.env.FAKE_CU_APP = "org.alacritty";
+        process.env.FAKE_CU_APP_NAME = "Notes";
+        rmSync(LOG, { force: true });
+        const twoPart = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await twoPart.run("go")).toBe("done");
+        expect(appAsks(twoPart.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "decline", content: null, _meta: null });
+
+        delete process.env.FAKE_CU_APP;
+        delete process.env.FAKE_CU_APP_NAME;
+        process.env.FAKE_CU_URL = "1";
+        rmSync(LOG, { force: true });
+        const url = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await url.run("go")).toBe("done");
+        expect(appAsks(url.asked)).toEqual([]);
+        expect(answers()[1]).toEqual({ action: "cancel", content: null, _meta: null });
+    });
+
+    test("off: the person's own Codex computer use is turned off, bypass stays never, and an app it asks for is declined unasked", async () => {
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true }, "browser@openai-bundled": { enabled: true } });
+        process.env.FAKE_USER_MCP = JSON.stringify({ node_repl: { command: "node_repl" } });
+        const off = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: true }) });
+        await off.run("go");
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(threadConfig().mcp_servers.node_repl).toEqual({ enabled: false });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
+        expect(appAsks(off.asked)).toEqual([]);
+        expect(answers().at(-1)).toMatchObject({ action: "decline" });
+    });
+
+    test("a project can't turn it on, and a server of the person's own isn't touched while it's on", async () => {
+        process.env.FAKE_USER_PLUGINS = "null";
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
+        const project = await makeAgent({ provider: "codex", settings: on, mode: "bypassPermissions", ask: () => ({ allow: true }) });
+        await project.run("go");
+        expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
+        expect(threadConfig().computer_use).toBeUndefined();
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
+
+        delete process.env.FAKE_PROJECT_PLUGINS;
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
+        process.env.FAKE_USER_MCP = JSON.stringify({ cua_repl: { url: "https://example.com/mcp" } });
+        rmSync(LOG, { force: true });
+        const mine = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await mine.run("go");
+        expect(threadConfig().mcp_servers?.cua_repl).toBeUndefined();
+    });
+
+    test.if(process.platform === "darwin")("not set up in the ChatGPT app: off, said once a session", async () => {
+        process.env.FAKE_USER_PLUGINS = "null";
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(threadConfig().computer_use).toBeUndefined();
+        await run("again");
+        expect(notices(events).filter((n) => n.includes("ChatGPT app"))).toEqual(["info: To let Codex use your Mac's apps, set up Computer Use in the ChatGPT app."]);
     });
 });
 

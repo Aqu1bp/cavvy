@@ -1786,6 +1786,12 @@ export class App {
         type Choice = "yes" | "session" | "always" | "session-edits" | "no";
         const items: SelectItem<Choice>[] = [{ label: "Yes", value: "yes" }];
         if (decision.grant) items.push({ label: `Yes, and allow ${bold(decision.grant.label)} for the session`, value: "session" });
+        // An agent CLI's own computer use (Codex's) keeps a yes to an app once, for the session or always.
+        if (decision.appPersist) {
+            items[0] = { label: "Yes, once", value: "yes" };
+            if (decision.appPersist.includes("session")) items.push({ label: "Yes, for this session", value: "session" });
+            if (decision.appPersist.includes("always")) items.push({ label: "Yes, always", value: "always" });
+        }
         const suggestions = decision.suggestions ?? [];
         // Where a generated summary can't be checked against the command, more of the command shows.
         let hiddenNote = "";
@@ -1897,6 +1903,7 @@ export class App {
         req.signal?.addEventListener("abort", withdraw, { once: true });
         const choice = ((await this.showDialog(d).finally(() => req.signal?.removeEventListener("abort", withdraw))) as Choice | undefined) ?? "no";
         if (req.signal?.aborted) return { allow: false };
+        if (decision.appPersist && (choice === "session" || choice === "always")) return { allow: true, persist: choice };
         switch (choice) {
             case "yes":
                 return { allow: true };
