@@ -17,4 +17,6 @@ desktop-electron/out
 desktop-electron/stage
 desktop-electron/bench-results
 desktop-electron/bench-*.json
+# The Mac checks' baseline (bench-mac.ts) is kept.
+!desktop-electron/bench-mac-baseline.json
 /bench-results/
