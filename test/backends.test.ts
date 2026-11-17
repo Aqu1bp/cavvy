@@ -4646,7 +4646,7 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
     const appAsks = (asked: PermissionRequest[]) => asked.filter((r) => r.tool.name === "DesktopControl");
     const desktopTools = () => (logLines().filter((l) => l.mcpConnected === "cavvy").at(-1)?.tools ?? []).filter((t: string) => t.startsWith("desktop_"));
     const DESKTOP = ["desktop_control", "desktop_snapshot", "desktop_act", "desktop_screenshot"];
-    const LINE = "info: Using Cavvy's Mac app tools instead";
+    const LINE = "info: ChatGPT's computer use didn't start";
     const on = { desktop: { enabled: true } };
     const PLUGIN = "unified-computer-use@openai-bundled";
     // As on a Mac, wherever the test runs (CI runs on Linux, where Mac apps is never offered).
@@ -4781,24 +4781,24 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(answers().at(-1)).toMatchObject({ action: "decline" });
     });
 
-    test("without Codex's config layers it isn't known to be set up: Cavvy's Mac app tools, with the warning about them", async () => {
+    test("without Codex's config layers it isn't known to be set up: Cavvy's Mac app tools, with the warning about them and no line", async () => {
         process.env.FAKE_NO_CONFIG_LAYERS = "1";
         const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
         await run("go");
         expect(threadConfig().computer_use).toBeUndefined();
         expect(desktopTools()).toEqual(DESKTOP);
         expect(notices(events).join("\n")).toContain("did not identify its config layers");
-        expect(notices(events)).toContain(LINE);
+        expect(notices(events)).not.toContain(LINE);
     });
 
-    test("set up, but also turned on by the project: turned off, and Cavvy's Mac app tools in its place", async () => {
+    test("set up, but also turned on by the project: turned off, and Cavvy's Mac app tools in its place, silently", async () => {
         process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: true } });
         const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
         await run("go");
         expect(threadConfig().plugins).toEqual({ [PLUGIN]: { enabled: false } });
         expect(threadConfig().computer_use).toBeUndefined();
         expect(desktopTools()).toEqual(DESKTOP);
-        expect(notices(events)).toContain(LINE);
+        expect(notices(events)).not.toContain(LINE);
     });
 
     test.each(["bypassPermissions", "auto"] as const)("in %s mode, a js call whose code names Cavvy's helper goes to the person, once; other code goes by the mode", async (mode) => {
@@ -4903,7 +4903,7 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
     test.each([
         ["one app-server for the session", on],
         ["one app-server a turn", { ...on, agentCli: { liveSessions: false } }],
-    ])("not set up in the ChatGPT app (%s): Cavvy's Mac app tools from the start, its plugin off, said once a session", async (_, settings) => {
+    ])("not set up in the ChatGPT app (%s): Cavvy's Mac app tools from the start, its plugin off, without a line", async (_, settings) => {
         process.env.FAKE_USER_PLUGINS = JSON.stringify({ [PLUGIN]: { enabled: false } });
         const { run, events } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
         await run("go");
@@ -4913,7 +4913,7 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(answers().at(-1)).toMatchObject({ action: "decline" });
         await run("again");
         expect(desktopTools()).toEqual(DESKTOP);
-        expect(notices(events).filter((n) => n === LINE)).toHaveLength(1);
+        expect(notices(events)).not.toContain(LINE);
         expect(notices(events).join("\n")).not.toContain("set up Computer Use");
     });
 
@@ -4925,13 +4925,13 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(desktopTools()).toEqual(DESKTOP);
         await run("again");
         expect(received().filter((m) => m.method === "thread/start" || m.method === "thread/resume")).toHaveLength(1);
-        expect(notices(events).filter((n) => n === LINE)).toHaveLength(1);
+        expect(notices(events)).not.toContain(LINE);
     });
 
     test.each([
         ["one app-server for the session", on],
         ["one app-server a turn", { ...on, agentCli: { liveSessions: false } }],
-    ])("it fails to start (%s): the model is told, its calls are refused, and Cavvy's Mac app tools take its place from the next message, for good", async (_, settings) => {
+    ])("it fails to start (%s): said once in a line, the model is told, its calls are refused, and Cavvy's Mac app tools take its place from the next message, for good", async (_, settings) => {
         process.env.FAKE_CU_FAIL = "pipe";
         process.env.FAKE_CU_TWICE = "1";
         const s: any = settings;

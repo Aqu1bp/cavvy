@@ -2120,10 +2120,8 @@ export class CodexTurn {
         // Not set up in Codex's config (its plugin off, or turned off as a project's): this thread falls back as it
         // opens, Cavvy's server getting the tools (withDesktopTools), and a new app-server is started next time with them.
         if (!codexDesktopFallback(t.sessionKey) && !computerUseReady(overrides.effective, overrides.config, t.accountId)) fallBackToCavvyTools(t.sessionKey, "setup");
-        if (codexDesktopFallback(t.sessionKey)) {
-            if (fallbackToSay(t.sessionKey)) this.sink.emit({ type: "notice", level: "info", message: FALLBACK_LINE });
-            return off();
-        }
+        // Silently: the line is for a failure only (computerUseFailed).
+        if (codexDesktopFallback(t.sessionKey)) return off();
         this.computerUse = true;
         return computerUseOnConfig();
     }
@@ -2136,7 +2134,7 @@ export class CodexTurn {
 
     /**
      * The ChatGPT app's computer use failed to start in this thread (computerUseStartFailed, or its server didn't
-     * start): the session falls back to Cavvy's Mac app tools for good, said once in a line. The thread keeps it until
+     * start): the session falls back to Cavvy's Mac app tools for good, the only fallback said in a line. The thread keeps it until
      * the next message, whose app-server serves Cavvy's tools instead: until then what it asks is declined, its calls
      * refused, and the model is told.
      */
@@ -2599,8 +2597,8 @@ export function codexHookEvents(hooked: (e: CodexHookEvent) => boolean, guardsHe
     return CODEX_HOOK_EVENTS.filter((e) => hooked(e) || (e === "PreToolUse" && guardsHelper));
 }
 
-/** The line a session shows once, when its Codex falls back to Cavvy's Mac app tools. */
-const FALLBACK_LINE = `Using ${APP_TITLE}'s Mac app tools instead`;
+/** The line a session shows once, when the ChatGPT app's computer use failed to start (a fallback for its setup says nothing). */
+const FALLBACK_LINE = "ChatGPT's computer use didn't start";
 
 /**
  * The Mac apps the person let Codex use for the rest of a Cavvy session ("Allow for this session"), by session: asked

@@ -97,7 +97,7 @@ export function fallBackToCavvyTools(sessionKey: string, why: DesktopFallback): 
     if (!fellBack.has(sessionKey)) fellBack.set(sessionKey, { why });
 }
 
-/** Whether the session's line saying it fell back is still to be shown: true once. */
+/** Whether the session's line saying its computer use failed to start is still to be shown: true once. */
 export function fallbackToSay(sessionKey: string): boolean {
     const f = fellBack.get(sessionKey);
     if (!f || f.said) return false;
