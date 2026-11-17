@@ -94,6 +94,13 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean } = {}
     const bundled = join(app, "Contents", "MacOS", "cavvy");
     copyFileSync(server, bundled);
     chmodSync(bundled, 0o755);
+    // The Mac app helper, built here so it's signed with the app (desktop:install signs it with your certificate:
+    // macOS's grants for it then outlast a new version). Without swiftc, Cavvy builds it on first use instead.
+    const { buildIn } = await import("../src/desktop/helper.ts");
+    await buildIn(join(app, "Contents", "Helpers")).then(
+        () => console.log("built Cavvy Desktop Control.app"),
+        (e: Error) => console.warn(`Cavvy Desktop Control isn't in this build (${e.message}): Cavvy builds it on first use.`),
+    );
     if (!existsSync(join(app, "Contents", "MacOS", "cavvy-desktop"))) throw new Error(`${app} has no Contents/MacOS/cavvy-desktop`);
     // The bundle changed after Electron signed its binaries: signed again, ad hoc, so macOS runs it on this machine.
     run(["codesign", "--force", "--deep", "--sign", "-", app]);

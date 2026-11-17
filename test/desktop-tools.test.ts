@@ -462,7 +462,7 @@ describe("what reaches the Mac", () => {
             writeFileSync(record, JSON.stringify({ hash: "new", trusted: "old", screen: "old" }));
             helper.screen = false;
             expect(await DesktopScreenshotTool.run({}, ctxWith(s))).toMatchObject({ isError: true, content: staleLine("screen") });
-            expect(staleLine("screen")).toBe(`Cavvy Desktop Control was updated, and macOS no longer counts its switch: in System Settings → Privacy & Security → Screen & System Audio Recording, remove it with −, add it again with + (it's in ${join(paths.home(), "desktop")}) and turn it on, then try again.`);
+            expect(staleLine("screen")).toBe(`Cavvy Desktop Control was updated, and macOS no longer counts its switch: in System Settings → Privacy & Security → Screen & System Audio Recording, remove it with −, add it again with + (Cavvy Desktop Control.app, in ${join(paths.home(), "desktop")}) and turn it on, then try again.`);
             helper.accessibility = false;
             expect(await DesktopSnapshotTool.run({}, ctxWith(s))).toMatchObject({ isError: true, content: staleLine("accessibility") });
             expect(staleLine("accessibility")).toContain("in System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access), remove it with −");

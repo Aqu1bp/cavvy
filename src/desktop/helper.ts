@@ -38,8 +38,6 @@ export function helperSource(): string {
 export const sourceHash = () => createHash("sha256").update(helperSource()).digest("hex").slice(0, 16);
 
 const dir = () => join(paths.home(), "desktop");
-/** Where the helper is kept: what the person adds with + in System Settings. */
-export const helperDir = dir;
 const recordFile = () => join(dir(), "build.json");
 
 interface BuildRecord {
@@ -64,6 +62,7 @@ function record(): BuildRecord {
 }
 
 function writeRecord(r: BuildRecord) {
+    mkdirSync(dir(), { recursive: true, mode: 0o700 });
     writeFileSync(recordFile(), JSON.stringify(r), { mode: 0o600 });
 }
 
@@ -80,39 +79,141 @@ export function trustedBefore(g: Grant = "accessibility"): boolean {
     return Boolean(had && had !== r.hash);
 }
 
-let building: Promise<string> | undefined;
-
-/** The helper, built when it isn't yet or its source has changed (a few seconds). */
-export function helperBinary(): Promise<string> {
-    const bin = join(dir(), HELPER_NAME);
-    if (existsSync(bin) && record().hash === sourceHash()) return Promise.resolve(bin);
-    return (building ??= build(bin).finally(() => (building = undefined)));
+/**
+ * Whether this process may build and run the real helper. Not in Cavvy's tests (CAVVY_TEST, set by test/preload.ts and
+ * passed to what they start), unless a live run asks with CAVVY_DESKTOP_LIVE=1: running it is what adds it to macOS's
+ * privacy lists, an entry for each test home. Tests use a fake one (setDesktopHelperStarter).
+ */
+export function realHelperAllowed(): boolean {
+    return process.env.CAVVY_TEST !== "1" || process.env.CAVVY_DESKTOP_LIVE === "1";
 }
 
-async function build(bin: string): Promise<string> {
-    mkdirSync(dir(), { recursive: true, mode: 0o700 });
+/** Symbol.for(...) on globalThis: how many times a test reached for the real helper (test/preload.ts fails that test). */
+export const REAL_HELPER_REFUSED = Symbol.for("cavvy.desktop.realHelperRefused");
+
+function refuseInTests() {
+    if (realHelperAllowed()) return;
+    const g = globalThis as Record<symbol, number>;
+    g[REAL_HELPER_REFUSED] = (g[REAL_HELPER_REFUSED] ?? 0) + 1;
+    throw new DesktopError(`Tests don't build or run the real ${HELPER_NAME}: use a fake one (setDesktopHelperStarter), or set CAVVY_DESKTOP_LIVE=1 for a live run.`, "test");
+}
+
+let building: Promise<string> | undefined;
+
+/** Its bundle id: what macOS keeps the person's grants under, with its signature. */
+export const HELPER_BUNDLE_ID = "dev.cavvy.desktop.control";
+const APP = `${HELPER_NAME}.app`;
+const executableIn = (app: string) => join(app, "Contents", "MacOS", HELPER_NAME);
+
+/** The source a helper bundle was built from (its Info.plist says), if it's there. */
+function builtFrom(app: string): string | undefined {
+    try {
+        return /<key>CavvySourceHash<\/key>\s*<string>([0-9a-f]+)<\/string>/.exec(readFileSync(join(app, "Contents", "Info.plist"), "utf8"))?.[1];
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The helper Cavvy.app carries (Contents/Helpers, built by desktop-electron/pack.ts and signed with the app at
+ * install), when Cavvy runs from the app and it's of this source: signed with the app's certificate, the person's
+ * grants outlast a new version.
+ */
+function carried(execPath = process.execPath): string | undefined {
+    const app = /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
+    if (!app) return undefined;
+    const helper = join(app, "Contents", "Helpers", APP);
+    return builtFrom(helper) === sourceHash() ? helper : undefined;
+}
+
+/** The helper bundle Cavvy uses: the app's own, else the one built in Cavvy's home (`execPath`: the server's, for tests). */
+export function helperApp(execPath = process.execPath): string {
+    return carried(execPath) ?? join(dir(), APP);
+}
+
+/** The helper, built in Cavvy's home when the app carries none of this source and it isn't built yet (a few seconds). */
+export function helperBinary(): Promise<string> {
+    try {
+        refuseInTests();
+    } catch (e) {
+        return Promise.reject(e);
+    }
+    const own = carried();
+    if (own) return Promise.resolve(inUse(own));
+    const app = join(dir(), APP);
+    if (builtFrom(app) === sourceHash() && existsSync(executableIn(app))) return Promise.resolve(inUse(app));
+    return (building ??= buildIn(dir())
+        .then((built) => {
+            // The helper before bundles: a binary on its own (a grant of its own in System Settings, to take out).
+            rmSync(join(dir(), HELPER_NAME), { force: true });
+            return inUse(built);
+        })
+        .finally(() => (building = undefined)));
+}
+
+/** The helper's executable, noted as the build in use (for what a missing grant's line says). */
+function inUse(app: string): string {
+    if (record().hash !== sourceHash()) writeRecord({ ...record(), hash: sourceHash() });
+    return executableIn(app);
+}
+
+/**
+ * Builds the helper as an app bundle in `parent` (Cavvy Desktop Control.app, bundle id dev.cavvy.desktop.control),
+ * signed ad hoc; returns the bundle. One bundle id at one path is one entry in System Settings; signed ad hoc, macOS
+ * counts a grant for that build only, so it lasts until the source changes (the same source builds the same).
+ */
+export async function buildIn(parent: string): Promise<string> {
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
     const tag = randomBytes(4).toString("hex");
-    const src = join(dir(), `helper-${tag}.swift`);
-    // Linked under its own name, which its signature takes.
-    const tmpDir = join(dir(), `.build-${tag}`);
-    const tmp = join(tmpDir, HELPER_NAME);
-    mkdirSync(tmpDir, { mode: 0o700 });
+    const tmpDir = join(parent, `.build-${tag}`);
+    const app = join(tmpDir, APP);
+    const src = join(tmpDir, "helper.swift");
+    mkdirSync(join(app, "Contents", "MacOS"), { recursive: true, mode: 0o700 });
     writeFileSync(src, helperSource(), { mode: 0o600 });
     try {
-        const r = await run(["xcrun", "swiftc", "-O", "-swift-version", "5", "-suppress-warnings", "-o", tmp, src], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
+        const r = await run(["xcrun", "swiftc", "-O", "-swift-version", "5", "-suppress-warnings", "-o", executableIn(app), src], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
         if (r.code !== 0) {
             if (r.code === 127 || /xcrun: error|not found|no developer tools/i.test(r.stderr)) throw new DesktopError("Desktop control needs Apple's command line tools: run xcode-select --install, then try again.");
             throw new DesktopError(`Couldn't build ${HELPER_NAME}: ${(r.stderr || r.stdout).split("\n").find((l) => /error/.test(l))?.trim() ?? "swiftc failed"}`);
         }
-        chmodSync(tmp, 0o700);
-        // A helper still running keeps its own copy until it ends.
-        renameSync(tmp, bin);
-        writeRecord({ ...record(), hash: sourceHash() });
-        return bin;
-    } finally {
         rmSync(src, { force: true });
+        chmodSync(executableIn(app), 0o755);
+        writeFileSync(join(app, "Contents", "Info.plist"), infoPlist(sourceHash()));
+        const signed = await run(["codesign", "--force", "--sign", "-", "--identifier", HELPER_BUNDLE_ID, app], { timeoutMs: BUILD_MS }).catch((e: Error) => ({ code: 127, stdout: "", stderr: e.message }));
+        if (signed.code !== 0) throw new DesktopError(`Couldn't sign ${HELPER_NAME}: ${(signed.stderr || signed.stdout).trim().split("\n")[0]}`);
+        // In its place. One still running keeps its own copy until it ends.
+        const final = join(parent, APP);
+        const old = join(parent, `.old-${tag}`);
+        if (existsSync(final)) renameSync(final, old);
+        renameSync(app, final);
+        rmSync(old, { recursive: true, force: true });
+        return final;
+    } finally {
         rmSync(tmpDir, { recursive: true, force: true });
     }
+}
+
+/** Its Info.plist: a background app (no Dock icon, no menu bar) under its bundle id, and the source it was built from. */
+export function infoPlist(hash: string): string {
+    const entries: [string, string][] = [
+        ["CFBundleIdentifier", `<string>${HELPER_BUNDLE_ID}</string>`],
+        ["CFBundleName", `<string>${HELPER_NAME}</string>`],
+        ["CFBundleDisplayName", `<string>${HELPER_NAME}</string>`],
+        ["CFBundleExecutable", `<string>${HELPER_NAME}</string>`],
+        ["CFBundlePackageType", "<string>APPL</string>"],
+        ["CFBundleInfoDictionaryVersion", "<string>6.0</string>"],
+        ["CFBundleVersion", "<string>1</string>"],
+        ["LSUIElement", "<true/>"],
+        ["CavvySourceHash", `<string>${hash}</string>`],
+    ];
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+${entries.map(([k, v]) => `\t<key>${k}</key>\n\t${v}`).join("\n")}
+</dict>
+</plist>
+`;
 }
 
 /** Tests: forget a build in progress. */
@@ -212,6 +313,7 @@ export class DesktopHelper implements DesktopHelperLike {
      * holds, then sent back as the first line on stdin. The helper takes commands only when the two agree.
      */
     static start(bin: string): DesktopHelper {
+        refuseInTests();
         const secret = randomBytes(32).toString("hex");
         const proc = Bun.spawn([bin], { stdio: ["pipe", "pipe", "ignore", "pipe"] }) as unknown as HelperProcess;
         // A line on fd 3, left open: Bun closes its end when the helper ends (closing it here too would close
