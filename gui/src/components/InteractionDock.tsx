@@ -1,4 +1,4 @@
-// What the agent is waiting on you for: a permission, a question, a plan, a secret, a sign-in.
+// What the agent is waiting on you for: a permission, a question, a plan, a secret, a sign-in, a macOS grant.
 // A card in the dock above the composer. It opens with the question itself
 // ("Run `bun test auth`?"), then what you need to answer it, then the answers:
 // the one that goes ahead first, filled; the way out at the far end, plain.
@@ -8,7 +8,7 @@
 
 import { createEffect, createResource, createUniqueId, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
-import type { ConfirmInteraction, Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
+import type { AccessInteraction, ConfirmInteraction, Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
@@ -30,6 +30,8 @@ export const mayFocus = () => !typing() && !settingsTab();
 const SignInCard = lazy(() => import("./SignInCard"));
 /** The card that asks before money is spent or something is deleted: in the same chunk. */
 const ConfirmCard = lazy(() => import("./SignInCard").then((m) => ({ default: m.ConfirmCard })));
+/** The card for one of macOS's grants the Mac app tools need: in the same chunk. */
+const AccessCard = lazy(() => import("./SignInCard").then((m) => ({ default: m.AccessCard })));
 
 /** A key pressed this soon after a card appears was meant for something else. */
 const SETTLE_MS = 400;
@@ -91,6 +93,11 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
                         <Match when={first()!.kind === "confirm"}>
                             <Suspense>
                                 <ConfirmCard sessionId={p.sessionId} it={first() as ConfirmInteraction} />
+                            </Suspense>
+                        </Match>
+                        <Match when={first()!.kind === "access"}>
+                            <Suspense>
+                                <AccessCard sessionId={p.sessionId} it={first() as AccessInteraction} />
                             </Suspense>
                         </Match>
                     </Switch>

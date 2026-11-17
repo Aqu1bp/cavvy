@@ -91,11 +91,12 @@ export function realHelperAllowed(): boolean {
 /** Symbol.for(...) on globalThis: how many times a test reached for the real helper (test/preload.ts fails that test). */
 export const REAL_HELPER_REFUSED = Symbol.for("cavvy.desktop.realHelperRefused");
 
-function refuseInTests() {
+/** Refuses, in tests, what reaches macOS for real (`what`: build or run the helper, open System Settings): counted, so the test fails. */
+export function refuseRealInTests(what = `build or run the real ${HELPER_NAME}`) {
     if (realHelperAllowed()) return;
     const g = globalThis as Record<symbol, number>;
     g[REAL_HELPER_REFUSED] = (g[REAL_HELPER_REFUSED] ?? 0) + 1;
-    throw new DesktopError(`Tests don't build or run the real ${HELPER_NAME}: use a fake one (setDesktopHelperStarter), or set CAVVY_DESKTOP_LIVE=1 for a live run.`, "test");
+    throw new DesktopError(`Tests don't ${what}: use a fake one (setDesktopHelperStarter, setDesktopAccess), or set CAVVY_DESKTOP_LIVE=1 for a live run.`, "test");
 }
 
 let building: Promise<string> | undefined;
@@ -134,7 +135,7 @@ export function helperApp(execPath = process.execPath): string {
 /** The helper, built in Cavvy's home when the app carries none of this source and it isn't built yet (a few seconds). */
 export function helperBinary(): Promise<string> {
     try {
-        refuseInTests();
+        refuseRealInTests();
     } catch (e) {
         return Promise.reject(e);
     }
@@ -324,7 +325,7 @@ export class DesktopHelper implements DesktopHelperLike {
      * holds, then sent back as the first line on stdin. The helper takes commands only when the two agree.
      */
     static start(bin: string): DesktopHelper {
-        refuseInTests();
+        refuseRealInTests();
         const secret = randomBytes(32).toString("hex");
         const proc = Bun.spawn([bin], { stdio: ["pipe", "pipe", "ignore", "pipe"] }) as unknown as HelperProcess;
         // A line on fd 3, left open: Bun closes its end when the helper ends (closing it here too would close

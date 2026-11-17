@@ -9,7 +9,11 @@ import { isolate, tempDir } from "./helpers/isolate";
 isolate();
 const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable, desktopServerTools, nativeDesktopCall, servedDesktopName, servedDesktopTool } = await import("../src/tools/desktop-tools");
 const { stopServer } = await import("../src/mcp/server");
-const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, staleLine, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
+const { DesktopSession, setDesktopHelperStarter, setDesktopAccess, resetDesktop, parseKey, staleLine, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
+const { ACCESS_TITLES, windowCard } = await import("../src/desktop/access");
+type AccessCard = import("../src/desktop/access").AccessCard;
+type AccessView = import("../src/desktop/access").AccessView;
+type AccessAction = import("../src/desktop/access").AccessAction;
 const { helperSource } = await import("../src/desktop/helper");
 const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
@@ -131,6 +135,7 @@ afterEach(() => {
     stopServer();
     resetDesktop();
     setDesktopHelperStarter(undefined);
+    setDesktopAccess(undefined);
 });
 
 const session = () => new DesktopSession({ settleMs: 0 });
@@ -755,4 +760,240 @@ test("off unless the user's own settings turn it on; any settings file turns it 
     expect(desktopAvailable({ desktop: { enabled: true } })).toBe(process.platform === "darwin");
     expect(desktopAvailable({})).toBe(false);
     expect(DESKTOP_TOOLS.every((t) => t.enabled!({ settings: {} }) === false)).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+
+/** A card as the window shows it: what it was shown, in order, and the person's presses. */
+class FakeCard implements AccessCard {
+    views: AccessView[] = [];
+    closed = false;
+    private presses: AccessAction[] = [];
+    private waiting?: (a: AccessAction) => void;
+    show(v: AccessView) {
+        this.views.push(v);
+    }
+    next(): Promise<AccessAction> {
+        const a = this.presses.shift();
+        return a ? Promise.resolve(a) : new Promise((r) => (this.waiting = r));
+    }
+    close() {
+        this.closed = true;
+    }
+    press(a: AccessAction) {
+        const w = this.waiting;
+        this.waiting = undefined;
+        if (w) w(a);
+        else this.presses.push(a);
+    }
+    get last() {
+        return this.views.at(-1);
+    }
+}
+
+describe("asking for macOS's grants with a card", () => {
+    const fast = { everyMs: { accessibility: 5, screen: 5 }, freshEvery: 1000, limitMs: 2000 };
+    let opened: string[];
+    let card: FakeCard | undefined;
+    let cards: number;
+    beforeEach(() => {
+        opened = [];
+        card = undefined;
+        cards = 0;
+        setDesktopAccess({ open: async (g) => (opened.push(g), true), timing: fast });
+    });
+    const ctxCard = (s: InstanceType<typeof DesktopSession>, signal = new AbortController().signal) => ({ ...ctxWith(s, signal), ui: { accessCard: () => (cards++, (card = new FakeCard())) } });
+    const until = async (ok: () => boolean) => {
+        for (let i = 0; i < 400 && !ok(); i++) await Bun.sleep(5);
+        expect(ok()).toBe(true);
+    };
+    const checks = () => helper.calls.filter((c) => c.op === "status" && c.ask === undefined).length;
+
+    test("Open Settings opens the page and asks macOS; the card notices the switch by itself, and the action carries on", async () => {
+        const s = session();
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        helper.accessibility = false;
+        const snap = DesktopSnapshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        expect(card!.last).toEqual({ grant: "accessibility", title: "Let Cavvy control apps on this Mac?", step: "ask", name: "Cavvy Desktop Control" });
+        // Nothing is checked until the person has something to switch on.
+        const before = checks();
+        await Bun.sleep(30);
+        expect(checks()).toBe(before);
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        expect(opened).toEqual(["accessibility"]);
+        // macOS is asked once Open Settings is pressed: that lists the helper for its switch.
+        expect(helper.calls.filter((c) => c.op === "status" && c.ask === "accessibility")).toHaveLength(1);
+        expect(card!.last).toEqual({ grant: "accessibility", title: ACCESS_TITLES.accessibility, step: "waiting", name: "Cavvy Desktop Control" });
+        await until(() => checks() > before + 2);
+        expect(card!.closed).toBe(false);
+        helper.accessibility = true;
+        const r = await snap;
+        expect(r.isError).toBeUndefined();
+        expect(r.content).toContain('button "Bold"');
+        expect(card!.closed).toBe(true);
+        // Once it's closed, nothing more is checked.
+        const after = checks();
+        await Bun.sleep(30);
+        expect(checks()).toBe(after);
+        expect(cards).toBe(1);
+    });
+
+    test("when the link can't open the page, the card names it", async () => {
+        setDesktopAccess({ open: async () => false, timing: fast });
+        const s = session();
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        helper.accessibility = false;
+        const snap = DesktopSnapshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        expect(card!.last?.page).toBe("System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access)");
+        helper.accessibility = true;
+        expect((await snap).isError).toBeUndefined();
+    });
+
+    test("asked at request_access: the yes holds, and once the switch is on the result says the app is ready", async () => {
+        helper.accessibility = false;
+        const s = session();
+        const asked = DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        helper.accessibility = true;
+        expect((await asked).content).toBe("You can use TextEdit until this session ends.");
+    });
+
+    test("closed, or the turn stopped, the card goes and the agent is told", async () => {
+        helper.accessibility = false;
+        const s = session();
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        const snap = DesktopSnapshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        card!.press("close");
+        expect(await snap).toMatchObject({ isError: true, content: `The user didn't turn on Cavvy Desktop Control. ${ACCESSIBILITY_LINE}` });
+        expect(card!.closed).toBe(true);
+        const after = checks();
+        await Bun.sleep(30);
+        expect(checks()).toBe(after);
+        // Stopped: the turn's signal closes it.
+        const stop = new AbortController();
+        const again = DesktopSnapshotTool.run({}, ctxCard(s, stop.signal));
+        await until(() => cards === 2 && Boolean(card?.views.length));
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        stop.abort();
+        card!.press("close");
+        expect(await again).toMatchObject({ isError: true, content: "Interrupted by user" });
+        expect(card!.closed).toBe(true);
+    });
+
+    test("left waiting, the card stops checking after its time and says what to turn on", async () => {
+        setDesktopAccess({ open: async () => true, timing: { ...fast, limitMs: 60 } });
+        helper.accessibility = false;
+        const s = session();
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        const snap = DesktopSnapshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        card!.press("open");
+        const r = await snap;
+        expect(r).toMatchObject({ isError: true });
+        expect(r.content).toEndWith(ACCESSIBILITY_LINE);
+        expect(card!.closed).toBe(true);
+    });
+
+    test("Accessibility the running helper doesn't see: a helper started every few checks does, and the call runs on a new one", async () => {
+        setDesktopAccess({ open: async () => true, timing: { ...fast, freshEvery: 2 } });
+        const fresh: FakeHelper[] = [];
+        setDesktopHelperStarter(async () => {
+            started++;
+            if (started === 1) return helper;
+            const h = new FakeHelper();
+            fresh.push(h);
+            return h;
+        });
+        const s = session();
+        await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+        helper.accessibility = false;
+        const snap = DesktopSnapshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        card!.press("open");
+        const r = await snap;
+        expect(r.isError).toBeUndefined();
+        // Checked with a new helper on the second check, then the snapshot ran on the next one started.
+        expect(fresh.length).toBe(2);
+        expect(fresh[0]!.running).toBe(false);
+        expect(fresh[1]!.sent("look").length).toBeGreaterThan(0);
+        expect(helper.running).toBe(false);
+    });
+
+    test("Screen Recording, which only a new process sees: checked with a helper started for it, then the call runs on a new one", async () => {
+        const fresh: FakeHelper[] = [];
+        setDesktopHelperStarter(async () => {
+            started++;
+            if (started === 1) return helper;
+            const h = new FakeHelper();
+            h.ready = Promise.resolve({ accessibility: true, screen: false });
+            fresh.push(h);
+            return h;
+        });
+        const s = await (async () => {
+            const x = session();
+            await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(x));
+            return x;
+        })();
+        helper.screen = false;
+        const shot = DesktopScreenshotTool.run({}, ctxCard(s));
+        await until(() => Boolean(card?.views.length));
+        expect(card!.last).toMatchObject({ grant: "screen", title: "Let Cavvy take screenshots of apps?", step: "ask" });
+        card!.press("open");
+        await until(() => card!.last?.step === "waiting");
+        expect(opened).toEqual(["screen"]);
+        expect(helper.calls.filter((c) => c.op === "status" && c.ask === "screen")).toHaveLength(1);
+        // Each check starts a helper and stops it.
+        await until(() => fresh.length >= 2);
+        expect(fresh.slice(0, -1).every((h) => !h.running)).toBe(true);
+        // Turned on: a new process sees it, the running helper never does.
+        const probes = fresh.length;
+        setDesktopHelperStarter(async () => {
+            started++;
+            const h = new FakeHelper();
+            h.ready = Promise.resolve({ accessibility: true, screen: true });
+            fresh.push(h);
+            return h;
+        });
+        const r = await shot;
+        expect(r.isError).toBeUndefined();
+        expect(r.content).toStartWith("Screenshot of TextEdit");
+        // The screenshot was taken by a helper started after the grant; the old one is stopped.
+        expect(fresh.length).toBeGreaterThan(probes);
+        expect(helper.running).toBe(false);
+        expect(fresh.at(-1)!.sent("screenshot")).toHaveLength(1);
+    });
+});
+
+test("a window's card: presses wait to be asked for, it shows and goes once, and the turn stopping closes it", async () => {
+    const shown: [string, boolean][] = [];
+    let hidden = 0;
+    const stop = new AbortController();
+    const { card, press } = windowCard({ show: (v, first) => shown.push([v.step, first]), hide: () => hidden++ }, stop.signal);
+    const view = { grant: "accessibility" as const, title: ACCESS_TITLES.accessibility, step: "ask" as const, name: "Cavvy Desktop Control" };
+    card.show(view);
+    press("open");
+    expect(await card.next()).toBe("open");
+    card.show({ ...view, step: "waiting" });
+    expect(shown).toEqual([["ask", true], ["waiting", false]]);
+    const next = card.next();
+    stop.abort();
+    expect(await next).toBe("close");
+    card.close();
+    card.close();
+    expect(hidden).toBe(1);
+    // Over: nothing more is shown, and it's closed to whoever asks.
+    card.show(view);
+    expect(shown).toHaveLength(2);
+    expect(await card.next()).toBe("close");
 });
