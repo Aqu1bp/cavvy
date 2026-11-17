@@ -37,6 +37,8 @@ const MAX_BASES = 300;
 const MAX_REPLY_LINES = 20_000;
 /** File contents read for one reply's diffs. */
 const MAX_REPLY_BYTES = 64 * 1024 * 1024;
+/** Working files read at once while a reply's diffs are made (each at most MAX_DIFF_INPUT). */
+const READ_AHEAD = 16;
 /** Submodules whose checked-out commit is looked up (each is a git call). */
 const MAX_SUBMODULES = 20;
 const GIT_TIMEOUT_MS = 10_000;
@@ -215,19 +217,25 @@ interface IndexEntry extends Entry {
     tag: string;
 }
 
-export function parseTree(buf: Buffer): Map<string, Entry> {
+/** Which of a listing's paths to parse, by path and mode: all of them when not given. */
+type Keep = (path: string, mode: string) => boolean;
+
+/** `ls-tree -r` records, with sizes where it was given -l. */
+export function parseTree(buf: Buffer, keep?: Keep): Map<string, Entry> {
     const out = new Map<string, Entry>();
     for (const rec of records(buf)) {
-        const m = /^(\d{6}) \w+ ([0-9a-f]+) +(\S+)\t/.exec(rec);
+        if (keep && !keep(rec.slice(rec.indexOf("\t") + 1), rec.slice(0, 6))) continue;
+        const m = /^(\d{6}) \w+ ([0-9a-f]+)(?: +(\S+))?\t/.exec(rec);
         if (!m) continue;
-        out.set(rec.slice(m[0].length), { mode: m[1]!, oid: m[2]!, size: /^\d+$/.test(m[3]!) ? Number(m[3]) : undefined });
+        out.set(rec.slice(m[0].length), { mode: m[1]!, oid: m[2]!, size: m[3] !== undefined && /^\d+$/.test(m[3]) ? Number(m[3]) : undefined });
     }
     return out;
 }
 
-function parseIndex(buf: Buffer): Map<string, IndexEntry> {
+function parseIndex(buf: Buffer, keep?: Keep): Map<string, IndexEntry> {
     const out = new Map<string, IndexEntry>();
     for (const rec of records(buf)) {
+        if (keep && !keep(rec.slice(rec.indexOf("\t") + 1), rec.slice(2, 8))) continue;
         const m = /^(\S) (\d{6}) ([0-9a-f]+) (\d)\t/.exec(rec);
         if (!m) continue;
         const path = rec.slice(m[0].length);
@@ -453,6 +461,8 @@ async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): P
 /** What the working tree holds at one path: never through a symlinked folder, never following a link. */
 export class WorkTree {
     private dirs = new Map<string, Promise<boolean>>();
+    /** A blob's size, for an entry listed without one. */
+    blobSize?: (oid: string) => Promise<number | undefined>;
     constructor(
         readonly root: string,
         private algo: Algo,
@@ -525,7 +535,10 @@ export class WorkTree {
         const exec = this.filemode ? (st.mode & 0o100 ? "100755" : "100644") : was && isFileMode(was.mode) ? was.mode : "100644";
         if (!hash) return { mode: exec, oid: "", size: st.size };
         // A big file of another size has changed; no need to read it all to know.
-        if (st.size > MAX_DIFF_INPUT && was?.size !== undefined && was.size !== st.size) return { mode: exec, oid: "resized", size: st.size };
+        if (st.size > MAX_DIFF_INPUT && was && (isFileMode(was.mode) || was.mode === SYMLINK)) {
+            was.size ??= await this.blobSize?.(was.oid);
+            if (was.size !== undefined && was.size !== st.size) return { mode: exec, oid: "resized", size: st.size };
+        }
         return { mode: exec, size: st.size, ...(await fileId(abs, st, this.algo, this.inTime)) };
     }
 
@@ -603,7 +616,10 @@ const NS = 1_000_000_000n;
  * Whether a file's stat still matches its index entry, by git's own rules
  * (racy-git.adoc, core.checkStat, core.trustCtime): then git takes it as
  * unchanged without reading it. Nanoseconds count only where git recorded
- * them; an entry not older than the index itself is racy, so not trusted.
+ * them and compares them; an entry not older than the index itself is racy,
+ * so not trusted. Where only seconds are compared, an entry from the index's
+ * own second is racy: a rewrite of the same size later in that second
+ * would look the same (as git built without USE_NSEC sees it).
  */
 export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime: bigint, rules: { trustCtime: boolean; minimal: boolean }): boolean {
     if (!e) return false;
@@ -613,17 +629,138 @@ export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime:
     if (!rules.minimal && (u32(st.ino) !== e.ino || u32(st.uid) !== e.uid || u32(st.gid) !== e.gid)) return false;
     const [sec, nsec] = e.mtime;
     const idxSec = indexMtime / NS;
-    const racy = sec > idxSec || (sec === idxSec && (nsec === 0n || nsec >= indexMtime % NS));
+    const racy = sec > idxSec || (sec === idxSec && (rules.minimal || nsec === 0n || nsec >= indexMtime % NS));
     return !racy;
 }
 
-/** Attributes for paths, as check-attr reports them ("unspecified" when not set). */
-async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Record<string, string>>> {
-    const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0", deadline });
+const ATTRS = new Set(["filter", "ident", "working-tree-encoding", "text", "eol"]);
+const NO_ATTRS: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
+ * The attributes that change what's read from disk, for each of `paths`: a path missing one has it unspecified.
+ * Every path asked gets an entry, unless git couldn't say (then none does). `-a` prints only the attributes set:
+ * none at all where the repository has no .gitattributes, against five records a path (12 ms and 945 KB for
+ * 5,000 paths, 3.5 ms and nothing with `-a`, measured).
+ */
+async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Readonly<Record<string, string>>>> {
+    const out = new Map<string, Readonly<Record<string, string>>>();
+    const input = paths.join("\0") + "\0";
+    let r = await git(root, ["check-attr", "-a", "-z", "--stdin"], { input, deadline });
+    // A .gitattributes giving every path thousands of other attributes can make `-a` print more than is read: then
+    // these five alone, by name.
+    if (r.code === 0 && r.cut) r = await git(root, ["check-attr", "-z", "--stdin", ...ATTRS], { input, deadline });
+    if (r.code !== 0 || r.cut) return out;
     const recs = records(r.out);
-    const out = new Map<string, Record<string, string>>();
-    for (let i = 0; i + 2 < recs.length; i += 3) out.set(recs[i]!, { ...out.get(recs[i]!), [recs[i + 1]!]: recs[i + 2]! });
+    for (let i = 0; i + 2 < recs.length; i += 3) {
+        // Asked by name, git also prints those unspecified, which is what a missing one means.
+        if (!ATTRS.has(recs[i + 1]!) || recs[i + 2] === "unspecified") continue;
+        // Filled in place: a copy for each record cost 10 ms for 5,000 paths.
+        let a = out.get(recs[i]!) as Record<string, string> | undefined;
+        if (!a) out.set(recs[i]!, (a = {}));
+        a[recs[i + 1]!] = recs[i + 2]!;
+    }
+    for (const p of paths) if (!out.has(p)) out.set(p, NO_ATTRS);
     return out;
+}
+
+/** The tree with nothing in it, which git knows without having it stored. */
+const EMPTY_TREE = { sha1: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha256: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" };
+
+/**
+ * How `git status` is run in `root` so that it runs no program: undefined where that can't be made sure of, and
+ * `git status` isn't to be used. Asked just before it runs. Two guards, each enough where it holds:
+ * - For each filter Git's config defines (git-lfs's, which `git lfs install` puts in the user's config, for one),
+ *   settings that make its programs none and its failing no error, so that whatever attributes name it, it runs
+ *   nothing. A filter is only ever run for an attribute that names one Git's config defines, and the repository's
+ *   own config files are out of an agent's reach (sandbox.ts). A file the repository's config includes (`include.path`,
+ *   `includeIf`) can be anywhere, its folder too, and rewritten after this looked: an include from the repository's
+ *   config, or the command's, refuses. One the user's or the system's config includes is theirs. So does a filter the
+ *   command's own config defines (GIT_CONFIG_PARAMETERS), and GIT_CONFIG, which would point `git config` alone at
+ *   another file. Older git, without --show-scope, says nothing plainly: refused.
+ * - The folder's .gitattributes files, which an agent can write, read from the empty tree instead
+ *   (GIT_ATTR_SOURCE): none of them can name a filter. Git before 2.41 doesn't know it, and the first guard stands
+ *   alone. A capture from `git status` takes only what attributes don't change (TurnSnapshots.converts), so they
+ *   change nothing it says.
+ * And no hooks, though `git status` that doesn't write Git's index runs none, and no fsmonitor (gitArgv).
+ */
+export async function statusGuard(root: string, algo: "sha1" | "sha256", deadline: number): Promise<{ args: string[]; env: Record<string, string> } | undefined> {
+    if (gitEnvironment().GIT_CONFIG !== undefined) return undefined;
+    const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+    if (found.cut || (found.code && found.code !== 1)) return undefined;
+    const names = new Set<string>();
+    // scope NUL key LF value NUL, for each.
+    // Decoded strictly: a name that isn't UTF-8 would come back as another (U+FFFD for its bytes), and be the one turned off.
+    let text = "";
+    try {
+        text = found.code === 1 ? "" : new TextDecoder("utf-8", { fatal: true }).decode(found.out);
+    } catch {
+        return undefined;
+    }
+    const fields = text ? text.split("\0") : [];
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+        const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!, lower = key.toLowerCase();
+        if (lower.startsWith("filter.")) {
+            // filter.<name>.clean or .process: the name as it's spelled (its case counts), to be spelled again in `-c`,
+            // which takes what's before its first "=" for the key.
+            const name = key.slice("filter.".length, key.lastIndexOf("."));
+            if (scope === "command" || !name || name.includes("=") || (!names.has(name) && names.size >= 64)) return undefined;
+            names.add(name);
+        } else if (scope !== "global" && scope !== "system") return undefined;
+    }
+    const args = ["-c", "core.hooksPath=/dev/null"];
+    for (const name of names) args.push(...["clean", "smudge", "process"].flatMap((program) => ["-c", `filter.${name}.${program}=`]), "-c", `filter.${name}.required=false`);
+    return { args, env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_SOURCE: EMPTY_TREE[algo] } };
+}
+
+/**
+ * The paths whose base, index or working copy may differ, as `git status` (and, for a branch, `diff-tree` from its base
+ * to HEAD) says, run so that it runs no program (statusGuard). Undefined where it can't say. Compared raw (no core.autocrlf,
+ * no attributes), so no conversion makes a changed file look unchanged: these are every path the full comparison could list,
+ * but for a file changed with its stat data left as it was, which git doesn't see either. Not submodules: it doesn't look in.
+ */
+/**
+ * Paths git says differ (status, and a branch's commits); `onDisk`: those whose file differs from the index, by git's
+ * reading, with the file's mode as git saw it.
+ */
+type Differ = Set<string> & { onDisk: Map<string, string> };
+
+async function differing(root: string, guard: { args: string[]; env: Record<string, string> }, base: string | undefined, head: string | undefined, deadline: number): Promise<Differ | undefined> {
+    // Replacement objects as the listings here see them, so HEAD is the same tree.
+    const { GIT_NO_REPLACE_OBJECTS: _, ...env } = guard.env;
+    const args = [...guard.args, "-c", "core.autocrlf=false"];
+    const [status, since] = await Promise.all([
+        git(root, [...args, "--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=no", "--no-renames", "--ignore-submodules=all"], { deadline, privateEnv: env }),
+        base && base !== head ? git(root, [...args, "diff-tree", "-r", "-z", "--name-only", "--no-renames", base, head!], { deadline, privateEnv: env }) : undefined,
+    ]);
+    const failed = (r?: GitOut) => !!r && (r.code !== 0 || r.cut || !!r.err.trim());
+    if (failed(status) || failed(since)) return undefined;
+    const paths = Object.assign(new Set<string>(since ? records(since.out) : []), { onDisk: new Map<string, string>() });
+    for (const rec of records(status.out)) {
+        // "1 XY sub mH mI mW hH hI path"; unmerged, "u XY sub m1 m2 m3 mW h1 h2 h3 path".
+        const fields = rec.split(" ");
+        const at = rec.startsWith("1 ") ? 8 : rec.startsWith("u ") ? 10 : -1;
+        if (at < 0 || fields.length <= at) return undefined;
+        const path = fields.slice(at).join(" ");
+        paths.add(path);
+        // Y: the file against the index (M: its content or mode).
+        if (rec.startsWith("1 ") && rec[3] === "M") paths.onDisk.set(path, fields[5]!);
+    }
+    return paths;
+}
+
+/** Sizes for entries listed without them, from git's object headers. */
+async function blobSizes(root: string, entries: Iterable<Entry>, deadline: number): Promise<void> {
+    const wanted = [...entries].filter((e) => e.size === undefined && (isFileMode(e.mode) || e.mode === SYMLINK));
+    if (!wanted.length) return;
+    const r = await git(root, ["cat-file", "--batch-check"], { input: [...new Set(wanted.map((e) => e.oid))].join("\n") + "\n", deadline });
+    if (r.code !== 0 || r.cut) throw new RpcError("Git couldn't list this repository's files.");
+    const size = new Map<string, number>();
+    for (const line of r.out.toString("utf-8").split("\n")) {
+        const m = /^([0-9a-f]+) blob (\d+)$/.exec(line);
+        if (m) size.set(m[1]!, Number(m[2]));
+    }
+    // One missing (a partial clone) stays unknown, as ls-tree -l leaves it.
+    for (const e of wanted) e.size = size.get(e.oid);
 }
 
 // ---------------------------------------------------------------------------
@@ -759,8 +896,13 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         base = { ref: name, sha: baseSha };
     }
 
-    const [tree, index, others, folders] = await Promise.all([
-        baseSha ? git(root, ["ls-tree", "-r", "-l", "-z", "--full-tree", baseSha], { deadline }) : undefined,
+    // Where git can say which paths differ without running a program, only those are compared (and sized); the rest
+    // are as git last saw them. Elsewhere, every path, each with its size (a big file of another size has changed).
+    const guard = await statusGuard(root, algo, deadline);
+    const listTree = (sized: boolean) => (baseSha ? git(root, ["ls-tree", "-r", ...(sized ? ["-l"] : []), "-z", "--full-tree", baseSha], { deadline }) : undefined);
+    let [differ, tree, index, others, folders] = await Promise.all([
+        guard ? differing(root, guard, req.scope === "branch" ? baseSha : undefined, headSha, deadline) : undefined,
+        listTree(!guard),
         // Reading the index (here and with --debug) may touch a split index's sharedindex file's
         // mtime: git's own way of keeping it from expiring, as any ls-files or status does.
         git(root, ["ls-files", "-s", "-v", "-z"], { deadline }),
@@ -768,14 +910,22 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         // The same, with wholly untracked folders as one path each ("dir/"), as `git status` shows them.
         git(root, ["ls-files", "-z", "--others", "--exclude-standard", "--directory"], { maxBytes: 4 * 1024 * 1024, deadline }),
     ]);
+    if (guard && !differ) tree = await listTree(true);
     if (tree?.cut || index.cut) throw new RpcError("This repository has too many files to compare.", "limit");
     if ((tree && tree.code !== 0) || index.code !== 0) throw new RpcError("Git couldn't list this repository's files.");
-    const old = tree ? parseTree(tree.out) : new Map<string, Entry>();
-    const staged = parseIndex(index.out);
+    const keep: Keep | undefined = differ && ((path, mode) => differ.has(path) || mode === GITLINK);
+    const old = tree ? parseTree(tree.out, keep) : new Map<string, Entry>();
+    const staged = parseIndex(index.out, keep);
     const untracked = untrackedEntries(records(others.out), others.cut, records(folders.out));
     inTime();
 
     const wt = new WorkTree(root, algo, filemode, inTime, deadline);
+    // Listed without sizes, a big file's is asked for when it's met; the others' when they're needed (renames, diffs).
+    if (differ)
+        wt.blobSize = async (oid) => {
+            const r = await git(root, ["cat-file", "-s", oid], { deadline });
+            return r.code === 0 && /^\d+\n?$/.test(r.out.toString("utf-8")) ? Number(r.out.toString("utf-8")) : undefined;
+        };
     const indexEols = new Map<string, boolean>();
     /**
      * Why git would still list a file that's back as it was: a conflict left unresolved, or a
@@ -795,7 +945,33 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     /** Raw equality can still change on check-in when attributes force CRLF conversion. */
     const rawEqual: Change[] = [];
     let submodules = 0;
-    const paths = [...new Set([...old.keys(), ...staged.keys()])];
+    // A file git says differs on disk from its index entry, which is the compared side's, with nothing to convert it
+    // (no attribute that could, no core.autocrlf: git read it as it is, as this would) has changed, whatever its
+    // bytes: it's read only if it's among those listed (MAX_FILES). 5,000 changed files: the first review after a
+    // start read every one of them.
+    let early = new Map<string, Readonly<Record<string, string>>>();
+    /** Changes listed without their file read: read once they're known to be listed. */
+    const unreadChanges = new Set<Change>();
+    let unread: Set<string> | undefined;
+    if (differ && differ.onDisk.size > MAX_FILES && req.path === undefined && !autocrlf) {
+        const maybe = [...differ.onDisk.keys()].filter((p) => {
+            const was = old.get(p);
+            const ix = staged.get(p);
+            return !!was && !!ix && ix.tag === "H" && ix.oid === was.oid && ix.mode === was.mode && isFileMode(was.mode) && isFileMode(differ.onDisk.get(p)!);
+        });
+        if (maybe.length > MAX_FILES) {
+            early = await attributes(root, maybe, deadline);
+            unread = new Set(maybe.filter((p) => early.get(p) === NO_ATTRS));
+            // Not even stat'ed: git's mode for the file (its last, without core.filemode).
+            for (const path of unread) {
+                const was = old.get(path)!;
+                const c: Change = { path, change: "modified", old: was, now: { mode: filemode ? differ.onDisk.get(path)! : was.mode, oid: "" } };
+                changes.push(c);
+                unreadChanges.add(c);
+            }
+        }
+    }
+    const paths = [...new Set([...old.keys(), ...staged.keys()])].filter((p) => !unread?.has(p));
     await eachLimit(paths, 32, async (path) => {
         inTime();
         const was = old.get(path);
@@ -842,7 +1018,9 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const tracked = (c: Change) => !c.indexed && !!c.now && isFileMode(c.now.mode) && staged.get(c.path)?.tag === "H" && isFileMode(staged.get(c.path)!.mode);
     const candidates = changes.filter((c) => (c.change === "added" || c.change === "modified" || c.change === "typechange") && tracked(c));
     // check-attr only reads .gitattributes; it runs nothing.
-    const attrs = candidates.length || crlfOnly.length || rawEqual.length ? await attributes(root, [...candidates, ...crlfOnly, ...rawEqual].map((c) => c.path), deadline) : new Map<string, Record<string, string>>();
+    const asked = [...candidates, ...crlfOnly, ...rawEqual].map((c) => c.path).filter((p) => !early.has(p));
+    const attrs = asked.length ? await attributes(root, asked, deadline) : new Map<string, Readonly<Record<string, string>>>();
+    for (const [path, a] of early) attrs.set(path, a);
     const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
     /**
      * What git does with a path's line endings on check-in (gitattributes): `text`, or `eol`
@@ -930,11 +1108,52 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
 
     // A path the base tracks is compared above, even if the index has since dropped it.
     for (const c of untracked.changes) if (!old.has(c.path)) changes.push(c);
+    if (differ) await blobSizes(root, changes.flatMap((c) => (c.change === "deleted" && c.old ? [c.old] : [])), deadline);
     await findRenames(changes, wt, untracked.changes.length <= 2000, inTime);
     // As `git status` lists them: tracked changes, then untracked files.
     const rank = (c: Change) => (c.change === "untracked" ? 1 : 0);
     changes.sort((a, b) => rank(a) - rank(b) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     inTime();
+    // Those not read, now read where they're listed: one back as it was (since git looked) isn't a change, and those
+    // after it move up; one gone is deleted.
+    let oldBlobs: Promise<Map<string, Buffer>> | undefined;
+    while (unreadChanges.size) {
+        const due = changes.slice(0, MAX_FILES).filter((c) => unreadChanges.has(c));
+        if (!due.length) break;
+        const same = new Set<Change>();
+        // Their old sides, which the listing shows, are asked for meanwhile: sizes, then contents.
+        const sized = blobSizes(root, due.map((c) => c.old!), deadline);
+        if (!oldBlobs) {
+            oldBlobs = sized.then(() => {
+                const take = due.map((c) => c.old!).filter((e) => isFileMode(e.mode) && (e.size ?? Infinity) <= MAX_DIFF_INPUT);
+                return blobs(root, [...new Set(take.map((e) => e.oid))], deadline);
+            });
+            // One that fails is asked again with the rest.
+            oldBlobs.catch(() => {});
+        }
+        await Promise.all([
+            sized,
+            eachLimit(due, 32, async (c) => {
+                inTime();
+                unreadChanges.delete(c);
+                const was = c.old!;
+                const now = await wt.entry(c.path, was);
+                if (!now) {
+                    c.change = "deleted";
+                    c.now = undefined;
+                    c.kind = kindOf(was.mode);
+                } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
+                else {
+                    // As the comparison above has it: a file that's a link (or no file) now is a type change.
+                    c.now = now;
+                    c.change = kindOf(was.mode) === kindOf(now.mode) && now.mode !== "other" ? "modified" : "typechange";
+                    c.kind = kindOf(now.mode) ?? kindOf(was.mode);
+                }
+            }),
+        ]);
+        if (!same.size) break;
+        removeWhere(changes, (c) => same.has(c));
+    }
 
     // Relative to the session's folder, with ../ for the rest of the repository.
     const here = canonical(cwd);
@@ -956,7 +1175,20 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // Every diff read from disk needs its line-ending rule, conflicted files and all.
     const unseen = listed.filter((c) => c.change !== "deleted" && !c.indexed && !c.kind && !attrs.has(c.path)).map((c) => c.path);
     if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols });
+    if (differ) await blobSizes(root, listed.flatMap((c) => (c.old ? [c.old] : [])), deadline);
+    const readBlobs = oldBlobs && (async (oids: string[], deadline: number) => {
+        const early = (await oldBlobs!.catch(() => undefined)) ?? new Map<string, Buffer>();
+        // Only those asked for: render keeps to the reply's budget, which the early fetch didn't.
+        const have = new Map<string, Buffer>();
+        for (const o of oids) {
+            const b = early.get(o);
+            if (b) have.set(o, b);
+        }
+        const rest = oids.filter((o) => !have.has(o));
+        if (rest.length) for (const [oid, b] of await blobs(root, rest, deadline)) have.set(oid, b);
+        return have;
+    });
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols, readBlobs });
     let added = 0;
     let removed = 0;
     for (const f of files) {
@@ -1122,9 +1354,24 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         if (e instanceof RpcError && e.code === "timeout") return new Map<string, Buffer>();
         throw e;
     });
+    // Working files are read a few ahead of the one being diffed: one at a time, 300 small files took ~90 ms.
+    // A read asked ahead had at least the budget left now, so it's held to what's left when its turn comes.
+    const reads = new Map<Change, Promise<Side | null>>();
+    const readAhead = (from: number) => {
+        for (let j = from; j < Math.min(listed.length, from + READ_AHEAD); j++) {
+            const c = listed[j]!;
+            if (reads.has(c) || c.note || c.kind || c.change === "deleted" || c.indexed) continue;
+            const r = current(c, wt, budget);
+            // One left unread (past the deadline) mustn't fail unhandled; the one read rethrows.
+            r.catch(() => {});
+            reads.set(c, r);
+        }
+    };
     let lines = 0;
     const files: GitFileDiff[] = [];
-    for (const c of listed) {
+    for (let i = 0; i < listed.length; i++) {
+        const c = listed[i]!;
+        readAhead(i);
         const path = shown(c.path);
         const base: GitFileDiff = { path, status: statusOf(c), change: c.change, added: 0, removed: 0, hunks: [] };
         if (c.from) base.from = shown(c.from);
@@ -1154,7 +1401,9 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
             continue;
         }
         const before = c.old ? oldSide(c.old, olds) : null;
-        const after = c.change === "deleted" ? null : c.indexed ? oldSide(c.now!, olds) : await current(c, wt, budget);
+        let after = c.change === "deleted" ? null : c.indexed ? oldSide(c.now!, olds) : await (reads.get(c) ?? current(c, wt, budget));
+        reads.delete(c);
+        if (after && "bytes" in after && !("link" in after) && after.bytes > budget) after = { later: true };
         if (after && "bytes" in after) budget -= after.bytes;
         if (after && "link" in after) base.kind = "link";
         if ((before && "note" in before) || (after && "note" in after)) {

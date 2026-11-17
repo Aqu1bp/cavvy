@@ -29,9 +29,20 @@ function restart(anims: Animation[]) {
     for (const a of anims) if (endless(a) && a.playState === "running" && !(a.effect as KeyframeEffect | null)?.target?.closest(KEEPS)) a.startTime = at;
 }
 
+/** Told whether the window can be seen and has the focus, each time either may have changed (the clock, lib/clock.ts). */
+const sightWatchers: ((seen: boolean, focused: boolean) => void)[] = [];
+const visible = () => seen && document.visibilityState !== "hidden";
+
+/** Calls `fn` now and each time the window's being seen or focused may have changed. */
+export function onSight(fn: (seen: boolean, focused: boolean) => void) {
+    sightWatchers.push(fn);
+    fn(visible(), focused);
+}
+
 function apply() {
+    const loops = visible();
+    for (const fn of sightWatchers) fn(loops, focused);
     const root = document.documentElement;
-    const loops = seen && document.visibilityState !== "hidden";
     const decor = loops && focused;
     const back = (loops && root.hasAttribute("data-loops-off")) || (decor && root.hasAttribute("data-decor-off"));
     root.toggleAttribute("data-loops-off", !loops);

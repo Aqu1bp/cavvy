@@ -46,12 +46,32 @@ function objectUrl(i: { mediaType: string; data: string }): string {
     return URL.createObjectURL(new Blob([fromBase64(i.data) as BlobPart], { type: i.mediaType }));
 }
 
-/** Images calls' results brought (session.toolImage), by their key: what the model looked at. */
+/** Images calls' results brought (session.toolImage), by their key: what the model looked at. Whole, for the viewer. */
 const tools = new ImageCache<PromptImage>(48);
+/**
+ * Their thumbnails, for the rows: a run of 200 screenshots shows 200 of these, and holds none of the images
+ * themselves, which only the viewer asks for (again, past `tools`).
+ */
+const toolThumbs = new ImageCache<string>(400);
 
 /** A call's result image, with its thumbnail. Rejects when it's gone. */
 export function toolImage(sessionId: string, key: string): Promise<PromptImage> {
-    return tools.get(`${sessionId}\0${key}`, () => rpc.call("session.toolImage", { id: sessionId, key }).then(async (i) => [await withThumb(i)])).then((a) => a[0]!);
+    const k = `${sessionId}\0${key}`;
+    return tools
+        .get(k, () =>
+            rpc.call("session.toolImage", { id: sessionId, key }).then(async (i) => {
+                const thumb = await toolThumbs.peek(k)?.then((a) => a[0], () => undefined);
+                return [thumb ? { mediaType: i.mediaType, data: i.data, thumb } : await withThumb(i)];
+            }),
+        )
+        .then((a) => a[0]!);
+}
+
+/** A call's result image as its row shows it: the thumbnail alone. Rejects when it's gone. */
+export function toolThumb(sessionId: string, key: string): Promise<string> {
+    const k = `${sessionId}\0${key}`;
+    const whole = tools.peek(k);
+    return toolThumbs.get(k, () => (whole ?? rpc.call("session.toolImage", { id: sessionId, key }).then(async (i) => [await withThumb(i)])).then((a) => [a[0]!.thumb])).then((a) => a[0]!);
 }
 
 /** A prompt's images, fetched by where it is and kept by what they are. Rejects when they're gone. */

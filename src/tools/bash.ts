@@ -330,7 +330,12 @@ class PacedOutput {
     private owed = 0;
     private readonly buf = Buffer.allocUnsafe(PACED_CHUNK);
 
-    constructor(fds: number[]) {
+    /**
+     * `background`: what it prints is read when asked for (drain) or by a later poll, never watched as it comes, so
+     * its polls back off to PACED_IDLE_MS as soon as it's quiet, not after 2 s of quiet. Polled every PACED_POLL_MS, a command printing once a second
+     * cost 0.27 ms of CPU a second (measured: 100 of them, 27 ms/s), nearly all of it reads that found nothing.
+     */
+    constructor(fds: number[], private background = false) {
         this.streams = fds.map((fd) => new PacedStream(fd, this));
     }
 
@@ -398,7 +403,7 @@ class PacedOutput {
         this.owed = 0;
         if (!this.idle++) return void (this.immediate = setImmediate(this.poll));
         const quiet = performance.now() - this.lastData;
-        const longest = quiet < 2000 ? PACED_POLL_MS : Math.min(PACED_IDLE_MS, quiet / 25);
+        const longest = this.background ? PACED_IDLE_MS : quiet < 2000 ? PACED_POLL_MS : Math.min(PACED_IDLE_MS, quiet / 25);
         this.timer = setTimeout(this.poll, Math.min(longest, 2 ** (this.idle - 2)));
     };
 }
@@ -515,7 +520,7 @@ export interface PacedChild {
  * ordinary pipes, as before, where FIFOs can't be made or `paced` is false. `combined`:
  * both go into one, in the order the command wrote them (as a terminal shows them).
  */
-export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, o: { paced?: boolean; combined?: boolean } = {}): PacedChild {
+export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, o: { paced?: boolean; combined?: boolean; background?: boolean } = {}): PacedChild {
     const fifos = o.paced !== false ? pacedFifos(o.combined ? 1 : 2) : undefined;
     if (!fifos) {
         const child = spawn(file, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
@@ -533,7 +538,7 @@ export function spawnPaced(file: string, args: string[], options: Omit<SpawnOpti
         // The command holds them now: the streams end when it (and what it started) closes them.
         for (const f of fifos) closeSync(f.write);
     }
-    const output = new PacedOutput(fifos.map((f) => f.read));
+    const output = new PacedOutput(fifos.map((f) => f.read), o.background);
     const [stdout, stderr] = output.streams as [PacedStream, PacedStream | undefined];
     let left = 1 + output.streams.length;
     let status: [number | null, NodeJS.Signals | null] = [null, null];
@@ -1233,7 +1238,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     const [file, ...args] = shellArgv(command, ctx.sandbox);
     let spawned: PacedChild;
     try {
-        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true });
+        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true, background: true });
     } catch (e) {
         proxy?.close();
         throw e;

@@ -3,7 +3,10 @@
 // written after each part, so a crash loses only the part it stopped. Writes bench-results/bench-heavy-<label>.json.
 //
 //   bun desktop-electron/bench-heavy.ts --label new --app <…>/Cavvy.app [--only open,many,git,soak] [--sessions 5]
-//       [--turns 400] [--kb 200] [--files 100000] [--hours 3]
+//       [--turns 400] [--kb 200] [--files 100000] [--hours 3] [--churn 6]
+//
+// --churn N: in the soak, each session is archived after N turns and a new one takes its place, as a day's sessions
+// come and go; memory at the start, before any session, is what the end is held to.
 //
 // For the same with real models, bench-real.ts with five --models.
 
@@ -23,6 +26,7 @@ const SESSIONS = Number(arg("--sessions") ?? 5);
 const LARGE_TURNS = Number(arg("--turns") ?? 400), LARGE_KB = Number(arg("--kb") ?? 200);
 const FILES = Number(arg("--files") ?? 100_000);
 const HOURS = Number(arg("--hours") ?? 3);
+const CHURN = Number(arg("--churn") ?? 0);
 const repo = resolve(import.meta.dir, "..");
 const results = join(import.meta.dir, "bench-results");
 const out = join(results, `bench-heavy-${label}.json`);
@@ -324,21 +328,35 @@ try {
     }
 
     if (parts.includes("soak")) {
+        await sleep(10_000);
+        const start = { memory: footprint(), heapMB: await heapMB(a) };
         const ids: string[] = [];
         for (let i = 0; i < SESSIONS; i++) ids.push(await create(a));
+        let archived = 0;
         const mix = ["fastdemo 20000 (part)", "demo", "cmdrows", "perfreply 8000 20 33", `perfbig ${LARGE_KB}`, "fastdemo burst short"];
         const until = Date.now() + HOURS * 3_600_000;
         let turns = 0, failed = 0;
         // Each works on as a person's sessions do: one turn after another, a moment between.
-        const worker = async (id: string, n: number) => {
-            for (let i = n; Date.now() < until; i++) {
-                try { await turn(a, id, mix[i % mix.length]!); turns++; } catch { failed++; }
+        const worker = async (slot: number) => {
+            for (let i = slot, done = 0; Date.now() < until; i++) {
+                try { await turn(a, ids[slot]!, mix[i % mix.length]!); turns++; } catch { failed++; }
                 await sleep(2000);
+                // Done with: archived (closed and out of the list), and a new one in its place.
+                if (CHURN && ++done % CHURN === 0 && Date.now() < until) {
+                    const old = ids[slot]!;
+                    ids[slot] = await create(a);
+                    await a.rpc.call("session.pin", { id: old, pinned: false });
+                    await a.rpc.call("session.archive", { id: old, archived: true });
+                    // And let go, as the window lets go of what it no longer shows: held here, every archived session
+                    // stayed loaded, and the end measured the bench's sessions, not the app's.
+                    await a.rpc.call("session.close", { id: old });
+                    archived++;
+                }
             }
         };
-        const workers = ids.map((id, n) => worker(id, n));
+        const workers = ids.map((_, n) => worker(n));
         const checkpoints: any[] = [];
-        report.soak = { checkpoints };
+        report.soak = { start, churn: CHURN, checkpoints };
         const started = Date.now();
         // Every session has a turn to show by now.
         await sleep(60_000);
@@ -346,7 +364,7 @@ try {
             // A person looks from one to another.
             const openMs = await open(a, ids[k % ids.length]!);
             const s = await stretch(a, 30_000);
-            checkpoints.push({ minutes: Math.round((Date.now() - started) / 60_000), turns, failed, openMs, ...s, frames: await longFrames(a), memory: footprint(), heapMB: await heapMB(a), nodes: await domNodes(a), serverFiles: openFiles(a.serverPid) });
+            checkpoints.push({ minutes: Math.round((Date.now() - started) / 60_000), turns, failed, archived, openMs, ...s, frames: await longFrames(a), memory: footprint(), heapMB: await heapMB(a), nodes: await domNodes(a), serverFiles: openFiles(a.serverPid) });
             report.soak.crashed = a.crashed();
             save();
             await sleep(Math.max(0, Math.min(270_000, until - Date.now())));
@@ -368,6 +386,8 @@ try {
             await a.js(`(() => { sessionStorage.removeItem('cavvy.navigation'); location.reload(); })()`);
             await sleep(120_000);
             report.soak.closed = { memory: footprint(), heapMB: await heapMB(a), serverFiles: openFiles(a.serverPid) };
+            // The target: back within 10% of where it started, once settled.
+            report.soak.closedOverStart = Math.round((report.soak.closed.memory.total / Math.max(1, start.memory.total) - 1) * 1000) / 10;
             save();
         }
     }

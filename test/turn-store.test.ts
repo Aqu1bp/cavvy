@@ -2,7 +2,7 @@
 // there next time: what the window is sent then is what building it from its logs would send, and a session whose
 // logs changed since is built from them again.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentRun, SessionSnapshot, Turn } from "../src/server/protocol";
@@ -13,8 +13,11 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { writeThread } = await import("../scripts/perf-thread");
 const { TurnStore } = await import("../src/server/turn-store");
-const { findSessionAnywhere } = await import("../src/agent/session");
-const { turnStoring, turnBuilding } = await import("../src/server/runtime");
+const { findSessionAnywhere, Session } = await import("../src/agent/session");
+const { turnStoring, turnBuilding, storedFirst } = await import("../src/server/runtime");
+// An open from the store reads only its last turns' heads (the rest as they're asked for): as few as it reads, so that
+// these sessions (60 to 150 turns) have earlier turns left to read.
+const firstRead = storedFirst.turns;
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 let mock: ReturnType<typeof startMockLlm>;
@@ -60,6 +63,7 @@ const until = (id: string, pred: (v: { turns: Turn[]; state: any }) => boolean) 
     });
 
 beforeAll(async () => {
+    storedFirst.turns = 20;
     mock = startMockLlm({ delayMs: 0 });
     mkdirSync(iso.home, { recursive: true });
     writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
@@ -91,6 +95,8 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
+    // Other test files run in the same process (a CI shard): as it was.
+    storedFirst.turns = firstRead;
     ws?.close();
     await srv?.stop();
     mock?.stop();
@@ -170,6 +176,147 @@ for (const kind of ["cli", "native"] as const) {
     });
 }
 
+for (const kind of ["cli", "native"] as const) {
+    test(`a ${kind === "cli" ? "Claude Code session" : "session"} opened from its store reads its earlier turns as they're asked for, and they're as built`, async () => {
+        const cwd = join(tempDir(`cavvy-turn-store-earlier-${kind}-`), "project");
+        mkdirSync(cwd, { recursive: true });
+        const t = writeThread({ cwd, items: 1500, kind, seed: 12 });
+        const built = await everything(t.id);
+        await close(t.id);
+        // Its last turns read, and those before counted: as many as there are, their sub-agents too (agentsMore).
+        storedFirst.turns = 1000;
+        let whole: SessionSnapshot;
+        try {
+            whole = (await call("session.open", { id: t.id, last: 5 })) as SessionSnapshot;
+            await close(t.id);
+        } finally {
+            storedFirst.turns = 20;
+        }
+        const index = storeOf(t.file, t.id);
+        const stat = () => { const s = statSync(index); return `${s.ino}:${s.mtimeMs}`; };
+        const was = stat();
+        // Opened, its last turns read, and closed: nothing changed, nothing written (its earlier turns aren't read for that).
+        await open(t.id, { last: 5 });
+        await close(t.id);
+        await Bun.sleep(200);
+        if (kind === "native") expect(stat()).toBe(was);
+        const last = await open(t.id, { last: 5 });
+        const shown = (x: SessionSnapshot) => unset({ earlier: x.earlier, agentsMore: x.agentsMore, agents: x.agents, turns: lessOpenNotice(x.turns) });
+        expect(shown(last)).toEqual(shown(whole));
+        expect(last.earlier).toBeGreaterThan(20);
+        // A page at a time back to the first: what building them all made.
+        const pages: Turn[] = [];
+        let first = last.turns[0]!.id;
+        for (let earlier = last.earlier!; earlier > 0; ) {
+            const page = await call("session.turns", { id: t.id, before: first, count: 7 });
+            expect(page.turns.length).toBe(Math.min(7, earlier));
+            expect(page.earlier).toBe(earlier - page.turns.length);
+            pages.unshift(...page.turns);
+            earlier = page.earlier;
+            first = page.turns[0].id;
+        }
+        const thoughtless = (turns: Turn[]) => turns.map((x) => ({ ...x, blocks: x.blocks.map((b) => (b.t === "thinking" ? { ...b, text: "", omitted: true } : b)) }));
+        expect(unset(lessOpenNotice([...pages, ...last.turns]))).toEqual(unset(thoughtless(built.turns)));
+        expect(await call("session.agentList", { id: t.id })).toEqual(built.list);
+        await close(t.id);
+        // Nothing changed: its index as it was. (Not a Claude Code session's here, where each open shows a notice that
+        // Claude Code isn't installed: its ids move on, and the index is written again.)
+        await Bun.sleep(200);
+        if (kind === "native") expect(stat()).toBe(was);
+        // Opened with its last turns, then all asked for at once (Find, the agents' list): all of them, as built.
+        await open(t.id, { last: 5 });
+        expect(unset(await everything(t.id))).toEqual(built);
+        await close(t.id);
+    }, 60_000);
+}
+
+// An index of the format before this one (the whole index one line of JSON) isn't read: the session is built from its
+// logs, all of it, and written in this one as it's let go of.
+test("a session whose store is of the version before opens with all its turns", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-v3-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 1500, kind: "native", seed: 13 });
+    const built = await everything(t.id);
+    await close(t.id);
+    const index = storeOf(t.file, t.id);
+    for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
+    // As the version before wrote it, its logs as they are (it would be read, were it of this version), and no turns.
+    const lines = readFileSync(index, "utf-8").trimEnd().split("\n");
+    const meta = JSON.parse(lines.at(-1)!);
+    writeFileSync(index, JSON.stringify({ v: 3, logs: meta.logs, ids: meta.ids, turns: [], agents: [], ui: meta.ui }));
+    expect(unset(await everything(t.id))).toEqual(built);
+    await close(t.id);
+    for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
+    expect(JSON.parse(readFileSync(index, "utf-8").trimEnd().split("\n").at(-1)!).v).toBe(4);
+    expect(unset(await everything(t.id))).toEqual(built);
+    await close(t.id);
+}, 60_000);
+
+test("a session opened from its store with its last turns read rewinds as one opened whole does", async () => {
+    const outline = (turns: Turn[]) => turns.map((x) => [x.prompt?.text, x.status, x.pos, x.archived, x.blocks.map((b) => b.t)]);
+    const rewound: unknown[] = [];
+    for (const partly of [false, true]) {
+        const cwd = join(tempDir("cavvy-turn-store-rewind-partly-"), "project");
+        mkdirSync(cwd, { recursive: true });
+        const t = writeThread({ cwd, items: 3000, kind: "native", seed: 14 });
+        await open(t.id);
+        await close(t.id);
+        storedFirst.turns = partly ? 20 : 1000;
+        try {
+            const snap = await open(t.id, { last: 5 });
+            const last = snap.turns.at(-1)!.pos!.index;
+            const plan = await call("session.rewindPlan", { id: t.id, index: last });
+            await call("session.rewind", { id: t.id, index: last, planId: plan.planId, code: false, conversation: true });
+            await until(t.id, (v) => !v.turns.some((x) => x.id === snap.turns.at(-1)!.id));
+            await close(t.id);
+        } finally {
+            storedFirst.turns = 20;
+        }
+        await open(t.id);
+        await call("session.find", { id: t.id, query: "" });
+        await fillThoughts(t.id);
+        rewound.push(outline(views.get(t.id)!.turns));
+        await close(t.id);
+    }
+    expect(rewound[1]).toEqual(rewound[0]);
+}, 120_000);
+
+test("a store read from its end, its earlier turns a few at a time, reads what it would whole", async () => {
+    const dir = tempDir("cavvy-turn-store-partly-");
+    const log = join(dir, "s.jsonl");
+    writeFileSync(log, '{"t":"meta"}\n');
+    const store = TurnStore.of(log, "s", [log]);
+    const turns = Array.from({ length: 6 }, (_, i) => ({ head: { id: `t${i}`, startedAt: i, status: "done" } as never, ...store.put({ id: `t${i}`, startedAt: i, status: "done", blocks: [{ t: "text", id: `b${i}`, text: `turn ${i} ${"x".repeat(i * 3000)}` }] } as Turn) }));
+    const agent = (id: string, turnId: string, more: object = {}) => ({ head: { id, turnId, description: id, status: "done", startedAt: 1, ...more } as never });
+    // Each turn's, one at work of the first turn, a background task's, one of no turn; and one failed.
+    const agents = [agent("a0", "t0"), agent("a1", "t1", { status: "failed" }), agent("live", "t0", { status: "running" }), agent("a4", "t4"), agent("task", "t2", { taskId: "x" }), agent("lost", "none"), agent("a5", "t5")];
+    await store.writeIndex(turns, agents, 7, { state: {}, created: true }, undefined, "first prompt");
+    store.close();
+    const whole = TurnStore.of(log, "s", [log]).read()!;
+    expect(whole.heads).toEqual(turns);
+    expect(whole.agents.map((a) => a.head.id)).toEqual(agents.map((a) => (a.head as { id: string }).id));
+    expect(whole.earlier).toBeUndefined();
+    const partly = TurnStore.of(log, "s", [log]);
+    const end = partly.read(2)!;
+    expect(end.heads.map((x) => x.head.id)).toEqual(["t4", "t5"]);
+    // Those of its last turns, and those kept with them whatever their turn, in their order.
+    expect(end.agents.map((a) => a.head.id)).toEqual(["live", "a4", "task", "lost", "a5"]);
+    expect(end).toMatchObject({ ids: 7, first: "first prompt", earlier: { turns: 4, agents: 2, failed: 1 } });
+    expect(partly.partial).toBe(true);
+    const next = partly.readEarlier(3);
+    expect(next.heads.map((x) => x.head.id)).toEqual(["t1", "t2", "t3"]);
+    expect(next.agents.map((a) => a.head.id)).toEqual(["a1"]);
+    const rest = partly.readEarlier();
+    expect(rest.heads.map((x) => x.head.id)).toEqual(["t0"]);
+    expect(rest.agents.map((a) => a.head.id)).toEqual(["a0"]);
+    expect(partly.partial).toBe(false);
+    expect(partly.readEarlier()).toEqual({ heads: [], agents: [] });
+    for (const x of [...end.heads, ...next.heads, ...rest.heads]) expect(partly.get<Turn>(x.at, x.len).id).toBe(x.head.id);
+    // Nothing changed since it was read: as it says, whatever was read of it.
+    expect(partly.unchanged(6, 7, 7)).toBe(true);
+    partly.close();
+});
+
 test("a turn taken after opening from the store is kept, and the session opens as building it again would", async () => {
     const cwd = join(tempDir("cavvy-turn-store-turn-"), "project");
     mkdirSync(cwd, { recursive: true });
@@ -238,6 +385,11 @@ test("a store not written whole, or of another version, isn't read", async () =>
     store.close();
     const read = TurnStore.of(log, "s", [log]).read();
     expect(read?.heads).toHaveLength(1);
+    // One with no turns left (rewound to its first prompt) starts with its details, of this version: read.
+    const empty = TurnStore.of(log, "s", [log]);
+    await empty.writeIndex([], [], 3, { state: {}, created: true });
+    empty.close();
+    expect(TurnStore.of(log, "s", [log]).read()).toMatchObject({ heads: [], agents: [], ids: 3 });
     // The log changed since: nothing.
     appendFileSync(log, '{"t":"title","title":"x"}\n');
     expect(TurnStore.of(log, "s", [log]).read()).toBeUndefined();
@@ -441,6 +593,39 @@ test("a session whose store is damaged opens anyway, built from its logs", async
 
 // One of its earlier turns damaged (read only as it's sent: an open sends a session whole here): found as it's sent, the
 // session is let go of and opened again from its logs, at once; its store isn't indexed again over the damage either.
+// Its earlier turns lost to a damaged index, the first prompt the store kept names it; rewound to that prompt and sent
+// another, the new one does.
+test("a session whose earlier turns couldn't be read is named after its first prompt, the one after a rewind to it too", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-first-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const s = Session.create(cwd);
+    s.setModel("mock:mock-opus");
+    for (let i = 0; i < 30; i++) {
+        s.push({ role: "user", content: [{ type: "text", text: `Prompt ${i}` }], meta: { kind: "prompt" } } as never);
+        s.push({ role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: `Reply ${i}` }] } as never);
+    }
+    const id = s.meta.id;
+    await open(id);
+    await close(id);
+    for (let i = 0; i < 200 && !existsSync(storeOf(s.path, id)); i++) await Bun.sleep(10);
+    // The index's first line (its earliest turn) damaged: its end still reads.
+    const fd = openSync(storeOf(s.path, id), "r+");
+    writeSync(fd, Buffer.from("garbage!!"), 0, 9, 0);
+    closeSync(fd);
+    await open(id, { last: 5 });
+    const rt = () => (srv as any).engine.runtimes.get(id);
+    await expect(call("session.rewindTargets", { id })).rejects.toThrow("Couldn't load earlier turns.");
+    expect(rt().firstPrompt()).toBe("Prompt 0");
+    const targets = (await call("session.rewindTargets", { id })).sort((a: any, b: any) => a.index - b.index);
+    expect(targets[0].index).toBe(0);
+    const plan = await call("session.rewindPlan", { id, index: 0 });
+    await call("session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+    await call("session.send", { id, text: "A brand new first prompt" });
+    for (let i = 0; i < 100 && !rt().view.turns.length; i++) await Bun.sleep(10);
+    expect(rt().firstPrompt()).toBe("A brand new first prompt");
+    await close(id);
+}, 120_000);
+
 test("a session whose store has an earlier turn damaged opens whole", async () => {
     const cwd = join(tempDir("cavvy-turn-store-damaged-early-"), "project");
     mkdirSync(cwd, { recursive: true });

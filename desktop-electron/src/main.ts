@@ -4,7 +4,7 @@
 // (Contents/MacOS/cavvy, where the Tauri app kept it); run from the repo (`bun run desktop:dev`), it's the TypeScript
 // source with `bun`, so server changes need no rebuild.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, screen, shell, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, screen, shell, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -124,6 +124,43 @@ function sidecarInfo(): Promise<SidecarInfo> {
     });
 }
 
+/**
+ * How many sessions have work the server couldn't save (server.unsaved). 0 when it can't say within a moment (not
+ * started, or stuck): quitting isn't held up for it.
+ */
+function unsavedSessions(): Promise<number> {
+    const i = info;
+    if (!i) return Promise.resolve(0);
+    return new Promise((resolve) => {
+        let ws: WebSocket | undefined;
+        const done = (n: number) => {
+            clearTimeout(timer);
+            try {
+                ws?.close();
+            } catch {
+                // already closed
+            }
+            resolve(n);
+        };
+        const timer = setTimeout(() => done(0), 1500);
+        try {
+            ws = new WebSocket(`ws://127.0.0.1:${i.port}/ws`, ["cavvy.v1", `auth.${i.token}`]);
+        } catch {
+            return done(0);
+        }
+        ws.onopen = () => ws!.send(JSON.stringify({ id: 1, method: "server.unsaved", params: {} }));
+        ws.onmessage = (m) => {
+            try {
+                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[] } };
+                if (r.id === 1) done(r.result?.sessions?.length ?? 0);
+            } catch {
+                // not the answer
+            }
+        };
+        ws.onerror = () => done(0);
+    });
+}
+
 async function stopServer() {
     const child = server;
     if (!child) return;
@@ -144,6 +181,30 @@ const goneAt: number[] = [];
 /** How the window opened (window-state.ts): maximized or full screen once it's shown, as showing it hidden would show it early. */
 let opened: WindowState | undefined;
 const host = new BrowserHost(() => win);
+
+/** Whether the screen is locked, the Mac asleep or another user switched in: nothing of the window can be seen. */
+let screenAway = false;
+const awayListeners = new Set<() => void>();
+let watchingAway = false;
+function watchScreenAway() {
+    if (watchingAway) return;
+    watchingAway = true;
+    // Each on its own: waking from sleep doesn't unlock the screen.
+    const why = { locked: false, asleep: false, switchedOut: false };
+    const set = (k: keyof typeof why, v: boolean) => () => {
+        why[k] = v;
+        const away = why.locked || why.asleep || why.switchedOut;
+        if (screenAway === away) return;
+        screenAway = away;
+        for (const fn of awayListeners) fn();
+    };
+    powerMonitor.on("lock-screen", set("locked", true));
+    powerMonitor.on("unlock-screen", set("locked", false));
+    powerMonitor.on("suspend", set("asleep", true));
+    powerMonitor.on("resume", set("asleep", false));
+    powerMonitor.on("user-did-resign-active", set("switchedOut", true));
+    powerMonitor.on("user-did-become-active", set("switchedOut", false));
+}
 
 function createWindow() {
     const glass = liquidGlass();
@@ -178,14 +239,19 @@ function createWindow() {
     });
     host.watch(win.webContents);
     // Whether the window can be seen and has the focus, for the page's looping motion (gui/src/lib/loops.ts): macOS
-    // keeps drawing a minimized window.
+    // keeps drawing a minimized window, and a window behind a locked screen, still "visible" and focused.
     {
         const w = win;
         const tell = () => {
-            if (!w.isDestroyed()) w.webContents.send("window_state", { seen: w.isVisible() && !w.isMinimized(), focused: w.isFocused() });
+            if (w.isDestroyed()) return;
+            const seen = !screenAway && w.isVisible() && !w.isMinimized();
+            w.webContents.send("window_state", { seen, focused: seen && w.isFocused() });
         };
         for (const e of ["minimize", "restore", "hide", "show", "focus", "blur"] as const) w.on(e as "focus", tell);
         w.webContents.on("did-finish-load", tell);
+        watchScreenAway();
+        awayListeners.add(tell);
+        w.on("closed", () => awayListeners.delete(tell));
     }
     opened = state;
     keepWindowState(win);
@@ -450,6 +516,8 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
     // A second launch focuses the window that's already open, even before the page has asked (it may never).
     app.on("second-instance", () => raiseWindow());
+    // Started now, not once Electron is ready: the window waits on it first, and it doesn't need Electron.
+    startServer();
     app.whenReady().then(() => {
         mark("ready");
         testWindowCommands();
@@ -466,15 +534,31 @@ else {
         app.setAboutPanelOptions({ applicationName: "Cavvy", applicationVersion: app.getVersion(), copyright: "MIT License", website: "https://cavvy.dev" });
         appMenu();
         bridge();
-        startServer();
         createWindow();
     });
     app.on("window-all-closed", () => app.quit());
+    let asking = false;
     app.on("before-quit", (e) => {
         if (quitting) return;
-        quitting = true;
         e.preventDefault();
-        host.close();
-        void stopServer().finally(() => app.quit());
+        if (asking) return;
+        asking = true;
+        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk).
+        void unsavedSessions().then(async (n) => {
+            const w = win && !win.isDestroyed() ? win : undefined;
+            if (n > 0) {
+                const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
+                const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
+                if (response === 1) {
+                    asking = false;
+                    // Its last window closed to quit: it comes back, so the work can still be saved.
+                    if (!win || win.isDestroyed()) createWindow();
+                    return;
+                }
+            }
+            quitting = true;
+            host.close();
+            void stopServer().finally(() => app.quit());
+        });
     });
 }

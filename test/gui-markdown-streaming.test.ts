@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
 import { LAG_MS, lagFor, MAX_LAG_MS, nextGap, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
-import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
+import { Lexer, Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
+// A finished reply's render is kept by its text for every renderer, so one compared with it comes from a module of its own.
+const { MarkdownRenderer: Fresh } = (await import("../gui/src/lib/markdown.ts?fresh")) as { MarkdownRenderer: typeof MarkdownRenderer };
 const visible = (r: MarkdownRenderer, text: string, streaming = true) => r.segments(text, streaming).map((s) => s.kind === "html" ? { kind: s.kind, html: s.html } : { kind: s.kind, lang: s.lang, code: s.code, open: s.open });
 
 test("incremental Markdown agrees with a fresh parse at every streamed character", () => {
@@ -50,7 +52,7 @@ test("incremental Markdown agrees with a fresh parse at every streamed character
             const text = sample.slice(0, i);
             expect(visible(incremental, text)).toEqual(visible(new MarkdownRenderer(), text));
         }
-        expect(visible(incremental, sample, false)).toEqual(visible(new MarkdownRenderer(), sample, false));
+        expect(visible(incremental, sample, false)).toEqual(visible(new Fresh(), sample, false));
         // Edits, truncation and replacements must abandon the append cache.
         for (const edited of [sample.slice(0, 10), "replacement\n\n```ts\nx", sample]) {
             expect(visible(incremental, edited)).toEqual(visible(new MarkdownRenderer(), edited));
@@ -123,6 +125,102 @@ test("code that reads like a link definition, an open code block, and the end of
     }
 });
 
+test("a list's last item, one line of text, is lexed a piece at a time as it's written", () => {
+    // Lexed whole with each chunk (as marked lexes an item), a list of long items was read 3.6 times a character.
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    const lexInline = (Lexer as any).lexInline;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    (Lexer as any).lexInline = (src: string, options: unknown) => { chars += src.length; return lexInline(src, options); };
+    try {
+        const text = "The steps:\n\n" + Array.from({ length: 40 }, (_, i) => `- **Step ${i}**: read \`src/part${i}.ts\` and say what it changes and why, in a sentence that runs to a long line.\n`).join("") + "\nDone.";
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        expect(chars / text.length).toBeLessThan(1.7);
+    } finally {
+        Marked.prototype.lexer = lexer;
+        (Lexer as any).lexInline = lexInline;
+    }
+});
+
+/** How many times each character of `text` is lexed, streamed in uneven chunks and then finished. */
+function lexedPerCharacter(text: string): { streamed: number; finished: number } {
+    let chars = 0;
+    const lexer = Marked.prototype.lexer;
+    const lexInline = (Lexer as any).lexInline;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) { chars += src.length; return (lexer as any).call(this, src, ...rest); } as any;
+    (Lexer as any).lexInline = (src: string, options: unknown) => { chars += src.length; return lexInline(src, options); };
+    try {
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        const streamed = chars;
+        r.segments(text, false);
+        return { streamed: streamed / text.length, finished: (chars - streamed) / text.length };
+    } finally {
+        Marked.prototype.lexer = lexer;
+        (Lexer as any).lexInline = lexInline;
+    }
+}
+
+test("a table's rows are lexed once each as they're written, without its header", () => {
+    // Lexed with its header and the row before, each row was read about 4 times (5 with the finished reply's lex).
+    const text = "Results:\n\n| Name | Value | Notes |\n|---|---|---|\n" + Array.from({ length: 60 }, (_, i) => `| row ${i} | ${i * 7} | \`code${i}\` and **bold** text |\n`).join("") + "\nDone.";
+    expect(lexedPerCharacter(text).streamed).toBeLessThan(1.6);
+});
+
+test("a paragraph of many lines is lexed a piece at a time, not whole with each chunk", () => {
+    // Lexed whole with each chunk, a 30-line paragraph was read 39 times a character.
+    const text = Array.from({ length: 30 }, (_, i) => `Line ${i} of one long paragraph with **bold** words in it.`).join("\n") + "\n\nDone.";
+    expect(lexedPerCharacter(text).streamed).toBeLessThan(1.5);
+});
+
+test("a finished reply isn't lexed again where its last update held nothing back", () => {
+    // Its last block, a list or a table, was lexed once more when the reply finished.
+    for (const text of ["The steps:\n\n" + Array.from({ length: 20 }, (_, i) => `- Step ${i} reads \`part${i}.ts\` and says why.`).join("\n"), "| a | b |\n|---|---|\n" + Array.from({ length: 30 }, (_, i) => `| ${i} | x${i} |`).join("\n") + "\n"]) {
+        expect(lexedPerCharacter(text).finished).toBeLessThan(0.1);
+    }
+});
+
+test("a paragraph over several lines streams as a fresh parse would, whatever its marks and the lines that end it", () => {
+    const lines = ["Some words here", "more words *em", "and close* it", "with `code` in", "a **bold\nacross** lines", "trailing two  ", "trailing one ", "===", "---", "a | b", "--- | ---", "<div>", "<di", ">x quoted", "1. item", "1x not item", "12 apples", "- dash", "    indented", "", "# head", "```", "x_y_z words", "(paren start", "*a*"];
+    const marks = ["`", "``", "`a", "a`", "*", "**", "***", "_", "__", "*a", "a*", "**a", "a**", "a*b", "word"];
+    let seed = 3;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)]!;
+    for (let n = 0; n < 300; n++) {
+        const line = () => (rand() < 0.4 ? ["Then", ...Array.from({ length: 2 + Math.floor(rand() * 8) }, () => pick(marks))].join(" ") : pick(rand() < 0.6 ? lines.slice(0, 7) : lines));
+        const sample = Array.from({ length: 2 + Math.floor(rand() * 7) }, line).join("\n") + pick(["", "\n", "\n\nEnd.", " more"]);
+        const incremental = new MarkdownRenderer();
+        for (let i = 0; i <= sample.length; i += 1 + Math.floor(rand() * 5)) {
+            const text = sample.slice(0, i);
+            expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new Fresh(), text) });
+        }
+        visible(incremental, sample);
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new Fresh(), sample, false) });
+    }
+}, 60_000);
+
+test("a code block once closed isn't lexed again with what's written after it", () => {
+    // Lexed with the block after it, a closed block was read once more for each block that followed a code block.
+    let code = 0;
+    const lexer = Marked.prototype.lexer;
+    Marked.prototype.lexer = function (this: unknown, src: string, ...rest: unknown[]) {
+        if (src.startsWith("```")) code += src.indexOf("```\n\n", 3) + 5;
+        return (lexer as any).call(this, src, ...rest);
+    } as any;
+    try {
+        const block = (i: number) => "```ts\n" + Array.from({ length: 8 }, (_, k) => `const part${i}_${k} = input.slice(${k}).trim();\n`).join("") + "```\n\n";
+        const after = ["| a | b |\n| --- | --- |\n| 1 | 2 |\n\n", "Text after it, a sentence or two long.\n\n", "- an item\n- another\n\n", "## A heading\n\n"];
+        const text = Array.from({ length: 20 }, (_, i) => block(i) + after[i % after.length]).join("");
+        const r = new MarkdownRenderer();
+        for (let at = 0, n = 0; at < text.length; at += 4 + (n++ * 7) % 37) r.segments(text.slice(0, at), true);
+        const written = Array.from({ length: 20 }, (_, i) => block(i).length).reduce((a, b) => a + b, 0);
+        expect(code / written).toBeLessThan(1.1);
+    } finally {
+        Marked.prototype.lexer = lexer;
+    }
+});
+
 test("incremental Markdown agrees with a fresh parse on replies made of every kind of block", () => {
     const pieces = [
         "Para one.", "Para with *em* and `code`.", "# H1", "Setext\n===", "Setext two\n---", "---",
@@ -142,7 +240,7 @@ test("incremental Markdown agrees with a fresh parse on replies made of every ki
             const text = sample.slice(0, i);
             expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
         }
-        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new Fresh(), sample, false) });
     }
 });
 
@@ -172,7 +270,7 @@ test("a long list written a character at a time renders as a fresh parse would, 
             const text = sample.slice(0, i);
             expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
         }
-        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new Fresh(), sample, false) });
     }
 }, 120_000);
 
@@ -192,7 +290,7 @@ test("a table written a character at a time renders as a fresh parse would, what
             const text = sample.slice(0, i);
             expect({ text, seen: visible(incremental, text) }).toEqual({ text, seen: visible(new MarkdownRenderer(), text) });
         }
-        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new MarkdownRenderer(), sample, false) });
+        expect({ sample, seen: visible(incremental, sample, false) }).toEqual({ sample, seen: visible(new Fresh(), sample, false) });
     }
 }, 120_000);
 
@@ -223,7 +321,7 @@ test("a long paragraph written a word at a time renders as a fresh parse would, 
         const sample = Array.from({ length: 1 + Math.floor(rand() * 3) }, line).join(pick(["\n\n", "\n\n", "\n"])) + pick(["", " ", "  ", "*", "`"]);
         for (const l of [undefined, look]) {
             const incremental = new MarkdownRenderer();
-            const fresh = (text: string, streaming = true) => new MarkdownRenderer().segments(text, streaming, l).map((s) => (s.kind === "html" ? s.html : s.code));
+            const fresh = (text: string, streaming = true) => new Fresh().segments(text, streaming, l).map((s) => (s.kind === "html" ? s.html : s.code));
             for (let i = 0; i <= sample.length; i += 1 + Math.floor(rand() * 3)) {
                 const text = sample.slice(0, i);
                 expect({ text, seen: incremental.segments(text, true, l).map((s) => (s.kind === "html" ? s.html : s.code)) }).toEqual({ text, seen: fresh(text) });

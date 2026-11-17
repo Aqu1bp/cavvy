@@ -201,9 +201,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                     opts.onProvider?.(l);
                     return l;
                 }
-                const client = await clientFor(def.id);
-                const signal = combine(opts.signal, def.local ? 1500 : 20_000);
-                const listed = await client.listModels(signal);
+                const listed = await shared(`${def.id}\0${fp}`, () => clientFor(def.id).then((client) => client.listModels(AbortSignal.timeout(def.local ? 1500 : 20_000))), opts.signal);
                 const models = def.sorted ? listed : sortModels(listed);
                 if (!def.local) {
                     cache.providers[def.id] = { fetchedAt: Date.now(), fp, models, configuration: providerConfiguration(def) };
@@ -236,9 +234,21 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
     return listings;
 }
 
-function combine(signal: AbortSignal | undefined, ms: number): AbortSignal {
-    const t = AbortSignal.timeout(ms);
-    return signal ? AbortSignal.any([signal, t]) : t;
+/**
+ * Lists asked for while one for the same provider and credential is under way: that one, not another. A Claude Code
+ * or Codex list is a CLI process of its own; a window and the server asking at once as it starts made two. Each caller
+ * stops waiting when its own signal is aborted; the list goes on for the others, to its own time limit.
+ */
+const listing = new Map<string, Promise<ModelInfo[]>>();
+function shared(key: string, list: () => Promise<ModelInfo[]>, signal?: AbortSignal): Promise<ModelInfo[]> {
+    let p = listing.get(key);
+    if (!p) {
+        p = list().finally(() => listing.delete(key));
+        listing.set(key, p);
+    }
+    if (!signal) return p;
+    signal.throwIfAborted();
+    return Promise.race([p, new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
 }
 
 /** Newest first, then by name. */

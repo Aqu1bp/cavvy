@@ -14,16 +14,16 @@ const WHOLE_MAX = 256 * 1024 * 1024;
  * Calls `fn` with each line of `file` (without its newline), in order; a last line without a newline too. Says whether
  * the file ended with a newline (true for an empty file), and where it ended (`end`: how far it was read). Throws as
  * openSync does (no file, no access). `wholeMax`: the size up to which it's read whole (tests use 0 to read any file a
- * chunk at a time). `from`: where to start (the start of a line).
+ * chunk at a time). `from`: where to start (the start of a line). `to`: where to stop, not the file's end.
  */
-export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX, from = 0): { endsWithNewline: boolean; end: number } {
+export function eachLine(file: string, fn: (line: string) => void, wholeMax = WHOLE_MAX, from = 0, to?: number): { endsWithNewline: boolean; end: number } {
     const fd = openSync(file, "r");
     try {
-        const size = fstatSync(fd).size;
+        const size = Math.min(fstatSync(fd).size, to ?? Infinity);
         if (size - from <= wholeMax) {
             let text: string;
             let end: number;
-            if (from === 0) {
+            if (from === 0 && to === undefined) {
                 const b = readFileSync(fd);
                 text = b.toString("utf-8");
                 end = b.length;
@@ -46,7 +46,7 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
         let parts: Buffer[] = [];
         let last = 10;
         let pos = from;
-        for (let n: number; (n = readSync(fd, chunk, 0, CHUNK, pos)) > 0; pos += n) {
+        for (let n: number; pos < size && (n = readSync(fd, chunk, 0, Math.min(CHUNK, size - pos), pos)) > 0; pos += n) {
             last = chunk[n - 1]!;
             const nl = chunk.lastIndexOf(10, n - 1);
             if (nl < 0) {
@@ -70,35 +70,41 @@ export function eachLine(file: string, fn: (line: string) => void, wholeMax = WH
 const TAIL_CHUNK = 64 * 1024;
 
 /**
- * Calls `fn` with each line of `file`, last first (an empty last line after a final newline isn't one), until `fn`
- * returns false: what's before is never read. For the end of a file that only grows (a history kept for good).
+ * Calls `fn` with each line of `file`, last first (an empty last line after a final newline isn't one), and where it
+ * starts in the file, until `fn` returns false: what's before is never read. For the end of a file that only grows (a
+ * history kept for good). `file` may be a descriptor open for reading: it's left open. `before`: from there back, not
+ * from the file's end (where a line starts: what's after is never read).
  */
-export function linesFromEnd(file: string, fn: (line: string) => boolean | void, chunkSize = TAIL_CHUNK) {
-    const fd = openSync(file, "r");
+export function linesFromEnd(file: string | number, fn: (line: string, at: number) => boolean | void, chunkSize = TAIL_CHUNK, before?: number) {
+    const fd = typeof file === "number" ? file : openSync(file, "r");
     try {
-        let pos = fstatSync(fd).size;
-        // The start of a line whose beginning is in a chunk not read yet.
-        let rest: Buffer = Buffer.alloc(0);
+        let pos = before ?? fstatSync(fd).size;
+        // What's been read of a line whose beginning is in a chunk not read yet, last read first: joined once its
+        // beginning is found (joined at each chunk, a long line cost the square of its length).
+        let tail: Buffer[] = [];
         let first = true;
         while (pos > 0) {
             const n = Math.min(chunkSize, pos);
             pos -= n;
-            const b = Buffer.allocUnsafe(n);
+            let b = Buffer.allocUnsafe(n);
             readSync(fd, b, 0, n, pos);
-            let buf = rest.length ? Buffer.concat([b, rest]) : b;
             // A final newline ends the last line.
-            if (first && buf.length && buf[buf.length - 1] === 10) buf = buf.subarray(0, buf.length - 1);
+            if (first && b[b.length - 1] === 10) b = b.subarray(0, b.length - 1);
             first = false;
-            let end = buf.length;
-            // Each whole line in it (a newline never falls inside a character's bytes), last first.
-            for (let nl = buf.lastIndexOf(10, end - 1); nl >= 0; nl = end > 0 ? buf.lastIndexOf(10, end - 1) : -1) {
-                if (fn(buf.subarray(nl + 1, end).toString("utf-8")) === false) return;
+            let end = b.length;
+            // Each line that ends in it (a newline never falls inside a character's bytes), last first.
+            for (let nl = end > 0 ? b.lastIndexOf(10, end - 1) : -1; nl >= 0; nl = end > 0 ? b.lastIndexOf(10, end - 1) : -1) {
+                const piece = b.subarray(nl + 1, end);
+                const line = tail.length ? Buffer.concat([piece, ...tail.reverse()]) : piece;
+                tail = [];
+                // The chunk starts at `pos`.
+                if (fn(line.toString("utf-8"), pos + nl + 1) === false) return;
                 end = nl;
             }
-            rest = Buffer.from(buf.subarray(0, end));
+            if (end > 0) tail.push(b.subarray(0, end));
         }
-        if (rest.length || !first) fn(rest.toString("utf-8"));
+        if (tail.length || !first) fn(Buffer.concat(tail.reverse()).toString("utf-8"), 0);
     } finally {
-        closeSync(fd);
+        if (typeof file !== "number") closeSync(fd);
     }
 }

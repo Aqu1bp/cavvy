@@ -6,7 +6,7 @@
 // test.failing: a target the app doesn't meet yet, with what will meet it. It fails once it's met: make it a test then.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { heapStats } from "bun:jsc";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -18,6 +18,9 @@ const { writeThread } = await import("../scripts/perf-thread");
 // work shown folded (the default: gui/src/state/app.ts opening).
 const { OPEN_TURNS, OPEN_BYTES } = await import("../gui/src/state/app");
 const { findKeeping } = await import("../src/server/runtime");
+const { Session, checkpointing, findSessionAnywhere } = await import("../src/agent/session");
+const { uiLogFile } = await import("../src/server/history");
+const { imageKey, readKept, toolImagesDir } = await import("../src/server/tool-images");
 // What Find searches, let go of soon after it was used (as it is a while after: runtime.ts findKeeping).
 const keptFor = findKeeping.ms;
 findKeeping.ms = 300;
@@ -68,7 +71,7 @@ const settledHeap = async () => {
     return last;
 };
 
-interface Cost { openSent: number; findSent: number; rewindSent?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
+interface Cost { openSent: number; findSent: number; rewindSent?: number; sendSent?: number; readOnSend?: number; readOnOpen?: number; keptAfterOpen: number; keptOpen: number; readOnReopen?: number; keptAfterReopen: number; openMs: number; reopenMs: number }
 
 async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     const cwd = join(tempDir(`cavvy-perf-size-${kind}-`), "project");
@@ -96,6 +99,8 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         keptOpen = now;
     }
     let rewindSent: number | undefined;
+    let sendSent: number | undefined;
+    let readOnSend: number | undefined;
     if (kind === "native") {
         // Back to before the last prompt.
         const last = open.msg.result.turns.at(-1).pos.index as number;
@@ -104,6 +109,16 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         await ok("session.rewind", { id: t.id, index: last, planId: plan.msg.result.planId, code: false, conversation: true });
         await Bun.sleep(150);
         rewindSent = opsBytes;
+        // A prompt, sent and answered (the mock model's reply): from the send to the turn's end.
+        const rt = srv.engine.runtimes.get(t.id)!;
+        opsBytes = 0;
+        const read4 = readSoFar();
+        await ok("session.send", { id: t.id, text: "Say hello" });
+        for (let i = 0; i < 2000 && rt.idle; i++) await Bun.sleep(5);
+        for (let i = 0; i < 2000 && !rt.idle; i++) await Bun.sleep(5);
+        const read5 = readSoFar();
+        sendSent = opsBytes;
+        readOnSend = read4 === undefined || read5 === undefined ? undefined : read5 - read4;
     }
     await ok("session.close", { id: t.id });
     // Opened again (its turns stored as it was let go of: src/server/turn-store.ts), twice: what it keeps is the less
@@ -122,7 +137,7 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         reopen.kept = Math.min(reopen.kept, kept2);
     }
     return {
-        openSent: open.bytes, findSent: find.bytes, rewindSent, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
+        openSent: open.bytes, findSent: find.bytes, rewindSent, sendSent, readOnSend, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
         readOnReopen: reopen!.read, keptAfterReopen: reopen!.kept, openMs, reopenMs: reopen!.ms,
     };
 }
@@ -177,6 +192,17 @@ describe("a session of one of Cavvy's own models", () => {
         const { small, large } = measured.native!;
         expect(within(small.rewindSent!, large.rewindSent!)).toBe(true);
     });
+    // The prompt and its answer, whatever came before them (Linux: 13 KB read for 3,000 items and for 100,000).
+    test("a send sends its own turn", () => {
+        const { small, large } = measured.native!;
+        expect(small.sendSent).toBeGreaterThan(0);
+        expect(within(small.sendSent!, large.sendSent!)).toBe(true);
+    });
+    test.skipIf(!existsSync("/proc/self/io"))("a send reads what its turn needs", () => {
+        const { small, large } = measured.native!;
+        expect(small.readOnSend).toBeDefined();
+        expect(within(small.readOnSend!, large.readOnSend!)).toBe(true);
+    });
     // Open, its turns beyond the latest in its store (put there a slice at a time after it opens), and what Find
     // searches let go of a while after it's used (runtime.ts findKeeping: 30 MB for 100,000 items).
     test("open, the server keeps what's on screen", () => {
@@ -208,14 +234,99 @@ describe("a Claude Code session", () => {
         const { small, large } = measured.cli!;
         expect(within(small.openSent, large.openSent)).toBe(true);
     });
-    // Opened again, its turns and sub-agents come from its store, but its log is read whole and its history kept (a
-    // Claude Code session's isn't compacted here: every reply's text): 1 MB read and 2 MB kept at 3,000 items, 4.7 and
-    // 6.7 at 30,000. The session's state kept with the store, and its messages read as they're needed, would do it.
-    test.failing("opening it again reads, and keeps in the server, what's on screen", () => {
+    // Opened again, its turns and sub-agents come from its store, and its messages (a Claude Code session's aren't
+    // compacted here: every reply's text) from its checkpoint's digest of them, read only as they're asked for. Its log
+    // was read whole and its history kept: 1 MB read and 2 MB kept at 3,000 items, 4.7 and 6.7 at 30,000.
+    test("opening it again reads, and keeps in the server, what's on screen", () => {
         const { small, large } = measured.cli!;
         expect(small.readOnReopen).toBeDefined();
         expect(within(small.readOnReopen!, large.readOnReopen!)).toBe(true);
         expect(keptWithin(small.keptAfterReopen, large.keptAfterReopen)).toBe(true);
+    });
+    // Opened again from its digest, its messages aren't read: not to see whether a turn was cut off where nothing was
+    // left running (imported, src/server/cli-import.ts writes its turns done, never started: they were, at every open),
+    // nor for its last prompt's images, which the window asks for as it shows it.
+    for (const imported of [false, true]) {
+        test(`opening ${imported ? "an imported one" : "one"} again doesn't read its messages`, async () => {
+            const cwd = join(tempDir("cavvy-perf-size-reopen-"), "project");
+            mkdirSync(cwd, { recursive: true });
+            const t = writeThread({ cwd, items: SMALL, kind: "cli", seed: 9 });
+            const log = uiLogFile(t.file, t.id);
+            if (imported) writeFileSync(log, readFileSync(log, "utf8").split("\n").filter((l) => !l.startsWith('{"t":"turn"') || JSON.parse(l).status !== undefined).join("\n"));
+            // A prompt with an image, a turn before the last.
+            const image = { type: "image", mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } as const;
+            const s = Session.load(t.file);
+            const imageAt = s.messageCount;
+            s.push({ role: "user", content: [{ type: "text", text: "Look at this" }, image], meta: { kind: "prompt" } } as never);
+            s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Seen." }] } as never);
+            s.push({ role: "user", content: [{ type: "text", text: "And then?" }], meta: { kind: "prompt" } } as never);
+            s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Done." }] } as never);
+            s.release();
+            // Read from a checkpoint (one this short has none).
+            const was = checkpointing.after;
+            checkpointing.after = 1;
+            const store = join(dirname(t.file), "turns", `${t.id}.json`);
+            try {
+                await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                // Its turns stored, a slice at a time after it opened, as it's let go of.
+                for (let i = 0; i < 500 && !existsSync(store); i++) {
+                    await Bun.sleep(10);
+                    if (i % 50 === 49) {
+                        await ok("session.close", { id: t.id });
+                        await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                    }
+                }
+                await ok("session.close", { id: t.id });
+            } finally {
+                checkpointing.after = was;
+            }
+            for (let i = 0; i < 200 && !existsSync(store); i++) await Bun.sleep(10);
+            expect(existsSync(store)).toBe(true);
+            const proto = Session.prototype as unknown as { readMessages(): void };
+            const read = proto.readMessages;
+            let reads = 0;
+            proto.readMessages = function (this: unknown) {
+                reads++;
+
+                return read.call(this);
+            };
+            try {
+                const opened = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                if (!imported) {
+                    const pos = opened.msg.result.turns.findLast((x: { pos?: { seg: number } }) => x.pos && x.pos.seg >= 0).pos;
+                    await ok("session.promptImages", { id: t.id, ...pos });
+                }
+                await ok("session.close", { id: t.id });
+                expect(reads).toBe(0);
+                // An earlier prompt's images: read once, and kept from then on.
+                for (const time of [1, 2]) {
+                    reads = 0;
+                    await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+                    const got = await ok("session.promptImages", { id: t.id, seg: 0, index: imageAt });
+                    expect(got.msg.result.images).toEqual([{ mediaType: image.mediaType, data: image.data }]);
+                    await ok("session.close", { id: t.id });
+                    expect(reads).toBe(time === 1 ? 1 : 0);
+                }
+            } finally {
+                proto.readMessages = read;
+            }
+        });
+    }
+    // A prompt's images, kept as it's sent: shown again in a session opened from a digest of its messages, they're
+    // read from where they're kept (as an earlier prompt's are above, once read), not from every message.
+    test("a prompt's images sent from the window are kept beside the session", async () => {
+        const cwd = join(tempDir("cavvy-perf-size-sent-"), "project");
+        mkdirSync(cwd, { recursive: true });
+        const created = await ok("session.create", { cwd });
+        const id = created.msg.result.state.id as string;
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        await ok("session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: png }] });
+        let file: string | undefined;
+        for (let i = 0; i < 500 && !(file = findSessionAnywhere(id)); i++) await Bun.sleep(10);
+        const key = imageKey({ mediaType: "image/png", data: png })!;
+        for (let i = 0; i < 500 && !readKept(toolImagesDir(file!, id), key); i++) await Bun.sleep(10);
+        expect(readKept(toolImagesDir(file!, id), key)).toEqual({ mediaType: "image/png", data: png });
+        await ok("session.close", { id });
     });
     // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
     test("open, the server keeps what's on screen", () => {

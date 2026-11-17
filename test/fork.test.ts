@@ -10,8 +10,8 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: CAVVY_HOME, cleanup } = isolate();
 const { Session, cliLinks, listSessions } = await import("../src/agent/session");
-const { forkSession, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
-const { forkUiLog, promptKey, readSegments, UiLog } = await import("../src/server/history");
+const { forkSession, forkSessionSoon, readForkSource, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
+const { forkUiLog, forkUiLogSoon, promptKey, readSegments, UiLog } = await import("../src/server/history");
 const { FileHistory } = await import("../src/agent/checkpoints");
 const { App } = await import("../src/ui/app");
 const { runCommand } = await import("../src/commands/index");
@@ -19,6 +19,7 @@ const { stripAnsi } = await import("../src/ui/ansi");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { MODE_INFO } = await import("../src/permissions/modes");
 import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
+import { textOf } from "../src/providers/types";
 
 beforeAll(() => {
     process.env.CAVVY_HOME = CAVVY_HOME;
@@ -413,6 +414,47 @@ describe("the fork's file", () => {
     });
 });
 
+describe("forked a slice at a time (as the server does)", () => {
+    /** A fork's records without what's its own (its id and when it was made). */
+    const records = (file: string) => readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).map((l) => (l.t === "meta" ? { ...l, id: "<id>", createdAt: 0, forkOf: { ...l.forkOf, at: 0 } } : l));
+
+    test("writes what forkSession writes, and opens the same", async () => {
+        const s = original();
+        const a = forkSession(s, { cut: 4 });
+        a.release();
+        const { session: b, keep } = await forkSessionSoon(s, { cut: 4, source: await readForkSource(s.path) });
+        keep();
+        expect(records(b.path)).toEqual(records(a.path));
+        expect(b.messages).toEqual(a.messages);
+        expect(b.title).toBe(a.title);
+        // Kept for its runtime: not read from the file again.
+        expect(b.takeLoadedLines()?.length).toBeGreaterThan(0);
+        b.release();
+        expect(statSync(b.path).mode & 0o777).toBe(0o600);
+        expect(filesIn(dirname(b.path)).filter((n) => n.includes(".tmp"))).toEqual([]);
+    });
+
+    test("reads the original's records as forkSession does, a torn line and a last line without its newline included", async () => {
+        const s = original();
+        appendFileSync(s.path, '{"t":"title","title":"torn\n{"t":"title","title":"Last one"}');
+        const source = await readForkSource(s.path);
+        expect(source.filter((l) => l.t === "title").map((l) => (l as { title: string }).title)).toEqual(["Layout questions", "Last one"]);
+        const a = forkSession(s, { cut: 6 });
+        a.release();
+        const { session: b } = await forkSessionSoon(s, { cut: 6, source });
+        b.release();
+        expect(records(b.path)).toEqual(records(a.path));
+    });
+
+    test("one whose saved conversation doesn't match isn't made, and leaves nothing behind", async () => {
+        const s = original();
+        const source = await readForkSource(s.path);
+        const before = filesIn(dirname(s.path));
+        await expect(forkSessionSoon(s, { cut: 6, source: source.map((l) => (l.t === "msg" && l.m.role === "assistant" && textOf(l.m) === "one" ? { ...l, m: reply("not one") } : l)) })).rejects.toThrow(/doesn't match/);
+        expect(filesIn(dirname(s.path))).toEqual(before);
+    });
+});
+
 describe("the timeline log", () => {
     test("copies backend steps and their diffs, without queued work or original settings", () => {
         const s = original();
@@ -453,6 +495,45 @@ describe("the timeline log", () => {
         expect(copied.turn(0, 0)).toMatchObject({ at: 111, end: 222 });
         expect([...copied.tools.keys()]).toEqual(["c1"]);
         const file = join(dirname(f.path), "ui", `${f.meta.id}.jsonl`);
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+        expect(filesIn(dirname(file)).filter((n) => n.includes(".tmp"))).toEqual([]);
+    });
+
+    test("opens from its end, as the original's would: its last turn and what came after it, not the rest; the same written a slice at a time", async () => {
+        const s = original();
+        s.push(call("c2"));
+        s.push(result("c2"));
+        s.push(reply("three"));
+        const ui = new UiLog(s.path, s.meta.id);
+        const [k0, k4] = [promptKey(s.messages[0] as any), promptKey(s.messages[4] as any)];
+        ui.write({ t: "turn", seg: 0, index: 0, at: 111 });
+        ui.write({ t: "step", seg: 0, index: 0, prompt: k0, block: { t: "tool", id: "c1", name: "Read", title: "Read a.ts", status: "ok" } as any });
+        ui.write({ t: "tool", id: "c1", summary: "Read 1 line", durationMs: 5 });
+        ui.write({ t: "turn", seg: 0, index: 0, at: 111, end: 222, status: "done", prompt: k0 });
+        ui.write({ t: "turn", seg: 0, index: 4, at: 333 });
+        ui.write({ t: "tool", id: "c2", summary: "Read 2 lines", durationMs: 7 });
+        ui.write({ t: "turn", seg: 0, index: 4, at: 333, end: 444, status: "done", prompt: k4 });
+        ui.write({ t: "state", mode: "plan" });
+        const f = forkSession(s, { cut: s.messages.length });
+        f.release();
+        forkUiLog({ file: s.path, id: s.meta.id }, { file: f.path, id: f.meta.id });
+        const file = join(dirname(f.path), "ui", `${f.meta.id}.jsonl`);
+        const whole = new UiLog(f.path, f.meta.id);
+        expect(whole.turn(0, 0)).toMatchObject({ at: 111, end: 222, status: "done" });
+        expect(whole.turn(0, 4)).toMatchObject({ at: 333, end: 444, status: "done" });
+        expect([...whole.tools.keys()].sort()).toEqual(["c1", "c2"]);
+        expect(whole.state).toEqual({});
+        // From its end, back to the last turn's start: that turn, its tools, no earlier ones.
+        const tail = new UiLog(f.path, f.meta.id, false);
+        expect(tail.readTail("0:4")).toBe(true);
+        expect([...tail.turns.keys()]).toEqual(["0:4"]);
+        expect(tail.turn(0, 4)).toMatchObject({ at: 333, end: 444, status: "done" });
+        expect([...tail.tools.keys()]).toEqual(["c2"]);
+        // A slice at a time (as the server writes it): the same file.
+        const written = readFileSync(file, "utf-8");
+        fs.unlinkSync(file);
+        await forkUiLogSoon({ file: f.path, id: f.meta.id }, new UiLog(s.path, s.meta.id), readSegments(f.path));
+        expect(readFileSync(file, "utf-8")).toBe(written);
         expect(statSync(file).mode & 0o777).toBe(0o600);
         expect(filesIn(dirname(file)).filter((n) => n.includes(".tmp"))).toEqual([]);
     });

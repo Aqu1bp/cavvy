@@ -290,6 +290,25 @@
     height: var(--bar-h);
 }
 
+/* The conversation scrolls on under the title bar, its scrollbar with it: the bar stops short of the scrollbar, so a
+   thumb scrolled to the top can still be taken (the same place for what's in the bar: its right padding is less). */
+.stage-pane > .header {
+    margin-right: var(--scrollbar-w);
+    padding-right: calc(12px - var(--scrollbar-w));
+}
+
+/* And there it isn't the window's to drag (base.css: .app.electron::before): pressed, it moved the window. */
+.app.electron .stage-pane::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: var(--scrollbar-w);
+    height: var(--bar-h);
+    -webkit-app-region: no-drag;
+    pointer-events: none;
+}
+
 /* Maximized, the terminal is the whole sheet; the conversation and inspector wait behind it. */
 [data-tmax="on"] .main,
 [data-tmax="on"] .insp {

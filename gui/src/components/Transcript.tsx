@@ -54,6 +54,13 @@ const AGAIN_MS = 2000;
  * down to (LaterTurns). A page of 40 there took the server 52 ms of the jump's 124 (a 100,000-item session, Linux).
  */
 const JUMP_PAGE = 12;
+/**
+ * Turns drawn at most while reading far up: as "Show earlier" puts a page in above, those far below the place read are
+ * held back (they go in again a page at a time as they're read down to). Every turn drawn costs each frame something
+ * (laid out in the column, watched for coming near), so reading up through all of a long session got slower the
+ * further it went: 100,000 items, Linux, headless, 1 frame in 550 dropped 5 pages up, 197 at 40 pages.
+ */
+const DRAWN_MAX = 3 * PAGE;
 /** An element's padding and border, above and below it (px). */
 function outside(el: Element): number {
     if (typeof getComputedStyle !== "function") return 0;
@@ -175,6 +182,41 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let stagedBefore: string | undefined;
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
+    /** Of those, how many stay held back while the reader is far up (DRAWN_MAX): grow doesn't put them in. */
+    let heldBelow = Math.max(0, first.trimmed - (DRAWN_MAX - PAGE));
+    /** As "Show earlier" puts its page in: no more than DRAWN_MAX drawn once it's in, those furthest down held back. */
+    const holdBelow = () => {
+        heldBelow = Math.max(heldBelow, goal() - DRAWN_MAX);
+        if (trimmed() < heldBelow) setTrimmed(heldBelow);
+    };
+    /** Read down: what's drawn above beyond DRAWN_MAX and a page goes (it's "Show earlier"'s again), the place read staying put. */
+    const trimAbove = () => {
+        const over = shown() - heldBelow - (DRAWN_MAX + PAGE);
+        if (over <= 0 || staged || stick()) return;
+        reading = capture();
+        setShown((n) => n - over);
+        setGoal((g) => Math.min(g, shown()));
+        restore();
+    };
+    /** Read down toward the last drawn: a page more of those held goes in (a few a frame), and what's above goes. */
+    const releaseBelow = () => {
+        heldBelow = Math.max(0, heldBelow - PAGE);
+        growMore?.();
+        trimAbove();
+    };
+    /**
+     * To the end (Latest, a send, End): only the end's page of what was read up through is drawn, not every page from a
+     * place reopened at (put in at once, that was hundreds of turns in one frame).
+     */
+    const unholdForEnd = () => {
+        if (heldBelow) {
+            heldBelow = 0;
+            unstage();
+            setShown((n) => Math.min(n, PAGE));
+            setGoal((g) => Math.min(g, PAGE));
+        }
+        setTrimmed(0);
+    };
     let reading = saved?.anchor;
     let ready = false;
     /** The turns still to go in (trimmed, or short of the page) put in a few at a time from the next frame (onMount). */
@@ -190,6 +232,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let lastSize = "";
     /** A pointer or finger is down on the conversation (dragging its scrollbar, say): its scrolls are the reader's. */
     let pressed = false;
+    /** The pointer down is on the scrollbar (press). */
+    let onBar = false;
     const sizeOf = (el: HTMLElement) => `${el.scrollHeight}:${el.clientHeight}`;
     /** Our own write is where the next scroll is measured from: only the reader's scrolls move it on from there. */
     /** The last pin's write: when, and from where (onScroll tells WebKit undoing it from the reader). */
@@ -800,7 +844,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // above, between frames. Followed at the end, the end stays in view; read further up, the place read stays put.
         let growing = 0;
         let gone = false;
-        const pending = () => trimmed() > 0 || shown() < goal();
+        const pending = () => trimmed() > heldBelow || shown() < goal();
         const grow = () => {
             growing = 0;
             if (gone || !pending()) return;
@@ -811,7 +855,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 recapture();
             }
             // Below the place read first, then above it.
-            if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
+            if (trimmed() > heldBelow) setTrimmed((n) => Math.max(heldBelow, n - MORE_TURNS));
             else setShown((n) => (n >= goal() ? n : Math.min(goal(), n + MORE_TURNS)));
             // Shown before, their rows skip their layout at the sizes they had (not laid out first, here).
             settleRows?.();
@@ -909,6 +953,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         }
         setGoal(to);
         setShown((n) => Math.min(to, Math.max(n, target) + MORE_TURNS));
+        holdBelow();
         // Solid has inserted those synchronously: staged before they're laid out (nothing on screen moves).
         settleRows?.();
         stage();
@@ -987,7 +1032,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             () => [turns().length, turns()[turns().length - 1]?.id] as const,
             ([n, last], prev) => {
                 if (prev !== undefined && n > prev[0] && last !== prev[1] && turns()[n - 1]?.prompt) {
-                    setTrimmed(0);
+                    unholdForEnd();
                     setStick(true);
                     afterLayout(() => toBottom(true));
                 }
@@ -1002,6 +1047,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (!scroller || !ready) return;
         const top = scroller.scrollTop;
         const gap = scroller.scrollHeight - scroller.clientHeight - top;
+        // The scrollbar dragged to the bottom with turns held there: to the end, as Latest goes, not a page more.
+        if (onBar && below() && gap <= 1) return toEnd();
         if (gap <= 1) smoothScroll = false;
         const size = sizeOf(scroller);
         const resized = size !== lastSize;
@@ -1045,6 +1092,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // Read up toward the top of what's here: the next page is fetched now, above what's drawn, so "Show
             // earlier" has it when it's reached. Only for a reader who goes up there: nothing more is fetched otherwise.
             if (top < scroller.clientHeight * 1.5 && hiddenHere() < PAGE && p.handle.view.earlier && !loadingEarlier()) void loadEarlier(p.handle, { count: PAGE });
+            // Read down toward the last turn drawn, with more held back below it.
+            if (heldBelow > 0 && trimmed() <= heldBelow && gap < scroller.clientHeight * 1.5) releaseBelow();
         }
         // Growth above seen here lands here, before it's drawn.
         else if (grewAbove() && !smoothScroll) toBottom();
@@ -1086,13 +1135,16 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = capture();
     };
     /** A pointer or finger down on the conversation: until it's lifted, scrolls up are the reader's even as it grows. */
-    const press = () => {
+    const press = (e?: Event) => {
         finishAtEnd();
         interruptJump();
+        // On the conversation's own box, not anything in it: its scrollbar.
+        onBar = e?.target === scroller;
         if (pressed) return;
         pressed = true;
         const lift = () => {
             pressed = false;
+            onBar = false;
             for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) removeEventListener(t, lift, true);
         };
         for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) addEventListener(t, lift, true);
@@ -1121,10 +1173,42 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             if (e.deltaY > 0) downAtEnd(e.target);
         }
     };
+    /** Turns not drawn below: held there, or still going in. */
+    const below = () => heldBelow > 0 || trimmed() > 0;
+    /** To the end and following it, as Latest goes (not smoothly: a key's or the scrollbar's move isn't). */
+    const toEnd = () => {
+        unholdForEnd();
+        setStick(true);
+        toBottom();
+    };
+    // A click in the conversation focuses nothing, so its keys come to the page: the browser scrolls what was last
+    // pressed. Pressed here last, End goes to the end as it does from inside (onKey), not to the last turn drawn.
+    let pressedHere = false;
+    const notePress = (e: Event) => void (pressedHere = !!scroller && scroller.contains(e.target as Node));
+    const pageKey = (e: KeyboardEvent) => {
+        // Pressed last in this conversation, and it's still the one shown (not parked under another since).
+        if (!pressedHere || !pane.focused() || !below() || e.defaultPrevented || e.target !== document.body) return;
+        if (e.key === "End" || (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey))) {
+            interruptJump();
+            toEnd();
+        }
+    };
+    if (typeof document !== "undefined") {
+        addEventListener("pointerdown", notePress, true);
+        addEventListener("keydown", pageKey);
+        onCleanup(() => {
+            removeEventListener("pointerdown", notePress, true);
+            removeEventListener("keydown", pageKey);
+        });
+    }
     const onKey = (e: KeyboardEvent) => {
         toggledRow();
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
-        else {
+        // To the end with turns held there: all the way, as before they were held, not a page more each time.
+        else if (below() && (e.key === "End" || (e.key === "ArrowDown" && (e.metaKey || e.ctrlKey))) && !innerTakes(e.target)) {
+            interruptJump();
+            toEnd();
+        } else {
             interruptJump();
             if (["ArrowDown", "PageDown", "End", " "].includes(e.key)) downAtEnd(e.target);
         }
@@ -1146,16 +1230,23 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = undefined; // Explicit navigation owns the next position.
         unstage();
         const need = turns().length - i;
-        // Far above what's drawn (a find a thousand turns up): a page around it, and the turns below it go in a few at
-        // a time after, as when opened there. Drawn all at once down to it, they were a frame of hundreds of turns.
-        if (need > shown() + PAGE) {
+        // Far above what's drawn (a find a thousand turns up), or in those held back below it: a page around it, and the
+        // turns below it go in a few at a time after, as when opened there, no more than DRAWN_MAX in all (the pages
+        // read up through not put back above it). Drawn all at once down to it, they were a frame of hundreds of turns.
+        if (need > shown() + PAGE || need <= heldBelow) {
             const half = Math.floor(PAGE / 2);
             setShown(Math.min(turns().length, need + half));
+            setGoal((g) => Math.min(g, shown()));
             setTrimmed(Math.max(0, need - 1 - half));
+            heldBelow = Math.max(0, need - 1 - half - (DRAWN_MAX - PAGE));
             growMore?.();
         } else {
-            setTrimmed(0);
+            heldBelow = Math.min(heldBelow, Math.max(0, need - 1 - PAGE));
+            // Down to it at once if it isn't drawn yet; those below it go in a few at a time after, as they were (a
+            // Find's next hit among them put them all in at once).
+            if (trimmed() >= need) setTrimmed(need - 1);
             if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+            growMore?.();
         }
         smoothScroll = false;
         setStick(false);
@@ -1181,7 +1272,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         // Following the end, or the reader went there meanwhile.
         if (stick()) return;
         if (now.bottom) {
-            setTrimmed(0);
+            unholdForEnd();
             setStick(true);
             toBottom();
             return;
@@ -1190,7 +1281,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = now.anchor;
         const need = turns().length - turns().findIndex((t) => t.id === now.anchor!.turnId);
         unstage();
-        setTrimmed(0);
+        heldBelow = Math.min(heldBelow, Math.max(0, need - 1 - PAGE));
+        setTrimmed(heldBelow);
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         restore();
     };
@@ -1318,7 +1410,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                         <KeyedList each={visible()}>{(t) => <>
                             <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
                                 workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />
-                            <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n))} root={() => scroller} />}</Show>
+                            <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n)).then((r) => (trimAbove(), r))} root={() => scroller} />}</Show>
                         </>}</KeyedList>
                     </CardFoldsProvider>
                     </BuiltFromEnd.Provider>
@@ -1346,7 +1438,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             </Show>
             <Show when={!stick() && !scrolledDown()}>
                 {/* It has the dock's height itself (it isn't inherited). */}
-                <button class="jump glass" style={{ "--dock-h": dock(), "--over": floatOver() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
+                <button class="jump glass" style={{ "--dock-h": dock(), "--over": floatOver() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { unholdForEnd(); setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>
                         <Spinner size={12} />

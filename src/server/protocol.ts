@@ -403,6 +403,8 @@ export interface TurnPrompt {
     images?: number;
     /** A hash of the images (session.promptImages has them): the same key, the same images. Turn ids aren't kept across a reopen. */
     imagesKey?: string;
+    /** Each image's width and height as shown (0, 0 when unknown): its place is kept while it's fetched. */
+    imageSizes?: [number, number][];
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;
@@ -871,6 +873,8 @@ export interface SessionSnapshot {
     earlier?: number;
     /** Sub-agents not sent (finished, of those turns): session.agentList has them. */
     agentsMore?: AgentsMore;
+    /** A fork still being made (session.fork's `soon`): how it will look. Not watched: session.open it. */
+    making?: true;
 }
 
 /**
@@ -2198,6 +2202,8 @@ export interface Methods {
     "server.lag": { params: { reset?: boolean }; result: LoopLag };
     /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
     "server.memory": { params: { types?: boolean }; result: ServerMemory };
+    /** Sessions whose latest work couldn't be saved (a full disk) and would be lost if Cavvy quit now: the desktop app asks before quitting. */
+    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[] } };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
@@ -2281,7 +2287,12 @@ export interface Methods {
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
-    "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
+    /**
+     * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
+     * conversation as built; open it (session.open) for the fork itself. Calls on it wait until it's made, and fail
+     * as making it did.
+     */
+    "session.fork": { params: { id: string; index: number; text: string; turn: string; last?: number; budget?: number; fold?: boolean; soon?: boolean }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     /**
      * `worktree`: another worktree of the session's repository to look at (a path `session.worktrees` lists);

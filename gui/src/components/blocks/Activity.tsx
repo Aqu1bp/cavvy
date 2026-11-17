@@ -5,7 +5,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // call's details.
 
 import { Dynamic } from "solid-js/web";
-import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
+import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -48,7 +48,7 @@ import { app, handleFor, loadBlock, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
-import { imagesReady, toolImage } from "../../state/images";
+import { imagesReady, toolImage, toolThumb } from "../../state/images";
 import { CopyButton, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
@@ -705,15 +705,47 @@ function viewToolImages(sessionId: string | undefined, t: ToolBlock, index: numb
     });
 }
 
-/** An image a call's result brought (what the model looked at), as a thumbnail that opens the viewer. Nothing while it's fetched, or once it's gone. */
+/** Thumbnails waiting to come near the view, each with what asks for it then. */
+const farThumbs = new WeakMap<Element, () => void>();
+let thumbsSeen: IntersectionObserver | undefined;
+/** `then` once `el` is within 300 px of the view (at once without an observer); the returned function stops waiting. */
+function whenNear(el: Element, then: () => void): () => void {
+    if (typeof IntersectionObserver === "undefined") return then(), () => {};
+    thumbsSeen ??= new IntersectionObserver(
+        (entries) => {
+            for (const e of entries) {
+                if (!e.isIntersecting) continue;
+                const near = farThumbs.get(e.target);
+                farThumbs.delete(e.target);
+                thumbsSeen!.unobserve(e.target);
+                near?.();
+            }
+        },
+        { rootMargin: "300px" },
+    );
+    farThumbs.set(el, then);
+    thumbsSeen.observe(el);
+    return () => {
+        farThumbs.delete(el);
+        thumbsSeen?.unobserve(el);
+    };
+}
+
+/**
+ * An image a call's result brought (what the model looked at), as a thumbnail that opens the viewer. Asked for as it
+ * comes near the view, its place kept meanwhile; nothing once it's gone.
+ */
 function ToolImage(p: { tool: ToolBlock; index: number }) {
     const folds = useContext(CardFoldsContext);
+    const [near, setNear] = createSignal(false);
+    let place: HTMLSpanElement | undefined;
+    onMount(() => place && onCleanup(whenNear(place, () => setNear(true))));
     const [img] = createResource(
-        () => (folds.sessionId && imagesReady(folds.sessionId) ? p.tool.imageKeys?.[p.index] : undefined),
-        (key) => toolImage(folds.sessionId!, key).catch(() => undefined),
+        () => (near() && folds.sessionId && imagesReady(folds.sessionId) ? p.tool.imageKeys?.[p.index] : undefined),
+        (key) => toolThumb(folds.sessionId!, key).catch(() => null),
     );
     return (
-        <Show when={img()}>
+        <Show when={img()} fallback={<Show when={img() !== null}>{<span ref={place} class="tool-thumb wait" aria-hidden="true" />}</Show>}>
             {(i) => (
                 <button
                     class="tool-thumb"
@@ -725,7 +757,7 @@ function ToolImage(p: { tool: ToolBlock; index: number }) {
                         viewToolImages(folds.sessionId, p.tool, p.index, e.currentTarget);
                     }}
                 >
-                    <img src={i().thumb} alt="" />
+                    <img src={i()} alt="" />
                 </button>
             )}
         </Show>

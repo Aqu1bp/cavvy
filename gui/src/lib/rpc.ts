@@ -170,9 +170,15 @@ export class Rpc {
             this.ws = undefined;
             this.rejectPending();
             if (this.closed) return;
-            // Refused before opening, more than a few times: probably a stale token.
+            // Refused before opening, more than a few times: a stale token, if the server answers at all. A link
+            // that's down is refused the same way (a dropped connection to another machine): it's tried again.
             if (!opened && ev.code === 1006 && this.attempt >= 3 && !this.retriesCredentials) {
-                this.setState("unauthorized");
+                const generation = this.generation;
+                void reachable(creds.url).then((up) => {
+                    if (this.closed || generation !== this.generation || this.ws) return;
+                    if (up) this.setState("unauthorized");
+                    else this.retry();
+                });
                 return;
             }
             this.retry();
@@ -181,6 +187,7 @@ export class Rpc {
 
     private retry() {
         if (this.closed) return;
+        this.listenForReturn();
         clearTimeout(this.retryTimer);
         this.attempt++;
         this.setState(this.attempt > 8 ? "unavailable" : "reconnecting");
@@ -271,7 +278,21 @@ export class Rpc {
         });
     }
 
+    /** Back online (the browser says so): tried at once rather than at the backoff's next turn. */
+    private returned?: () => void;
+    private listenForReturn() {
+        if (this.returned || typeof window === "undefined") return;
+        this.returned = () => {
+            if (this.state === "reconnecting" || this.state === "unavailable") this.reconnectNow();
+        };
+        window.addEventListener("online", this.returned);
+    }
+
     close() {
+        if (this.returned) {
+            window.removeEventListener("online", this.returned);
+            this.returned = undefined;
+        }
         this.closed = true;
         this.generation++;
         clearTimeout(this.retryTimer);
@@ -279,4 +300,18 @@ export class Rpc {
         this.setState("unavailable");
         this.ws?.close();
     }
+}
+
+/** Whether the server at `url` (its socket's) answers at all, within 5 s: what it says doesn't matter. */
+function reachable(url: string): Promise<boolean> {
+    const u = new URL(url);
+    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
+    u.pathname = "/healthz";
+    u.search = "";
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 5000);
+    return fetch(u.toString(), { mode: "no-cors", cache: "no-store", signal: ac.signal }).then(
+        () => true,
+        () => false,
+    ).finally(() => clearTimeout(t));
 }

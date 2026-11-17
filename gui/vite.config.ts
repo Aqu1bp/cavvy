@@ -22,8 +22,17 @@ function minifyBoot(): Plugin {
     };
 }
 
+/** lucide-solid's icons drawn from a template (src/lib/lucide-icon.ts), not built anew each time by lucide's Icon. */
+const fastIcons = {
+    name: "fast-icons",
+    enforce: "pre" as const,
+    resolveId(source: string, importer?: string) {
+        if (source === "../Icon" && importer?.includes("/lucide-solid/dist/source/icons/")) return fileURLToPath(new URL("./src/lib/lucide-icon.ts", import.meta.url));
+    },
+};
+
 export default defineConfig({
-    plugins: [solid(), minifyBoot()],
+    plugins: [fastIcons, solid(), minifyBoot()],
     // Match Cavvy's --no-env-file launch policy; builds need no dotenv data.
     envDir: false,
     // Relative URLs: the same build loads from the desktop app (tauri://) and from `cavvy gui` (http://).

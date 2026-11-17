@@ -117,8 +117,9 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         expect(f.ids.slice(-2)).toEqual(["40", "59"]);
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
-        // Finished since last looked: the unread dot by its time, not a word or a glyph at the start.
-        expect(f.nodes.some((n) => n.props.class === "unread-dot")).toBe(true);
+        // Finished since last looked: "Done" in its time's place, not a glyph at the start.
+        expect(f.nodes.some((n) => n.props.class === "when done")).toBe(true);
+        expect(f.nodes.some((n) => /(^| )(unread-dot|spin-ring|err-dot)( |$)/.test(String(n.props.class)))).toBe(false);
         expect(f.nodes.some((n) => String(n.props.class).startsWith("st "))).toBe(false);
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
         f.contextMenu(card);
@@ -175,8 +176,14 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         const waiting = rowOf("Session 1");
         expect(String(waiting.props.class)).toContain("waiting");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
-        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(true);
-        // The dot alone says it: no hand at the start of the row.
+        // Its time, in amber: no dot, and no hand at the start of the row.
+        expect(f.descendants(waiting).some((n) => n.props?.class === "when waiting")).toBe(true);
+        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(false);
+        // Working and stopped say so where the time was; never both.
+        f.update("2", { status: "running", turnStartedAt: Date.now() - 9 * 60_000 });
+        f.update("3", { status: "error" });
+        expect(f.descendants(rowOf("Session 2")).some((n) => n.props?.class === "when working")).toBe(true);
+        expect(f.descendants(rowOf("Session 3")).some((n) => n.props?.class === "when stopped")).toBe(true);
         expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);

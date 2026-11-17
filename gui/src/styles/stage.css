@@ -36,12 +36,17 @@
     padding: 0 var(--stage-x);
     /* Gone by the middle of the title bar; whole from just under it. Whole down to a line's height above the dock
        (a reply being followed ends above that, transcript-end), gone where the dock starts. */
+    /* The scrollbar's strip at the right edge (no text reaches it) isn't faded: a long thread's thumb at the top or
+       the bottom would be gone. */
     mask-image: linear-gradient(
         transparent calc(var(--bar-h, 52px) - 6px),
         #000 calc(var(--bar-h, 52px) + 18px),
         #000 calc(100% - var(--dock-h) - 24 * var(--sp)),
         transparent calc(100% - var(--dock-h) + 2 * var(--sp))
-    );
+    ), linear-gradient(#000, #000);
+    mask-size: 100% 100%, var(--scrollbar-w) 100%;
+    mask-position: 0 0, right 0 top 0;
+    mask-repeat: no-repeat;
 }
 
 .stage .transcript-col {

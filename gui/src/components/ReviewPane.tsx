@@ -540,7 +540,7 @@ function FileCard(p: {
         p.onToggle(e.altKey);
     };
     return (
-        <section ref={el} class="rf" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} aria-label={p.file.path}>
+        <section ref={el} class="rf" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} style={{ "--rows": rows(), "--held": held() ? `${held()}px` : undefined }} aria-label={p.file.path}>
             <div class="rf-h" onClick={toggle}>
                 <button
                     class="tog"
@@ -584,7 +584,7 @@ function FileCard(p: {
             </div>
             <div class="rf-b">
                 <div class="rf-in" ref={body}>
-                    <Show when={drawn()} fallback={<Show when={!p.closed}>{<div class="rf-ph" style={held() ? { height: `${held()}px` } : { "--rows": rows() }} />}</Show>}>
+                    <Show when={drawn()} fallback={<Show when={!p.closed}>{<div class="rf-ph" />}</Show>}>
                         <Show
                             when={!shown().deferred}
                             fallback={

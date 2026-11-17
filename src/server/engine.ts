@@ -27,8 +27,8 @@ import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
-import { forkSession } from "../agent/fork";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
+import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
@@ -64,7 +64,7 @@ import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
-import { forkUiLog } from "./history";
+import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
@@ -132,6 +132,8 @@ import { TitleQueue } from "./title-queue";
 import { WorkingIndex } from "./working";
 
 export interface EngineOptions {
+    /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
+    shrinkIdleMs?: number;
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
     allowBypass?: boolean;
     /** The folder the server was started in. */
@@ -184,6 +186,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 const UNLOAD_AFTER_MS = 30_000;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
+/** How long without a turn running before the server hands memory back (idleNow). */
+const SHRINK_IDLE_MS = 5 * 60_000;
 /** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
 const OPEN_MODEL_WAIT_MS = 2_000;
 
@@ -245,6 +249,15 @@ function runMembers(store: GuiStore): Map<string, RunMember> {
 function runOutcome(rt: Runtime): RunOutcome {
     if (rt.status === "running" || rt.status === "waiting") return "working";
     return rt.lastTurnStatus === "done" ? "done" : "stopped";
+}
+
+/** The store's lists as sets, for asking about many sessions at once. */
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember> };
+let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
+function storeLists(store: GuiStore): StoreLists {
+    // The store read is frozen and kept until the file changes: so are these.
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store) } };
+    return listsOf.lists;
 }
 
 const storeFile = () => join(cavvyHome(), "gui.json");
@@ -398,6 +411,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Forks being made (forkSession): a call on one waits until it's made, and fails as making it did. */
+    private forking = new Map<string, Promise<Runtime>>();
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
@@ -486,8 +501,32 @@ export class Engine {
     /** Which sessions have a turn running, when this Cavvy keeps that (EngineOptions.working). */
     private working?: WorkingIndex;
 
+    /** Sessions with a turn running now (turnRunning), for handing memory back once none has for a while. */
+    private turnsRunning = new Set<string>();
+    private shrinkTimer?: ReturnType<typeof setTimeout>;
+
+    /**
+     * No turn has run for SHRINK_IDLE_MS: the runtime hands back what the work left it holding (compiled code not run
+     * since, freed pages). Linux, 5 sessions after 55-205 mock turns and closed: 76-80 -> 55-58 MB private, about what
+     * it held with them open after a turn each. The next turn compiles again: about 70 ms of CPU more, once.
+     */
+    private idleNow(id: string) {
+        this.turnsRunning.delete(id);
+        if (this.turnsRunning.size || this.stopping || this.shrinkTimer) return;
+        this.shrinkTimer = setTimeout(() => {
+            this.shrinkTimer = undefined;
+            if (!this.turnsRunning.size && !this.stopping) Bun.shrink();
+        }, this.o.shrinkIdleMs ?? SHRINK_IDLE_MS);
+        this.shrinkTimer.unref?.();
+    }
+
     /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
     turnRunning(rt: Runtime, running: boolean) {
+        if (running) {
+            this.turnsRunning.add(rt.id);
+            clearTimeout(this.shrinkTimer);
+            this.shrinkTimer = undefined;
+        } else this.idleNow(rt.id);
         if (!this.working || this.stopping) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
@@ -534,6 +573,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
         this.stopThemes?.();
         this.updates.stop();
@@ -678,7 +718,7 @@ export class Engine {
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
+        if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -983,9 +1023,8 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Sessions
 
-    summaryOf(rt: Runtime): SessionSummary {
-        const store = readStore();
-        const run = runMembers(store).get(rt.id);
+    summaryOf(rt: Runtime, lists: StoreLists = storeLists(readStore())): SessionSummary {
+        const run = lists.runs.get(rt.id);
         return {
             id: rt.id,
             cwd: rt.ws.cwd,
@@ -994,13 +1033,13 @@ export class Engine {
             createdAt: rt.session.meta.createdAt,
             // Its file's time can be a moment later (a turn's end, saved once the turn is put away).
             updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
-            messages: rt.session.messages.length,
+            messages: rt.session.messageCount,
             status: rt.status,
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
-            pinned: (store.pinned ?? []).includes(rt.id),
-            archived: (store.archived ?? []).includes(rt.id),
-            settled: (store.settled ?? []).includes(rt.id),
+            pinned: lists.pinned.has(rt.id),
+            archived: lists.archived.has(rt.id),
+            settled: lists.settled.has(rt.id),
             model: rt.session.model,
             live: true,
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
@@ -1008,19 +1047,18 @@ export class Engine {
     }
 
     listSessions(limit = 200, archived = false): SessionSummary[] {
-        const store = readStore();
-        const pinned = new Set(store.pinned ?? []);
-        const arch = new Set(store.archived ?? []);
-        const settled = new Set(store.settled ?? []);
-        const runs = runMembers(store);
+        const lists = storeLists(readStore());
+        const { pinned, settled, runs } = lists;
+        const arch = lists.archived;
         const out = new Map<string, SessionSummary>();
-        for (const s of listAllSessions(limit + arch.size)) {
+        // Only the list asked for is read: the other side of `archived` grows with history.
+        for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messages.length && !rt.busy)) continue;
+            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
-            out.set(rt.id, this.summaryOf(rt));
+            out.set(rt.id, this.summaryOf(rt, lists));
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).filter((s, i) => i < limit || s.status === "waiting");
     }
@@ -1152,19 +1190,48 @@ export class Engine {
      * (src/agent/fork.ts), and open the fork with the original's model,
      * speed, mode and effort.
      */
-    async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
-        await original.allTurns();
+    forkSession(original: Runtime, index: unknown, text: string, turnId: string, id = newSessionId(), createdAt?: number): Promise<Runtime> {
+        // Begun after this call's reply is on its way: before it, its first steps held the reply 12 ms (100,000 items).
+        const made = new Promise<void>((r) => setImmediate(r)).then(() => this.makeFork(original, index, text, turnId, id, createdAt));
+        this.forking.set(id, made);
+        made.then(
+            () => this.forking.delete(id),
+            // What's asked of it a while after says why it isn't there.
+            () => setTimeout(() => this.forking.delete(id), 60_000).unref?.(),
+        );
+        return made;
+    }
+
+    private async makeFork(original: Runtime, index: unknown, text: string, turnId: string, id: string, createdAt?: number): Promise<Runtime> {
+        // Only to find a turn the window hasn't been sent: all of a 100,000-item Claude Code session's took 3 s.
+        if (!original.hasTurn(turnId)) await original.allTurns();
+        // Its records and its log, a slice at a time, before anything's made (what's written meanwhile is read with the rest).
+        let log: UiLog | undefined;
+        let source: Line[];
+        try {
+            [log, source] = await Promise.all([readUiLogSoon(original.session.path, original.id), readForkSource(original.session.path)]);
+        } catch (e) {
+            throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
+        }
         const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
         const effort = original.effort;
         let session: Session;
+        let keep: () => void;
         try {
-            session = forkSession(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy });
+            ({ session, keep } = await forkSessionSoon(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy, source, id, createdAt }));
         } catch (e) {
             throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
         }
-        forkUiLog({ file: original.session.path, id: original.id }, { file: session.path, id: session.meta.id });
+        // The lines it was just loaded from, for its runtime (Session.takeLoadedLines): not read from the file again.
+        keep();
+        if (log) {
+            const segments = readSegments(session.path, { takeLoadedLines: () => session.peekLoadedLines() });
+            // Not opened elsewhere meanwhile (its file is in the folder's list now: openSession waits): opened here, once it has its log.
+            await forkUiLogSoon({ file: session.path, id: session.meta.id }, log, segments);
+            keep();
+        }
         // Made now, by the person: it goes to the top of the sidebar, and stays there until something else works.
         session.worked(Date.now(), true);
         // The original's folder, already trusted to open it; bypass mode still needs allowing (the constructor checks).
@@ -1298,6 +1365,7 @@ export class Engine {
     openSession(id: string): Runtime {
         const live = this.runtimes.get(id);
         if (live) return live;
+        if (this.forking.has(id)) throw new RpcError("This fork is still being made. Try again in a moment.", "in_use");
         const session = this.loadSession(id);
         let rt: Runtime;
         try {
@@ -1340,6 +1408,7 @@ export class Engine {
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
         this.summarySent.delete(id);
+        if (this.turnsRunning.has(id)) this.idleNow(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
@@ -1440,6 +1509,7 @@ export class Engine {
                 if (rt) {
                     this.runtimes.delete(id);
                     this.summarySent.delete(id);
+                    if (this.turnsRunning.has(id)) this.idleNow(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
@@ -2501,6 +2571,9 @@ export class Engine {
     async handle<M extends Method>(client: EngineClient, method: M, raw: unknown): Promise<Methods[M]["result"]> {
         if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
         const p = (raw ?? {}) as Record<string, any>;
+        // A fork shown before it's made (session.fork's `soon`): what's asked of it, once it is.
+        const making = typeof p.id === "string" ? this.forking.get(p.id) : undefined;
+        if (making) await making;
         const r = await this.dispatch(client, method, p);
         return r as Methods[M]["result"];
     }
@@ -2616,6 +2689,8 @@ export class Engine {
                 return null;
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
+            case "server.unsaved":
+                return { sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })) };
             case "server.memory":
                 return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":
@@ -2773,8 +2848,9 @@ export class Engine {
                 // Only a session this window has open: its ops come to it, so what it's sent stays right.
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
                 const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
-                // The turns asked for are earlier ones: there, once a first open has built them (Runtime.allTurns).
-                await rt.allTurns();
+                // The turns asked for are earlier ones: there, once a first open has built them (Runtime.turnsBuilt); one
+                // opened from its store reads as many as the page needs (Runtime.turnsBefore).
+                await rt.turnsBuilt();
                 const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true, fold: p.fold === true, upTo: typeof p.upTo === "number" && p.upTo > 0 ? Math.min(Math.floor(p.upTo), 1000) : undefined, after: typeof p.after === "string" ? p.after : undefined });
                 if (!page) throw new RpcError("Those turns were replaced.", "gone");
                 return page;
@@ -2917,9 +2993,29 @@ export class Engine {
                 await this.runtime(p.id).allTurns();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
-                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
+                const original = this.runtime(p.id);
+                const text = str(p.text, "text");
+                const turn = str(p.turn, "turn");
+                // As much as an open asks for: all of a long conversation's turns was 4,949 sent at once.
+                const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
+                const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
+                // Shown at once (`soon`), from the turns the window was sent, while it's made: a 100,000-item session's
+                // copy takes 1.5-3 s. Checked first, so what can't be forked is said now; the window opens it, which
+                // waits until it's made (handle).
+                if (p.soon === true && original.hasTurn(turn)) {
+                    original.canFork(p.index, text, turn, true);
+                    const id = newSessionId();
+                    const named = original.title ?? original.firstPrompt() ?? "";
+                    const createdAt = Date.now();
+                    const preview = original.forkPreview(turn, { id, title: forkTitle(named), named: redact(named).replace(/\s+/g, " ").trim().slice(0, 120) || "(untitled)", createdAt }, last, budget, p.fold === true);
+                    if (preview) {
+                        this.forkSession(original, p.index, text, turn, id, createdAt).catch(() => undefined);
+                        return preview;
+                    }
+                }
+                const rt = await this.forkSession(original, p.index, text, turn);
                 this.watch(client, rt.id);
-                return rt.snapshot();
+                return await rt.snapshotSoon(last, budget, p.fold === true);
             }
             case "session.changes":
                 return this.runtime(p.id).changes();

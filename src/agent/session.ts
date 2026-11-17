@@ -16,6 +16,7 @@ import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 import { eachLine, linesFromEnd } from "../util/lines";
+import { digestOf, digestWith, type MessagesDigest } from "./history-digest";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
 
@@ -250,7 +251,77 @@ export function newSessionId(): string {
 
 export class Session {
     readonly meta: SessionMeta;
-    messages: Message[] = [];
+    private loadedMessages: Message[] = [];
+    /**
+     * What's needed of its messages without them, in their place until something asks for them (readMessages): read from
+     * a checkpoint of a session whose messages are most of it (a Claude Code session's, never compacted here).
+     */
+    private digest?: MessagesDigest;
+    get messages(): Message[] {
+        if (this.digest) this.readMessages();
+        return this.loadedMessages;
+    }
+    set messages(v: Message[]) {
+        this.digest = undefined;
+        this.loadedMessages = v;
+    }
+    /** How many messages it has, not reading them. */
+    get messageCount(): number {
+        return this.digest ? this.digest.count : this.loadedMessages.length;
+    }
+    /** Its last message, not reading them all. */
+    get lastMessage(): Message | undefined {
+        return this.digest ? this.digest.tail.at(-1) : this.loadedMessages.at(-1);
+    }
+    /** Its messages from `index` on at least, and where they start (`at`): only its last turn's, where that's all it has read. */
+    messagesFrom(index: number): { at: number; messages: readonly Message[] } {
+        const d = this.digest;
+        if (d && index >= d.from) return { at: d.from, messages: d.tail };
+        return { at: 0, messages: this.messages };
+    }
+    /** Its message at `index`, not reading them all where it's of its last turn. */
+    messageAt(index: number): Message | undefined {
+        const d = this.digest;
+        if (d && index >= d.from) return d.tail[index - d.from];
+        return this.messages[index];
+    }
+    /** Its messages from `index` on (a copy), not reading them all where they're its last turn's. */
+    messagesSince(index: number): Message[] {
+        const d = this.digest;
+        if (d && index >= d.from) return d.tail.slice(index - d.from);
+        return this.messages.slice(index);
+    }
+    /** What's needed of its messages, while they're not read (see digest). */
+    get historyDigest(): Readonly<MessagesDigest> | undefined {
+        return this.digest;
+    }
+    /** Where its file was read to, if it doesn't write to it: its messages read later are read to there. */
+    private readTo?: number;
+    /** Those pushed while its messages weren't read (push): the same objects once they are, not copies read back. */
+    private pushedUnread: Message[] = [];
+
+    /** Read from its file, as reading all of it makes them. */
+    private readMessages() {
+        const count = this.digest?.count;
+        const pushed = this.pushedUnread;
+        // As the file has them: no repair of its own (this session made its own when it was read, or is making it).
+        // Read first: a read that fails leaves the session as it was. One that doesn't write reads what it read then (a
+        // peer's look at a session another process is writing to): not what's been written since.
+        const inner = Session.read(this.file, false, true, false, this.persist ? undefined : this.readTo);
+        const read = inner.loadedMessages;
+        this.digest = undefined;
+        this.pushedUnread = [];
+        if (read.length === count && pushed.length) read.splice(read.length - pushed.length, pushed.length, ...pushed);
+        this.loadedMessages = read;
+        // Its lines, for the runtime opening it in this same task (readSegments), as a whole read leaves them.
+        const lines = inner.takeLoadedLines();
+        if (lines) {
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        }
+    }
+    /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
+    private digestible = false;
     fastMode?: boolean;
     /** The speed the file has (a chat from before speeds were saved has it only in memory, until one is chosen). */
     private savedFastMode?: boolean;
@@ -395,6 +466,9 @@ export class Session {
      */
     release() {
         this.saveWorked();
+        // What waited for room (a full disk) goes down now if it can: no later write will take it.
+        if (this.failing) this.write();
+        this.stopRetry();
         this.released = true;
         if (!this.holding) return;
         this.holding = false;
@@ -417,23 +491,35 @@ export class Session {
     private torn = false;
     /** Saving failed, and hasn't worked since. */
     private failing = false;
+    /** Saving fails, and something waits to be saved: lost if Cavvy quits now. */
+    get unsaved(): boolean {
+        return this.failing && this.pending.length > 0;
+    }
     /** Told when saving stops working (and why), and when it works again (undefined). */
     onSaving?: (error: Error | undefined) => void;
+    /** While saving fails: what waits is tried again, so room made while the session is idle saves it. */
+    private retry?: ReturnType<typeof setTimeout>;
 
-    /** Whether it's on disk now. */
-    private write(line: Line): boolean {
+    private stopRetry() {
+        if (this.retry) clearTimeout(this.retry);
+        this.retry = undefined;
+    }
+
+    /** Whether it's on disk now. Without a line: what waits (saving failed) is written, if it can be now. */
+    private write(line?: Line): boolean {
         if (!this.persist || this.released) return false;
-        if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
-            this.pending.push(line);
+        if (!line && !this.pending.length) return true;
+        if (!this.started && line?.t !== "msg" && !existsSync(this.file)) {
+            if (line) this.pending.push(line);
             return false;
         }
         // One from before worked lines, written to for something else (a repair, a rename): when it last worked goes first,
         // or the sidebar would take this write's time for it.
-        if (line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
+        if (line && line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
             this.workedAt = this.savedWorkedAt = this.writtenAt;
             this.pending.push({ t: "worked", at: this.writtenAt });
         }
-        const lines = [...this.pending.splice(0), line];
+        const lines = [...this.pending.splice(0), ...(line ? [line] : [])];
         let saved = 0;
         try {
             if (!this.started) {
@@ -454,6 +540,7 @@ export class Session {
             }
             if (this.failing) {
                 this.failing = false;
+                this.stopRetry();
                 this.onSaving?.(undefined);
             }
             return true;
@@ -467,6 +554,12 @@ export class Session {
                 this.failing = true;
                 this.onSaving?.(error as Error);
             }
+            this.stopRetry();
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.write();
+            }, savingRetry.ms);
+            this.retry.unref?.();
             return false;
         }
     }
@@ -495,6 +588,16 @@ export class Session {
     /** Store a message (redacted); returns the stored copy. */
     push<M extends Message>(m: M): M {
         m = redactMessage(m) as M;
+        // Not read yet: put on its digest, once its file has it (they're read from there when they're asked for).
+        if (this.digest) {
+            if (this.write({ t: "msg", m })) {
+                this.digest = digestWith(this.digest, m);
+                this.pushedUnread.push(m);
+                return m;
+            }
+            this.messages.push(m);
+            return m;
+        }
         this.messages.push(m);
         this.write({ t: "msg", m });
         return m;
@@ -557,7 +660,7 @@ export class Session {
     recordNotice(level: TurnNotice["level"], text: string, extra: { details?: string[] } & NoticeData = {}): TurnNotice {
         // What it shows: the data's text, if it has one (as a live notice: history.liveNotice).
         const { details, text: shown, ...data } = extra;
-        const n: TurnNotice = { index: this.messages.length, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
+        const n: TurnNotice = { index: this.messageCount, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
         addNotice(this.notices, n);
         this.write({ t: "notice", ...n });
         return n;
@@ -570,7 +673,7 @@ export class Session {
      */
     recordSwitch(a: NoticeAccount): { notice: TurnNotice; merged: boolean } {
         const last = this.notices.at(-1);
-        const prev = last && mergesWith(last, a.provider, this.messages.length) ? last : undefined;
+        const prev = last && mergesWith(last, a.provider, this.messageCount) ? last : undefined;
         const all = [...(prev?.account?.stopped ?? []), ...(a.stopped ?? [])];
         const { stopped: _had, ...who } = a;
         const account: NoticeAccount = { ...who, ...(all.length ? { stopped: all } : {}) };
@@ -588,7 +691,7 @@ export class Session {
     recordStopped(origin: TurnNotice | undefined, stopped: NoticeStopped): { notice: TurnNotice; merged: boolean } {
         const last = this.notices.at(-1);
         const run = origin && this.switchRuns.get(origin);
-        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messages.length)) {
+        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messageCount)) {
             const account: NoticeAccount = { ...last.account, stopped: [...(last.account.stopped ?? []), ...stopped.tasks] };
             const notice = this.recordNotice("info", accountNoticeText(account), { account });
             this.switchRuns.set(notice, run);
@@ -878,10 +981,12 @@ export class Session {
     }
 
     /** What it is, as read from its file (Session.read): its checkpoint's state (readCheckpoint). */
-    private toState(): SessionState {
+    /** `digested`: with a digest of its messages in their place (digestOf), not them. */
+    private toState(digested = false): SessionState {
+        const digest = this.digest ?? (digested ? digestOf(this.loadedMessages) : undefined);
         return {
             meta: this.meta,
-            messages: this.messages,
+            ...(digest ? { digest } : { messages: this.loadedMessages }),
             notices: this.notices,
             backends: [...this.backends],
             backendPlaces: [...this.backendPlaces],
@@ -909,7 +1014,9 @@ export class Session {
 
     /** As its checkpoint has it (toState), before what's been written since is read. */
     private restoreState(st: SessionState) {
-        this.messages = st.messages;
+        this.loadedMessages = st.messages ?? [];
+        this.digest = st.digest;
+        this.digestible = Boolean(st.digest);
         this.notices = st.notices;
         this.backends = new Map(st.backends);
         this.backendPlaces = new Map(st.backendPlaces);
@@ -938,6 +1045,24 @@ export class Session {
     /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
     private loadedLines?: readonly Line[];
 
+    /** Those lines, left for takeLoadedLines (the runtime opening it): to look at without reading the file again. */
+    peekLoadedLines(): readonly Line[] | undefined {
+        return this.loadedLines;
+    }
+
+    /**
+     * Those lines, kept for takeLoadedLines past this task (a fork's log written a slice at a time before the runtime
+     * opens it): the function puts them back for the task it's called in.
+     */
+    keepLoadedLines(): () => void {
+        const lines = this.loadedLines;
+        return () => {
+            if (!lines) return;
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        };
+    }
+
     /** The lines this session was just loaded from, once, while that's still the task that loaded it. */
     takeLoadedLines(): readonly Line[] | undefined {
         const lines = this.loadedLines;
@@ -945,20 +1070,28 @@ export class Session {
         return lines;
     }
 
-    private static read(file: string, persist = true): Session {
+    /** `whole`: all of it, not from a checkpoint. `repair`: answer a tool call left without results (repairTail). */
+    private static read(file: string, persist = true, whole = false, repair = true, upTo?: number): Session {
         const writtenAt = statSync(file).mtimeMs;
         // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
-        const cp = readCheckpoint(file);
+        const cp = whole ? undefined : readCheckpoint(file);
         let meta: SessionMeta | undefined = cp?.state.meta;
         const lines: Line[] = [];
+        // Each message line's length: what a checkpoint would hold of it, about.
+        const lineSizes = new WeakMap<Line, number>();
+        const kept = new WeakMap<Message, number>();
         let empty = !cp;
+        // Characters read, to set against bytes (a line's length is in characters: non-ASCII text is more bytes).
+        let chars = 0;
         // A line at a time (lib eachLine): a session of any size, never all of it as one string.
         const { endsWithNewline, end } = eachLine(file, (raw) => {
             empty = false;
+            chars += raw.length + 1;
             if (!raw.trim()) return;
             // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
             if (raw.startsWith(MSG_LINE)) {
                 lines.push(lazyMessage(raw));
+                lineSizes.set(lines[lines.length - 1]!, raw.length);
                 return;
             }
             try {
@@ -968,11 +1101,14 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        }, undefined, cp?.offset ?? 0);
+        }, undefined, cp?.offset ?? 0, upTo);
         if (!meta) throw new Error(`Not a session file: ${file}`);
+        // Read from a digest of its messages, and some changed since other than by adding one: all of it, as without one.
+        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true, repair, upTo);
         const s = new Session(meta, { file, persist });
         s.started = true;
         if (cp) s.restoreState(cp.state);
+        if (!persist) s.readTo = end;
         // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
         // past it, or a session loaded for anything else would hold every line it ever had. (Read from a checkpoint,
         // they aren't all of them: readSegments reads the file.)
@@ -1008,7 +1144,12 @@ export class Session {
             if (i < lastCompact && CLEARED_BY_COMPACT.has(l.t)) continue;
             if (l.t === "msg") {
                 const m = l.m as Message | undefined;
-                if (m) s.messages.push(m);
+                // Added to its digest, read from one (digestWith: as a digest of them all).
+                if (m && s.digest) s.digest = digestWith(s.digest, m);
+                else if (m) {
+                    s.messages.push(m);
+                    kept.set(m, lineSizes.get(l) ?? 0);
+                }
             }
             else if (l.t === "compact") {
                 s.segments++;
@@ -1032,7 +1173,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messageCount, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendPlaces.set(l.provider, { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) });
                 else s.backendPlaces.delete(l.provider);
@@ -1046,7 +1187,7 @@ export class Session {
                 if (typeof l.id === "string" && l.id) s.parked.push({
                     provider: l.provider,
                     place: { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) },
-                    session: { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) },
+                    session: { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messageCount, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) },
                 });
             }
             else if (l.t === "account" && (l.provider === "claude-code" || l.provider === "codex") && validAccountId(l.id)) {
@@ -1083,12 +1224,18 @@ export class Session {
         }
         // Read far past where it was read from before (or all of it): from here, next time. As it is now, read: what
         // happens to it from here (a repair below) is written to it, and read from it next time.
-        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState());
+        // Not where its messages alone are more than it would be kept at: a session never compacted (a Claude Code one's)
+        // has all of them, and making that checkpoint to throw it away was 18 ms of opening one of 100,000 items.
+        // Where they are most of it, a digest of them in their place (toState): opened from it, they're read only when
+        // they're asked for.
+        const bytesPerChar = chars ? (end - (cp?.offset ?? 0)) / chars : 1;
+        if (!s.digest && s.loadedMessages.reduce((n, m) => n + (kept.get(m) ?? 0), 0) * bytesPerChar * 0.9 > end * checkpointing.most) s.digestible = true;
+        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState(s.digestible));
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
         for (const p of s.parked.filter((p) => s.backends.get(p.provider)?.id === p.session.id)) s.dropParked(p);
-        repairTail(s);
+        if (repair) repairTail(s);
         return s;
     }
 }
@@ -1138,7 +1285,9 @@ interface Checkpoint {
 /** What a checkpoint keeps of a session (Session.toState). */
 interface SessionState {
     meta: SessionMeta;
-    messages: Message[];
+    /** Its messages, or a digest of them in their place (Session.digest). */
+    messages?: Message[];
+    digest?: MessagesDigest;
     notices: TurnNotice[];
     backends: [string, BackendSession][];
     backendPlaces: [string, AccountPlace][];
@@ -1164,7 +1313,9 @@ interface SessionState {
     workedAt?: number;
 }
 
-const CHECKPOINT_VERSION = 2;
+const CHECKPOINT_VERSION = 4;
+/** Lines that change its messages other than by adding one: read from a digest of them (Session.read), these can't be applied to it. */
+const CHANGES_MESSAGES = new Set<string>(["compact", "rewind", "withdraw", "imagesRefused"]);
 /**
  * `after`: read this far past a session's checkpoint (or with none), it's written anew. `most`: and kept only if it's
  * at most this much of what it's read in place of. (Tests set them low to checkpoint short sessions.)
@@ -1205,21 +1356,24 @@ function readCheckpoint(file: string): Checkpoint | undefined {
     }
 }
 
-function writeCheckpoint(file: string, offset: number, state: SessionState) {
+/** Whether it was written. */
+function writeCheckpoint(file: string, offset: number, state: SessionState): boolean {
     let fd: number | undefined;
     try {
         fd = openSync(file, "r");
         const cp: Checkpoint = { v: CHECKPOINT_VERSION, offset, ino: fstatSync(fd).ino, tail: tailBefore(fd, offset), state };
         const json = JSON.stringify(cp);
         // Kept only if it's read in place of much more (a session never compacted keeps all its messages: no saving).
-        if (json.length > offset * checkpointing.most) return;
+        if (json.length > offset * checkpointing.most) return false;
         const out = checkpointFile(file);
         ensureDir(dirname(out));
         const tmp = `${out}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
         writeFileSync(tmp, json, { mode: 0o600 });
         renameSync(tmp, out);
+        return true;
     } catch {
         // Read whole next time, as without it.
+        return false;
     } finally {
         if (fd !== undefined) closeSync(fd);
     }
@@ -1565,7 +1719,7 @@ function unlock(file: string) {
  * that, so answer dangling calls with an "interrupted" result on load.
  */
 function repairTail(s: Session) {
-    const last = s.messages[s.messages.length - 1];
+    const last = s.lastMessage;
     if (!last || last.role !== "assistant") return;
     const calls = last.content.filter((p) => p.type === "tool_call");
     if (!calls.length) return;
@@ -1578,6 +1732,8 @@ function repairTail(s: Session) {
 
 /** While a session works, how often at most a worked line goes down (Session.worked). */
 const WORKED_EVERY_MS = 60_000;
+/** While saving fails (a full disk), how often what waits is tried again (a test sets it lower). */
+export const savingRetry = { ms: 5_000 };
 const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
 /** Enough of a line to see its record type. */

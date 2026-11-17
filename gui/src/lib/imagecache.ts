@@ -57,6 +57,11 @@ export class ImageCache<T = string> {
         return p;
     }
 
+    /** What's kept for `key`, without making it the most recent. */
+    peek(key: string): Promise<T[]> | undefined {
+        return this.entries.get(key);
+    }
+
     get size(): number {
         return this.entries.size;
     }

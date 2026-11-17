@@ -9,14 +9,17 @@ import type { Message } from "../src/providers/types";
 const iso = isolate();
 const { Session, checkpointFile, checkpointing } = await import("../src/agent/session");
 const { writeThread } = await import("../scripts/perf-thread");
+const { digestOf, digestToolState, lastCheckpointOf, lastPlanCall, latestCheckpointOf, toolStateOf } = await import("../src/agent/history-digest");
 afterAll(() => iso.cleanup());
 
 /** In memory only, or how it's held: not what it is. */
-const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords"]);
+const RUNTIME = new Set(["file", "persist", "strictWrites", "holding", "released", "started", "pending", "torn", "failing", "loadedLines", "writtenAt", "switchRuns", "subagentRuns", "runsFor", "hookContext", "hookWatchPaths", "hooksStarting", "onSaving", "usageRecords", "loadedMessages", "digest", "digestible", "pushedUnread", "readTo"]);
 /** Every field of it, as data. */
 function fields(s: InstanceType<typeof Session>): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(s)) if (!RUNTIME.has(k) && typeof v !== "function") out[k] = v instanceof Map ? [...v] : v;
+    // Its messages as they're asked for (read then, where a checkpoint has a digest of them in their place).
+    out.messages = s.messages;
     return JSON.parse(JSON.stringify(out));
 }
 /** Read whole (its checkpoint put aside), and read from its checkpoint. */
@@ -112,6 +115,105 @@ test("a long session's checkpoint is read in place of what its compactions clear
     expect(fromCheckpoint).toEqual(whole);
 });
 
+// One never compacted (a Claude Code session's) keeps all its messages: its checkpoint has a digest of them in their
+// place, made without a checkpoint of them all to throw away (18 ms of opening one of 100,000 items), and opened from it
+// they aren't read until they're asked for; then they're what reading all of it makes.
+test("a long session never compacted is opened from a digest of its messages, read as they're asked for", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cli-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 2 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    const stringify = JSON.stringify;
+    let longest = 0;
+    JSON.stringify = ((...args: Parameters<typeof stringify>) => {
+        const out = stringify(...args);
+        longest = Math.max(longest, out?.length ?? 0);
+        return out;
+    }) as typeof stringify;
+    try {
+        Session.load(t.file).release();
+    } finally {
+        JSON.stringify = stringify;
+    }
+    try {
+        expect(longest).toBeLessThan(statSync(t.file).size * 0.1);
+        expect(statSync(checkpointFile(t.file)).size).toBeLessThan(statSync(t.file).size * 0.1);
+        const s = Session.peek(t.file);
+        expect(s.historyDigest).toBeDefined();
+        const count = s.messageCount;
+        const { fromCheckpoint, whole } = bothWays(t.file);
+        expect(fromCheckpoint).toEqual(whole);
+        expect(count).toBe((whole.messages as unknown[]).length);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// Messages added since its digest was made are put on it as they're read (digestWith); any other change to them (a
+// rewind, images refused) and it's read whole. Either way, what reading all of it makes.
+test("a session opened from a digest of its messages and written to since reads as reading all of it makes", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cli-since-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 4 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    // What a digest says, and what the same from its messages says.
+    const said = (s: InstanceType<typeof Session>) => {
+        const d = s.historyDigest!;
+        return { count: d.count, tools: digestToolState(d), plan: d.plan, checkpoint: d.checkpoint, latest: d.latestCheckpoint, last: s.lastMessage, images: d.images };
+    };
+    const truth = (messages: Message[]) => ({ count: messages.length, tools: toolStateOf(messages), plan: lastPlanCall(messages), checkpoint: lastCheckpointOf(messages), latest: latestCheckpointOf(messages), last: messages.at(-1), images: digestOf(messages).images });
+    try {
+        Session.load(t.file).release();
+        // Only added to: a turn with its todos and a plan, then the next prompt.
+        const s = Session.load(t.file);
+        expect(s.historyDigest).toBeDefined();
+        s.push({ role: "user", content: [{ type: "text", text: "look" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }], meta: { kind: "prompt" } } as Message);
+        s.push(reply("seen"));
+        s.push(prompt("plan it"));
+        s.push({ role: "assistant", provider: "mock", model: "m", stopReason: "tool_use", content: [{ type: "tool_call", id: "todo-1", name: "TodoWrite", input: { todos: [{ content: "one", status: "pending", activeForm: "Doing one" }] } }, { type: "tool_call", id: "plan-1", name: "ExitPlanMode", input: { plan: "The plan" } }] } as Message);
+        s.push({ role: "user", content: [{ type: "tool_result", toolCallId: "todo-1", content: "ok" }, { type: "tool_result", toolCallId: "plan-1", content: "ok" }], meta: { kind: "tool_results", checkpoint: 7 } } as Message);
+        s.push(reply("done"));
+        const next = s.push(prompt("next"));
+        // Put on its digest, not read.
+        expect(s.historyDigest?.count).toBe(s.messageCount);
+        expect(s.lastMessage).toBe(next);
+        // Asked for, they're read: the ones pushed are the objects pushed.
+        expect(s.messages.at(-1)).toBe(next);
+        expect(s.historyDigest).toBeUndefined();
+        s.release();
+        const added = Session.peek(t.file);
+        expect(added.historyDigest).toBeDefined();
+        const whole = bothWays(t.file);
+        expect(said(added)).toEqual(truth(whole.whole.messages as Message[]));
+        expect(said(added).tools.todos).toHaveLength(1);
+        expect(said(added).images).toHaveLength(1);
+        expect(whole.fromCheckpoint).toEqual(whole.whole);
+        // Changed otherwise: read whole.
+        const again = Session.load(t.file);
+        work(again, 1);
+        again.rewind(again.messageCount - 2);
+        again.release();
+        const after = bothWays(t.file);
+        expect(after.fromCheckpoint).toEqual(after.whole);
+        // A message taken out, then more added after it: read whole, each once.
+        Session.load(t.file).release();
+        const steered = Session.load(t.file);
+        expect(steered.historyDigest).toBeDefined();
+        steered.push(prompt("steer"));
+        steered.withdraw(steered.messageCount - 1);
+        work(steered, 2);
+        const count = steered.messageCount;
+        steered.release();
+        const withdrawn = bothWays(t.file);
+        expect(withdrawn.fromCheckpoint).toEqual(withdrawn.whole);
+        expect(withdrawn.whole.messages as unknown[]).toHaveLength(count);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
 // It's checked as the session heads' cache is (sessionHead): a file that's only ever appended to is the same file, with
 // the same bytes up to where it was read, if it's the same inode, at least that long, and ends there as it did then.
 test("a checkpoint of a file since changed where it was read to, cut shorter, or replaced, isn't used", () => {
@@ -146,6 +248,96 @@ test("a checkpoint of a file since changed where it was read to, cut shorter, or
         rmSync(file);
         renameSync(copy, file);
         expect(title(file)).toBe("Title C");
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// Its messages read from the file on demand are the file's: a tool call it ends with is answered once, by the session
+// that was opened (repairTail), not again by the read; and a read that fails leaves the session as it was.
+test("a session opened from a digest answers a dangling tool call once, and keeps its messages if reading them fails", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-dangling-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 2 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        Session.load(t.file).release();
+        const running = Session.load(t.file);
+        expect(running.historyDigest).toBeDefined();
+        running.push(prompt("go"));
+        running.push(reply("calling", "call-x"));
+        // A peer looks in mid-tool, opened from the digest: its repair is in memory only, so it reads them.
+        const p = Session.peek(t.file);
+        const answers = (m: Message[]) => m.filter((x) => x.content.some((c) => c.type === "tool_result" && (c as { toolCallId: string }).toolCallId === "call-x")).length;
+        expect(answers(p.messages)).toBe(1);
+        expect(p.messageCount).toBe(running.messageCount + 1);
+        running.push(result("call-x"));
+        running.push(reply("done"));
+        running.release();
+
+        const s = Session.peek(t.file);
+        expect(s.historyDigest).toBeDefined();
+        const count = s.messageCount;
+        renameSync(t.file, t.file + ".aside");
+        try {
+            expect(() => s.messages).toThrow();
+        } finally {
+            renameSync(t.file + ".aside", t.file);
+        }
+        expect(s.historyDigest).toBeDefined();
+        expect(s.messageCount).toBe(count);
+        expect(s.messages.length).toBe(count);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// Its messages' size is set against the file's in the same unit: text that's more bytes than characters still digests.
+test("a long session in a language of many bytes per character is opened from a digest too", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-cjk-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        const s = Session.create(cwd);
+        const text = "日本語のテキストです。".repeat(40);
+        for (let i = 0; i < 400; i++) {
+            s.push(prompt(`${i} ${text}`));
+            s.push(reply(`${i} ${text}`));
+        }
+        const file = s.file;
+        s.release();
+        Session.load(file).release();
+        const opened = Session.peek(file);
+        expect(opened.historyDigest).toBeDefined();
+        expect(statSync(checkpointFile(file)).size).toBeLessThan(statSync(file).size * 0.1);
+        const { fromCheckpoint, whole } = bothWays(file);
+        expect(fromCheckpoint).toEqual(whole);
+    } finally {
+        Object.assign(checkpointing, was);
+    }
+});
+
+// One opened only to read (a peer's look at a session another process is writing): its messages, read when asked
+// for, are those of the file as it was read, and their lines are left for the runtime opening it (readSegments).
+test("a session opened from a digest to read reads its messages as the file was, and leaves their lines", () => {
+    const cwd = join(tempDir("cavvy-checkpoint-peek-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 3 });
+    const was = { ...checkpointing };
+    checkpointing.after = 1;
+    try {
+        Session.load(t.file).release();
+        const running = Session.load(t.file);
+        const p = Session.peek(t.file);
+        expect(p.historyDigest).toBeDefined();
+        const count = p.messageCount;
+        running.push(prompt("later"));
+        running.push(reply("written after the look"));
+        running.release();
+        expect(p.messages).toHaveLength(count);
+        expect(p.takeLoadedLines()?.length).toBeGreaterThan(count);
     } finally {
         Object.assign(checkpointing, was);
     }
