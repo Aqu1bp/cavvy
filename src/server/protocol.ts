@@ -2165,6 +2165,8 @@ export interface Methods {
     "server.lag": { params: { reset?: boolean }; result: LoopLag };
     /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
     "server.memory": { params: { types?: boolean }; result: ServerMemory };
+    /** Sessions whose latest work couldn't be saved (a full disk) and would be lost if Cavvy quit now: the desktop app asks before quitting. */
+    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[] } };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)

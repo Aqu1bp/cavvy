@@ -491,6 +491,10 @@ export class Session {
     private torn = false;
     /** Saving failed, and hasn't worked since. */
     private failing = false;
+    /** Saving fails, and something waits to be saved: lost if Cavvy quits now. */
+    get unsaved(): boolean {
+        return this.failing && this.pending.length > 0;
+    }
     /** Told when saving stops working (and why), and when it works again (undefined). */
     onSaving?: (error: Error | undefined) => void;
     /** While saving fails: what waits is tried again, so room made while the session is idle saves it. */

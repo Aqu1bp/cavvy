@@ -2637,6 +2637,8 @@ export class Engine {
                 return null;
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
+            case "server.unsaved":
+                return { sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })) };
             case "server.memory":
                 return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":

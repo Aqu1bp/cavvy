@@ -124,6 +124,43 @@ function sidecarInfo(): Promise<SidecarInfo> {
     });
 }
 
+/**
+ * How many sessions have work the server couldn't save (server.unsaved). 0 when it can't say within a moment (not
+ * started, or stuck): quitting isn't held up for it.
+ */
+function unsavedSessions(): Promise<number> {
+    const i = info;
+    if (!i) return Promise.resolve(0);
+    return new Promise((resolve) => {
+        let ws: WebSocket | undefined;
+        const done = (n: number) => {
+            clearTimeout(timer);
+            try {
+                ws?.close();
+            } catch {
+                // already closed
+            }
+            resolve(n);
+        };
+        const timer = setTimeout(() => done(0), 1500);
+        try {
+            ws = new WebSocket(`ws://127.0.0.1:${i.port}/ws`, ["cavvy.v1", `auth.${i.token}`]);
+        } catch {
+            return done(0);
+        }
+        ws.onopen = () => ws!.send(JSON.stringify({ id: 1, method: "server.unsaved", params: {} }));
+        ws.onmessage = (m) => {
+            try {
+                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[] } };
+                if (r.id === 1) done(r.result?.sessions?.length ?? 0);
+            } catch {
+                // not the answer
+            }
+        };
+        ws.onerror = () => done(0);
+    });
+}
+
 async function stopServer() {
     const child = server;
     if (!child) return;
@@ -500,11 +537,28 @@ else {
         createWindow();
     });
     app.on("window-all-closed", () => app.quit());
+    let asking = false;
     app.on("before-quit", (e) => {
         if (quitting) return;
-        quitting = true;
         e.preventDefault();
-        host.close();
-        void stopServer().finally(() => app.quit());
+        if (asking) return;
+        asking = true;
+        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk).
+        void unsavedSessions().then(async (n) => {
+            const w = win && !win.isDestroyed() ? win : undefined;
+            if (n > 0) {
+                const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
+                const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
+                if (response === 1) {
+                    asking = false;
+                    // Its last window closed to quit: it comes back, so the work can still be saved.
+                    if (!win || win.isDestroyed()) createWindow();
+                    return;
+                }
+            }
+            quitting = true;
+            host.close();
+            void stopServer().finally(() => app.quit());
+        });
     });
 }

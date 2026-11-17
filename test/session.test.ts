@@ -107,9 +107,12 @@ describe("Session persistence", () => {
             spy.mockRestore();
         }
         expect(told).toEqual(["ENOSPC: no space left on device"]);
+        // What waits would be lost by quitting now (server.unsaved).
+        expect(s.unsaved).toBe(true);
         // Room again: the next write takes what waited, then itself.
         s.push(user("after"));
         expect(told).toEqual(["ENOSPC: no space left on device", undefined]);
+        expect(s.unsaved).toBe(false);
         s.release();
         const said = Session.load(s.path, { persist: false }).messages.map((m) => (m.content[0] as { text: string }).text);
         expect(said).toEqual(["before", "while full 1", "while full 2", "while full 3", "after"]);
