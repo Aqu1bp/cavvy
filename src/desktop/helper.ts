@@ -4,7 +4,7 @@
 // out the same (measured: the same code hash), so a grant lasts until the helper's source changes.
 
 import { createHash, randomBytes } from "crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { join } from "path";
 import { paths } from "../config/paths";
 import { run } from "../simulator/simctl";
@@ -143,18 +143,29 @@ export function helperBinary(): Promise<string> {
     const app = join(dir(), APP);
     if (builtFrom(app) === sourceHash() && existsSync(executableIn(app))) return Promise.resolve(inUse(app));
     return (building ??= buildIn(dir())
-        .then((built) => {
-            // The helper before bundles: a binary on its own (a grant of its own in System Settings, to take out).
-            rmSync(join(dir(), HELPER_NAME), { force: true });
-            return inUse(built);
-        })
+        .then(inUse)
         .finally(() => (building = undefined)));
 }
 
-/** The helper's executable, noted as the build in use (for what a missing grant's line says). */
+/** The helper's executable, noted as the build in use (for what a missing grant's line says), with stale copies gone. */
 function inUse(app: string): string {
     if (record().hash !== sourceHash()) writeRecord({ ...record(), hash: sourceHash() });
+    clearStale();
     return executableIn(app);
+}
+
+/**
+ * What's left in Cavvy's home that no longer runs: the helper from before it was an app (a binary on its own), and a
+ * build that stopped halfway. (Their entries in System Settings stay: the person takes them out with −.)
+ */
+export function clearStale() {
+    let names: string[];
+    try {
+        names = readdirSync(dir());
+    } catch {
+        return;
+    }
+    for (const n of names) if (n === HELPER_NAME || ((n.startsWith(".build-") || n.startsWith(".old-")) && !building)) rmSync(join(dir(), n), { recursive: true, force: true });
 }
 
 /**

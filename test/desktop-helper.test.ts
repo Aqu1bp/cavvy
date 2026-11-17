@@ -10,7 +10,7 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, helperApp, helperBinary, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+const { DesktopHelper, buildIn, clearStale, helperApp, helperBinary, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
 const { paths } = await import("../src/config/paths");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
@@ -64,6 +64,18 @@ test("the app's own helper is used when it's of this source; else the one in Cav
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test("what no longer runs is cleared from Cavvy's home: the helper from before it was an app, a build stopped halfway", () => {
+    const home = join(paths.home(), "desktop");
+    mkdirSync(join(home, "Cavvy Desktop Control.app", "Contents"), { recursive: true });
+    mkdirSync(join(home, ".build-1a2b3c4d"), { recursive: true });
+    mkdirSync(join(home, ".old-1a2b3c4d"), { recursive: true });
+    writeFileSync(join(home, "Cavvy Desktop Control"), "old helper");
+    writeFileSync(join(home, "build.json"), "{}");
+    clearStale();
+    expect(Bun.spawnSync(["ls", "-A", home]).stdout.toString().trim().split("\n").sort()).toEqual(["Cavvy Desktop Control.app", "build.json"]);
+    rmSync(home, { recursive: true, force: true });
 });
 
 /** Runs the helper with what's given (fd 3: a pipe holding that, as Cavvy hands its secret over); resolves with how it ended and what it wrote. */
