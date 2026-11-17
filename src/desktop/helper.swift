@@ -125,7 +125,7 @@ func humans() -> Int {
 /// The person's clicks, keys and scrolls into these apps since the helper started.
 func used(_ pids: Set<pid_t>) -> Int {
     // A sandboxed app's Open and Save panels are another process's: typing there is using the app.
-    let all = pids.isEmpty ? pids : pids.union(NSWorkspace.shared.runningApplications.filter { PANEL_SERVICES.contains($0.bundleIdentifier ?? "") }.map(\.processIdentifier))
+    let all = pids.isEmpty ? pids : pids.union(workspaceApps().filter { PANEL_SERVICES.contains($0.bundleIdentifier ?? "") }.map(\.processIdentifier))
     humanLock.lock()
     defer { humanLock.unlock() }
     return all.reduce(0) { $0 + (usedBy[$1] ?? 0) }
@@ -379,7 +379,7 @@ func clickable(_ x: Double, _ y: Double, _ pids: Set<pid_t>) throws {
     }
     if inMenu { return }
     var owners = pids
-    for app in NSWorkspace.shared.runningApplications where PANEL_SERVICES.contains(app.bundleIdentifier ?? "") { owners.insert(app.processIdentifier) }
+    for app in workspaceApps() where PANEL_SERVICES.contains(app.bundleIdentifier ?? "") { owners.insert(app.processIdentifier) }
     let inside = windows(owners).contains { w in
         let f = w["frame"] as! [Double]
         return CGRect(x: f[0], y: f[1], width: f[2], height: f[3]).contains(p)
@@ -699,8 +699,14 @@ func appInfo(_ app: NSRunningApplication) -> [String: Any] {
     return o
 }
 
+/// The running apps. Read on the main thread, where macOS keeps the list current: read from another thread, it stays
+/// as it was first read, without the apps started since (measured).
+func workspaceApps() -> [NSRunningApplication] {
+    Thread.isMainThread ? NSWorkspace.shared.runningApplications : DispatchQueue.main.sync { NSWorkspace.shared.runningApplications }
+}
+
 func running() -> [NSRunningApplication] {
-    NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+    workspaceApps().filter { $0.activationPolicy == .regular }
 }
 
 /// The processes that started this one, up to launchd: Cavvy, and the terminal it may run in.
