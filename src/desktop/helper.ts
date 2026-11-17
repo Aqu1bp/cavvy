@@ -80,10 +80,34 @@ export function trustedBefore(g: Grant = "accessibility"): boolean {
     return Boolean(had && had !== r.hash);
 }
 
+/**
+ * Whether this process may build and run the real helper. Not in Cavvy's tests (CAVVY_TEST, set by test/preload.ts and
+ * passed to what they start), unless a live run asks with CAVVY_DESKTOP_LIVE=1: running it is what adds it to macOS's
+ * privacy lists, an entry for each test home. Tests use a fake one (setDesktopHelperStarter).
+ */
+export function realHelperAllowed(): boolean {
+    return process.env.CAVVY_TEST !== "1" || process.env.CAVVY_DESKTOP_LIVE === "1";
+}
+
+/** Symbol.for(...) on globalThis: how many times a test reached for the real helper (test/preload.ts fails that test). */
+export const REAL_HELPER_REFUSED = Symbol.for("cavvy.desktop.realHelperRefused");
+
+function refuseInTests() {
+    if (realHelperAllowed()) return;
+    const g = globalThis as Record<symbol, number>;
+    g[REAL_HELPER_REFUSED] = (g[REAL_HELPER_REFUSED] ?? 0) + 1;
+    throw new DesktopError(`Tests don't build or run the real ${HELPER_NAME}: use a fake one (setDesktopHelperStarter), or set CAVVY_DESKTOP_LIVE=1 for a live run.`, "test");
+}
+
 let building: Promise<string> | undefined;
 
 /** The helper, built when it isn't yet or its source has changed (a few seconds). */
 export function helperBinary(): Promise<string> {
+    try {
+        refuseInTests();
+    } catch (e) {
+        return Promise.reject(e);
+    }
     const bin = join(dir(), HELPER_NAME);
     if (existsSync(bin) && record().hash === sourceHash()) return Promise.resolve(bin);
     return (building ??= build(bin).finally(() => (building = undefined)));
@@ -212,6 +236,7 @@ export class DesktopHelper implements DesktopHelperLike {
      * holds, then sent back as the first line on stdin. The helper takes commands only when the two agree.
      */
     static start(bin: string): DesktopHelper {
+        refuseInTests();
         const secret = randomBytes(32).toString("hex");
         const proc = Bun.spawn([bin], { stdio: ["pipe", "pipe", "ignore", "pipe"] }) as unknown as HelperProcess;
         // A line on fd 3, left open: Bun closes its end when the helper ends (closing it here too would close
