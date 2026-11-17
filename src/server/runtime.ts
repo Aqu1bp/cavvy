@@ -13,7 +13,8 @@ import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { BrowserSession } from "../browser/session";
 import { SimulatorSession } from "../simulator/session";
 import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
-import { DESKTOP_TOOL_HEADINGS } from "../tools/desktop-tools";
+import { DESKTOP_TOOL_HEADINGS, DESKTOP_TOOLS, servedDesktopName } from "../tools/desktop-tools";
+import { windowCard, type AccessAction, type AccessCard } from "../desktop/access";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, wakesFrom, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -1669,6 +1670,7 @@ export class Runtime {
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                     askSignIn: (req, then) => this.askSignIn(req, then),
                     confirm: (req, signal) => this.confirm(req, signal),
+                    accessCard: (signal) => this.accessCard(signal),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -2518,6 +2520,7 @@ export class Runtime {
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
             if (interaction.kind === "signin") return this.engine.notify(this, "question", signInAsks(interaction));
             if (interaction.kind === "confirm") return this.engine.notify(this, "question", `${interaction.title}?`);
+            if (interaction.kind === "access") return this.engine.notify(this, "question", interaction.title);
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
@@ -2542,6 +2545,8 @@ export class Runtime {
             const choice = r.choice === "yes" || (r.choice === "other" && p.interaction.other) ? r.choice : "no";
             return this.settle(interactionId, { kind: "confirm", choice });
         }
+        // A button in a grant's card: the card stays until the switch is on, or it's closed.
+        if (r.kind === "access") return this.accessPresses.get(interactionId)?.(r.action === "open" || r.action === "reset" ? r.action : "close");
         // A step in a sign-in's card: the card stays until the sign-in itself is over.
         if (r.kind === "signin") {
             try {
@@ -2804,6 +2809,42 @@ export class Runtime {
             signal.removeEventListener("abort", withdraw);
             if (toolId) this.patchBlock(toolId, { status: "running" });
         }
+    }
+
+    /** Presses on grant cards up, by interaction id. */
+    private readonly accessPresses = new Map<string, (a: AccessAction) => void>();
+
+    /**
+     * A card for a macOS grant the Mac app tools need: shown and changed by src/desktop/access.ts, which waits for the
+     * switch. Its call shows as waiting on the user meanwhile; the turn stopping closes it.
+     */
+    private accessCard(signal: AbortSignal): AccessCard {
+        const id = this.newId();
+        const toolId = DESKTOP_TOOLS.flatMap((t) => [t.name, `mcp__${MCP_SERVER_NAME}__${servedDesktopName(t.name)}`]).map((n) => this.runningTool(n)).find(Boolean);
+        const { card, press } = windowCard(
+            {
+                show: (view, first) => {
+                    const interaction: Interaction = { ...view, kind: "access", id, toolId, since: this.pending.get(id)?.interaction.since ?? Date.now() };
+                    if (!first) {
+                        const had = this.pending.get(id);
+                        if (had) had.interaction = interaction;
+                        this.setState({ interactions: this.pendingList() });
+                        return;
+                    }
+                    if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+                    // Withdrawn from elsewhere (the session closing): as closed.
+                    void this.interact(interaction).then(() => press("close"));
+                },
+                hide: () => {
+                    this.accessPresses.delete(id);
+                    this.settle(id, undefined);
+                    if (toolId) this.patchBlock(toolId, { status: "running" });
+                },
+            },
+            signal,
+        );
+        this.accessPresses.set(id, press);
+        return card;
     }
 
     /** RequestSignIn: the card is the flow's, changed in place as the sign-in goes; this waits for what the model is told. */

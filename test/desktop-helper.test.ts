@@ -10,7 +10,8 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, helperApp, helperBinary, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+const { DesktopHelper, buildIn, clearStale, handshake, helperApp, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
+const { RESETTABLE_IDS, resetCommand } = await import("../src/desktop/access");
 const { paths } = await import("../src/config/paths");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
@@ -48,6 +49,41 @@ test.skipIf(!swift)("it builds as an app with its own bundle id and signature, n
     }
 }, 240_000);
 
+test.skipIf(!swift)("a test copy's helper builds with an identity of its own, never run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-helper-compile-"));
+    try {
+        const app = await buildIn(dir, TEST_HELPER_IDENTITY);
+        expect(app).toBe(join(dir, "Cavvy Desktop Control (Test).app"));
+        expect(existsSync(join(app, "Contents", "MacOS", "Cavvy Desktop Control (Test)"))).toBe(true);
+        const plist = readFileSync(join(app, "Contents", "Info.plist"), "utf8");
+        expect(plist).toContain("<key>CFBundleIdentifier</key>\n\t<string>dev.cavvy.desktop.control.test</string>");
+        expect(plist).toContain("<key>CFBundleName</key>\n\t<string>Cavvy Desktop Control (Test)</string>");
+        expect(Bun.spawnSync(["codesign", "-dv", app], { stderr: "pipe" }).stderr.toString()).toContain("Identifier=dev.cavvy.desktop.control.test");
+        expect(helperIdentity(app)).toEqual(TEST_HELPER_IDENTITY);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}, 240_000);
+
+test("a test copy carries its own helper, and Reset access may name only the two helpers' ids", () => {
+    const root = mkdtempSync(join(tmpdir(), "cavvy-helper-carried-"));
+    try {
+        const helper = join(root, "Cavvy Test.app", "Contents", "Helpers", "Cavvy Desktop Control (Test).app");
+        mkdirSync(join(helper, "Contents"), { recursive: true });
+        writeFileSync(join(helper, "Contents", "Info.plist"), infoPlist(sourceHash(), TEST_HELPER_IDENTITY));
+        const server = join(root, "Cavvy Test.app", "Contents", "MacOS", "cavvy");
+        expect(helperApp(server)).toBe(helper);
+        expect(helperIdentity(helperApp(server))).toEqual({ name: "Cavvy Desktop Control (Test)", bundleId: "dev.cavvy.desktop.control.test" });
+        // Release builds keep the helper's own.
+        expect(HELPER_IDENTITY).toEqual({ name: "Cavvy Desktop Control", bundleId: HELPER_BUNDLE_ID });
+        expect(helperIdentity(join(root, "nothing.app"))).toEqual(HELPER_IDENTITY);
+        expect(RESETTABLE_IDS).toEqual(["dev.cavvy.desktop.control", "dev.cavvy.desktop.control.test"]);
+        expect(resetCommand("screen", "dev.cavvy.desktop.control.test")).toEqual(["/usr/bin/tccutil", "reset", "ScreenCapture", "dev.cavvy.desktop.control.test"]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("the app's own helper is used when it's of this source; else the one in Cavvy's home", () => {
     const root = mkdtempSync(join(tmpdir(), "cavvy-helper-carried-"));
     try {
@@ -64,6 +100,44 @@ test("the app's own helper is used when it's of this source; else the one in Cav
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test("it registers itself with LaunchServices when it starts, so System Settings can list it; not in tests", () => {
+    // Read from its source, not run (it never runs in tests): the call, behind the same gate as the TypeScript side.
+    const src = helperSource();
+    const fn = src.slice(src.indexOf("func registerWithLaunchServices()"), src.indexOf("registerWithLaunchServices()\n", src.indexOf("func registerWithLaunchServices()") + 40));
+    expect(fn).toContain('if env["CAVVY_TEST"] == "1" && env["CAVVY_DESKTOP_LIVE"] != "1" { return }');
+    expect(fn).toContain('guard url.pathExtension == "app" else { return }');
+    expect(fn).toContain("LSRegisterURL(url as CFURL, true)");
+    // Once it's admitted (Cavvy handed it the secret), before it reads a command.
+    expect(src.indexOf("\nregisterWithLaunchServices()\n")).toBeGreaterThan(src.indexOf("if !admitted() {"));
+    expect(src.indexOf("\nregisterWithLaunchServices()\n")).toBeLessThan(src.indexOf("Thread.detachNewThread {"));
+});
+
+test("it takes the never-offered list only on the line after the secret, and without it refuses every app", () => {
+    // Read from its source, not run: what it does with the list is checked by a live run (below).
+    const src = helperSource();
+    const admitted = src.indexOf("if !admitted() {");
+    const received = src.indexOf("\nlet NEVER = receiveNeverOffered()\n");
+    expect(received).toBeGreaterThan(admitted);
+    expect(received).toBeLessThan(src.indexOf("Thread.detachNewThread {"));
+    const fn = src.slice(src.indexOf("func neverOffered(name: String, bundleId: String?) -> Bool {"));
+    expect(fn.split("\n")[1]!.trim()).toBe("guard let never = NEVER else { return true }");
+    // A pattern that doesn't compile fails it closed too.
+    expect(src).toContain("guard patterns.count == sources.count else { return nil }");
+    expect(src).not.toContain("NEVER_IDS");
+});
+
+test("what no longer runs is cleared from Cavvy's home: the helper from before it was an app, a build stopped halfway", () => {
+    const home = join(paths.home(), "desktop");
+    mkdirSync(join(home, "Cavvy Desktop Control.app", "Contents"), { recursive: true });
+    mkdirSync(join(home, ".build-1a2b3c4d"), { recursive: true });
+    mkdirSync(join(home, ".old-1a2b3c4d"), { recursive: true });
+    writeFileSync(join(home, "Cavvy Desktop Control"), "old helper");
+    writeFileSync(join(home, "build.json"), "{}");
+    clearStale();
+    expect(Bun.spawnSync(["ls", "-A", home]).stdout.toString().trim().split("\n").sort()).toEqual(["Cavvy Desktop Control.app", "build.json"]);
+    rmSync(home, { recursive: true, force: true });
 });
 
 /** Runs the helper with what's given (fd 3: a pipe holding that, as Cavvy hands its secret over); resolves with how it ended and what it wrote. */
@@ -104,6 +178,17 @@ describe.skipIf(!swift || !live)("who may drive the helper (live)", () => {
         }
         // Too short a secret isn't one.
         expect((await run(bin, { fd3: "abc", lines: [JSON.stringify({ op: "hello", secret: "abc" }), status] })).code).toBe(2);
+    }, 240_000);
+
+    test("an app on the never-offered list is refused; with no list, every app is", async () => {
+        const bin = await helperBinary();
+        const [hello, never] = handshake("c".repeat(64));
+        const ask = (name: string, bundleId: string) => JSON.stringify({ id: 1, op: "offered", name, bundleId });
+        const answer = (out: string) => JSON.parse(out.trim().split("\n").find((l) => l.includes('"id"'))!).offered;
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, never!, ask("Terminal", "com.apple.Terminal")] })).out)).toBe(false);
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, never!, ask("TextEdit", "com.apple.TextEdit")] })).out)).toBe(true);
+        // No list: the line after the secret isn't one, so nothing is offered.
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, ask("TextEdit", "com.apple.TextEdit"), ask("TextEdit", "com.apple.TextEdit")] })).out)).toBe(false);
     }, 240_000);
 
     test("started by Cavvy, it answers", async () => {

@@ -5,7 +5,7 @@
 
 import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { Check, ExternalLink, SquareTerminal } from "lucide-solid";
-import type { ConfirmInteraction, SignInAction, SignInInteraction } from "@shared/protocol";
+import type { AccessInteraction, ConfirmInteraction, SignInAction, SignInInteraction } from "@shared/protocol";
 import { respond } from "../state/actions";
 import { machine as windowMachine, openExternal } from "../lib/platform";
 import { home } from "../lib/machines";
@@ -464,6 +464,69 @@ export function ConfirmCard(p: { sessionId: string; it: ConfirmInteraction }) {
                 <span class="grow" />
                 <button class="pbtn quiet" disabled={busy()} onClick={() => void answer("no")}>
                     {p.it.no} <kbd>Esc</kbd>
+                </button>
+            </div>
+        </>
+    );
+}
+
+/**
+ * One of macOS's grants for the Mac app helper (src/desktop/access.ts): Open Settings opens the page, then the card
+ * waits for the switch and goes by itself once it's on. Where the page couldn't be opened, it says where to go. A
+ * switch macOS no longer counts (a new build of the helper) is offered Reset access first.
+ */
+export function AccessCard(p: { sessionId: string; it: AccessInteraction }) {
+    // Until the card changes: a press is answered by the next step.
+    const [pressed, setPressed] = createSignal(false);
+    createEffect(on(() => [p.it.step, p.it.page, p.it.error], () => setPressed(false), { defer: true }));
+    const first = () => (p.it.step === "stale" ? "reset" : "open");
+    const press = async (action: "open" | "reset" | "close") => {
+        if (pressed() && action !== "close") return;
+        setPressed(true);
+        if (!(await respond(p.sessionId, p.it.id, { kind: "access", action }))) setPressed(false);
+    };
+    useKeys((k) => {
+        if (k === "1") return void press(first()), true;
+        if (k === "Escape") return void press("close"), true;
+        return false;
+    });
+    return (
+        <>
+            <Head title={p.it.title} />
+            <div class="itab-body">
+                <Show when={p.it.step === "stale"}>
+                    macOS no longer counts the switch for this version of {p.it.name}.
+                    <Show when={p.it.error}>
+                        <div class="si-error selectable">Couldn't reset it: {p.it.error}</div>
+                    </Show>
+                </Show>
+                <Show when={p.it.page} fallback={<Show when={p.it.step === "ask"}>Turn on {p.it.name} in System Settings.</Show>}>
+                    <span class="selectable">
+                        Turn on {p.it.name} in {p.it.page}.
+                    </span>
+                </Show>
+                <Show when={p.it.step === "waiting"}>
+                    <div class="si-wait" role="status">
+                        <Spinner size={13} /> Waiting for the switch…
+                    </div>
+                </Show>
+            </div>
+            <div class="itab-actions ask-row">
+                <Show
+                    when={p.it.step === "stale"}
+                    fallback={
+                        <button class={`pbtn ${p.it.step === "ask" ? "primary" : ""}`} disabled={pressed()} onClick={() => void press("open")}>
+                            Open Settings <kbd>1</kbd>
+                        </button>
+                    }
+                >
+                    <button class="pbtn primary" disabled={pressed()} onClick={() => void press("reset")}>
+                        Reset access <kbd>1</kbd>
+                    </button>
+                </Show>
+                <span class="grow" />
+                <button class="pbtn quiet" onClick={() => void press("close")}>
+                    Cancel <kbd>Esc</kbd>
                 </button>
             </div>
         </>

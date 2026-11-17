@@ -6,11 +6,12 @@
 // checked by the helper right before each event goes out, against what's on the screen then.
 
 import { randomBytes } from "crypto";
+import { obtain, openSettingsPage, resetGrant, type AccessAsker, type AccessTiming, type Seen } from "./access";
 import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
 import { homedir } from "os";
 import { dirname } from "path";
-import { DesktopError, DesktopHelper, HELPER_NAME, helperApp, helperBinary, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
+import { DesktopError, DesktopHelper, HELPER_NAME, forgetTrusted, helperApp, helperBinary, helperIdentity, noteTrusted, trustedBefore, type DesktopHelperLike, type Grant, type Reply } from "./helper";
 import { outlineApp, refStill, type DesktopNode, type DesktopRef } from "./outline";
 
 export { DesktopError };
@@ -22,8 +23,10 @@ const PANE = "System Settings → Privacy & Security";
 // version first did isn't known here); earlier ones, under "Accessibility".
 const CONTROL = `${PANE} → Accessibility (on newer macOS, Device Control and Data Access)`;
 const SCREEN = `${PANE} → Screen & System Audio Recording`;
-export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${CONTROL}, then try again.`;
-export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.`;
+/** What to turn on for a grant, and where: the helper by the name System Settings lists (a test copy's has its own). */
+const turnOn = (g: Grant, name = HELPER_NAME) => `Turn on ${name} in ${g === "screen" ? SCREEN : CONTROL}, then try again.`;
+export const ACCESSIBILITY_LINE = turnOn("accessibility");
+export const SCREEN_LINE = turnOn("screen");
 
 /**
  * A new build of the helper, where an earlier one had the grant: macOS shows the switch on but no longer counts it,
@@ -32,7 +35,8 @@ export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.
 export function staleLine(g: "accessibility" | "screen"): string {
     const dir = dirname(helperApp());
     const where = dir.startsWith(`${homedir()}/`) ? `~${dir.slice(homedir().length)}` : dir;
-    return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (${HELPER_NAME}.app, in ${where}) and turn it on, then try again.`;
+    const { name } = helperIdentity();
+    return `${name} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (${name}.app, in ${where}) and turn it on, then try again.`;
 }
 const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
 export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on newer macOS, Device Control and Data Access) and Input Monitoring, then try again.`;
@@ -44,15 +48,28 @@ const STOPPED = "Stopped: the user used the Mac (the mouse or keyboard) during t
 
 let shared: DesktopHelperLike | undefined;
 let starting: Promise<DesktopHelperLike> | undefined;
+/** Helpers that can't see a grant given since they started: stopped once nothing uses them. */
+let retired: DesktopHelperLike[] = [];
 let busy = 0;
 let idle: ReturnType<typeof setTimeout> | undefined;
 /** macOS has been asked to show the person its Accessibility prompt, by this helper. */
 let promptedAccessibility = false;
 let starter: () => Promise<DesktopHelperLike> = async () => DesktopHelper.start(await helperBinary());
 
+let openPage: (g: Grant) => Promise<boolean> = openSettingsPage;
+let resetter: (g: Grant, bundleId: string) => Promise<string | undefined> = resetGrant;
+let timing: AccessTiming | undefined;
+
 /** Tests: start a fake helper instead. */
 export function setDesktopHelperStarter(fn: (() => Promise<DesktopHelperLike>) | undefined) {
     starter = fn ?? (async () => DesktopHelper.start(await helperBinary()));
+}
+
+/** Tests: open no page (say whether it opened instead), reset nothing (say what was asked), check for the switch at once. */
+export function setDesktopAccess(o: { open?: (g: Grant) => Promise<boolean>; reset?: (g: Grant, bundleId: string) => Promise<string | undefined>; timing?: AccessTiming } | undefined) {
+    openPage = o?.open ?? openSettingsPage;
+    resetter = o?.reset ?? resetGrant;
+    timing = o?.timing;
 }
 
 /** Tests: stop the helper and forget it. */
@@ -62,6 +79,8 @@ export function resetDesktop() {
     shared?.stop();
     shared = undefined;
     starting = undefined;
+    for (const h of retired) h.stop();
+    retired = [];
     busy = 0;
     promptedAccessibility = false;
 }
@@ -86,16 +105,36 @@ function stopShared() {
     shared = undefined;
 }
 
-/** Runs `fn` with the helper; it stops a minute after nothing uses it. */
-async function withHelper<T>(fn: (h: DesktopHelperLike) => Promise<T>): Promise<T> {
+/** The running helper no longer serves new calls: one started after a grant sees it. */
+function retire() {
+    if (!shared) return;
+    retired.push(shared);
+    shared = undefined;
+}
+
+/**
+ * Runs `fn` with the helper; it stops a minute after nothing uses it. When macOS hasn't given the helper what `fn`
+ * needs, the person is asked (`ask`: their card) and `fn` runs again once they've given it: nothing it does goes out
+ * before the grant is checked.
+ */
+async function withHelper<T>(fn: (h: DesktopHelperLike) => Promise<T>, ask?: SessionAsker): Promise<T> {
     if (idle) clearTimeout(idle);
     idle = undefined;
     busy++;
     try {
-        return await fn(await helper());
+        try {
+            return await fn(await helper());
+        } catch (e) {
+            const g = grantOf(e);
+            if (!g) throw e;
+            await access(g, ask);
+            return await fn(await helper());
+        }
     } finally {
         busy--;
         if (!busy) {
+            for (const h of retired) h.stop();
+            retired = [];
             idle = setTimeout(() => {
                 idle = undefined;
                 stopShared();
@@ -113,33 +152,85 @@ function sameKeys(v: unknown): string {
     return JSON.stringify(v, (_k, x: unknown) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
-/** Has macOS show its Accessibility prompt (once for each helper), and says in one line what to turn on. */
-async function askAccessibility(h: DesktopHelperLike): Promise<string> {
-    if (!promptedAccessibility) {
-        promptedAccessibility = true;
-        await h.call({ op: "status", ask: "accessibility" }).catch(() => undefined);
-    }
-    return trustedBefore("accessibility") ? staleLine("accessibility") : ACCESSIBILITY_LINE;
+/** A session's way of asking, with the cards it has up, so that two calls at once share one card for a grant. */
+export interface SessionAsker extends AccessAsker {
+    asking?: Map<Grant, Promise<Seen>>;
 }
 
-/** A command, with what a missing grant needs said in one line (and macOS's own prompt shown once). */
-async function call(h: DesktopHelperLike, command: Record<string, unknown>, timeoutMs?: number): Promise<Reply> {
-    try {
-        const r = await h.call(command, timeoutMs);
-        if (command.op === "look" || command.op === "open") noteTrusted("accessibility");
-        if (command.op === "screenshot") noteTrusted("screen");
-        return r;
-    } catch (e) {
-        if (!(e instanceof DesktopError)) throw e;
-        if (e.code === "accessibility") throw new DesktopError(await askAccessibility(h), e.code);
-        if (e.code === "screen") {
-            await h.call({ op: "status", ask: "screen" }).catch(() => undefined);
-            // A process sees a new Screen Recording grant only once it starts again.
-            if (h === shared) stopShared();
-            throw new DesktopError(trustedBefore("screen") ? staleLine("screen") : SCREEN_LINE, e.code);
+/** The grant a helper's refusal says is missing. */
+function grantOf(e: unknown): Grant | undefined {
+    if (!(e instanceof DesktopError)) return undefined;
+    return e.code === "accessibility" || e.code === "screen" ? e.code : undefined;
+}
+
+/** What to turn on, and where, in one line: for where there's no card, and after one that didn't get it. */
+function grantLine(g: Grant): string {
+    if (trustedBefore(g)) return staleLine(g);
+    return turnOn(g, helperIdentity().name);
+}
+
+/**
+ * Gets the grant, or throws what the agent is told: with a card, the person's (shared by the session's calls at once);
+ * without one, macOS's own prompt (once for each helper) and the line.
+ */
+async function access(g: Grant, ask?: SessionAsker): Promise<void> {
+    if (!ask?.card) {
+        const h = await helper();
+        if (g === "accessibility" && !promptedAccessibility) {
+            promptedAccessibility = true;
+            await h.call({ op: "status", ask: g }).catch(() => undefined);
         }
-        throw e;
+        if (g === "screen") {
+            await h.call({ op: "status", ask: g }).catch(() => undefined);
+            // A process sees a new Screen Recording grant only once it starts again.
+            retire();
+        }
+        throw new DesktopError(grantLine(g), g);
     }
+    const asking = (ask.asking ??= new Map());
+    let p = asking.get(g);
+    if (!p) {
+        const card = ask.card(ask.signal ?? new AbortController().signal);
+        p = obtain(g, card, accessDeps, { name: helperIdentity().name, page: g === "screen" ? SCREEN : CONTROL, line: () => grantLine(g), stale: trustedBefore(g), signal: ask.signal }).finally(() => asking.delete(g));
+        asking.set(g, p);
+    }
+    const seen = await p;
+    // The running helper can't see a Screen Recording grant (nor, if only a new one saw it, Accessibility): the next
+    // call starts another.
+    if (g === "screen" || seen === "fresh") retire();
+}
+
+const key = (g: Grant) => (g === "screen" ? "screen" : "accessibility");
+
+const accessDeps = {
+    request: async (g: Grant) => void (await (await helper()).call({ op: "status", ask: g })),
+    open: (g: Grant) => openPage(g),
+    async check(g: Grant, fresh: boolean): Promise<boolean> {
+        if (!fresh) return (await (await helper()).call({ op: "status" }))[key(g)] === true;
+        const probe = await starter();
+        try {
+            const said = await Promise.race([probe.ready, new Promise<Reply>((resolve) => setTimeout(() => resolve({}), 5000).unref?.())]);
+            return said[key(g)] === true;
+        } finally {
+            probe.stop();
+        }
+    },
+    async reset(g: Grant): Promise<string | undefined> {
+        const error = await resetter(g, helperIdentity().bundleId);
+        if (!error) forgetTrusted(g);
+        return error;
+    },
+    get timing() {
+        return timing;
+    },
+};
+
+/** A command, with the grants it shows the helper has noted (so that a later build without them can say why). */
+async function call(h: DesktopHelperLike, command: Record<string, unknown>, timeoutMs?: number): Promise<Reply> {
+    const r = await h.call(command, timeoutMs);
+    if (command.op === "look" || command.op === "open") noteTrusted("accessibility");
+    if (command.op === "screenshot") noteTrusted("screen");
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +294,16 @@ export class DesktopSession {
     /** Names the agent asked for, found (validate, then the prompt and the run, look them up once). */
     private found = new Map<string, { app?: AppInfo; error?: string; at: number }>();
 
+    /** How this session asks the person for macOS's grants: set by the tool call under way (desktopOf). */
+    private asker: SessionAsker = {};
+
     constructor(private o: DesktopSessionOptions = {}) {}
+
+    /** The call under way's card and signal, for a grant it finds missing. */
+    asking(ask: AccessAsker) {
+        this.asker.card = ask.card;
+        this.asker.signal = ask.signal;
+    }
 
     /** The apps this session may use. */
     approved(): GrantedApp[] {
@@ -256,8 +356,13 @@ export class DesktopSession {
         if (!app) throw new DesktopError(error!);
         this.grants.add({ name: app.name, bundleId: app.bundleId });
         const ready = `You can use ${app.name} until this session ends.`;
-        // Seeing it takes Accessibility: said now, while the person is here, rather than on the first snapshot.
-        const missing = await withHelper(async (h) => ((await h.call({ op: "status" })).accessibility === true ? undefined : askAccessibility(h))).catch(() => undefined);
+        // Seeing it takes Accessibility: asked now, while the person is here, rather than on the first snapshot.
+        const missing = await withHelper(async (h) => {
+            if ((await h.call({ op: "status" })).accessibility !== true) throw new DesktopError("Accessibility isn't on.", "accessibility");
+        }, this.asker).then(
+            () => undefined,
+            (e: Error) => (e instanceof DesktopError && e.code === "cancelled" ? Promise.reject(e) : e instanceof DesktopError ? e.message : undefined),
+        );
         if (missing) return `${ready} ${missing}`;
         return `${ready}${app.running ? "" : " It isn't running: DesktopControl action=open starts it."}`;
     }
@@ -272,7 +377,7 @@ export class DesktopSession {
             if (others.length) lines.push(`Other apps running: ${others.map((a) => a.name).join(", ")}.`);
             lines.push("Ask for one with DesktopControl action=request_access app=<name>.");
             return lines.join("\n");
-        });
+        }, this.asker);
     }
 
     /** Brings an approved app to the front, starting it if it isn't running. */
@@ -284,7 +389,7 @@ export class DesktopSession {
             const r = await call(h, { op: "open", bundleId: app.bundleId }, 30_000);
             stopped(signal);
             return r.front === true ? `${app.name} is in front.` : `${app.name} is open, but not in front yet.`;
-        });
+        }, this.asker);
     }
 
     /**
@@ -323,7 +428,7 @@ export class DesktopSession {
 
     /** An approved app as an outline, with refs for DesktopAct, and a note when the person used the Mac since the agent last looked. */
     async snapshot(name?: string): Promise<string> {
-        return withHelper((h) => this.look(h, name));
+        return withHelper((h) => this.look(h, name), this.asker);
     }
 
     /** The app as an outline. `read`: what was just read (settle's last look), used rather than read again. */
@@ -408,7 +513,7 @@ export class DesktopSession {
             const read = await this.settle(h, undefined, signal).catch(() => undefined);
             const screen = await this.look(h, undefined, read).catch((e) => `The app couldn't be read: ${(e as Error).message}`);
             return `${done}\n\n${screen}`;
-        });
+        }, this.asker);
     }
 
     /**
@@ -524,7 +629,7 @@ export class DesktopSession {
                 if (Date.now() >= end) return `"${text}" didn't show in ${Math.round(limit / 1000)} seconds.\n\n${await this.look(h)}`;
                 await pause(400, signal);
             }
-        });
+        }, this.asker);
     }
 
     /** The approved apps' windows, and nothing else on the screen. */
@@ -535,7 +640,7 @@ export class DesktopSession {
             if (!r.pids.length) throw new DesktopError("None of the apps you may use is running.");
             const shot = await call(h, { op: "screenshot", pids: r.pids }, 20_000);
             return { png: new Uint8Array(Buffer.from(String(shot.png), "base64")), x: Number(shot.x), y: Number(shot.y), width: Number(shot.width), height: Number(shot.height), apps: appList(r.apps, r.front) };
-        });
+        }, this.asker);
     }
 
     dispose() {

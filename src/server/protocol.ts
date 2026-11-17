@@ -528,6 +528,28 @@ export interface ConfirmInteraction {
     danger?: boolean;
 }
 
+/**
+ * Cavvy asks the user to turn on one of macOS's grants for its Mac app helper (src/desktop/access.ts): its one button
+ * opens the page in System Settings, then the card waits for the switch and goes once it's on. The same id, sent
+ * again with what's new.
+ */
+export interface AccessInteraction {
+    kind: "access";
+    id: string;
+    toolId?: string;
+    grant: "accessibility" | "screen";
+    /** The question: "Let Cavvy control apps on this Mac?" */
+    title: string;
+    /** ask: Open Settings. waiting: for the switch. stale: the switch is on but macOS no longer counts it: Reset access. */
+    step: "ask" | "waiting" | "stale";
+    /** The helper, as System Settings lists it. */
+    name: string;
+    /** Where to turn it on, when the link couldn't open the page. */
+    page?: string;
+    /** Why Reset access didn't work. */
+    error?: string;
+}
+
 /** One sign-in in a card that offers several (a new server's): what it is, and whether it's done. */
 export interface SignInRow {
     target: string;
@@ -607,7 +629,7 @@ export type SignInAction =
     /** The window brought the card's `forward` port over, or couldn't (`error`). */
     | { action: "port"; error?: string };
 
-export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction | ConfirmInteraction) & {
+export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction | ConfirmInteraction | AccessInteraction) & {
     /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
     since?: number;
 };
@@ -620,7 +642,9 @@ export type InteractionResponse =
     | { kind: "secret"; value?: string }
     /** A step in the card, not an answer: the card stays until the sign-in is over. */
     | ({ kind: "signin" } & SignInAction)
-    | { kind: "confirm"; choice: "yes" | "other" | "no" };
+    | { kind: "confirm"; choice: "yes" | "other" | "no" }
+    /** A button in a grant's card, not an answer: the card stays until the switch is on or it's closed. */
+    | { kind: "access"; action: "open" | "reset" | "close" };
 
 // ---------------------------------------------------------------------------
 // Session state

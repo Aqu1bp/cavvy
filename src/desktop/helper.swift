@@ -1,5 +1,5 @@
-// Cavvy Desktop Control: reads and acts in the Mac apps the person approved, for src/desktop/session.ts, which builds
-// it with swiftc on first use (src/desktop/helper.ts). It reads apps through the accessibility API, takes pictures of
+// Cavvy Desktop Control: reads and acts in the Mac apps the person approved, for src/desktop/session.ts. It's an app of
+// its own (dev.cavvy.desktop.control), which Cavvy.app carries or Cavvy builds with swiftc on first use (src/desktop/helper.ts). It reads apps through the accessibility API, takes pictures of
 // approved apps' windows with ScreenCaptureKit, and sends clicks and keys as CGEvents.
 //
 // The grants macOS asks for (Accessibility, Screen Recording) are this helper's own: it starts by disclaiming its
@@ -11,8 +11,8 @@
 // while an approved app has focus. A listen-only event tap tells the person's input from the helper's own (each event
 // it posts carries OURS); an action stops as soon as they move the mouse, click, scroll or type.
 //
-// It never acts on what's never offered (src/desktop/apps.ts, whose list src/desktop/helper.ts compiles in), whatever
-// it's sent: terminals, password managers, Cavvy and the processes it runs in.
+// It never acts on what's never offered (src/desktop/apps.ts, whose list Cavvy sends right after the secret; until it
+// has the list, every app is), whatever it's sent: terminals, password managers, Cavvy and the processes it runs in.
 //
 // Commands arrive on stdin, one JSON object per line with an "id"; each is answered on stdout with one JSON line,
 // {"id", ...} or {"id", "error", "code"?}, and every answer carries "human" (how many times the person has used the
@@ -80,6 +80,41 @@ if !admitted() {
     FileHandle.standardError.write(Data("Cavvy Desktop Control takes commands only from the Cavvy that started it.\n".utf8))
     exit(2)
 }
+
+/// Known to LaunchServices by its bundle id, so System Settings can find it to list it, turn its switch on and take it
+/// with +: macOS doesn't register an app inside another one, nor one only ever started by its path (seen on 27.0).
+/// Not in Cavvy's tests, unless a live run asks (CAVVY_DESKTOP_LIVE).
+func registerWithLaunchServices() {
+    let env = ProcessInfo.processInfo.environment
+    if env["CAVVY_TEST"] == "1" && env["CAVVY_DESKTOP_LIVE"] != "1" { return }
+    let url = Bundle.main.bundleURL
+    guard url.pathExtension == "app" else { return }
+    DispatchQueue.global(qos: .utility).async { _ = LSRegisterURL(url as CFURL, true) }
+}
+
+registerWithLaunchServices()
+
+// MARK: - Never offered
+
+/// The apps never offered, as Cavvy sends them on the line after the secret: {"op":"never","ids":[…],"patterns":[…]}.
+/// Set once, before any command is read. Without it (no such line, or one that doesn't read whole), every app is
+/// refused: the helper fails closed.
+struct NeverList {
+    let ids: Set<String>
+    let patterns: [NSRegularExpression]
+}
+
+func receiveNeverOffered() -> NeverList? {
+    guard let line = readLine(strippingNewline: true), let data = line.data(using: .utf8),
+          let msg = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], msg["op"] as? String == "never",
+          let ids = msg["ids"] as? [String], let sources = msg["patterns"] as? [String], !ids.isEmpty, !sources.isEmpty else { return nil }
+    let patterns = sources.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+    // A pattern that doesn't compile would let its apps through.
+    guard patterns.count == sources.count else { return nil }
+    return NeverList(ids: Set(ids.map { $0.lowercased() }), patterns: patterns)
+}
+
+let NEVER = receiveNeverOffered()
 
 // MARK: - Output
 
@@ -197,15 +232,14 @@ func needAccessibility(acting: Bool = false) throws {
     if !watch() && acting { throw Refusal("Not done: Cavvy Desktop Control can't watch for the user's mouse and keyboard, so it won't act.", "watch") }
 }
 
-// MARK: - Never offered
-
-let NEVER_PATTERNS: [NSRegularExpression] = NEVER_NAME_PATTERNS.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+// MARK: - Never offered (the list is received at the top)
 
 func neverOffered(name: String, bundleId: String?) -> Bool {
+    guard let never = NEVER else { return true }
     let id = (bundleId ?? "").lowercased()
-    if id.isEmpty || id.hasPrefix("dev.cavvy") || NEVER_IDS.contains(id) { return true }
+    if id.isEmpty || id.hasPrefix("dev.cavvy") || never.ids.contains(id) { return true }
     let range = NSRange(name.startIndex..., in: name)
-    return NEVER_PATTERNS.contains { $0.firstMatch(in: name, range: range) != nil }
+    return never.patterns.contains { $0.firstMatch(in: name, range: range) != nil }
 }
 
 /// Not an app, or one never offered, or one Cavvy runs in.
@@ -882,6 +916,9 @@ func handle(_ cmd: [String: Any]) throws -> [String: Any] {
         return o
     case "front":
         return ["front": Int(focusedPid() ?? 0)]
+    case "offered":
+        // Whether an app would be refused, by its name and bundle id: asks macOS nothing.
+        return ["offered": !neverOffered(name: cmd["name"] as? String ?? "", bundleId: cmd["bundleId"] as? String)]
     case "click":
         try needAccessibility(acting: true)
         try click(num(cmd["x"]) ?? 0, num(cmd["y"]) ?? 0, button: cmd["button"] as? String ?? "left", count: Int(num(cmd["count"]) ?? 1), holdMs: Int(num(cmd["holdMs"]) ?? 50), pids: pids, g)

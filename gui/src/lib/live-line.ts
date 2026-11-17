@@ -65,6 +65,8 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
             return { label: "Waiting for you to sign in", detail: i.name };
         case "confirm":
             return { label: "Waiting for your OK", detail: i.title };
+        case "access":
+            return { label: i.step === "waiting" ? "Waiting for the switch" : "Waiting for your OK", detail: i.name };
         default: {
             // A command by what it's for, else its first step (the card has all of it); no command or file: what the card
             // asks, in its words (never the call as code, "BrowserAct(click e4)").

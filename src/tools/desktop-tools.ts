@@ -25,7 +25,11 @@ export function desktopOf(ctx: Pick<ToolContext, "state">): DesktopSession {
 async function guarded(ctx: ToolContext, fn: (s: DesktopSession) => Promise<ToolResult>): Promise<ToolResult> {
     try {
         if (ctx.signal.aborted) throw new DesktopError("Interrupted by user.");
-        return await fn(desktopOf(ctx));
+        const s = desktopOf(ctx);
+        // A grant macOS hasn't given is asked for with a card in the person's window, where there is one.
+        const card = ctx.ui?.accessCard?.bind(ctx.ui);
+        s.asking({ card, signal: ctx.signal });
+        return await fn(s);
     } catch (e) {
         if (ctx.signal.aborted) return { content: "Interrupted by user", isError: true };
         const message = e instanceof DesktopError ? e.message : `Desktop error: ${(e as Error).message ?? String(e)}`;

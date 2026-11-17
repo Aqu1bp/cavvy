@@ -16,6 +16,7 @@ import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
 import type { ServerSetup } from "./server-tools";
 import type { SignInAnswer, SignInRequest } from "../agent/sign-ins";
+import type { AccessCard } from "../desktop/access";
 import type { ConfirmInteraction } from "../server/protocol";
 
 /** What a confirm card asks: the interaction without what the session adds. */
@@ -158,6 +159,11 @@ export interface UiBridge {
      * "later" when the user put it off, and `then` runs if they sign in after all.
      */
     askSignIn?(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot">;
+    /**
+     * A card for one of macOS's grants the Mac app tools need (src/desktop/access.ts), changed in place while it waits
+     * for the switch. Missing where there's no window: the agent is told what to turn on instead.
+     */
+    accessCard?(signal: AbortSignal): AccessCard;
 }
 
 export interface ToolContext {
