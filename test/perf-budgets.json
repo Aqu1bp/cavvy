@@ -11,5 +11,7 @@
     "glidesPerScreenOfReply": 3.6,
     "idleLayoutsAfterReply": 2,
     "idleStyleUpdatesAfterReply": 2,
-    "idleEntrancesRunningAfterReply": 0
+    "idleEntrancesRunningAfterReply": 0,
+    "idleHomeMemoryMB": 610,
+    "idleHomeCpuPercent": 2
 }

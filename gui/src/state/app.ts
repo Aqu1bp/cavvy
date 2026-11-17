@@ -1089,6 +1089,12 @@ export async function forkSession(id: string, at: { index: number; text: string;
     const snap = await rpc.call("session.fork", { ...opening(id), id, ...at, soon: true });
     sameMachine(id, snap.state.id);
     const h = adopt(snap);
+    // Its row too, selected as it's shown, until the server lists it: the original's, as the fork starts.
+    const o = snap.making ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
+    if (o && !upsertsDue.has(h.id) && !app.sessions.some((s) => s.id === h.id)) {
+        const { run: _r, waitingKind: _w, turnStartedAt: _t, ...kept } = o;
+        upsertSession({ ...kept, id: h.id, title: snap.state.title ?? o.title, createdAt: snap.state.createdAt, updatedAt: Date.now(), status: "idle", pinned: false, archived: false, settled: false, live: true, making: true });
+    }
     await activate(h.id);
     if (!snap.making) return h;
     // Shown as it will be while it's made; opened (watched) once it is, its turns taking the place of those shown.
@@ -1097,8 +1103,13 @@ export async function forkSession(id: string, at: { index: number; text: string;
     try {
         const made = await openFresh(h.id);
         if (handles.get(h.id) === h) adopt(made);
+        // The server's row takes its place as it's listed; one not listed yet is no longer being made.
+        upsertsFirst();
+        setApp("sessions", (s) => s.id === h.id && !!s.making, "making", undefined);
         return h;
     } catch (e) {
+        upsertsFirst();
+        setApp("sessions", (l) => (l.some((s) => s.id === h.id && s.making) ? l.filter((s) => !(s.id === h.id && s.making)) : l));
         if (handles.get(h.id) === h) {
             dropHandle(h.id);
             if (app.activeId === h.id) void activate(id);
@@ -1260,6 +1271,8 @@ export async function refreshSessions() {
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
         (active.archived ? archived : list).push(active);
     }
+    // A fork being made isn't listed yet: its row stays till it is.
+    for (const s of app.sessions) if (s.making && s.id !== active?.id && forksMaking.has(s.id) && !list.some((x) => x.id === s.id)) list.push(s);
     batch(() => {
         for (const s of [...list, ...archived]) sessionPresent(s.id);
     });

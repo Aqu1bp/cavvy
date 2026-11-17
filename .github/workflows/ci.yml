@@ -4,15 +4,17 @@ on:
   pull_request:
     # Drafts don't run (see `if:` below); marking one ready does.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Every branch: a branch that gathers work before a pull request (an integration branch) is checked as it goes,
+  # not only once it's proposed.
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
-# A newer push to a pull request cancels the run it replaces. Runs on main
-# each have their own commit, so they all finish.
+# A newer push to a pull request or a branch cancels the run it replaces. Runs on main each have their own commit, so
+# they all finish.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -46,6 +48,8 @@ jobs:
       - run: bun run desktop:typecheck
       - run: bun run gui:build
       - run: bun run perf:budgets
+      # The home screen left alone: its memory and CPU (scripts/perf-idle.ts), in installed Chrome.
+      - run: bun run perf:idle
       # Adding the label takes effect on the next push.
       - name: Performance budgets only come down
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'perf-budget-raise')

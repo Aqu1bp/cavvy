@@ -1,0 +1,28 @@
+{
+ "label": "mac-2026-11-17",
+ "note": "tonight's Mac figures, measured by earlier benches and by hand: replace with this check's own (--save-baseline)",
+ "figures": {
+  "Home: memory": 293,
+  "Home: CPU": 0.35,
+  "Waiting, in front: Cavvy": 9.4,
+  "Waiting, in front: WindowServer": 3.8,
+  "Waiting, behind another app: Cavvy": 0.8,
+  "Waiting, behind another app: WindowServer": 1.7,
+  "Waiting, hidden: Cavvy": 0.5,
+  "Waiting, hidden: WindowServer": 1.6,
+  "Waiting, minimized: Cavvy": 0.8,
+  "Waiting, minimized: WindowServer": 1.6,
+  "Memory, 1 session open": null,
+  "Memory, 5 sessions open": null,
+  "Memory, 15 sessions open": null,
+  "Memory per session (1 to 15)": null,
+  "100,000 items, Cavvy's own: open cold": 16,
+  "100,000 items, Claude Code: open cold": 31,
+  "Scroll up 20 pages, Cavvy's own: frames over 25 ms": 0,
+  "Scroll up 20 pages, Cavvy's own: worst frame": 19,
+  "Scroll up 20 pages, Cavvy's own: blank frames": 0,
+  "Scroll up 20 pages, Claude Code: frames over 25 ms": 14,
+  "Scroll up 20 pages, Claude Code: worst frame": 41,
+  "Scroll up 20 pages, Claude Code: blank frames": 0
+ }
+}

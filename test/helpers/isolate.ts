@@ -16,10 +16,35 @@ import { tmpdir } from "os";
 import { join, resolve, sep } from "path";
 
 const SECRETISH = /(_API_KEY|_AUTH_TOKEN|_BASE_URL)$/;
+
+/**
+ * Every folder made here, removed once the tests are done (test/preload.ts, after the last file) or the process
+ * exits: a whole run left about 10,000 behind. CAVVY_KEEP_TEST_DIRS=1 keeps them, to look at.
+ */
+const made: string[] = ((globalThis as { __cavvyTestDirs?: string[] }).__cavvyTestDirs ??= []);
+let hooked = false;
+function track(dir: string): string {
+    made.push(dir);
+    if (!hooked) {
+        hooked = true;
+        process.on("exit", removeTestDirs);
+    }
+    return dir;
+}
+export function removeTestDirs() {
+    if (process.env.CAVVY_KEEP_TEST_DIRS) return;
+    for (const d of made.splice(0)) {
+        try {
+            rmSync(d, { recursive: true, force: true });
+        } catch {
+            // Best effort: one still in use is left.
+        }
+    }
+}
 const EXTRA = ["API_KEY", "BASE_URL", "MODEL", "CAVVY_MODEL"];
 
 export function isolate(): { home: string; cleanup: () => void } {
-    const home = mkdtempSync(join(tmpdir(), "cavvy-test-"));
+    const home = track(mkdtempSync(join(tmpdir(), "cavvy-test-")));
     if (!resolve(home).startsWith(resolve(tmpdir()) + sep)) throw new Error(`refusing to use ${home} as CAVVY_HOME`);
     process.env.CAVVY_HOME = home;
     process.env.CAVVY_NO_KEYCHAIN = "1";
@@ -28,8 +53,8 @@ export function isolate(): { home: string; cleanup: () => void } {
     process.env.CAVVY_BROWSER = join(home, "no-browser");
     // Nor the Mac's own simulators (the Simulator tools would be offered wherever Xcode is): a test that wants them fakes them.
     process.env.CAVVY_SIMULATOR = "0";
-    const claude = mkdtempSync(join(tmpdir(), "cavvy-test-claude-"));
-    const codex = mkdtempSync(join(tmpdir(), "cavvy-test-codex-"));
+    const claude = track(mkdtempSync(join(tmpdir(), "cavvy-test-claude-")));
+    const codex = track(mkdtempSync(join(tmpdir(), "cavvy-test-codex-")));
     process.env.CLAUDE_CONFIG_DIR = claude;
     process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = claude;
     process.env.CODEX_HOME = codex;
@@ -47,7 +72,7 @@ export function isolate(): { home: string; cleanup: () => void } {
 
 /** A fresh temp directory (project dirs, .env files, ...). */
 export function tempDir(prefix = "cavvy-test-"): string {
-    return mkdtempSync(join(tmpdir(), prefix));
+    return track(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 // Fake keys only. None of these are real credentials.

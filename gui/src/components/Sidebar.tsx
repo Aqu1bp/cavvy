@@ -200,8 +200,8 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
-    const word = sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    const word = s.making ? "forking" : sessionStatus(s, now())?.text;
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
@@ -227,9 +227,9 @@ function RowLead(p: { s: SessionSummary; picked?: boolean }) {
 function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     // Set again only when it changes, not at each tick of the clock it's worked out from.
     const word = createMemo(() =>
-        p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : undefined,
+        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : undefined,
     );
-    const tone = () => (p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
+    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
     return <span class={`when ${tone()}`}>{word() ?? (now(), since(p.s.updatedAt))}</span>;
 }
 
@@ -455,7 +455,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
                 <span class="sub" aria-hidden="true">{p.s.machine ? `${machineLabel(p.s.machine)} · ${p.s.projectName}` : p.s.projectName}</span>
                 <Show when={provider()}>{(id) => <span class="prov" aria-hidden="true"><ProviderIcon id={id()} size={12} /></span>}</Show>
             </button>
-            <span class="sess-acts">
+            <span class="sess-acts" hidden={p.s.making}>
                 {/* A session waiting for you isn't archived from under its question. */}
                 <Show when={!waiting() && !p.s.archived}>
                     <button class="hb sm" title="Archive" aria-label={`Archive ${p.s.title}`} onClick={() => void archive(p.s.id, true)}>

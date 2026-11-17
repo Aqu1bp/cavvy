@@ -685,10 +685,10 @@ const EMPTY_TREE = { sha1: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha256: "
  */
 export async function statusGuard(root: string, algo: "sha1" | "sha256", deadline: number): Promise<{ args: string[]; env: Record<string, string> } | undefined> {
     if (gitEnvironment().GIT_CONFIG !== undefined) return undefined;
-    const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+    const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1", LC_ALL: "C" } });
     if (found.cut || (found.code && found.code !== 1)) return undefined;
     const names = new Set<string>();
-    // scope NUL key LF value NUL, for each.
+    // scope NUL key LF value NUL, for each. Matched byte by byte (LC_ALL=C), whatever the locale: the same names in every one.
     // Decoded strictly: a name that isn't UTF-8 would come back as another (U+FFFD for its bytes), and be the one turned off.
     let text = "";
     try {

@@ -326,3 +326,24 @@ test("same-timestamp deletion also beats a pending history-only update", () => {
     first.flush();
     expect(createComposerStorage(() => disk, () => now).history("a")).toEqual(["new prompt after Undo"]);
 });
+
+test("a sent message remembered in the same millisecond its cleared draft was saved stays in history", () => {
+    const disk = storage();
+    const now = 1000;
+    const state = createComposerStorage(() => disk, () => now);
+    state.setDraft("a", "sent text");
+    state.flush();
+    // Sent: the draft is cleared and saved at once, then the message goes in its history, all in one millisecond.
+    state.setDraft("a", "");
+    state.flush();
+    state.remember("a", "sent text");
+    state.flush();
+    expect(state.history("a")).toEqual(["sent text"]);
+    expect(createComposerStorage(() => disk, () => now).history("a")).toEqual(["sent text"]);
+    // Another tab's deletion in that millisecond still wins over this tab's pending edit.
+    const other = createComposerStorage(() => disk, () => now);
+    state.remember("a", "pending");
+    other.delete("a");
+    state.flush();
+    expect(createComposerStorage(() => disk, () => now).history("a")).toEqual([]);
+});
