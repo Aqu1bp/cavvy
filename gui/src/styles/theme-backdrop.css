@@ -47,7 +47,7 @@
     opacity: 0;
 }
 
-.tb-layer > img {
+.tb-pic {
     display: block;
     width: 100%;
     height: 100%;
@@ -66,12 +66,12 @@
 }
 
 /* Animate off, or the system asks for less motion: every layer rests at its first keyframe. */
-.theme-backdrop[data-still] .tb-layer > img {
+.theme-backdrop[data-still] .tb-pic {
     animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .tb-layer > img {
+    .tb-pic {
         animation: none !important;
     }
 

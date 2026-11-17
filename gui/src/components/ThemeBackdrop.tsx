@@ -11,8 +11,9 @@ import type { Layer, Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
 import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette";
 import { parseHex, rgba } from "../../../src/themes/color";
-import { carryOn, frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
+import { alignOnStart, carryOn, gridOf, layerAnimation, restPose, sceneFrames, screenPx, transformOf } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
+import { cropOf, type Crop } from "../lib/theme-crop";
 import { away } from "../lib/away";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
@@ -38,7 +39,7 @@ const ROWS = 10;
  * peak), posed often enough that nothing skips a part (phases). The layers that couldn't be drawn are left out, and said. Each layer's image is
  * decoded on the way, so the scene shows whole when it shows.
  */
-async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
+async function measure(key: string, look: Look, s: Shown, loaded: Awaited<ReturnType<typeof loadLayers>>): Promise<Measured> {
     const known = veils.get(key);
     if (known) return known;
     const k = 10;
@@ -47,7 +48,7 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     canvas.height = STAGE.height / k;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const layers = look.layers ?? [];
-    const { images, failed } = await loadLayers(layers);
+    const { images, failed } = loaded;
     const background = parseHex(look.colors.background);
     const text = WINDOW_TEXT.map((name) => s.palette.vars[name]).filter((v): v is string => typeof v === "string" && v.startsWith("#")).map(parseHex);
     const floor = look.veil ?? 0;
@@ -104,11 +105,28 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     return out;
 }
 
+/** Each scene's layers cut to where they draw, and how fine each needs drawing (lib/theme-crop.ts). */
+const cuts = new Map<string, (Crop | undefined)[]>();
+/** Drawn into a canvas no finer than it needs, a layer that needs less than this much of the screen's own fineness. */
+const SOFT = 0.5;
+
 let serial = 0;
 
+/** A layer drawn into a canvas `crop.density` pixels to a stage unit: for the compositor to stretch, as smoothly. */
+function drawSoft(canvas: HTMLCanvasElement, layer: Layer, crop: Crop, image: HTMLImageElement) {
+    const box = boxOf(layer);
+    canvas.width = Math.max(1, Math.ceil(crop.width * crop.density));
+    canvas.height = Math.max(1, Math.ceil(crop.height * crop.density));
+    const sx = canvas.width / crop.width;
+    const sy = canvas.height / crop.height;
+    canvas.getContext("2d")?.drawImage(image, -crop.x * sx, -crop.y * sy, box.width * sx, box.height * sy);
+}
+
 /** One layer. One shown only while working (or idle) fades, and its motion stops while it's away. */
-function LayerView(p: { layer: Layer; index: number; animation?: string; working: () => boolean }): JSX.Element {
+function LayerView(p: { layer: Layer; index: number; animation?: string; frame: number; working: () => boolean; crop?: Crop; image?: HTMLImageElement; px: number }): JSX.Element {
     const box = boxOf(p.layer);
+    const part = p.crop ?? { x: 0, y: 0, width: box.width, height: box.height, density: Infinity };
+    const soft = p.image && part.density < SOFT * p.px ? p.image : undefined;
     const pose = restPose(p.layer);
     const wanted = () => p.layer.when === undefined || (p.layer.when === "working") === p.working();
     const [mounted, setMounted] = createSignal(untrack(wanted));
@@ -129,48 +147,83 @@ function LayerView(p: { layer: Layer; index: number; animation?: string; working
         onCleanup(() => clearTimeout(timer));
     }
     const [ox, oy] = p.layer.origin ?? [0.5, 0.5];
+    const look = () => ({
+        // Its own origin, where it was in the uncut box.
+        "transform-origin": `${((ox * box.width - part.x) / part.width) * 100}% ${((oy * box.height - part.y) / part.height) * 100}%`,
+        transform: transformOf(pose),
+        opacity: String((p.layer.opacity ?? 1) * pose.opacity),
+        ...(p.animation ? { animation: p.animation } : {}),
+    });
+    const grid = p.animation ? gridOf(p.frame) : undefined;
     return (
         <div
             class="tb-layer"
             classList={{ away: !visible() }}
-            style={{ left: `${box.x}px`, top: `${box.y}px`, width: `${box.width}px`, height: `${box.height}px` }}
+            style={{ left: `${box.x + part.x}px`, top: `${box.y + part.y}px`, width: `${part.width}px`, height: `${part.height}px` }}
         >
             <Show when={mounted()}>
-                <img
-                    src={svgUrl(p.layer.svg)}
-                    alt=""
-                    draggable={false}
-                    style={{
-                        "transform-origin": `${ox * 100}% ${oy * 100}%`,
-                        transform: transformOf(pose),
-                        opacity: String((p.layer.opacity ?? 1) * pose.opacity),
-                        ...(p.animation ? { animation: p.animation } : {}),
-                    }}
-                />
+                {soft ? (
+                    <canvas class="tb-pic" data-grid={grid} style={look()} ref={(c) => drawSoft(c, p.layer, part, soft)} />
+                ) : (
+                    <img class="tb-pic" src={svgUrl(p.crop?.svg ?? p.layer.svg)} alt="" draggable={false} data-grid={grid} style={look()} />
+                )}
             </Show>
         </div>
     );
+}
+
+/** Each layer's cut (lib/theme-crop.ts), and a cut SVG decoded, so the layer shows whole when it's put in. */
+async function cutsFor(key: string, layers: Layer[], images: (HTMLImageElement | undefined)[], px: number): Promise<(Crop | undefined)[]> {
+    let list = cuts.get(key);
+    if (!list) {
+        list = layers.map((l, i) => (images[i] ? cropOf(l, images[i]!, px) : undefined));
+        cuts.set(key, list);
+    }
+    await Promise.all(
+        list.map((c) => {
+            if (!c?.svg || c.density < SOFT * px) return undefined;
+            const img = new Image();
+            img.src = svgUrl(c.svg);
+            return img.decode().catch(() => undefined);
+        }),
+    );
+    return list;
 }
 
 /** One theme's scene, out of sight until it's put up. */
 function Scene(p: { shown: Shown; sceneKey: string; up: boolean }): JSX.Element {
     const look = p.shown.look;
     const n = ++serial;
-    const anims = (look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tb${n}_${i}`, l.opacity ?? 1, frameFor(l)) : undefined));
+    // As often as each layer's steps would show at the most the scene can cover: the screen it's on.
+    const frames = sceneFrames(look.layers ?? [], screenPx());
+    const anims = (look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tb${n}_${i}`, l.opacity ?? 1, frames[i]) : undefined));
     const [veil, setVeil] = createSignal<Measured>();
+    const [drawn, setDrawn] = createSignal<{ crops: (Crop | undefined)[]; images: (HTMLImageElement | undefined)[] }>();
     const working = () => app.sessions.find((x) => x.id === app.activeId)?.status === "running";
+    const px = screenPx();
     onMount(() => {
-        void measure(p.sceneKey, look, p.shown).then((m) => {
+        void (async () => {
+            const layers = look.layers ?? [];
+            const loaded = await loadLayers(layers);
+            // Cut first, and put in: they're drawn while the veil's measured.
+            setDrawn({ crops: await cutsFor(p.sceneKey, layers, loaded.images, px), images: loaded.images });
+            const m = await measure(p.sceneKey, look, p.shown, loaded);
             setVeil(m);
             drawnTheme({ key: p.sceneKey, id: p.shown.id, scheme: p.shown.scheme, veil: m.mean, veilMost: m.most, ...(m.map ? { map: m.map } : {}), failed: m.failed });
             sceneReady(p.sceneKey);
-        });
+        })();
     });
     return (
         <div class="tb-scene" classList={{ on: p.up }}>
             <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
             <div class="tb-stage">
-                <For each={look.layers ?? []}>{(layer, i) => <LayerView layer={layer} index={i()} animation={anims[i()]?.animation} working={working} />}</For>
+                <Show when={drawn()}>
+                    {(d) => (
+                        <For each={look.layers ?? []}>
+                            {(layer, i) => <LayerView layer={layer} index={i()} animation={anims[i()]?.animation} frame={frames[i()]!} working={working} crop={d().crops[i()]} image={d().images[i()]} px={px} />}
+                        </For>
+                    )}
+                </Show>
                 {/* Over the scene, in step with it: the map's cells are the stage's. */}
                 <div class="tb-veil" style={veil()?.map ? { "background-image": `url(${veil()!.map})` } : { background: rgba(parseHex(look.colors.background), veil()?.most ?? 1) }} />
             </div>
@@ -211,6 +264,7 @@ export function ThemeBackdrop(): JSX.Element {
         });
         watch.observe(html, { attributeFilter: ["data-decor-off"] });
         onCleanup(() => watch.disconnect());
+        onCleanup(alignOnStart(root));
     });
     createEffect(() => {
         const s = shown();

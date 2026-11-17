@@ -2,12 +2,12 @@
 // pointed at. A click shows it; the user's own can be deleted (with Undo). The last tile starts a session that asks
 // an agent for a new one.
 
-import { createMemo, createSignal, For, onMount, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Moon, Plus, Sun } from "lucide-solid";
 import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
-import { frameFor, layerAnimation, restPose, transformOf } from "../lib/theme-motion";
+import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
 import { reportError, rpc, toast } from "../state/app";
 import { refreshThemes } from "../state/theme-events";
 import { newSession } from "../state/actions";
@@ -45,9 +45,11 @@ let serial = 0;
 function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element {
     const n = ++serial;
     const scale = p.width / STAGE.width;
-    const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1, frameFor(l)) : undefined));
+    // As often as each layer's steps would show this small: a tile's preview steps less often than the window's scene.
+    const frames = sceneFrames(p.look.layers ?? [], scale * devicePixelRatio);
+    const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1, frames[i]) : undefined));
     return (
-        <span class="tg-scene" aria-hidden="true" data-loop-keeps>
+        <span class="tg-scene" aria-hidden="true" data-loop-keeps ref={(el) => onCleanup(alignOnStart(el))}>
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
             </Show>
@@ -62,6 +64,7 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
                                 src={svgUrl(layer.svg)}
                                 alt=""
                                 draggable={false}
+                                data-grid={anims[i] ? gridOf(frames[i]!) : undefined}
                                 style={{
                                     left: `${layer.x ?? 0}px`,
                                     top: `${layer.y ?? 0}px`,
