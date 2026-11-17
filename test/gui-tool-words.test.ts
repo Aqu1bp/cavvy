@@ -75,7 +75,10 @@ test("the Mac's apps are said in words, by the app's name, whether Cavvy's model
     expect(toolLabel(click)).toEqual({ verb: "Click", arg: '"New Document"' });
     expect(resultEchoes(click)).toBe(true);
     expect(toolLabel(call({ name: "DesktopAct", input: { action: "type", text: "Hello from Cavvy.\nMore" } }))).toEqual({ verb: "Type", arg: "Hello from Cavvy." });
-    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "s", modifiers: ["Meta"] } }))).toEqual({ verb: "Press", arg: "Meta+s" });
+    // Keys as a Mac shows them.
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "s", modifiers: ["Meta"] } }))).toEqual({ verb: "Press", arg: "⌘S" });
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "k", modifiers: ["Meta", "Shift", "Control", "Alt"] } }))).toEqual({ verb: "Press", arg: "⌃⌥⇧⌘K" });
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "Escape" } }))).toEqual({ verb: "Press", arg: "Escape" });
     expect(runningVerb(call({ name: "mcp__cavvy__desktop_act", status: "running", input: { action: "drag" } }))).toBe("Dragging");
 });
 
