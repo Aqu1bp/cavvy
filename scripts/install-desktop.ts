@@ -92,9 +92,22 @@ function signedBy(app: string): string | undefined {
     return r.stderr.toString().match(/^Authority=(.+)$/m)?.[1];
 }
 
+/**
+ * The account's own home, from its user record, whatever HOME says (a test home, say): its login keychain is there.
+ * `security` and `codesign` look for certificates in the keychains HOME's settings list, so with HOME elsewhere they
+ * see none, and the build would be signed ad hoc without a word.
+ */
+function accountHome(): string {
+    return Bun.spawnSync(["/bin/sh", "-c", 'eval echo "~$(id -un)"'], { stdout: "pipe" }).stdout.toString().trim() || homedir();
+}
+const loginKeychain = join(accountHome(), "Library", "Keychains", "login.keychain-db");
+/** With HOME elsewhere, the login keychain named outright, to look in and to sign from. */
+const keychain = resolve(homedir()) !== resolve(accountHome()) && existsSync(loginKeychain) ? [loginKeychain] : [];
+
 /** A certificate Apple issued, so the keychain's trust carries over to the next build; none means ad hoc. */
 function signingIdentity(): Identity | undefined {
-    const valid = output(["security", "find-identity", "-v", "-p", "codesigning"])
+    if (keychain.length) console.log(`HOME isn't your account's home: looking for your certificate in ${loginKeychain}.`);
+    const valid = output(["security", "find-identity", "-v", "-p", "codesigning", ...keychain])
         .split("\n")
         .flatMap((l) => {
             // Revoked and expired ones are listed too, flagged CSSMERR_….
@@ -122,10 +135,11 @@ function signingIdentity(): Identity | undefined {
 const id = signingIdentity();
 const desktopHelper = join(built, "Contents", "Helpers", "Cavvy Desktop Control.app");
 if (id) {
-    output(["codesign", "--force", "--deep", "--sign", id.hash, "--timestamp=none", built]);
-    output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "cavvy")]);
-    if (existsSync(desktopHelper)) output(["codesign", "--force", "--sign", id.hash, "--identifier", "dev.cavvy.desktop.control", "--timestamp=none", desktopHelper]);
-    output(["codesign", "--force", "--sign", id.hash, "--timestamp=none", built]);
+    const from = keychain.length ? ["--keychain", loginKeychain] : [];
+    output(["codesign", "--force", "--deep", "--sign", id.hash, ...from, "--timestamp=none", built]);
+    output(["codesign", "--force", "--sign", id.hash, ...from, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "cavvy")]);
+    if (existsSync(desktopHelper)) output(["codesign", "--force", "--sign", id.hash, ...from, "--identifier", "dev.cavvy.desktop.control", "--timestamp=none", desktopHelper]);
+    output(["codesign", "--force", "--sign", id.hash, ...from, "--timestamp=none", built]);
     output(["codesign", "--verify", "--deep", "--strict", built]);
     console.log(`Signed with ${id.name}`);
 } else {
