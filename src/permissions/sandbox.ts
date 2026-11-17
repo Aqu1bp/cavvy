@@ -139,6 +139,9 @@ const UNREADABLE_IN_HOME = [
     ".gem/credentials", ".terraform.d/credentials.tfrc.json", ".password-store", ".local/share/keyrings", "Library/Keychains",
 ];
 
+/** Where the desktop app puts the helper for Mac apps, in the home (src/desktop/helper.ts, placeFor). */
+export const DESKTOP_HELPER_COPIES = ["Library/Application Support/Cavvy/Cavvy Desktop Control.app", "Library/Application Support/Cavvy Test/Cavvy Desktop Control (Test).app"];
+
 /** A project's own config: Cavvy's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
 const PROJECT_CONFIG = [".cavvy", LEGACY.dir, ".mcp.json", "opencode.json", "opencode.jsonc"];
 const CLI_CONFIG = [".claude", ".codex", ".opencode", ".grok", ".agents"];
@@ -198,6 +201,8 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     // home can, but not read: settings and session logs may hold secrets too.
     // desktop/ is the helper for Mac apps, which holds the person's macOS grants: not run, read or listed either.
     const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts", "server-keys", "desktop"].flatMap((f) => bothForms(join(h, f))));
+    // The helper's copy outside the desktop app (src/desktop/helper.ts, placeFor), and a test copy's: the same.
+    const helpers = DESKTOP_HELPER_COPIES.flatMap((p) => bothForms(join(home, p)));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
     const globalConfig = [opencodeConfigDir(home), ...antigravityConfigDirs(home)].flatMap(bothForms);
@@ -208,7 +213,7 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
         readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), ...homes, ...accounts, ...globalConfig])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
-        unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
+        unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...helpers, ...allAccounts])],
         contentsUnreadable: [...new Set([...homes, ...settings.filter((x) => !homes.some((h) => isWithin(x, h)))])],
         gitDirs: git,
         globalConfig,

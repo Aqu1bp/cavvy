@@ -82,7 +82,8 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
         // Frozen from origin/main's construction without account paths, including its literal deny set; since then Cavvy
         // home's contents and extended attributes (not its listing) are what's denied, with its secrets, accounts/ and server-keys/ wholly, ps works, and the
         // folder above OpenCode's global config (~/.config) can't be moved; and Antigravity's config is protected as the
-        // other agent CLIs' is (.agents/, ~/.gemini/config, ~/.gemini/antigravity-cli, with ~/.gemini unmovable).
+        // other agent CLIs' is (.agents/, ~/.gemini/config, ~/.gemini/antigravity-cli, with ~/.gemini unmovable); and the
+        // helper for Mac apps (Cavvy home's desktop/, and its copies in Application Support) can't be read, listed or run.
         expect(seatbeltProfile(policy).replaceAll(home, "/workspace")).toBe(expected);
     });
 
