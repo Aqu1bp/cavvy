@@ -197,6 +197,12 @@ const CAVVY: Record<string, [verb: string, running: string, arg?: string]> = {
     Delegate: ["Delegate", "Delegating", "description"],
 };
 
+/** A key with its modifiers as a Mac shows them, run together in macOS's order: ⌘S, ⌃⌥⇧⌘K, ⇧Tab. */
+function macKeys(key: string, modifiers: string[]): string {
+    const order: [string, string][] = [["Control", "⌃"], ["Alt", "⌥"], ["Shift", "⇧"], ["Meta", "⌘"]];
+    return order.filter(([m]) => modifiers.includes(m)).map(([, sym]) => sym).join("") + (key.length === 1 ? key.toUpperCase() : key);
+}
+
 /** Cavvy's own tools in words: what they did to what, never their internal names, refs or code. */
 function ownWords(t: ToolBlock): Words | undefined {
     const i = t.input ?? {};
@@ -243,6 +249,30 @@ function ownWords(t: ToolBlock): Words | undefined {
             const [verb, running, arg] = words[a] ?? ["Use the simulator", "Using the simulator"];
             return { verb, running, arg };
         }
+        // The Mac's apps: what was done in which app, by the app's name.
+        case "DesktopControl": {
+            const a = s("action") ?? "";
+            const words: Record<string, [string, string, string?]> = {
+                list: ["List apps", "Listing apps"],
+                request_access: ["Ask to use", "Asking to use", s("app")],
+                open: ["Open", "Opening", s("app")],
+            };
+            const [verb, running, arg] = words[a] ?? ["Use an app", "Using an app"];
+            return { verb, running, arg };
+        }
+        case "DesktopSnapshot":
+            return s("app") ? { verb: "Read", running: "Reading", arg: s("app") } : { verb: "Read the app", running: "Reading the app" };
+        case "DesktopScreenshot":
+            return { verb: "Screenshot the apps", running: "Taking a screenshot" };
+        case "DesktopAct": {
+            const a = s("action") ?? "";
+            const words: Record<string, [string, string]> = { ...ACTS, right_click: ["Right-click", "Right-clicking"], drag: ["Drag", "Dragging"], type: ["Type", "Typing"], wait: ["Wait for", "Waiting for"] };
+            const [verb, running] = words[a] ?? ["Act in an app", "Acting in an app"];
+            const keys = a === "press" && s("key") ? macKeys(s("key")!, Array.isArray(i.modifiers) ? (i.modifiers as unknown[]).map(String) : []) : undefined;
+            // What it pressed, typed or waited for; else what it clicked, once it says ('Clicked "Bold" [e12].').
+            const arg = keys ?? (a === "type" || a === "wait" ? s("text")?.split("\n")[0] : /^(?:Clicked|Double-clicked|Right-clicked) (.+?)(?: \[e\d+\])?\.$/.exec(t.output?.split("\n", 1)[0] ?? "")?.[1]);
+            return { verb, running, arg };
+        }
         case "BrowserAct":
         case "SimulatorAct": {
             const a = s("action") ?? "";
@@ -258,7 +288,7 @@ function ownWords(t: ToolBlock): Words | undefined {
 /** A call whose result only says again what its row does ("Clicked button "Save" [e12]", the address it opened): none shown. */
 export function resultEchoes(t: ToolBlock): boolean {
     const kind = toolKind(t.name);
-    return t.status === "ok" && (kind === "BrowserNavigate" || kind === "BrowserAct" || kind === "SimulatorAct" || kind === "SimulatorControl");
+    return t.status === "ok" && (kind === "BrowserNavigate" || kind === "BrowserAct" || kind === "SimulatorAct" || kind === "SimulatorControl" || kind === "DesktopAct");
 }
 
 /** Another MCP server's tool, by its own name in words: mcp__github__create_issue is "Create issue", from github. */

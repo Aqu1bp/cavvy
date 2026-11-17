@@ -27,6 +27,10 @@ export interface DesktopRef {
     /** What it's called in the outline, to find it again (with its role and frame). */
     name: string;
     role: string;
+    /** What the outline calls it: button, text, textfield. */
+    word?: string;
+    /** It takes typing, and `clear` empties it. */
+    editable?: boolean;
     /** The app it's in. */
     pid: number;
     /** A password field: what's typed in it isn't said back. */
@@ -149,7 +153,7 @@ export function outlineApp(root: DesktopNode, pid: number, firstRef = 0): Deskto
     };
     const ref = (n: DesktopNode, f: Rect, role: string, name: string): string => {
         const r = `e${++seq}`;
-        refs.set(r, { x: round(f[0] + f[2] / 2), y: round(f[1] + f[3] / 2), frame: (n.frame ?? f).map(round) as Rect, name, role: n.role ?? "", pid, ...(role === "securefield" ? { secure: true } : {}) });
+        refs.set(r, { x: round(f[0] + f[2] / 2), y: round(f[1] + f[3] / 2), frame: (n.frame ?? f).map(round) as Rect, name, role: n.role ?? "", word: role, ...(EDITABLE.has(role) ? { editable: true } : {}), pid, ...(role === "securefield" ? { secure: true } : {}) });
         return r;
     };
 

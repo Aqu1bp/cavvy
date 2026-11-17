@@ -2,14 +2,14 @@
 // session sends the helper (only approved apps' pids), what the helper's refusals become, the person taking over,
 // stale refs, missing macOS grants, how the permission checker and the agent treat each call, and the setting.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 isolate();
 const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable, desktopServerTools, nativeDesktopCall, servedDesktopName, servedDesktopTool } = await import("../src/tools/desktop-tools");
 const { stopServer } = await import("../src/mcp/server");
-const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
+const { DesktopSession, setDesktopHelperStarter, resetDesktop, parseKey, staleLine, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
 const { helperSource } = await import("../src/desktop/helper");
 const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
@@ -210,7 +210,8 @@ describe("asking for an app", () => {
         const s = session();
         const r = await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
         expect(r.content).toBe(`You can use TextEdit until this session ends. ${ACCESSIBILITY_LINE}`);
-        expect(ACCESSIBILITY_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Accessibility, then try again.");
+        // Newer macOS calls the list Device Control and Data Access.
+        expect(ACCESSIBILITY_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access), then try again.");
         expect(helper.calls.filter((c) => c.op === "status" && c.ask === "accessibility")).toHaveLength(1);
         // A snapshot says the same, and doesn't show the prompt again.
         const snap = await DesktopSnapshotTool.run({}, ctxWith(s));
@@ -225,6 +226,25 @@ describe("what reaches the Mac", () => {
         for (const n of names) await s.grant(n);
         return s;
     };
+
+    test("an action ends once the app is still, though the helper lists each element's fields in any order", async () => {
+        const s = new DesktopSession({ settleMs: 1500 });
+        await s.grant("TextEdit");
+        // As Swift's dictionaries come out: the same tree, its keys in another order each read.
+        let reads = 0;
+        const reorder = (v: unknown): unknown => (Array.isArray(v) ? v.map(reorder) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, reorder(x)] as const).sort(() => (reads % 2 ? 1 : -1))) : v);
+        const call = helper.call.bind(helper);
+        helper.call = async (c, t) => {
+            const r = await call(c, t);
+            if (c.op === "look" && r.tree) (reads++, (r.tree = reorder(r.tree)));
+            return r;
+        };
+        const t0 = Date.now();
+        await DesktopActTool.run({ action: "type", text: "hi" }, ctxWith(s));
+        // A pause, then two reads alike: not the whole 1.5 s.
+        expect(Date.now() - t0).toBeLessThan(1000);
+        expect(reads).toBeGreaterThanOrEqual(2);
+    });
 
     test("with no app given, nothing is read or done", async () => {
         const s = session();
@@ -386,6 +406,21 @@ describe("what reaches the Mac", () => {
         expect(await DesktopActTool.preview!({ action: "click", ref: "e999" }, ctxWith(s))).toEqual({ summary: "Click e999 in TextEdit" });
     });
 
+    test("a static text is named as the outline names it; clear is refused, with nothing sent, where there's no text field", async () => {
+        helper.tree = { role: "AXApplication", title: "Calculator", children: [{ role: "AXWindow", title: "Calculator", frame: [0, 0, 230, 400], children: [{ role: "AXStaticText", label: "Edit field", value: "11,111", frame: [120, 10, 90, 36] }, { role: "AXTextField", title: "Memo", frame: [10, 60, 200, 20] }] }] };
+        const s = await granted("TextEdit");
+        const shown = await s.snapshot();
+        const display = /text "Edit field"[^\n]*\[(e\d+)\]/.exec(shown)![1]!;
+        expect(await DesktopActTool.preview!({ action: "type", ref: display, text: "6*7=", clear: true }, ctxWith(s))).toMatchObject({ summary: expect.stringContaining(`into text "Edit field" (${display})`) });
+        const r = await DesktopActTool.run({ action: "type", ref: display, text: "6*7=", clear: true }, ctxWith(s));
+        expect(r).toMatchObject({ isError: true, content: `Not done: clear empties a text field, and "Edit field" [${display}] isn't one. Type without clear, or clear it the app's own way.` });
+        expect([...helper.sent("click"), ...helper.sent("press"), ...helper.sent("type")]).toHaveLength(0);
+        // A text field is cleared as before.
+        const memo = /textfield "Memo"[^\n]*\[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        await DesktopActTool.run({ action: "type", ref: memo, text: "x", clear: true }, ctxWith(s));
+        expect(helper.sent("press").map((c) => c.key)).toEqual(["a", "backspace"]);
+    });
+
     test("a ref is refused, with nothing sent, when what it stood for has gone; and is good for one action", async () => {
         const s = await granted("TextEdit");
         let ref = /"Bold" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
@@ -411,6 +446,29 @@ describe("what reaches the Mac", () => {
         expect(SCREEN_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Screen & System Audio Recording, then try again.");
         // The helper starts again for the next call: a new grant shows only to a new process.
         expect(helper.running).toBe(false);
+    });
+
+    test("a rebuilt helper whose switches macOS no longer counts: each line says to take it out and add it again", async () => {
+        const record = join(paths.home(), "desktop", "build.json");
+        mkdirSync(dirname(record), { recursive: true });
+        try {
+            // A screenshot that works notes the build that had Screen Recording, as a snapshot does Accessibility.
+            writeFileSync(record, JSON.stringify({ hash: "old" }));
+            const s = await granted("TextEdit");
+            await DesktopSnapshotTool.run({}, ctxWith(s));
+            await DesktopScreenshotTool.run({}, ctxWith(s));
+            expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ hash: "old", trusted: "old", screen: "old" });
+            // Built again: both switches still show on, and neither works.
+            writeFileSync(record, JSON.stringify({ hash: "new", trusted: "old", screen: "old" }));
+            helper.screen = false;
+            expect(await DesktopScreenshotTool.run({}, ctxWith(s))).toMatchObject({ isError: true, content: staleLine("screen") });
+            expect(staleLine("screen")).toBe(`Cavvy Desktop Control was updated, and macOS no longer counts its switch: in System Settings → Privacy & Security → Screen & System Audio Recording, remove it with −, add it again with + (it's in ${join(paths.home(), "desktop")}) and turn it on, then try again.`);
+            helper.accessibility = false;
+            expect(await DesktopSnapshotTool.run({}, ctxWith(s))).toMatchObject({ isError: true, content: staleLine("accessibility") });
+            expect(staleLine("accessibility")).toContain("in System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access), remove it with −");
+        } finally {
+            rmSync(record, { force: true });
+        }
     });
 });
 

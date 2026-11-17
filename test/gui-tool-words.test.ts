@@ -64,6 +64,24 @@ test("Cavvy's own tools are said by what they do, however they were called: neve
     expect(runningVerb(call({ name: "mcp__cavvy__simulator_act", status: "running", input: {} }))).toBe("Acting on the screen");
 });
 
+test("the Mac's apps are said in words, by the app's name, whether Cavvy's model or Claude Code called them", () => {
+    expect(toolLabel(call({ name: "DesktopControl", input: { action: "request_access", app: "TextEdit" } }))).toEqual({ verb: "Ask to use", arg: "TextEdit" });
+    expect(toolLabel(call({ name: "mcp__cavvy__desktop_control", input: { action: "open", app: "Calculator" } }))).toEqual({ verb: "Open", arg: "Calculator" });
+    expect(toolLabel(call({ name: "DesktopControl", input: { action: "list" } }))).toEqual({ verb: "List apps", arg: undefined });
+    expect(toolLabel(call({ name: "DesktopSnapshot", input: { app: "Calculator" } }))).toEqual({ verb: "Read", arg: "Calculator" });
+    expect(toolLabel(call({ name: "mcp__cavvy__desktop_snapshot", input: {} }))).toEqual({ verb: "Read the app", arg: undefined });
+    expect(toolLabel(call({ name: "DesktopScreenshot", input: {} }))).toEqual({ verb: "Screenshot the apps", arg: undefined });
+    const click = call({ name: "DesktopAct", input: { action: "click", ref: "e115" }, output: 'Clicked "New Document" [e115].\n\nApps you may use: TextEdit (in front).' });
+    expect(toolLabel(click)).toEqual({ verb: "Click", arg: '"New Document"' });
+    expect(resultEchoes(click)).toBe(true);
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "type", text: "Hello from Cavvy.\nMore" } }))).toEqual({ verb: "Type", arg: "Hello from Cavvy." });
+    // Keys as a Mac shows them.
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "s", modifiers: ["Meta"] } }))).toEqual({ verb: "Press", arg: "⌘S" });
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "k", modifiers: ["Meta", "Shift", "Control", "Alt"] } }))).toEqual({ verb: "Press", arg: "⌃⌥⇧⌘K" });
+    expect(toolLabel(call({ name: "DesktopAct", input: { action: "press", key: "Escape" } }))).toEqual({ verb: "Press", arg: "Escape" });
+    expect(runningVerb(call({ name: "mcp__cavvy__desktop_act", status: "running", input: { action: "drag" } }))).toBe("Dragging");
+});
+
 test("a result that only repeats the row isn't shown; a failure's always is", () => {
     const click = call({ name: "mcp__cavvy__browser_act", input: { action: "click" }, summary: 'Clicked button "Save" [e12]' });
     expect(resultEchoes(click)).toBe(true);

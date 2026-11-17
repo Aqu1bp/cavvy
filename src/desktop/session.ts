@@ -8,7 +8,8 @@
 import { randomBytes } from "crypto";
 import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
-import { DesktopError, DesktopHelper, HELPER_NAME, helperBinary, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
+import { homedir } from "os";
+import { DesktopError, DesktopHelper, HELPER_NAME, helperBinary, helperDir, noteTrusted, trustedBefore, type DesktopHelperLike, type Reply } from "./helper";
 import { outlineApp, refStill, type DesktopNode, type DesktopRef } from "./outline";
 
 export { DesktopError };
@@ -16,11 +17,24 @@ export { DesktopError };
 const IDLE_MS = 60_000;
 
 const PANE = "System Settings → Privacy & Security";
-export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${PANE} → Accessibility, then try again.`;
-export const ACCESSIBILITY_STALE_LINE = `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${PANE} → Accessibility, remove it with −, then try again.`;
-export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${PANE} → Screen & System Audio Recording, then try again.`;
+// Newer macOS lists the apps that may control the Mac under "Device Control and Data Access" (seen on 27.0, which
+// version first did isn't known here); earlier ones, under "Accessibility".
+const CONTROL = `${PANE} → Accessibility (on newer macOS, Device Control and Data Access)`;
+const SCREEN = `${PANE} → Screen & System Audio Recording`;
+export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${CONTROL}, then try again.`;
+export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.`;
+
+/**
+ * A new build of the helper, where an earlier one had the grant: macOS shows the switch on but no longer counts it,
+ * and asks nothing (seen on macOS 27.0). Taking it out and adding it again is what works.
+ */
+export function staleLine(g: "accessibility" | "screen"): string {
+    const dir = helperDir();
+    const where = dir.startsWith(`${homedir()}/`) ? `~${dir.slice(homedir().length)}` : dir;
+    return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (it's in ${where}) and turn it on, then try again.`;
+}
 const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
-export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility and Input Monitoring, then try again.`;
+export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on newer macOS, Device Control and Data Access) and Input Monitoring, then try again.`;
 export const USED_NOTE = "The user used the Mac since you last looked: the screen may not be where you left it.";
 const STOPPED = "Stopped: the user used the Mac (the mouse or keyboard) during this action, so it's unfinished. Take a new snapshot before going on.";
 
@@ -90,20 +104,29 @@ async function withHelper<T>(fn: (h: DesktopHelperLike) => Promise<T>): Promise<
     }
 }
 
+/**
+ * A tree as text with each node's keys in one order, to tell whether the app changed: the helper's JSON lists them in
+ * any order, read to read (Swift's dictionaries have none), so the same app can come back as different text.
+ */
+function sameKeys(v: unknown): string {
+    return JSON.stringify(v, (_k, x: unknown) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+}
+
 /** Has macOS show its Accessibility prompt (once for each helper), and says in one line what to turn on. */
 async function askAccessibility(h: DesktopHelperLike): Promise<string> {
     if (!promptedAccessibility) {
         promptedAccessibility = true;
         await h.call({ op: "status", ask: "accessibility" }).catch(() => undefined);
     }
-    return trustedBefore() ? ACCESSIBILITY_STALE_LINE : ACCESSIBILITY_LINE;
+    return trustedBefore("accessibility") ? staleLine("accessibility") : ACCESSIBILITY_LINE;
 }
 
 /** A command, with what a missing grant needs said in one line (and macOS's own prompt shown once). */
 async function call(h: DesktopHelperLike, command: Record<string, unknown>, timeoutMs?: number): Promise<Reply> {
     try {
         const r = await h.call(command, timeoutMs);
-        if (command.op === "look" || command.op === "open") noteTrusted();
+        if (command.op === "look" || command.op === "open") noteTrusted("accessibility");
+        if (command.op === "screenshot") noteTrusted("screen");
         return r;
     } catch (e) {
         if (!(e instanceof DesktopError)) throw e;
@@ -112,7 +135,7 @@ async function call(h: DesktopHelperLike, command: Record<string, unknown>, time
             await h.call({ op: "status", ask: "screen" }).catch(() => undefined);
             // A process sees a new Screen Recording grant only once it starts again.
             if (h === shared) stopShared();
-            throw new DesktopError(SCREEN_LINE, e.code);
+            throw new DesktopError(trustedBefore("screen") ? staleLine("screen") : SCREEN_LINE, e.code);
         }
         throw e;
     }
@@ -278,7 +301,7 @@ export class DesktopSession {
     refName(ref: string): string | undefined {
         const r = this.refs.get(ref.replace(/^\[|\]$/g, ""));
         if (!r) return undefined;
-        const role = r.role.replace(/^AX/, "").toLowerCase() || "element";
+        const role = r.word ?? (r.role.replace(/^AX/, "").toLowerCase() || "element");
         return r.name && r.name.toLowerCase() !== role ? `${role} ${JSON.stringify(r.name.length > 60 ? `${r.name.slice(0, 60)}…` : r.name)}` : role;
     }
 
@@ -334,7 +357,7 @@ export class DesktopSession {
             if (!r || !app) return undefined;
             const reply = await call(h, { op: "look", pid: app.pid, pids: r.pids }).catch(() => undefined);
             if (!reply) return undefined;
-            const tree = JSON.stringify(reply.tree ?? null);
+            const tree = sameKeys(reply.tree ?? null);
             if (tree === before) return { r, app, reply };
             before = tree;
             await pause(200, signal);
@@ -453,6 +476,9 @@ export class DesktopSession {
             let secure = false;
             if (o.ref !== undefined) {
                 const p = await this.at(a, { ref: o.ref });
+                // Select-all and delete empties a text field; anywhere else it may do something else (in Calculator,
+                // it deletes a digit).
+                if (o.clear && p.ref && !p.ref.editable) throw new DesktopError(`Not done: clear empties a text field, and ${p.name} isn't one. Type without clear, or clear it the app's own way.`);
                 secure = Boolean(p.ref?.secure);
                 await a.send({ op: "click", x: p.x, y: p.y, button: "left", count: 1, pids: a.r.pids });
                 await pause(150, signal);
