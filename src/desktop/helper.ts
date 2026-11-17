@@ -38,6 +38,8 @@ export function helperSource(): string {
 export const sourceHash = () => createHash("sha256").update(helperSource()).digest("hex").slice(0, 16);
 
 const dir = () => join(paths.home(), "desktop");
+/** Where the helper is kept: what the person adds with + in System Settings. */
+export const helperDir = dir;
 const recordFile = () => join(dir(), "build.json");
 
 interface BuildRecord {
@@ -45,7 +47,13 @@ interface BuildRecord {
     hash?: string;
     /** A build macOS let use Accessibility. */
     trusted?: string;
+    /** A build macOS let take screenshots. */
+    screen?: string;
 }
+
+/** The grants macOS keeps for one build of the helper. */
+export type Grant = "accessibility" | "screen";
+const field = (g: Grant) => (g === "screen" ? "screen" : "trusted");
 
 function record(): BuildRecord {
     try {
@@ -59,16 +67,17 @@ function writeRecord(r: BuildRecord) {
     writeFileSync(recordFile(), JSON.stringify(r), { mode: 0o600 });
 }
 
-/** The helper had Accessibility: noted, so that a later build that hasn't can say why. */
-export function noteTrusted() {
+/** The helper had that grant: noted, so that a later build that hasn't can say why. */
+export function noteTrusted(g: Grant = "accessibility") {
     const r = record();
-    if (r.hash && r.trusted !== r.hash) writeRecord({ ...r, trusted: r.hash });
+    if (r.hash && r[field(g)] !== r.hash) writeRecord({ ...r, [field(g)]: r.hash });
 }
 
-/** An earlier build had Accessibility and this one hasn't: macOS keeps the switch on but no longer counts it. */
-export function trustedBefore(): boolean {
+/** An earlier build had that grant and this one hasn't: macOS keeps the switch on but no longer counts it. */
+export function trustedBefore(g: Grant = "accessibility"): boolean {
     const r = record();
-    return Boolean(r.trusted && r.trusted !== r.hash);
+    const had = r[field(g)];
+    return Boolean(had && had !== r.hash);
 }
 
 let building: Promise<string> | undefined;
