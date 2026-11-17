@@ -1,6 +1,6 @@
 // A test copy of the desktop app, to try a change that needs macOS's grants (Mac app control) without touching the
-// ones given to the Cavvy you use. Its Mac app helper has an identity of its own, Cavvy Desktop Control (Test),
-// dev.cavvy.desktop.control.test, so System Settings lists it apart. The copy is always at ~/Applications/Cavvy
+// ones given to the Cavvy you use. It's Cavvy Test (dev.cavvy.desktop.test), and its Mac app helper Cavvy Desktop
+// Control (Test) (dev.cavvy.desktop.control.test), so System Settings lists them apart. The copy is always at ~/Applications/Cavvy
 // Test.app (your account's, whatever HOME says), and signed with your Apple Development certificate from your login
 // keychain, named outright: macOS keeps a grant for that id and certificate, so a rebuild there keeps it. macOS only.
 //
@@ -11,16 +11,15 @@
 //
 // CAVVY_SIGNING_IDENTITY picks the certificate by name or SHA-1, as for desktop:install.
 //
-// Launch it directly with homes of its own, never with `open` (macOS would take it for the Cavvy you use, which has
-// the same bundle id):
+// Launch it directly with homes of its own:
 //   CAVVY_HOME=<test home> CAVVY_ELECTRON_USER_DATA=<test dir> CAVVY_NO_KEYCHAIN=1 ~/Applications/Cavvy\ Test.app/Contents/MacOS/cavvy-desktop
-// Keep the test home outside /tmp: macOS doesn't list a helper it finds in a temporary folder.
+// The helper is the copy's own (in the app), so the homes may be anywhere, /tmp included.
 
 import { existsSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle } from "../src/config/desktop-install";
-import { appInfo } from "../desktop-electron/app-info";
+import { TEST_COPY_APP } from "../desktop-electron/app-info";
 import { accountHome, appleIssued, loginKeychain, validIdentities } from "./signing";
 
 if (process.platform !== "darwin") {
@@ -29,7 +28,7 @@ if (process.platform !== "darwin") {
 }
 
 const root = resolve(import.meta.dir, "..");
-const { identifier } = appInfo(join(root, "desktop-electron"));
+const { identifier } = TEST_COPY_APP;
 const TEST_COPY = join(accountHome(), "Applications", "Cavvy Test.app");
 const step = process.argv[2];
 
@@ -60,7 +59,7 @@ switch (step) {
         refuseWhileRunning();
         for (const dir of [root, join(root, "gui"), join(root, "desktop-electron")]) if (!existsSync(join(dir, "node_modules"))) output(["bun", "install", "--cwd", dir]);
         const { pack } = await import("../desktop-electron/pack.ts");
-        const built = await pack({ testHelper: true });
+        const built = await pack({ testCopy: true });
         if (!existsSync(join(built, "Contents", "Helpers", `${TEST_HELPER_IDENTITY.name}.app`))) {
             console.error(`The build has no ${TEST_HELPER_IDENTITY.name}.app (is swiftc there? xcode-select --install).`);
             process.exit(1);
