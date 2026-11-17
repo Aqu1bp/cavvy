@@ -14,8 +14,8 @@ const { ACCESS_TITLES, resetCommand, resetGrant, windowCard } = await import("..
 type AccessCard = import("../src/desktop/access").AccessCard;
 type AccessView = import("../src/desktop/access").AccessView;
 type AccessAction = import("../src/desktop/access").AccessAction;
-const { helperSource } = await import("../src/desktop/helper");
-const { neverOffered, NEVER_OFFERED } = await import("../src/desktop/apps");
+const { handshake, helperSource, sourceHash } = await import("../src/desktop/helper");
+const { neverOffered, NEVER_OFFERED, NEVER_OFFERED_NAME_PATTERNS } = await import("../src/desktop/apps");
 const { DesktopGrants } = await import("../src/desktop/grants");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { loadSettings, desktopEnabled } = await import("../src/config/settings");
@@ -712,11 +712,19 @@ describe("for other agents' computer use", () => {
         for (const a of NEVER_OFFERED) expect(neverOffered({ name: "Anything", bundleId: a.bundleId }), a.bundleId).toBe(a.reason);
     });
 
-    test("the helper is built with the list, so it refuses those apps whatever it's sent", () => {
-        const src = helperSource();
-        for (const a of NEVER_OFFERED) expect(src).toContain(JSON.stringify(a.bundleId.toLowerCase()));
-        expect(src).toStartWith("let NEVER_IDS: Set<String> = [");
-        expect(src).toContain("let NEVER_NAME_PATTERNS: [String] = [");
+    test("the helper is sent the list right after the secret, and is built from its own code alone", () => {
+        const [hello, never, ...rest] = handshake("a".repeat(64));
+        expect(rest).toEqual([]);
+        expect(JSON.parse(hello!)).toEqual({ op: "hello", secret: "a".repeat(64) });
+        const list = JSON.parse(never!);
+        expect(list.op).toBe("never");
+        expect(list.ids).toEqual(NEVER_OFFERED.map((a) => a.bundleId.toLowerCase()));
+        expect(list.patterns).toEqual(NEVER_OFFERED_NAME_PATTERNS.map((r) => r.source));
+        // The list isn't in what's built, nor in what decides a rebuild: a change to it needs none.
+        const file = readFileSync(join(import.meta.dir, "../src/desktop/helper.swift"), "utf8");
+        expect(helperSource()).toBe(file);
+        expect(sourceHash()).toBe(new Bun.CryptoHasher("sha256").update(file).digest("hex").slice(0, 16));
+        for (const a of NEVER_OFFERED) expect(file).not.toContain(JSON.stringify(a.bundleId.toLowerCase()));
     });
 
     test("the grants are kept by bundle id, and can't hold an app that's never offered", () => {

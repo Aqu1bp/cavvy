@@ -25,17 +25,22 @@ export class DesktopError extends Error {
 export const HELPER_NAME = "Cavvy Desktop Control";
 const BUILD_MS = 180_000;
 
-/**
- * The helper's source, with the never-offered list compiled in: it refuses those apps itself, whatever it's sent
- * (another process running it can't give it one).
- */
+/** The helper's source: its own code only, so that it's built again only when that changes (not the never-offered list). */
 export function helperSource(): string {
-    const ids = NEVER_OFFERED.map((a) => JSON.stringify(a.bundleId.toLowerCase())).join(", ");
-    const names = NEVER_OFFERED_NAME_PATTERNS.map((r) => JSON.stringify(r.source)).join(", ");
-    return `let NEVER_IDS: Set<String> = [${ids}]\nlet NEVER_NAME_PATTERNS: [String] = [${names}]\n\n${SOURCE}`;
+    return SOURCE;
 }
 
 export const sourceHash = () => createHash("sha256").update(helperSource()).digest("hex").slice(0, 16);
+
+/**
+ * What Cavvy sends a helper it started, in order: the secret back, then the apps never offered, which it refuses
+ * itself, whatever it's sent later; until it has them, it refuses every app. Sent on the locked channel: only once the
+ * secret is taken is the next line read, and only as that list.
+ */
+export function handshake(secret: string): string[] {
+    const never = { op: "never", ids: NEVER_OFFERED.map((a) => a.bundleId.toLowerCase()), patterns: NEVER_OFFERED_NAME_PATTERNS.map((r) => r.source) };
+    return [JSON.stringify({ op: "hello", secret }), JSON.stringify(never)];
+}
 
 const dir = () => join(paths.home(), "desktop");
 const recordFile = () => join(dir(), "build.json");
@@ -348,7 +353,7 @@ export class DesktopHelper implements DesktopHelperLike {
         const handover = proc.stdio[3];
         if (typeof handover === "number") writeSync(handover, `${secret}\n`);
         const helper = new DesktopHelper(proc);
-        helper.write(`${JSON.stringify({ op: "hello", secret })}\n`);
+        helper.write(handshake(secret).map((l) => `${l}\n`).join(""));
         return helper;
     }
 

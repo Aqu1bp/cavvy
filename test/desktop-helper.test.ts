@@ -10,7 +10,7 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, clearStale, helperApp, helperBinary, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+const { DesktopHelper, buildIn, clearStale, handshake, helperApp, helperBinary, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
 const { paths } = await import("../src/config/paths");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
@@ -78,6 +78,20 @@ test("it registers itself with LaunchServices when it starts, so System Settings
     expect(src.indexOf("\nregisterWithLaunchServices()\n")).toBeLessThan(src.indexOf("Thread.detachNewThread {"));
 });
 
+test("it takes the never-offered list only on the line after the secret, and without it refuses every app", () => {
+    // Read from its source, not run: what it does with the list is checked by a live run (below).
+    const src = helperSource();
+    const admitted = src.indexOf("if !admitted() {");
+    const received = src.indexOf("\nlet NEVER = receiveNeverOffered()\n");
+    expect(received).toBeGreaterThan(admitted);
+    expect(received).toBeLessThan(src.indexOf("Thread.detachNewThread {"));
+    const fn = src.slice(src.indexOf("func neverOffered(name: String, bundleId: String?) -> Bool {"));
+    expect(fn.split("\n")[1]!.trim()).toBe("guard let never = NEVER else { return true }");
+    // A pattern that doesn't compile fails it closed too.
+    expect(src).toContain("guard patterns.count == sources.count else { return nil }");
+    expect(src).not.toContain("NEVER_IDS");
+});
+
 test("what no longer runs is cleared from Cavvy's home: the helper from before it was an app, a build stopped halfway", () => {
     const home = join(paths.home(), "desktop");
     mkdirSync(join(home, "Cavvy Desktop Control.app", "Contents"), { recursive: true });
@@ -128,6 +142,17 @@ describe.skipIf(!swift || !live)("who may drive the helper (live)", () => {
         }
         // Too short a secret isn't one.
         expect((await run(bin, { fd3: "abc", lines: [JSON.stringify({ op: "hello", secret: "abc" }), status] })).code).toBe(2);
+    }, 240_000);
+
+    test("an app on the never-offered list is refused; with no list, every app is", async () => {
+        const bin = await helperBinary();
+        const [hello, never] = handshake("c".repeat(64));
+        const ask = (name: string, bundleId: string) => JSON.stringify({ id: 1, op: "offered", name, bundleId });
+        const answer = (out: string) => JSON.parse(out.trim().split("\n").find((l) => l.includes('"id"'))!).offered;
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, never!, ask("Terminal", "com.apple.Terminal")] })).out)).toBe(false);
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, never!, ask("TextEdit", "com.apple.TextEdit")] })).out)).toBe(true);
+        // No list: the line after the secret isn't one, so nothing is offered.
+        expect(answer((await run(bin, { fd3: "c".repeat(64), lines: [hello!, ask("TextEdit", "com.apple.TextEdit"), ask("TextEdit", "com.apple.TextEdit")] })).out)).toBe(false);
     }, 240_000);
 
     test("started by Cavvy, it answers", async () => {

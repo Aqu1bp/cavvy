@@ -64,7 +64,7 @@ const TERMINAL_NAME = /^(terminal|iterm ?2?|ghostty|warp|wezterm|alacritty|kitty
 const CREDENTIAL_NAME = /^(keychain access|1password( \d+)?|bitwarden|keepassxc|lastpass|dashlane|enpass|nordpass|keeper( password manager)?|proton pass|authy( desktop)?)$|\b(passwords?|keychain)\b/i;
 const CAVVY_NAME = /^\s*cavvy\b/i;
 
-/** The names that say an app is never offered, for the helper to check too (src/desktop/helper.ts compiles them in). */
+/** The names that say an app is never offered, for the helper to check too (src/desktop/helper.ts sends them when it starts). */
 export const NEVER_OFFERED_NAME_PATTERNS: readonly RegExp[] = [TERMINAL_NAME, CREDENTIAL_NAME, CAVVY_NAME];
 
 const plain = (name: string) => name.trim().replace(/\.app\/?$/i, "").replace(/^.*\//, "");
