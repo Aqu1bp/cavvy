@@ -2637,10 +2637,12 @@ export class Runtime {
             it.heading = redact(req.preview?.summary ?? `Use ${decision.appGrant}`);
             it.options = [{ id: "yes", label: "Allow" }];
             // An agent CLI's own computer use (Codex's) keeps a yes once, for the session or always, as the user says.
+            // For the session first, as a yes to one of Cavvy's own Mac apps lasts: once covers one action only.
             if (decision.appPersist) {
                 it.everyChoice = true;
-                it.options = [{ id: "yes", label: "Allow once" }];
+                it.options = [];
                 if (decision.appPersist.includes("session")) it.options.push({ id: "session", label: "Allow for this session" });
+                it.options.push({ id: "yes", label: "Allow once" });
                 if (decision.appPersist.includes("always")) it.options.push({ id: "always", label: "Always allow" });
             }
         } else if (isShellTool(tool.name)) {

@@ -362,6 +362,20 @@ describe("asking for a secret in a GUI session", () => {
         a.close();
     });
 
+    test("an app an agent CLI's own computer use asks for: for this session first, then once, always, Deny", async () => {
+        const { DesktopControlTool } = await import("../src/tools/desktop-tools");
+        const a = await client();
+        const id = await a.open("session.create", { cwd: project() });
+        const rt = srv.engine.runtimes.get(id)! as any;
+        const answer = rt.askPermission({ tool: DesktopControlTool, input: { action: "request_access", app: "Calculator" }, title: "Use Calculator", preview: { summary: "Use Calculator" }, decision: { behavior: "ask", appGrant: "Calculator", appPersist: ["session", "always"] } });
+        await a.until(id, (v) => v.state.interactions.length === 1);
+        const card = a.view(id).state.interactions[0]!;
+        expect(card.kind === "permission" && card.options.map((o) => [o.id, o.label])).toEqual([["session", "Allow for this session"], ["yes", "Allow once"], ["always", "Always allow"], ["no", "Deny"]]);
+        await respond(a, id, card.id, { kind: "permission", choice: "session" });
+        expect(await answer).toEqual({ allow: true, persist: "session" });
+        a.close();
+    });
+
     test("an unloaded session restores mode and effort but not its secrets", async () => {
         const a = await client();
         const id = await a.open("session.create", { cwd: project() });

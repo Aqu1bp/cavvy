@@ -1787,10 +1787,10 @@ export class App {
         const items: SelectItem<Choice>[] = [{ label: "Yes", value: "yes" }];
         if (decision.grant) items.push({ label: `Yes, and allow ${bold(decision.grant.label)} for the session`, value: "session" });
         // An agent CLI's own computer use (Codex's) keeps a yes to an app once, for the session or always.
+        // For the session first, as a yes to one of Cavvy's own Mac apps lasts: once covers one action only.
         if (decision.appPersist) {
-            items[0] = { label: "Yes, once", value: "yes" };
-            if (decision.appPersist.includes("session")) items.push({ label: "Yes, for this session", value: "session" });
-            if (decision.appPersist.includes("always")) items.push({ label: "Yes, always", value: "always" });
+            const p = decision.appPersist;
+            items.splice(0, items.length, ...(p.includes("session") ? [{ label: "Yes, for this session", value: "session" as const }] : []), { label: "Yes, once", value: "yes" }, ...(p.includes("always") ? [{ label: "Yes, always", value: "always" as const }] : []));
         }
         const suggestions = decision.suggestions ?? [];
         // Where a generated summary can't be checked against the command, more of the command shows.

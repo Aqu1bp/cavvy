@@ -153,10 +153,10 @@ describe("the approval card", () => {
     const session = { id: "session", label: "Allow for this session" } as const;
     const always = { id: "always", label: "Always allow" } as const;
     const no = { id: "no", label: "Deny" } as const;
-    test("an app's choices are each shown, numbered in order, Deny last", () => {
-        const c = approvalChoices([yes, session, always, no], true);
-        expect(c.keys.map((o) => o.id)).toEqual(["yes", "session", "always"]);
-        expect(c.row.map((r) => `${r.o.id}:${r.key}`)).toEqual(["yes:1", "session:2", "always:3", "no:0"]);
+    test("an app's choices are each shown, numbered in the server's order (for this session first), Deny last", () => {
+        const c = approvalChoices([session, yes, always, no], true);
+        expect(c.keys.map((o) => o.id)).toEqual(["session", "yes", "always"]);
+        expect(c.row.map((r) => `${r.o.id}:${r.key}`)).toEqual(["session:1", "yes:2", "always:3", "no:0"]);
     });
 });
 
