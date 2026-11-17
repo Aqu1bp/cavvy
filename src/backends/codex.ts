@@ -30,7 +30,7 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
-import { appNameFromId, CODEX_CU_SERVERS, codexDesktopFallback, computerUseAsk, computerUseOff, computerUseOnConfig, computerUseReady, computerUseStartFailed, computerUseTitle, fallBackToCavvyTools, fallbackToSay, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
+import { appNameFromId, CODEX_CU_LOADED, codexDesktopFallback, computerUseAsk, computerUseOff, computerUseOnConfig, computerUseReady, computerUseStartFailed, computerUseTitle, fallBackToCavvyTools, fallbackToSay, isComputerUseServer, mergeThreadConfig, neverOfferedApp, toolSurfaceApp, type ComputerUseAsk, type ThreadConfig } from "./codex-computer-use";
 import { neverOfferedMessage } from "../desktop/apps";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
@@ -1411,8 +1411,10 @@ export class CodexTurn {
         }
         if (method === "mcpServer/startupStatus/updated" && isComputerUseServer(p?.name)) {
             // Loaded for the thread being opened (computerUseLoaded).
-            this.computerUseSeen = true;
-            this.computerUseStarting?.();
+            if ((CODEX_CU_LOADED as readonly string[]).includes(p.name)) {
+                this.computerUseSeen = true;
+                this.computerUseStarting?.();
+            }
             // Its server didn't start (the app-server's servers serve all its threads).
             if (p?.status === "failed") this.computerUseFailed(undefined, typeof p.error === "string" ? p.error : undefined);
         }
@@ -2156,7 +2158,7 @@ export class CodexTurn {
 
     /**
      * Whether the thread just opened has the ChatGPT app's computer use, where Cavvy left it on: one of its servers
-     * announced as starting (mcpServer/startupStatus/updated), or listed for the thread. Set up is judged by what Codex
+     * (CODEX_CU_LOADED) announced as starting (mcpServer/startupStatus/updated), or listed for the thread. Set up is judged by what Codex
      * loaded, not by its config: with CODEX_HOME away from $HOME/.codex, Codex 0.169 doesn't load the plugin it says is
      * on. Not loaded, the session falls back to Cavvy's Mac app tools, silently. Measured with Codex 0.169: a thread's
      * servers are announced about 20 ms after thread/start answers; asked for by name, a server the thread doesn't have
@@ -2171,9 +2173,9 @@ export class CodexTurn {
             timer = setTimeout(() => resolve(true), COMPUTER_USE_LOAD_MS);
         });
         const listed = Promise.all(
-            CODEX_CU_SERVERS.map((serverName) =>
+            CODEX_CU_LOADED.map((serverName) =>
                 this.rpc.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly", serverName }).then(
-                    (r: any) => !Array.isArray(r?.data) || r.data.some((d: any) => isComputerUseServer(d?.name)),
+                    (r: any) => !Array.isArray(r?.data) || r.data.some((d: any) => (CODEX_CU_LOADED as readonly string[]).includes(d?.name)),
                     () => true,
                 ),
             ),

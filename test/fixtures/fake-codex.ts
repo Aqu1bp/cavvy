@@ -121,6 +121,7 @@
 //                     thread has its cua_repl: announced as starting just after thread/start (or resume) answers, and
 //                     listed by mcpServerStatus/list (as measured with Codex 0.169). FAKE_CU_NOT_LOADED=1: Codex says the
 //                     plugin is on but doesn't load it (as 0.169 does with CODEX_HOME away from $HOME/.codex).
+//                     FAKE_NODE_REPL=1: a node_repl server of the person's own config is announced starting as well.
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 // Hooks: like Codex 0.163, hooks given with -c hooks=… run only when hooks.state trusts them by the hash Codex
 //                     computes (sha256 of the normalized handler as sorted JSON). A trusted PreToolUse mcp_tool hook
@@ -317,6 +318,8 @@ const cuThreads = new Set<string>();
 function announceComputerUse(threadId: string, config: any) {
     const plugin = "unified-computer-use@openai-bundled";
     const on = { ...JSON.parse(process.env.FAKE_USER_PLUGINS ?? "null"), ...JSON.parse(process.env.FAKE_PROJECT_PLUGINS ?? "null") }[plugin]?.enabled === true;
+    // FAKE_NODE_REPL=1: a node_repl of the person's own configuration starts too, as with the ChatGPT app's config.
+    if (process.env.FAKE_NODE_REPL === "1") setTimeout(() => notify("mcpServer/startupStatus/updated", { threadId, name: "node_repl", status: "starting", error: null, failureReason: null }), 5);
     if (!on || config?.plugins?.[plugin]?.enabled === false || process.env.FAKE_CU_NOT_LOADED === "1") return cuThreads.delete(threadId);
     cuThreads.add(threadId);
     // Just after the answer, as measured.

@@ -165,6 +165,14 @@ export function mergeThreadConfig(a: ThreadConfig | undefined, b: ThreadConfig |
     return merged;
 }
 
+/**
+ * The servers that are computer use themselves, and show it loaded (Codex's computerUseLoaded). Not `node_repl`: a
+ * JavaScript REPL, which the ChatGPT app's own Codex configuration may define, but which gave a Codex Cavvy started no
+ * computer use (measured with Codex 0.169 and ChatGPT 26.1106, the person's configuration copied: node_repl started,
+ * and no tool of the thread's used the Mac's apps).
+ */
+export const CODEX_CU_LOADED = ["cua_repl", "computer-use"] as const;
+
 /** One of Codex's computer-use servers. */
 export function isComputerUseServer(server: unknown): boolean {
     return typeof server === "string" && (CODEX_CU_SERVERS as readonly string[]).includes(server);
