@@ -10,7 +10,7 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, buildIn, clearStale, helperApp, helperBinary, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+const { DesktopHelper, buildIn, clearStale, helperApp, helperBinary, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
 const { paths } = await import("../src/config/paths");
 
 const swift = process.platform === "darwin" && spawnSync("xcrun", ["--find", "swiftc"]).status === 0;
@@ -64,6 +64,18 @@ test("the app's own helper is used when it's of this source; else the one in Cav
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test("it registers itself with LaunchServices when it starts, so System Settings can list it; not in tests", () => {
+    // Read from its source, not run (it never runs in tests): the call, behind the same gate as the TypeScript side.
+    const src = helperSource();
+    const fn = src.slice(src.indexOf("func registerWithLaunchServices()"), src.indexOf("registerWithLaunchServices()\n", src.indexOf("func registerWithLaunchServices()") + 40));
+    expect(fn).toContain('if env["CAVVY_TEST"] == "1" && env["CAVVY_DESKTOP_LIVE"] != "1" { return }');
+    expect(fn).toContain('guard url.pathExtension == "app" else { return }');
+    expect(fn).toContain("LSRegisterURL(url as CFURL, true)");
+    // Once it's admitted (Cavvy handed it the secret), before it reads a command.
+    expect(src.indexOf("\nregisterWithLaunchServices()\n")).toBeGreaterThan(src.indexOf("if !admitted() {"));
+    expect(src.indexOf("\nregisterWithLaunchServices()\n")).toBeLessThan(src.indexOf("Thread.detachNewThread {"));
 });
 
 test("what no longer runs is cleared from Cavvy's home: the helper from before it was an app, a build stopped halfway", () => {

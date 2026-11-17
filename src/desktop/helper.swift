@@ -1,5 +1,5 @@
-// Cavvy Desktop Control: reads and acts in the Mac apps the person approved, for src/desktop/session.ts, which builds
-// it with swiftc on first use (src/desktop/helper.ts). It reads apps through the accessibility API, takes pictures of
+// Cavvy Desktop Control: reads and acts in the Mac apps the person approved, for src/desktop/session.ts. It's an app of
+// its own (dev.cavvy.desktop.control), which Cavvy.app carries or Cavvy builds with swiftc on first use (src/desktop/helper.ts). It reads apps through the accessibility API, takes pictures of
 // approved apps' windows with ScreenCaptureKit, and sends clicks and keys as CGEvents.
 //
 // The grants macOS asks for (Accessibility, Screen Recording) are this helper's own: it starts by disclaiming its
@@ -80,6 +80,19 @@ if !admitted() {
     FileHandle.standardError.write(Data("Cavvy Desktop Control takes commands only from the Cavvy that started it.\n".utf8))
     exit(2)
 }
+
+/// Known to LaunchServices by its bundle id, so System Settings can find it to list it, turn its switch on and take it
+/// with +: macOS doesn't register an app inside another one, nor one only ever started by its path (seen on 27.0).
+/// Not in Cavvy's tests, unless a live run asks (CAVVY_DESKTOP_LIVE).
+func registerWithLaunchServices() {
+    let env = ProcessInfo.processInfo.environment
+    if env["CAVVY_TEST"] == "1" && env["CAVVY_DESKTOP_LIVE"] != "1" { return }
+    let url = Bundle.main.bundleURL
+    guard url.pathExtension == "app" else { return }
+    DispatchQueue.global(qos: .utility).async { _ = LSRegisterURL(url as CFURL, true) }
+}
+
+registerWithLaunchServices()
 
 // MARK: - Output
 
