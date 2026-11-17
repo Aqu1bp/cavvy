@@ -1821,7 +1821,9 @@ export class Agent {
         }
         if (desktop) {
             tools.push(...desktopServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
-            instructions.push(DESKTOP_INSTRUCTIONS);
+            // First: Claude Code keeps only the start of a server's instructions (about 4,000 characters, below), and
+            // after the others these were cut, so asked for computer use the agent went by other skills instead.
+            instructions.unshift(DESKTOP_INSTRUCTIONS);
         }
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));

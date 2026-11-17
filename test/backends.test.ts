@@ -5081,6 +5081,23 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
     });
 });
 
+describe("Claude Code: Mac apps", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    beforeEach(() => Object.defineProperty(process, "platform", { value: "darwin" }));
+    afterEach(() => Object.defineProperty(process, "platform", platform));
+
+    test("its instructions come first, where Claude Code keeps them, and say they're computer use", async () => {
+        // With sections that would otherwise come before it (sign-ins here; in the app, eight of them).
+        const { run } = await makeAgent({ provider: "claude-code", settings: { desktop: { enabled: true } }, ui: { requestSignIn: async () => ({ signedIn: false }) } as any, ask: () => ({ allow: true }) });
+        await run("go");
+        const conn = logLines().filter((l) => l.mcpConnected === "cavvy").at(-1);
+        expect(conn?.tools).toContain("desktop_control");
+        expect(conn?.instructions.startsWith("# Mac apps (cavvy)")).toBe(true);
+        expect(conn?.instructions.slice(0, 400)).toContain("This is computer use on this Mac.");
+        expect(conn?.instructions).toContain("# Sign-ins (cavvy)");
+    });
+});
+
 describe("Codex: a command naming Cavvy's helper for Mac apps goes to the person", () => {
     // Codex 0.167 runs commands without asking Cavvy in auto and bypass, but runs Cavvy's PreToolUse hook before each
     // one in every mode, and a deny from it stops the command (measured with a stand-in hook server).
