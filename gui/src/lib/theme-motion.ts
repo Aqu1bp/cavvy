@@ -1,6 +1,6 @@
 // A theme layer's keyframes as a CSS animation the compositor runs by itself: transform and opacity only, in steps.
-// Each layer steps only as often as it must for its steps not to show (frameFor), up to 30 a second (FASTEST_MS) for
-// rain, a few for a cloud's drift, all on a grid of 60 a second and each started on a multiple of its own step, so the window is drawn
+// Each layer steps only as often as it must for its steps not to show (frameFor): 60 a second for rain, a few for a
+// cloud's drift, all on a grid of 60 a second and each started on a multiple of its own step, so the window is drawn
 // again only when some layer changes. It runs while --scene-play says (theme-backdrop.css: Cavvy's window seen and
 // focused, and someone at it). The easing is worked into the keyframes: steps() takes no curve of its own, so the path
 // is sampled along the curve and each stretch between samples is walked in steps.
@@ -15,13 +15,8 @@ export { poseAt, restPose, transformOf, type Pose } from "./theme-pose";
 export const SMOOTH_MS = STEP_MS / 3;
 /** 30 a second. */
 const HALF_MS = SMOOTH_MS * 2;
-/**
- * The most a layer steps: 30 a second. Fast layers (rain, seeds blowing) still read as smooth at 30, and each redraw
- * with the window on screen costs CPU (about 1.3 ms, on a floor of about 24 ms a second for any motion).
- */
-export const FASTEST_MS = HALF_MS;
-/** What a layer may step at, slowest first (5, 10, 20, 30 a second): each a whole number of SMOOTH_MS. */
-export const FRAMES = [200, 100, STEP_MS, HALF_MS];
+/** What a layer may step at, slowest first (5, 10, 20, 30, 60 a second): each a whole number of SMOOTH_MS. */
+export const FRAMES = [200, 100, STEP_MS, HALF_MS, SMOOTH_MS];
 
 /** A step doesn't show on a layer that moves less than this in it, in device pixels, or fades less than FADES_IN_A_STEP. */
 const PX_IN_A_STEP = 1;
@@ -61,7 +56,7 @@ export function speedOf(layer: Layer, px: number): { moves: number; fades: numbe
 export function frameFor(layer: Layer, px: number, grain = 1): number {
     const { moves, fades } = speedOf(layer, px);
     const most = PX_IN_A_STEP * Math.max(1, grain);
-    return FRAMES.find((f) => (moves * f) / 1000 <= most && (fades * f) / 1000 <= FADES_IN_A_STEP) ?? FASTEST_MS;
+    return FRAMES.find((f) => (moves * f) / 1000 <= most && (fades * f) / 1000 <= FADES_IN_A_STEP) ?? SMOOTH_MS;
 }
 
 /**

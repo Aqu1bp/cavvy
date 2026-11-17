@@ -12,7 +12,7 @@ import { checkTheme, lookFor, onlyScheme, svgProblem, withNamespace, type Theme 
 import { CellColors, palette, veilCells, veilFor, WINDOW_TEXT } from "../src/themes/palette";
 import { listThemes, removeTheme, restoreTheme, saveTheme } from "../src/themes/store";
 import { STEP_MS } from "../gui/src/lib/stream-clock";
-import { FASTEST_MS, FRAMES, frameFor, gridOf, layerAnimation, poseAt, sceneFrames, SMOOTH_MS } from "../gui/src/lib/theme-motion";
+import { FRAMES, frameFor, gridOf, layerAnimation, poseAt, sceneFrames, SMOOTH_MS } from "../gui/src/lib/theme-motion";
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#123"/></svg>';
 const minimal = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -324,22 +324,22 @@ describe("a scene's motion", () => {
         // A window covering a 1512 × 982 screen at 2x: about 2 device pixels to a stage unit.
         const px = 2;
         const meadow = await layers("meadow");
-        // The seeds blow across: as often as a layer steps, 30 a second. The clouds drift and the grass sways: a few times a second is enough.
-        expect(meadow.filter((l) => l.width === 40).every((l) => frameFor(l, px) === FASTEST_MS)).toBe(true);
+        // The seeds blow across: 60 a second. The clouds drift and the grass sways: a few times a second is enough.
+        expect(meadow.filter((l) => l.width === 40).every((l) => frameFor(l, px) === SMOOTH_MS)).toBe(true);
         expect(meadow.filter((l) => l.width === 1600).every((l) => frameFor(l, px) >= 100)).toBe(true);
         expect(meadow.filter((l) => l.width! >= 240 && l.width! <= 420).every((l) => frameFor(l, px) >= 100)).toBe(true);
         const rain = await layers("night-rain");
         // The rain falls a sheet's height in seconds; the lights breathe.
-        expect(rain.filter((l) => l.height === 2000).every((l) => frameFor(l, px) === FASTEST_MS)).toBe(true);
+        expect(rain.filter((l) => l.height === 2000).every((l) => frameFor(l, px) === SMOOTH_MS)).toBe(true);
         expect(rain.filter((l) => l.height === 670).every((l) => frameFor(l, px) >= 100)).toBe(true);
         // A turn counts as far as the edge goes, a fade by how much it fades in a step.
         const turn = (duration: number) => frameFor({ svg: "", width: 1000, height: 1000, motion: { duration, keyframes: [{ rotate: 0 }, { rotate: 10 }] } }, px);
         expect(turn(600)).toBe(200);
         expect(turn(10)).toBe(100 / 3);
-        expect(turn(4)).toBe(FASTEST_MS);
+        expect(turn(4)).toBe(SMOOTH_MS);
         expect(frameFor({ svg: "", motion: { duration: 10, keyframes: [{ opacity: 0.9 }, { opacity: 1 }] } }, px)).toBe(200);
         expect(frameFor({ svg: "", motion: { duration: 10, keyframes: [{ opacity: 0.5 }, { opacity: 1 }] } }, px)).toBe(100);
-        expect(frameFor({ svg: "", motion: { duration: 2, keyframes: [{ opacity: 0 }, { opacity: 1 }] } }, px)).toBe(FASTEST_MS);
+        expect(frameFor({ svg: "", motion: { duration: 2, keyframes: [{ opacity: 0 }, { opacity: 1 }] } }, px)).toBe(SMOOTH_MS);
         expect(frameFor({ svg: "" }, px)).toBe(200);
         // 30 a second and 20 don't step together: in a scene with both, the 20s go to 30.
         const at = (speed: number): Layer => ({ svg: "", motion: { duration: 10, easing: "linear", keyframes: [{ x: 0 }, { x: speed * 10 }] } });
@@ -350,11 +350,11 @@ describe("a scene's motion", () => {
         expect(sceneFrames([at(9), at(14), at(4)], px)).toEqual([100 / 3, 100 / 3, 100]);
         expect(sceneFrames([at(9), at(4)], px)).toEqual([STEP_MS, 100]);
         // Smaller, a step moves fewer pixels: in a gallery tile a layer steps less often than in the window.
-        expect(frameFor(at(30), px)).toBe(FASTEST_MS);
+        expect(frameFor(at(30), px)).toBe(SMOOTH_MS);
         expect(frameFor(at(30), 0.3)).toBe(100);
         // A layer drawn four screen pixels to each of its own may step one of its own: as often as a sharp one a quarter as fast.
         expect(frameFor(at(30), px, 4)).toBe(STEP_MS);
-        expect(sceneFrames([at(30), at(4)], px, [4])).toEqual([STEP_MS, 100]);
+        expect(sceneFrames([at(30), at(30)], px, [4])).toEqual([STEP_MS, SMOOTH_MS]);
     });
 
     test("eases into and out of each keyframe, and keeps to the timed ones", () => {
