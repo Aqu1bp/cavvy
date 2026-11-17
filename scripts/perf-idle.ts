@@ -1,7 +1,8 @@
 // What the home screen costs while nothing happens: the memory and CPU of every process behind it (the server, the
 // demo's mock model, and Chrome's: browser, GPU, network, the page), on Linux, in the default theme.
 //
-//   bun scripts/perf-idle.ts            measure once, against test/perf-budgets.json (idleHomeMemoryMB, idleHomeCpuPercent)
+//   bun scripts/perf-idle.ts            measure three times; the median of each against test/perf-budgets.json
+//                                       (idleHomeMemoryMB, idleHomeCpuPercent)
 //   bun scripts/perf-idle.ts --runs 5   measure five times and print each, without checking
 //
 // The built GUI (gui/dist: `bun run gui:build` first), the demo server (scripts/gui-demo.ts), and installed Chrome
@@ -157,10 +158,16 @@ if (import.meta.main) {
         process.exit(0);
     }
     const budgets = JSON.parse(readFileSync(join(repo, "test/perf-budgets.json"), "utf8")) as Record<string, number>;
-    const m = await measureIdleHome(chrome);
+    // Three, and the median of each: one slow moment on a shared runner doesn't fail the build.
+    const all: Awaited<ReturnType<typeof measureIdleHome>>[] = [];
+    for (let i = 0; i < 3; i++) {
+        all.push(await measureIdleHome(chrome));
+        console.log(JSON.stringify(all.at(-1)));
+    }
+    const median = (xs: number[]) => xs.sort((a, b) => a - b)[1]!;
     const failures: string[] = [];
-    for (const [name, measured] of [["idleHomeMemoryMB", m.memoryMB], ["idleHomeCpuPercent", m.cpuPercent]] as const) {
-        console.log(`${name}: ${measured} (budget ${budgets[name]})`);
+    for (const [name, measured] of [["idleHomeMemoryMB", median(all.map((m) => m.memoryMB))], ["idleHomeCpuPercent", median(all.map((m) => m.cpuPercent))]] as const) {
+        console.log(`${name}: ${measured}, the median of 3 (budget ${budgets[name]})`);
         // Over fails; under doesn't: these move with the machine, and being under says nothing about the code.
         if (measured > budgets[name]!) failures.push(`${name}: ${measured}, over its budget of ${budgets[name]}`);
     }
