@@ -300,13 +300,14 @@
     /* Opaque, like the diff in it: its header and gutters cover what scrolls under them. */
     background: var(--well-solid);
     /* Off screen, not laid out or painted (each header sticks, so each would be drawn on every scroll).
-       Until it has been drawn, as tall as its placeholder (.rf-ph) would make it, so the scrollbar holds still. */
+       Until it has been drawn, as tall as its placeholder (.rf-ph) would make it, with its two 1px borders, so the
+       scrollbar holds still. */
     content-visibility: auto;
-    contain-intrinsic-size: auto calc(2px + 38 * var(--sp) + var(--held, calc(var(--rows, 0) * 1.312rem)));
+    contain-intrinsic-size: auto calc(2 * 1px + 38 * var(--sp) + var(--held, calc(var(--rows, 0) * 1.312rem)));
 }
 
 .rf.closed {
-    contain-intrinsic-size: auto calc(2px + 38 * var(--sp));
+    contain-intrinsic-size: auto calc(2 * 1px + 38 * var(--sp));
 }
 
 .rf-h {
