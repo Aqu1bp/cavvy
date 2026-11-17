@@ -210,8 +210,8 @@ describe("asking for an app", () => {
         const s = session();
         const r = await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
         expect(r.content).toBe(`You can use TextEdit until this session ends. ${ACCESSIBILITY_LINE}`);
-        // macOS 27 calls the list Device Control and Data Access.
-        expect(ACCESSIBILITY_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Accessibility (on macOS 27, Device Control and Data Access), then try again.");
+        // Newer macOS calls the list Device Control and Data Access.
+        expect(ACCESSIBILITY_LINE).toBe("Turn on Cavvy Desktop Control in System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access), then try again.");
         expect(helper.calls.filter((c) => c.op === "status" && c.ask === "accessibility")).toHaveLength(1);
         // A snapshot says the same, and doesn't show the prompt again.
         const snap = await DesktopSnapshotTool.run({}, ctxWith(s));
@@ -431,7 +431,7 @@ describe("what reaches the Mac", () => {
             expect(staleLine("screen")).toBe(`Cavvy Desktop Control was updated, and macOS no longer counts its switch: in System Settings → Privacy & Security → Screen & System Audio Recording, remove it with −, add it again with + (it's in ${join(paths.home(), "desktop")}) and turn it on, then try again.`);
             helper.accessibility = false;
             expect(await DesktopSnapshotTool.run({}, ctxWith(s))).toMatchObject({ isError: true, content: staleLine("accessibility") });
-            expect(staleLine("accessibility")).toContain("in System Settings → Privacy & Security → Accessibility (on macOS 27, Device Control and Data Access), remove it with −");
+            expect(staleLine("accessibility")).toContain("in System Settings → Privacy & Security → Accessibility (on newer macOS, Device Control and Data Access), remove it with −");
         } finally {
             rmSync(record, { force: true });
         }

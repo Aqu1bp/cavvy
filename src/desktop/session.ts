@@ -17,9 +17,9 @@ export { DesktopError };
 const IDLE_MS = 60_000;
 
 const PANE = "System Settings → Privacy & Security";
-// macOS 27 lists the apps that may control the Mac under "Device Control and Data Access" (seen on 27.0); earlier
-// versions, under "Accessibility".
-const CONTROL = `${PANE} → Accessibility (on macOS 27, Device Control and Data Access)`;
+// Newer macOS lists the apps that may control the Mac under "Device Control and Data Access" (seen on 27.0, which
+// version first did isn't known here); earlier ones, under "Accessibility".
+const CONTROL = `${PANE} → Accessibility (on newer macOS, Device Control and Data Access)`;
 const SCREEN = `${PANE} → Screen & System Audio Recording`;
 export const ACCESSIBILITY_LINE = `Turn on ${HELPER_NAME} in ${CONTROL}, then try again.`;
 export const SCREEN_LINE = `Turn on ${HELPER_NAME} in ${SCREEN}, then try again.`;
@@ -34,7 +34,7 @@ export function staleLine(g: "accessibility" | "screen"): string {
     return `${HELPER_NAME} was updated, and macOS no longer counts its switch: in ${g === "screen" ? SCREEN : CONTROL}, remove it with −, add it again with + (it's in ${where}) and turn it on, then try again.`;
 }
 const NO_APPS = "No app is yours to use yet: ask with DesktopControl action=request_access app=<name>.";
-export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on macOS 27, Device Control and Data Access) and Input Monitoring, then try again.`;
+export const WATCH_LINE = `In ${PANE}, check that ${HELPER_NAME} is on under Accessibility (on newer macOS, Device Control and Data Access) and Input Monitoring, then try again.`;
 export const USED_NOTE = "The user used the Mac since you last looked: the screen may not be where you left it.";
 const STOPPED = "Stopped: the user used the Mac (the mouse or keyboard) during this action, so it's unfinished. Take a new snapshot before going on.";
 
