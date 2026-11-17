@@ -5049,6 +5049,28 @@ describe("Codex: its own computer use, as the ChatGPT app set it up", () => {
         expect(notices(events)).not.toContain(LINE);
     });
 
+    test("a never-offered app its service refused wasn't used: titled as refused, and the turn goes on", async () => {
+        process.env.FAKE_CU_FAIL = "refused";
+        process.env.FAKE_CU_APP = "com.apple.Terminal";
+        process.env.FAKE_CU_APP_NAME = "Terminal";
+        const { run, events, asked } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        expect(await run("go")).toBe("done");
+        expect(notices(events).join("\n")).not.toContain("which is never offered");
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(false);
+        expect(toolEnds(events)[0]).toMatchObject({ title: "Mac apps: Terminal refused" });
+        expect(appAsks(asked)).toEqual([]);
+    });
+
+    test("a never-offered app a call used anyway (a yes kept elsewhere) stops the turn", async () => {
+        process.env.FAKE_CU_FAIL = "used";
+        process.env.FAKE_CU_APP = "com.apple.Terminal";
+        process.env.FAKE_CU_APP_NAME = "Terminal";
+        const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: () => ({ allow: true }) });
+        await run("go");
+        expect(notices(events)).toContain("warn: Stopped: Codex used Terminal, which is never offered.");
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+    });
+
     test("an app declined or the model's code failing isn't a startup failure", async () => {
         const { run, events } = await makeAgent({ provider: "codex", settings: on, ask: (req) => ({ allow: req.tool.name !== "DesktopControl" }) });
         await run("go");

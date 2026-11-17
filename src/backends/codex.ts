@@ -1841,7 +1841,10 @@ export class CodexTurn {
                 this.refusals.delete(id);
                 const app = this.computerUse && isComputerUseServer(item.server) ? toolSurfaceApp(item.result) : undefined;
                 const appName = app ? (this.appNames.get(app.toLowerCase()) ?? appNameFromId(app)) : undefined;
-                if (appName) open.title = computerUseTitle(String(item.tool ?? ""), open.input, appName);
+                // Its result names the app it was for, used or refused: only a call that succeeded used it.
+                const used = !(Boolean(item.error) || failed || item.result?.isError === true);
+                const never = app && appName ? neverOfferedApp({ name: appName, bundleId: app }) : undefined;
+                if (appName) open.title = never && !used ? `Mac apps: ${appName} refused` : computerUseTitle(String(item.tool ?? ""), open.input, appName);
                 this.endItem(id, open, content, Boolean(item.error) || failed, undefined, Boolean(appName), !refused);
                 // Its service couldn't be started: Cavvy's Mac app tools take its place.
                 if (this.computerUse && isComputerUseServer(item.server) && (Boolean(item.error) || failed || item.result?.isError === true) && computerUseStartFailed(content)) {
@@ -1849,8 +1852,8 @@ export class CodexTurn {
                     this.computerUseFailed(thread ? { thread, turnId: sub!.turnId, sub } : undefined, content.trimStart().split("\n", 1)[0]);
                 }
                 // Never offered, it was refused when asked for: one used anyway (a yes Codex kept from elsewhere) stops the turn.
-                const why = app && appName ? neverOfferedApp({ name: appName, bundleId: app }) : undefined;
-                if (why) {
+                // One the call was refused (ChatGPT's computer use refuses Terminal itself) wasn't used.
+                if (never && used) {
                     this.sink.emit({ type: "notice", level: "warn", message: `Stopped: Codex used ${appName}, which is never offered.` });
                     const thread = sub ? [...this.subs].find(([, s]) => s === sub)?.[0] : undefined;
                     this.interrupt(thread ? { thread, turnId: sub!.turnId } : undefined);
