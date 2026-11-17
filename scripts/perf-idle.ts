@@ -8,7 +8,7 @@
 // The built GUI (gui/dist: `bun run gui:build` first), the demo server (scripts/gui-demo.ts), and installed Chrome
 // (or CAVVY_TEST_CHROME). Memory is the processes' proportional set size once settled; CPU is their time over 30 s, as
 // a share of one core. Both vary from run to run and machine to machine, so a budget has room above what a runner
-// measures (docs/performance-targets-v2.md, CI budgets): it catches a regression, not noise. A Mac's figures are
+// measures (docs/performance-targets-v2.md, Guardrails): it catches a regression, not noise. A Mac's figures are
 // desktop-electron/bench-mac.ts's.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

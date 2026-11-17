@@ -12,6 +12,6 @@
     "idleLayoutsAfterReply": 2,
     "idleStyleUpdatesAfterReply": 2,
     "idleEntrancesRunningAfterReply": 0,
-    "idleHomeMemoryMB": 900,
-    "idleHomeCpuPercent": 5
+    "idleHomeMemoryMB": 610,
+    "idleHomeCpuPercent": 2
 }
