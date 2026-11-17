@@ -123,7 +123,7 @@ export interface HelperIdentity {
 
 export const HELPER_IDENTITY: HelperIdentity = { name: HELPER_NAME, bundleId: HELPER_BUNDLE_ID };
 /**
- * A test copy's (desktop-electron/pack.ts --test-helper, scripts/test-copy.ts): an entry of its own in System Settings,
+ * A test copy's (desktop-electron/pack.ts --test-copy, scripts/test-copy.ts): an entry of its own in System Settings,
  * so trying a build never touches the grants the person gave the helper they use.
  */
 export const TEST_HELPER_IDENTITY: HelperIdentity = { name: `${HELPER_NAME} (Test)`, bundleId: `${HELPER_BUNDLE_ID}.test` };

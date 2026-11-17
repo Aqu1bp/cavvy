@@ -5,8 +5,8 @@
 //
 //   bun desktop-electron/pack.ts            → desktop-electron/out/Cavvy-darwin-<arch>/Cavvy.app
 //   bun desktop-electron/pack.ts --server-builds     the same, carrying this build for Linux servers (pack below)
-//   bun desktop-electron/pack.ts --test-helper       for a test copy: its Mac app helper has an identity of its own
-//                                                    (scripts/test-copy.ts)
+//   bun desktop-electron/pack.ts --test-copy         a test copy: Cavvy Test.app, dev.cavvy.desktop.test, and its Mac
+//                                                    app helper with an identity of its own (scripts/test-copy.ts)
 //
 // ELECTRON_ZIP_DIR names a folder holding electron-v<version>-darwin-<arch>.zip to build offline. The server's Bun is
 // downloaded once, unless it's the Bun doing the building.
@@ -14,7 +14,7 @@
 import { packager } from "@electron/packager";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { appInfo } from "./app-info";
+import { appInfo, TEST_COPY_APP } from "./app-info";
 
 const here = import.meta.dir;
 const repo = resolve(here, "..");
@@ -38,13 +38,14 @@ function run(cmd: string[], cwd = repo) {
  * Builds the app; returns where it is. `install`: run `bun install` here first (the installer does).
  * `serverBuilds`: the app carries this build made for Linux servers too (Contents/Resources/server-builds), so it
  * can put Cavvy on a server: an installed app has no checkout to make one from (src/servers/build.ts). The installer
- * asks for them; a build made to try something out goes without, and can't set a server up. `testHelper`: the Mac
- * app helper is Cavvy Desktop Control (Test), dev.cavvy.desktop.control.test, so trying the copy has entries of its own
- * in System Settings; release builds and desktop:install never ask for it.
+ * asks for them; a build made to try something out goes without, and can't set a server up. `testCopy`: the app is
+ * Cavvy Test (dev.cavvy.desktop.test) and its Mac app helper Cavvy Desktop Control (Test)
+ * (dev.cavvy.desktop.control.test), so the copy shares no privacy entry with the Cavvy in use, and links meant for that
+ * one can't open it; release builds and desktop:install never ask for it.
  */
-export async function pack(o: { install?: boolean; serverBuilds?: boolean; testHelper?: boolean } = {}): Promise<string> {
+export async function pack(o: { install?: boolean; serverBuilds?: boolean; testCopy?: boolean } = {}): Promise<string> {
     if (process.platform !== "darwin") throw new Error("The desktop app is built for macOS only for now.");
-    const info = appInfo();
+    const info = o.testCopy ? { ...appInfo(), ...TEST_COPY_APP } : appInfo();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
     const stage = join(here, "stage");
     if (o.install) run(["bun", "install"], here);
@@ -101,7 +102,7 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean; testH
     // The Mac app helper, built here so it's signed with the app (desktop:install signs it with your certificate:
     // macOS's grants for it then outlast a new version). Without swiftc, Cavvy builds it on first use instead.
     const { buildIn, HELPER_IDENTITY, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper.ts");
-    const helper = o.testHelper ? TEST_HELPER_IDENTITY : HELPER_IDENTITY;
+    const helper = o.testCopy ? TEST_HELPER_IDENTITY : HELPER_IDENTITY;
     await buildIn(join(app, "Contents", "Helpers"), helper).then(
         () => console.log(`built ${helper.name}.app`),
         (e: Error) => console.warn(`${helper.name} isn't in this build (${e.message}): Cavvy builds it on first use.`),
@@ -114,4 +115,4 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean; testH
     return app;
 }
 
-if (import.meta.main) console.log(`packaged: ${await pack({ serverBuilds: process.argv.includes("--server-builds"), testHelper: process.argv.includes("--test-helper") })}`);
+if (import.meta.main) console.log(`packaged: ${await pack({ serverBuilds: process.argv.includes("--server-builds"), testCopy: process.argv.includes("--test-copy") })}`);

@@ -13,6 +13,9 @@ export interface AppInfo {
     minimumSystemVersion: string;
 }
 
+/** A test copy's name and bundle id (pack.ts --test-copy, scripts/test-copy.ts): apart from the app's own. */
+export const TEST_COPY_APP = { productName: "Cavvy Test", identifier: "dev.cavvy.desktop.test" };
+
 /** `dir`: a checkout's desktop-electron folder (the updater reads the one it builds). */
 export function appInfo(dir = import.meta.dir): AppInfo {
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { productName: string; version: string; cavvy: { identifier: string; category: string; minimumSystemVersion: string } };
