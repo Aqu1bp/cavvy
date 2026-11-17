@@ -4,7 +4,7 @@
 // running process sees change (with a freshly started helper every few seconds too, in case it doesn't), and every two
 // seconds with a freshly started helper for Screen Recording, which macOS tells only a process that starts after it.
 
-import { DesktopError, refuseRealInTests, type Grant } from "./helper";
+import { DesktopError, HELPER_BUNDLE_ID, refuseRealInTests, type Grant } from "./helper";
 import type { AccessInteraction, InteractionResponse } from "../server/protocol";
 import { run } from "../simulator/simctl";
 
@@ -97,6 +97,8 @@ export interface AccessDeps {
     open(g: Grant): Promise<boolean>;
     /** Whether the helper has the grant: the running one, or (`fresh`) one started for the check. */
     check(g: Grant, fresh: boolean): Promise<boolean>;
+    /** Takes the helper's grant out of macOS's list, so it can be given again: why not, if it couldn't. */
+    reset(g: Grant): Promise<string | undefined>;
     timing?: AccessTiming;
 }
 
@@ -107,6 +109,26 @@ export async function openSettingsPage(g: Grant): Promise<boolean> {
     return r?.code === 0;
 }
 
+/** The helper ids Reset access may ever name: the helper's own (and its test copy's). Never another app's. */
+export const RESETTABLE_IDS: readonly string[] = [HELPER_BUNDLE_ID];
+
+/** tccutil's name for each grant. */
+const TCC_SERVICES: Record<Grant, string> = { accessibility: "Accessibility", screen: "ScreenCapture" };
+
+/** The command that takes the helper's grant out: only ever for one of its own ids, never for every app. */
+export function resetCommand(g: Grant, bundleId: string): string[] {
+    if (!RESETTABLE_IDS.includes(bundleId)) throw new DesktopError(`Not done: access is reset only for ${RESETTABLE_IDS.join(" or ")}.`);
+    return ["/usr/bin/tccutil", "reset", TCC_SERVICES[g], bundleId];
+}
+
+/** Resets the helper's grant with tccutil. Never in tests (it would change the Mac's privacy settings). */
+export async function resetGrant(g: Grant, bundleId: string): Promise<string | undefined> {
+    const args = resetCommand(g, bundleId);
+    refuseRealInTests("run tccutil");
+    const r = await run(args, { timeoutMs: 15_000 }).catch((e: Error) => ({ code: 1, stdout: "", stderr: e.message }));
+    return r.code === 0 ? undefined : (r.stderr || r.stdout).trim().split("\n")[0] || "tccutil failed";
+}
+
 /** How the grant was seen, for the log: by the running helper, or one started to check. */
 export type Seen = "running" | "fresh";
 
@@ -114,12 +136,18 @@ export type Seen = "running" | "fresh";
  * Shows the card and waits for the grant: resolves once the helper has it (and how it was seen), or throws what the
  * agent is told when the person closed the card, the turn stopped, or nothing changed within the limit.
  */
-export async function obtain(g: Grant, card: AccessCard, deps: AccessDeps, o: { name: string; page: string; line: string; signal?: AbortSignal }): Promise<Seen> {
+export async function obtain(g: Grant, card: AccessCard, deps: AccessDeps, o: { name: string; page: string; line: () => string; stale?: boolean; signal?: AbortSignal }): Promise<Seen> {
     const timing = deps.timing ?? ACCESS_TIMING;
     const view: AccessView = { grant: g, title: ACCESS_TITLES[g], step: "ask", name: o.name };
-    card.show(view);
+    card.show(o.stale ? { ...view, step: "stale" } : view);
     try {
         let action = await card.next();
+        // The switch shows on, but macOS no longer counts it: taken out, then asked for as the first time.
+        while (action === "reset") {
+            const error = await deps.reset(g).catch((e: Error) => e.message);
+            card.show(error ? { ...view, step: "stale", error } : view);
+            action = await card.next();
+        }
         while (action === "open") {
             await deps.request(g).catch(() => undefined);
             const opened = await deps.open(g).catch(() => false);
@@ -127,11 +155,11 @@ export async function obtain(g: Grant, card: AccessCard, deps: AccessDeps, o: { 
             // The switch, or the person: whichever comes first. Another Open Settings opens the page again.
             const pressed = card.next();
             const seen = await untilGranted(g, deps, timing, pressed, o.signal);
-            if (seen === "timeout") throw new DesktopError(`The switch wasn't turned on in ${Math.round(timing.limitMs / 60_000)} minutes. ${o.line}`, g);
+            if (seen === "timeout") throw new DesktopError(`The switch wasn't turned on in ${Math.round(timing.limitMs / 60_000)} minutes. ${o.line()}`, g);
             if (seen !== "pressed") return seen;
             action = await pressed;
         }
-        throw new DesktopError(o.signal?.aborted ? "Interrupted by user." : `The user didn't turn on ${o.name}. ${o.line}`, o.signal?.aborted ? "cancelled" : g);
+        throw new DesktopError(o.signal?.aborted ? "Interrupted by user." : `The user didn't turn on ${o.name}. ${o.line()}`, o.signal?.aborted ? "cancelled" : g);
     } finally {
         card.close();
     }

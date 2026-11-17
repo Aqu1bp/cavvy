@@ -10,7 +10,7 @@ isolate();
 const { DesktopActTool, DesktopControlTool, DesktopScreenshotTool, DesktopSnapshotTool, DESKTOP_TOOLS, desktopAvailable, desktopServerTools, nativeDesktopCall, servedDesktopName, servedDesktopTool } = await import("../src/tools/desktop-tools");
 const { stopServer } = await import("../src/mcp/server");
 const { DesktopSession, setDesktopHelperStarter, setDesktopAccess, resetDesktop, parseKey, staleLine, ACCESSIBILITY_LINE, SCREEN_LINE, USED_NOTE, WATCH_LINE } = await import("../src/desktop/session");
-const { ACCESS_TITLES, windowCard } = await import("../src/desktop/access");
+const { ACCESS_TITLES, resetCommand, resetGrant, windowCard } = await import("../src/desktop/access");
 type AccessCard = import("../src/desktop/access").AccessCard;
 type AccessView = import("../src/desktop/access").AccessView;
 type AccessAction = import("../src/desktop/access").AccessAction;
@@ -996,4 +996,65 @@ test("a window's card: presses wait to be asked for, it shows and goes once, and
     card.show(view);
     expect(shown).toHaveLength(2);
     expect(await card.next()).toBe("close");
+});
+
+describe("Reset access, for a switch macOS no longer counts", () => {
+    test("tccutil is only ever told the helper's own bundle id, and the grant's service", async () => {
+        expect(resetCommand("accessibility", "dev.cavvy.desktop.control")).toEqual(["/usr/bin/tccutil", "reset", "Accessibility", "dev.cavvy.desktop.control"]);
+        expect(resetCommand("screen", "dev.cavvy.desktop.control")).toEqual(["/usr/bin/tccutil", "reset", "ScreenCapture", "dev.cavvy.desktop.control"]);
+        // Never without an id (every app's grant), nor for another app, nor one that only starts the same.
+        for (const id of ["", "com.apple.Terminal", "dev.cavvy.desktop", "dev.cavvy.desktop.control.other", "dev.cavvy.desktop.control ", " dev.cavvy.desktop.control", "All"]) {
+            expect(() => resetCommand("accessibility", id)).toThrow("Not done: access is reset only for");
+            await expect(resetGrant("accessibility", id)).rejects.toThrow("Not done");
+        }
+        // Not run in tests: refused, and counted (test/preload.ts would fail this test, so it's taken back here).
+        await expect(resetGrant("accessibility", "dev.cavvy.desktop.control")).rejects.toMatchObject({ code: "test" });
+        const { REAL_HELPER_REFUSED } = await import("../src/desktop/helper");
+        const g = globalThis as Record<symbol, number>;
+        expect(g[REAL_HELPER_REFUSED]).toBe(1);
+        g[REAL_HELPER_REFUSED] = 0;
+    });
+
+    test("the card offers Reset access; once it's done, it asks as the first time, and the action carries on", async () => {
+        const record = join(paths.home(), "desktop", "build.json");
+        mkdirSync(dirname(record), { recursive: true });
+        const resets: [string, string][] = [];
+        let fail: string | undefined = "tccutil: No such bundle identifier";
+        const opened: string[] = [];
+        setDesktopAccess({ open: async (g) => (opened.push(g), true), reset: async (g, id) => (resets.push([g, id]), fail), timing: { everyMs: { accessibility: 5, screen: 5 }, freshEvery: 1000, limitMs: 2000 } });
+        let card: FakeCard | undefined;
+        const ctx = (s: InstanceType<typeof DesktopSession>) => ({ ...ctxWith(s), ui: { accessCard: () => (card = new FakeCard()) } });
+        const until = async (ok: () => boolean) => {
+            for (let i = 0; i < 400 && !ok(); i++) await Bun.sleep(5);
+            expect(ok()).toBe(true);
+        };
+        try {
+            writeFileSync(record, JSON.stringify({ hash: "new", trusted: "old" }));
+            const s = session();
+            await DesktopControlTool.run({ action: "request_access", app: "TextEdit" }, ctxWith(s));
+            helper.accessibility = false;
+            const snap = DesktopSnapshotTool.run({}, ctx(s));
+            await until(() => Boolean(card?.views.length));
+            expect(card!.last).toMatchObject({ grant: "accessibility", step: "stale", name: "Cavvy Desktop Control" });
+            // It didn't work: said on the card, which still offers it.
+            card!.press("reset");
+            await until(() => card!.views.length === 2);
+            expect(card!.last).toMatchObject({ step: "stale", error: "tccutil: No such bundle identifier" });
+            fail = undefined;
+            card!.press("reset");
+            await until(() => card!.views.length === 3);
+            expect(card!.last).toMatchObject({ step: "ask" });
+            expect(card!.last?.error).toBeUndefined();
+            expect(resets).toEqual([["accessibility", "dev.cavvy.desktop.control"], ["accessibility", "dev.cavvy.desktop.control"]]);
+            // A first time again: this build's lack of it isn't a stale switch any more.
+            expect(JSON.parse(readFileSync(record, "utf8")).trusted).toBeUndefined();
+            card!.press("open");
+            await until(() => card!.last?.step === "waiting");
+            expect(opened).toEqual(["accessibility"]);
+            helper.accessibility = true;
+            expect((await snap).isError).toBeUndefined();
+        } finally {
+            rmSync(record, { force: true });
+        }
+    });
 });

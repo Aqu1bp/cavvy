@@ -6,12 +6,12 @@
 // checked by the helper right before each event goes out, against what's on the screen then.
 
 import { randomBytes } from "crypto";
-import { obtain, openSettingsPage, type AccessAsker, type AccessTiming, type Seen } from "./access";
+import { obtain, openSettingsPage, resetGrant, type AccessAsker, type AccessTiming, type Seen } from "./access";
 import { neverOffered, neverOfferedMessage } from "./apps";
 import { DesktopGrants, type GrantedApp } from "./grants";
 import { homedir } from "os";
 import { dirname } from "path";
-import { DesktopError, DesktopHelper, HELPER_NAME, helperApp, helperBinary, noteTrusted, trustedBefore, type DesktopHelperLike, type Grant, type Reply } from "./helper";
+import { DesktopError, DesktopHelper, HELPER_NAME, forgetTrusted, helperApp, helperBinary, helperBundleId, noteTrusted, trustedBefore, type DesktopHelperLike, type Grant, type Reply } from "./helper";
 import { outlineApp, refStill, type DesktopNode, type DesktopRef } from "./outline";
 
 export { DesktopError };
@@ -54,6 +54,7 @@ let promptedAccessibility = false;
 let starter: () => Promise<DesktopHelperLike> = async () => DesktopHelper.start(await helperBinary());
 
 let openPage: (g: Grant) => Promise<boolean> = openSettingsPage;
+let resetter: (g: Grant, bundleId: string) => Promise<string | undefined> = resetGrant;
 let timing: AccessTiming | undefined;
 
 /** Tests: start a fake helper instead. */
@@ -61,9 +62,10 @@ export function setDesktopHelperStarter(fn: (() => Promise<DesktopHelperLike>) |
     starter = fn ?? (async () => DesktopHelper.start(await helperBinary()));
 }
 
-/** Tests: open no page (say whether it opened instead), and check for the switch at once. */
-export function setDesktopAccess(o: { open?: (g: Grant) => Promise<boolean>; timing?: AccessTiming } | undefined) {
+/** Tests: open no page (say whether it opened instead), reset nothing (say what was asked), check for the switch at once. */
+export function setDesktopAccess(o: { open?: (g: Grant) => Promise<boolean>; reset?: (g: Grant, bundleId: string) => Promise<string | undefined>; timing?: AccessTiming } | undefined) {
     openPage = o?.open ?? openSettingsPage;
+    resetter = o?.reset ?? resetGrant;
     timing = o?.timing;
 }
 
@@ -186,7 +188,7 @@ async function access(g: Grant, ask?: SessionAsker): Promise<void> {
     let p = asking.get(g);
     if (!p) {
         const card = ask.card(ask.signal ?? new AbortController().signal);
-        p = obtain(g, card, accessDeps, { name: HELPER_NAME, page: g === "screen" ? SCREEN : CONTROL, line: grantLine(g), signal: ask.signal }).finally(() => asking.delete(g));
+        p = obtain(g, card, accessDeps, { name: HELPER_NAME, page: g === "screen" ? SCREEN : CONTROL, line: () => grantLine(g), stale: trustedBefore(g), signal: ask.signal }).finally(() => asking.delete(g));
         asking.set(g, p);
     }
     const seen = await p;
@@ -209,6 +211,11 @@ const accessDeps = {
         } finally {
             probe.stop();
         }
+    },
+    async reset(g: Grant): Promise<string | undefined> {
+        const error = await resetter(g, helperBundleId());
+        if (!error) forgetTrusted(g);
+        return error;
     },
     get timing() {
         return timing;

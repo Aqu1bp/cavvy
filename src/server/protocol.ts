@@ -538,12 +538,14 @@ export interface AccessInteraction {
     grant: "accessibility" | "screen";
     /** The question: "Let Cavvy control apps on this Mac?" */
     title: string;
-    /** ask: Open Settings. waiting: for the switch. */
-    step: "ask" | "waiting";
+    /** ask: Open Settings. waiting: for the switch. stale: the switch is on but macOS no longer counts it: Reset access. */
+    step: "ask" | "waiting" | "stale";
     /** The helper, as System Settings lists it. */
     name: string;
     /** Where to turn it on, when the link couldn't open the page. */
     page?: string;
+    /** Why Reset access didn't work. */
+    error?: string;
 }
 
 /** One sign-in in a card that offers several (a new server's): what it is, and whether it's done. */
@@ -640,7 +642,7 @@ export type InteractionResponse =
     | ({ kind: "signin" } & SignInAction)
     | { kind: "confirm"; choice: "yes" | "other" | "no" }
     /** A button in a grant's card, not an answer: the card stays until the switch is on or it's closed. */
-    | { kind: "access"; action: "open" | "close" };
+    | { kind: "access"; action: "open" | "reset" | "close" };
 
 // ---------------------------------------------------------------------------
 // Session state

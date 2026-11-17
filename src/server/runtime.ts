@@ -2546,7 +2546,7 @@ export class Runtime {
             return this.settle(interactionId, { kind: "confirm", choice });
         }
         // A button in a grant's card: the card stays until the switch is on, or it's closed.
-        if (r.kind === "access") return this.accessPresses.get(interactionId)?.(r.action === "open" ? "open" : "close");
+        if (r.kind === "access") return this.accessPresses.get(interactionId)?.(r.action === "open" || r.action === "reset" ? r.action : "close");
         // A step in a sign-in's card: the card stays until the sign-in itself is over.
         if (r.kind === "signin") {
             try {

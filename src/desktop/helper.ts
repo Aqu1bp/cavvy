@@ -72,6 +72,12 @@ export function noteTrusted(g: Grant = "accessibility") {
     if (r.hash && r[field(g)] !== r.hash) writeRecord({ ...r, [field(g)]: r.hash });
 }
 
+/** Its grants were reset (tccutil): a later lack of them is a first time again, not a build macOS no longer counts. */
+export function forgetTrusted(g: Grant) {
+    const r = record();
+    if (r[field(g)]) writeRecord({ ...r, [field(g)]: undefined });
+}
+
 /** An earlier build had that grant and this one hasn't: macOS keeps the switch on but no longer counts it. */
 export function trustedBefore(g: Grant = "accessibility"): boolean {
     const r = record();
@@ -130,6 +136,15 @@ function carried(execPath = process.execPath): string | undefined {
 /** The helper bundle Cavvy uses: the app's own, else the one built in Cavvy's home (`execPath`: the server's, for tests). */
 export function helperApp(execPath = process.execPath): string {
     return carried(execPath) ?? join(dir(), APP);
+}
+
+/** The bundle id of the helper Cavvy uses, as its Info.plist says: what macOS keeps its grants under. */
+export function helperBundleId(app = helperApp()): string {
+    try {
+        return /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(join(app, "Contents", "Info.plist"), "utf8"))?.[1] ?? HELPER_BUNDLE_ID;
+    } catch {
+        return HELPER_BUNDLE_ID;
+    }
 }
 
 /** The helper, built in Cavvy's home when the app carries none of this source and it isn't built yet (a few seconds). */
