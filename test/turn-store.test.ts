@@ -4,6 +4,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
 import { dirname, join } from "path";
+import { randomBytes } from "crypto";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentRun, SessionSnapshot, Turn } from "../src/server/protocol";
 
@@ -395,19 +396,44 @@ test("a store not written whole, or of another version, isn't read", async () =>
     expect(TurnStore.of(log, "s", [log]).read()).toBeUndefined();
 });
 
+test("long turns are kept compressed, and turns kept as JSON before still read", async () => {
+    const dir = tempDir("cavvy-turn-store-zstd-");
+    const log = join(dir, "s.jsonl");
+    writeFileSync(log, '{"t":"meta"}\n');
+    const store = TurnStore.of(log, "s", [log]);
+    const long = { id: "t1", startedAt: 1, status: "done", blocks: [{ t: "text", id: "b", text: "a line of a tool's output\n".repeat(4000) }] } as Turn;
+    const short = { id: "t2", startedAt: 2, status: "done", blocks: [{ t: "text", id: "c", text: "ok" }] } as Turn;
+    const a = store.put(long);
+    const b = store.put(short);
+    expect(a.len).toBeLessThan(JSON.stringify(long).length / 20);
+    expect(b.len).toBe(JSON.stringify(short).length);
+    expect(store.get(a.at, a.len)).toEqual(long);
+    expect(store.get(b.at, b.len)).toEqual(short);
+    // One written as JSON whatever its length (a store from before): read as it is.
+    const json = JSON.stringify(long);
+    const end = store.size;
+    const fd = openSync(join(dir, "turns", "s.jsonl"), "r+");
+    writeSync(fd, json + "\n", end);
+    closeSync(fd);
+    store.close();
+    expect(TurnStore.of(log, "s", [log]).get(end, Buffer.byteLength(json))).toEqual(long);
+});
+
 test("a store that's mostly old versions of its turns is rewritten without them", async () => {
     const dir = tempDir("cavvy-turn-store-compact-");
     const log = join(dir, "s.jsonl");
     writeFileSync(log, '{"t":"meta"}\n');
     const store = TurnStore.of(log, "s", [log]);
-    const turn = (n: number) => ({ id: "t1", startedAt: 1, status: "done", blocks: [{ t: "text", id: "b", text: `${n} `.padEnd(1024 * 1024, "x") }] }) as Turn;
+    // Text that doesn't compress (the store compresses what it keeps), so a few versions are megabytes.
+    const noise = randomBytes(768 * 1024).toString("base64");
+    const turn = (n: number) => ({ id: "t1", startedAt: 1, status: "done", blocks: [{ t: "text", id: "b", text: `${n} ${noise}` }] }) as Turn;
     let at = store.put(turn(0));
     // Few old versions: left as they are.
     expect(await store.compact([at])).toBeUndefined();
-    for (let n = 1; n <= 12; n++) at = store.put(turn(n));
+    for (let n = 1; n <= 20; n++) at = store.put(turn(n));
     const moved = (await store.compact([at]))!;
     expect(store.size).toBe(at.len + 1);
-    expect(store.get(moved.get(at.at)!, at.len)).toEqual(turn(12));
+    expect(store.get(moved.get(at.at)!, at.len)).toEqual(turn(20));
     store.close();
 });
 

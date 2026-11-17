@@ -16,6 +16,7 @@
 
 import { closeSync, existsSync, fstatSync, fsync, readdirSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { basename, dirname, join } from "path";
+import { constants as zlib, zstdCompressSync, zstdDecompressSync } from "zlib";
 import type { UiLight } from "./history";
 import type { AgentRun, Turn } from "./protocol";
 import { linesFromEnd } from "../util/lines";
@@ -24,6 +25,14 @@ import { linesFromEnd } from "../util/lines";
 const VERSION = 4;
 /** Old versions of turns the store may hold beyond twice what's current, before it's rewritten without them. */
 const COMPACT_SLACK = 8 * 1024 * 1024;
+/**
+ * A turn this long or longer is kept compressed (zstd, its fastest level): the store was a second copy of the logs,
+ * nearly as large (100,000 items: 112 MB beside a 132 MB log). Each turn on its own (Linux): the generated sessions'
+ * 7-7.8x smaller, real agent output (a Claude Code transcript, 147 MB) 2.3x a line and 3.2x for ten together, at
+ * 1.7-4 ms a MB to write and 1.1-2 ms a MB to read. Shorter ones gain little. A turn written as JSON (before this, or
+ * short) starts with `{`: read as it is.
+ */
+const COMPRESS_FROM = 512;
 /** How much of a log's end is kept, to tell later that it's the same log, unchanged. */
 const TAIL_BYTES = 256;
 
@@ -301,7 +310,7 @@ export class TurnStore {
             throw new Error("The turn store is incomplete.");
         }
         try {
-            return JSON.parse(b.toString("utf-8")) as T;
+            return JSON.parse((b[0] === 0x7b ? b : zstdDecompressSync(b)).toString("utf-8")) as T;
         } catch (e) {
             this.damaged = true;
             this.forget();
@@ -313,7 +322,12 @@ export class TurnStore {
     put(t: Turn | AgentRun): { at: number; len: number } {
         this.written = undefined;
         if (this.fd === undefined) this.end = this.open();
-        const b = Buffer.from(JSON.stringify(t) + "\n");
+        const json = Buffer.from(JSON.stringify(t));
+        const body = json.length < COMPRESS_FROM ? json : zstdCompressSync(json, { params: { [zlib.ZSTD_c_compressionLevel]: 1 } });
+        // Each on a line of its own, as it was: a compressed one may hold newlines (it's read by place, never by line).
+        const b = Buffer.allocUnsafe(body.length + 1);
+        body.copy(b);
+        b[body.length] = 0x0a;
         // Written whole or not at all (a full disk): an index never points at a turn half written.
         if (writeSync(this.fd!, b, 0, b.length, this.end) !== b.length) throw new Error("The turn store couldn't be written.");
         const at = this.end;
