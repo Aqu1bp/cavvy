@@ -20,7 +20,7 @@ import { userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle } from "../src/config/desktop-install";
 import { TEST_COPY_APP } from "../desktop-electron/app-info";
-import { accountHome, appleIssued, loginKeychain, validIdentities } from "./signing";
+import { accountHome, appleIssued, loginKeychain, signingEnv, validIdentities } from "./signing";
 
 if (process.platform !== "darwin") {
     console.error("A test copy of the desktop app is for macOS.");
@@ -34,7 +34,8 @@ const step = process.argv[2];
 
 /** Its output, or its error and exit if it fails. */
 function output(cmd: string[]): string {
-    const r = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+    // security and codesign find the certificate, and take it as valid, with the account's own HOME (scripts/signing.ts).
+    const r = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", env: cmd[0] === "security" || cmd[0] === "codesign" ? signingEnv() : process.env });
     if (r.exitCode !== 0) {
         console.error(r.stderr.toString().trim() || `${cmd[0]} failed`);
         process.exit(r.exitCode ?? 1);

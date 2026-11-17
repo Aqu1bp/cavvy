@@ -22,7 +22,7 @@ import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install";
 import { appInfo, olderThan } from "../desktop-electron/app-info";
-import { appleIssued, keychainArgs, loginKeychain as loginKeychainPath, validIdentities, type SigningIdentity } from "./signing";
+import { appleIssued, keychainArgs, loginKeychain as loginKeychainPath, signingEnv, validIdentities, type SigningIdentity } from "./signing";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS, as the desktop app is for now. Elsewhere, cavvy gui runs the same app in your browser.");
@@ -48,7 +48,8 @@ function run(cmd: string[], cwd: string) {
 
 /** Its output, or its error and exit if it fails. */
 function output(cmd: string[]): string {
-    const r = Bun.spawnSync(cmd, { env, stdout: "pipe", stderr: "pipe" });
+    // security and codesign find the certificate, and take it as valid, with the account's own HOME (scripts/signing.ts).
+    const r = Bun.spawnSync(cmd, { env: cmd[0] === "security" || cmd[0] === "codesign" ? signingEnv() : env, stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) {
         console.error(r.stderr.toString().trim() || `${cmd[0]} failed`);
         process.exit(r.exitCode ?? 1);
