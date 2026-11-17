@@ -57,6 +57,8 @@ interface BuildRecord {
     trusted?: string;
     /** A build macOS let take screenshots. */
     screen?: string;
+    /** Where the helper ran when those were noted. */
+    at?: string;
 }
 
 /** The grants macOS keeps for one build of the helper. */
@@ -276,8 +278,13 @@ export async function sameTree(a: string, b: string): Promise<boolean> {
 }
 
 /** The helper's executable, noted as the build in use (for what a missing grant's line says), with stale copies gone. */
-function inUse(app: string): string {
-    if (record().hash !== sourceHash()) writeRecord({ ...record(), hash: sourceHash() });
+export function inUse(app: string): string {
+    const r = record();
+    // Moved (out of the app, say): macOS gives Screen Recording to the app a program sits in, so a grant noted before
+    // was another app's, and lacking it now is a first time, not a build it no longer counts. Accessibility follows
+    // the bundle id.
+    const moved = r.at !== app ? { at: app, screen: undefined } : {};
+    if (r.hash !== sourceHash() || r.at !== app) writeRecord({ ...r, hash: sourceHash(), ...moved });
     clearStale();
     clearStaleCopies(dirname(app));
     return executableIn(app);

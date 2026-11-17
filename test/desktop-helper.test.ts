@@ -10,7 +10,7 @@ import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
 isolate();
-const { DesktopHelper, accountHome, buildIn, carried, clearStale, clearStaleCopies, handshake, helperApp, placeFor, placed, sameTree, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
+const { DesktopHelper, accountHome, inUse, trustedBefore, buildIn, carried, clearStale, clearStaleCopies, handshake, helperApp, placeFor, placed, sameTree, helperBinary, helperIdentity, helperSource, infoPlist, realHelperAllowed, sourceHash, HELPER_BUNDLE_ID, HELPER_IDENTITY, REAL_HELPER_REFUSED, TEST_HELPER_IDENTITY } = await import("../src/desktop/helper");
 const { RESETTABLE_IDS, resetCommand } = await import("../src/desktop/access");
 const { paths } = await import("../src/config/paths");
 
@@ -165,6 +165,25 @@ test("a copy that stopped halfway is cleared after an hour; nothing else in the 
         expect(readdirSync(root).sort()).toEqual([".helper-copy-5e6f7a8b", "Cavvy Desktop Control.app", "Local Storage", "Preferences"]);
     } finally {
         rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("once the helper moves, an earlier Screen Recording grant isn't taken for a stale one; Accessibility's still is", () => {
+    const home = join(paths.home(), "desktop");
+    const at = join(tmpdir(), "nowhere", "Cavvy Desktop Control.app");
+    mkdirSync(home, { recursive: true });
+    try {
+        // Noted before the move (no place recorded: run from inside the app, macOS gave Screen Recording to the app).
+        writeFileSync(join(home, "build.json"), JSON.stringify({ hash: "0000000000000000", trusted: "0000000000000000", screen: "0000000000000000" }));
+        inUse(at);
+        expect(trustedBefore("accessibility")).toBe(true);
+        expect(trustedBefore("screen")).toBe(false);
+        // In the same place, a new build that macOS no longer counts is stale, as before.
+        writeFileSync(join(home, "build.json"), JSON.stringify({ hash: "0000000000000000", screen: "0000000000000000", at }));
+        inUse(at);
+        expect(trustedBefore("screen")).toBe(true);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
     }
 });
 
