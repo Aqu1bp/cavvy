@@ -2631,13 +2631,6 @@ export class Runtime {
             // One of the user's Mac apps ("Use Notes?"): it lasts the session, so the yes isn't "once".
             it.heading = redact(req.preview?.summary ?? `Use ${decision.appGrant}`);
             it.options = [{ id: "yes", label: "Allow" }];
-            // An agent CLI's own computer use (Codex's) keeps a yes once, for the session or always, as the user says.
-            if (decision.appPersist) {
-                it.everyChoice = true;
-                it.options = [{ id: "yes", label: "Allow once" }];
-                if (decision.appPersist.includes("session")) it.options.push({ id: "session", label: "Allow for this session" });
-                if (decision.appPersist.includes("always")) it.options.push({ id: "always", label: "Always allow" });
-            }
         } else if (isShellTool(tool.name)) {
             it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
             it.command = redact(String(input.command ?? ""));
@@ -2734,7 +2727,6 @@ export class Runtime {
         patchSubCall(after);
         if (req.signal?.aborted) return { allow: false };
         if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, after);
-        if (decision.appPersist && (choice === "session" || choice === "always")) return { allow: true, persist: choice };
         switch (choice) {
             case "yes":
                 return { allow: true };

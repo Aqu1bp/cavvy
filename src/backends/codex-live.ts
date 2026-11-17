@@ -51,6 +51,7 @@ import {
     codexGoalCommand,
     codexHookEvents,
     codexPolicy,
+    computerUseOff,
     guardsDesktopHelper,
     hookServerConfig,
     liveCodexRpcs,
@@ -389,13 +390,13 @@ export class CodexLiveConnection extends CodexTurn {
         let orch = t.orchestrator;
         const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [orch?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
         if (typeof overrides === "string") throw new Error(overrides);
-        // Codex's computer use, on or off for the thread, goes with what's turned off: kept if Cavvy's tools aren't.
-        const off = mergeThreadConfig(overrides.config, this.computerUseConfig(t, overrides));
+        // Codex's own computer use is off in every thread, as is what else Cavvy turns off.
+        const off = mergeThreadConfig(overrides.config, computerUseOff(overrides.effective));
         if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
             this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way in this session${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
             this.nativeHooks = false;
         }
-        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks);
         if (orch && overrides.collisions.includes(orch.name)) {
             this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
@@ -804,7 +805,7 @@ export class CodexLiveConnection extends CodexTurn {
         // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
         if (this.goalPausedForMode) activate = true;
         const mode = this.host.mode();
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks);
         const note = modeNote(mode, Boolean(t.readOnly));
         const asked = run.skills ? codexInput(text, request, run.skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
         const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, seg.images), ...asked.items];
@@ -1351,7 +1352,7 @@ export class CodexLiveConnection extends CodexTurn {
         const leaves = this.goalLeaves;
         const text = [notes.length ? `<system-reminder>\n${notes.map((n) => n.text).join("\n\n")}\n</system-reminder>` : "", goalGoesOn ? modeSwitched(mode) : ""].filter(Boolean).join("\n\n");
         const label = notes.length === 1 ? notes[0]!.label : notes.length ? `${notes.length} background commands finished` : "Codex goes on with the goal under the new mode";
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks, this.computerUse);
+        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), (this.hooked("PreToolUse") || this.guardsHelper) && !this.nativeHooks);
         const note = modeNote(mode, Boolean(t.readOnly));
         const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
         const model = t.model.id === "default" ? undefined : t.model.id;
@@ -1498,8 +1499,6 @@ export class CodexLiveAdapter implements AgentCliAdapter {
             appendSystemPrompt: cfg.appendSystemPrompt ?? null,
             additionalDirectories: cfg.additionalDirectories,
             hooks,
-            // Codex's computer use, on or off with the Mac apps setting (and bypass's policy with it).
-            desktop: Boolean(cfg.desktop),
         };
         return { bin, args, cwd: cfg.cwd, env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env, thread, account: accountKey(cfg) }) };
     }

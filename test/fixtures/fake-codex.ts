@@ -55,10 +55,8 @@
 //                     the default), or an MCP server's form (FAKE_ELICIT=form) or link (FAKE_ELICIT=url)
 //                     web: a web search whose query comes only when it completes
 //                     computer-use: a js call on the ChatGPT app's cua_repl, which asks (as measured with Codex 0.167
-//                     and ChatGPT 26.1106) Codex's own approval of the call, then the server's approval of an app
-//                     (FAKE_CU_APP bundle id, FAKE_CU_APP_NAME), or (FAKE_CU_URL=1) a link to open; FAKE_CU_TWICE=1
-//                     makes a second call that asks for the same app; FAKE_CU_CODE is the call's code; FAKE_CU_UNKNOWN=1 asks something of a shape not
-//                     known (no app named) in its place; each answer is logged as {cuAnswer}
+//                     and ChatGPT 26.1106) Codex's own approval of the call, then the server's approval of an app;
+//                     each answer is logged as {cuAnswer}
 // FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
 // FAKE_ONE_TURN=1     turn/start is refused while a turn of the thread runs ("a turn is already running")
@@ -751,31 +749,15 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const error = r?.action === "decline" ? { message: "user rejected MCP tool call" } : r?.action === "cancel" ? { message: "user cancelled MCP tool call" } : null;
         notify("item/completed", { threadId, turnId, item: { ...item, status: ok ? "completed" : "failed", error: ok ? null : error, result: ok ? { content: [{ type: "text", text: `wrote ${JSON.stringify(r?.content)}` }] } : null } });
     } else if (scenario === "computer-use") {
-        const app = process.env.FAKE_CU_APP ?? "com.apple.TextEdit";
-        const name = process.env.FAKE_CU_APP_NAME ?? "TextEdit";
-        for (let n = 0; n < (process.env.FAKE_CU_TWICE === "1" ? 2 : 1); n++) {
-            const item = { type: "mcpToolCall", id: `exec-${turnId}-${n}`, server: "cua_repl", tool: "js", arguments: { code: process.env.FAKE_CU_CODE ?? "await sky.get_app_state({ app })", title: "Type a note" }, status: "inProgress", result: null, error: null, pluginId: null };
-            // Cavvy's PreToolUse hook, where Codex runs it, sees the call first (as Codex 0.167 runs it for MCP tools too).
-            const hooked = await preToolUse(threadId, turnId, "mcp__cua_repl__js", item.arguments, item.id);
-            if (hooked.deny !== undefined) {
-                log({ cuBlocked: hooked.deny });
-                continue;
-            }
-            notify("item/started", { threadId, turnId, item });
-            // Codex's own question about the call: in auto mode its reviewer answers it (measured), otherwise Cavvy.
-            const call = policy.approvalsReviewer === "auto_review" ? { action: "accept", content: {}, _meta: null } : await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
-            log({ cuAnswer: call });
-            const asked =
-                process.env.FAKE_CU_UNKNOWN === "1"
-                    ? { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", persist: ["session", "always"], tool_name: "take_over", tool_params: {} }, message: "Allow Computer Use to take over the screen?", requestedSchema: { type: "object", properties: {} } }
-                    : process.env.FAKE_CU_URL === "1"
-                    ? { threadId, turnId, serverName: "cua_repl", mode: "url", _meta: null, message: "Finish setting up Computer Use", url: "https://example.com/setup", elicitationId: "e-1" }
-                    : { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_call_id: item.id, tool_name: "get_app_state", tool_params: { app }, tool_params_display: [{ name: "app", display_name: "App", value: name }] }, message: `Allow Computer Use to use "${name}"?`, requestedSchema: { type: "object", properties: {} } };
-            const r = call?.action === "accept" ? await serverRequest("mcpServer/elicitation/request", asked) : undefined;
-            if (r) log({ cuAnswer: r });
-            const ok = r?.action === "accept";
-            notify("item/completed", { threadId, turnId, item: { ...item, status: "completed", result: { content: [{ type: "text", text: ok ? "the app's state" : `Computer Use was not approved to use ${name}` }], structuredContent: null, _meta: { "codex/toolSurface": { kind: "computerUse", app: ok ? { appId: app, kind: "appId" } : null } } } } });
-        }
+        // The ChatGPT app's computer use, were it still on: Codex's own approval of a js call on cua_repl, and its
+        // server's approval of an app (as measured with Codex 0.167 and ChatGPT 26.1106). Each answer is logged.
+        const item = { type: "mcpToolCall", id: `exec-${turnId}`, server: "cua_repl", tool: "js", arguments: { code: "await sky.get_app_state({ app })", title: "Type a note" }, status: "inProgress", result: null, error: null, pluginId: null };
+        notify("item/started", { threadId, turnId, item });
+        const call = await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_name: "js", tool_description: "Run JavaScript", tool_params: item.arguments, tool_params_display: [] }, message: 'Allow the cua_repl MCP server to run tool "js"?', requestedSchema: { type: "object", properties: {} } });
+        log({ cuAnswer: call });
+        const app = await serverRequest("mcpServer/elicitation/request", { threadId, turnId, serverName: "cua_repl", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_call_id: item.id, tool_name: "get_app_state", tool_params: { app: "com.apple.TextEdit" }, tool_params_display: [{ name: "app", display_name: "App", value: "TextEdit" }] }, message: 'Allow Computer Use to use "TextEdit"?', requestedSchema: { type: "object", properties: {} } });
+        log({ cuAnswer: app });
+        notify("item/completed", { threadId, turnId, item: { ...item, status: "completed", result: { content: [{ type: "text", text: "Computer Use was not approved to use TextEdit" }], structuredContent: null } } });
     } else if (scenario === "web") {
         const ws = { type: "webSearch", id: `ws-${turnId}`, query: "", action: { type: "other" }, results: null };
         notify("item/started", { threadId, turnId, item: ws });

@@ -26,7 +26,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf, assistantText } from "../providers/types";
-import { desktopEnabled, type Effort, type Settings } from "../config/settings";
+import type { Effort, Settings } from "../config/settings";
 import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
@@ -191,8 +191,6 @@ export interface PermissionResponse {
     feedback?: string;
     /** "Yes, and allow this for the session": the request's decision.grant takes effect. */
     grant?: boolean;
-    /** An app asked for with decision.appPersist: allowed for the session, or always. */
-    persist?: "session" | "always";
 }
 
 export interface AgentHost {
@@ -1702,8 +1700,6 @@ export class Agent {
             desktopGuard: (this.model.provider === "claude-code" || this.model.provider === "codex") && desktopGuardWanted(s),
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
-            // Codex's own computer use goes with Cavvy's Mac apps setting (src/backends/codex-computer-use.ts).
-            ...(desktopEnabled(s) ? { desktop: true } : {}),
             agents: this.nativeAgents(trusted),
             signal,
             sessionKey: this.session.meta.id,
@@ -1762,9 +1758,9 @@ export class Agent {
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to both, on a Mac with Xcode.
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
-        // The user's Mac apps, once the user has turned them on: for Claude Code, which has no computer use of its own
-        // (Codex has, and never gets these).
-        const desktop = caller === "claude-code" && offered(DesktopControlTool, this.o.settings());
+        // The user's Mac apps, once the user has turned them on: Claude Code's and Codex's (whose own, the ChatGPT app's,
+        // doesn't serve a Codex the app didn't start, and is kept off: src/backends/codex-computer-use.ts).
+        const desktop = (caller === "claude-code" || caller === "codex") && offered(DesktopControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
@@ -3318,11 +3314,6 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
-        // The backend says only the person answers this one: as a command naming Cavvy's helper is, past all but deny rules.
-        if (req.personOnly && decision.behavior !== "deny") {
-            decision = { ...decision, behavior: "ask", personOnly: true, everyTime: true, dangerous: true, reason: "This names Cavvy's helper for Mac apps, which can act in any app." };
-            ruled = false;
-        }
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -3347,8 +3338,6 @@ export class Agent {
             ruled = false;
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
-        // An app the user already allowed for the session, asked about again by the backend's computer use.
-        if (decision.appGrant !== undefined && req.appPersist && req.appRemembered) return { allow: true, persist: "session" };
         let title = req.title ?? tool.name;
         try {
             title = tool.title(input as any) || title;
@@ -3389,8 +3378,6 @@ export class Agent {
             suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
-            // An app the backend's own computer use asks for: the question says it all, and its choices are the backend's.
-            ...(decision.appGrant !== undefined && req.appPersist ? { appPersist: req.appPersist, reason: undefined } : {}),
         };
         const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
@@ -3402,10 +3389,9 @@ export class Agent {
         if (answer.allow) {
             const grant = answer.grant ? ask.grant : undefined;
             // A yes to part of a call isn't one to the next call that looks the same.
-            // A yes the person alone gives covers this call only.
-            if (!req.incomplete && !decision.personOnly) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
+            if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
-            return { allow: true, mode: answer.setMode, ...(ask.appPersist && answer.persist ? { persist: answer.persist } : {}) };
+            return { allow: true, mode: answer.setMode };
         }
         const fb = answer.feedback?.trim();
         if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };

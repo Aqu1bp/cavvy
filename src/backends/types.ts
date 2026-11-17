@@ -83,18 +83,6 @@ export interface BackendPermission {
      * call only, never remembered, and "don't ask again" isn't offered.
      */
     incomplete?: boolean;
-    /**
-     * With toolName DesktopControl (request_access): an app the backend's own computer use asks for, and what it can
-     * keep a yes for besides this once. The person chooses (PermissionAnswer.persist), in every mode.
-     */
-    appPersist?: ("session" | "always")[];
-    /** With appPersist: the person allowed this app for the session already; allowed again unless a rule now denies it. */
-    appRemembered?: boolean;
-    /**
-     * Only the person answers it, this once: no allow rule, mode, hook, reviewer or earlier yes does; a deny rule still
-     * refuses it (a computer-use call whose code names Cavvy's helper for Mac apps).
-     */
-    personOnly?: boolean;
 }
 
 export type PermissionAnswer =
@@ -103,8 +91,6 @@ export type PermissionAnswer =
           /** The user switched modes from the prompt ("allow all edits"). */ mode?: PermissionMode;
           /** A PermissionRequest hook approved this input in place of the one asked about (already checked against the rules). */
           updatedInput?: Record<string, unknown>;
-          /** An app asked for with appPersist: the yes is for the session, or for good (the backend keeps it). Once otherwise. */
-          persist?: "session" | "always";
       }
     | {
           allow: false;
@@ -332,11 +318,6 @@ export interface BackendTurn {
      * sandbox auto-approval for commands, MCP servers from its own config).
      */
     readOnly?: boolean;
-    /**
-     * desktop.enabled is on: Codex may use the Mac's apps through the ChatGPT app's computer use, each one asked of
-     * the person (src/backends/codex-computer-use.ts). Off, Codex's computer use is turned off. Others ignore it.
-     */
-    desktop?: boolean;
     /**
      * Cavvy's agent definitions for Claude Code to run with its own
      * Agent tool (src/backends/claude-agents.ts). Codex ignores them.

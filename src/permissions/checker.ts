@@ -74,8 +74,6 @@ export interface Decision {
     appGrant?: string;
     /** Only the person answers it, each time: no allow rule, mode, hook, reviewer or earlier yes does (an app grant, Cavvy's helper for Mac apps named in a command). */
     personOnly?: boolean;
-    /** With appGrant, from an agent CLI's own computer use: what its yes can be kept for besides this once (the prompt offers each). */
-    appPersist?: ("session" | "always")[];
 }
 
 /** What "Yes, and allow this for the session" covers, derived from what triggered the popup. */
