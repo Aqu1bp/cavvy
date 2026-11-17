@@ -48,18 +48,23 @@ export function speedOf(layer: Layer, px: number): { moves: number; fades: numbe
     return { moves, fades };
 }
 
-/** How often a layer's animation changes, in ms: the slowest of FRAMES at which no step shows, at `px` device pixels to a stage unit. */
-export function frameFor(layer: Layer, px: number): number {
+/**
+ * How often a layer's animation changes, in ms: the slowest of FRAMES at which no step shows, at `px` device pixels to a
+ * stage unit. A layer drawn coarser than the screen (`grain` device pixels to each of its own, ThemeBackdrop's soft
+ * layers) may step one of its own pixels: it has no edge finer than that for a step to show on.
+ */
+export function frameFor(layer: Layer, px: number, grain = 1): number {
     const { moves, fades } = speedOf(layer, px);
-    return FRAMES.find((f) => (moves * f) / 1000 <= PX_IN_A_STEP && (fades * f) / 1000 <= FADES_IN_A_STEP) ?? SMOOTH_MS;
+    const most = PX_IN_A_STEP * Math.max(1, grain);
+    return FRAMES.find((f) => (moves * f) / 1000 <= most && (fades * f) / 1000 <= FADES_IN_A_STEP) ?? SMOOTH_MS;
 }
 
 /**
  * Each of a scene's layers' frames. With one at 30 a second, those at 20 go to 30: their steps don't fall together, so
  * 30 and 20 would have the window drawn 40 times a second.
  */
-export function sceneFrames(layers: readonly Layer[], px: number): number[] {
-    const frames = layers.map((l) => frameFor(l, px));
+export function sceneFrames(layers: readonly Layer[], px: number, grains: readonly number[] = []): number[] {
+    const frames = layers.map((l, i) => frameFor(l, px, grains[i]));
     return frames.includes(HALF_MS) ? frames.map((f) => (f === STEP_MS ? HALF_MS : f)) : frames;
 }
 

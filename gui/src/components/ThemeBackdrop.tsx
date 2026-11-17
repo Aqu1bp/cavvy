@@ -11,7 +11,7 @@ import type { Layer, Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
 import { CellColors, veilCells, WINDOW_TEXT } from "../../../src/themes/palette";
 import { parseHex, rgba } from "../../../src/themes/color";
-import { alignOnStart, carryOn, gridOf, layerAnimation, restPose, sceneFrames, screenPx, transformOf } from "../lib/theme-motion";
+import { alignOnStart, carryOn, gridOf, layerAnimation, restPose, sceneFrames, screenPx, transformOf, type LayerAnimation } from "../lib/theme-motion";
 import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { cropOf, type Crop } from "../lib/theme-crop";
 import { away } from "../lib/away";
@@ -112,6 +112,9 @@ const SOFT = 0.5;
 
 let serial = 0;
 
+/** Whether a layer is drawn soft, into a canvas (drawSoft), and not as its SVG. */
+const isSoft = (crop: Crop | undefined, image: HTMLImageElement | undefined, px: number): boolean => !!image && !!crop && crop.density < SOFT * px;
+
 /** A layer drawn into a canvas `crop.density` pixels to a stage unit: for the compositor to stretch, as smoothly. */
 function drawSoft(canvas: HTMLCanvasElement, layer: Layer, crop: Crop, image: HTMLImageElement) {
     const box = boxOf(layer);
@@ -126,7 +129,7 @@ function drawSoft(canvas: HTMLCanvasElement, layer: Layer, crop: Crop, image: HT
 function LayerView(p: { layer: Layer; index: number; animation?: string; frame: number; working: () => boolean; crop?: Crop; image?: HTMLImageElement; px: number }): JSX.Element {
     const box = boxOf(p.layer);
     const part = p.crop ?? { x: 0, y: 0, width: box.width, height: box.height, density: Infinity };
-    const soft = p.image && part.density < SOFT * p.px ? p.image : undefined;
+    const soft = isSoft(p.crop, p.image, p.px) ? p.image : undefined;
     const pose = restPose(p.layer);
     const wanted = () => p.layer.when === undefined || (p.layer.when === "working") === p.working();
     const [mounted, setMounted] = createSignal(untrack(wanted));
@@ -180,8 +183,8 @@ async function cutsFor(key: string, layers: Layer[], images: (HTMLImageElement |
         cuts.set(key, list);
     }
     await Promise.all(
-        list.map((c) => {
-            if (!c?.svg || c.density < SOFT * px) return undefined;
+        list.map((c, i) => {
+            if (!c?.svg || isSoft(c, images[i], px)) return undefined;
             const img = new Image();
             img.src = svgUrl(c.svg);
             return img.decode().catch(() => undefined);
@@ -194,11 +197,8 @@ async function cutsFor(key: string, layers: Layer[], images: (HTMLImageElement |
 function Scene(p: { shown: Shown; sceneKey: string; up: boolean }): JSX.Element {
     const look = p.shown.look;
     const n = ++serial;
-    // As often as each layer's steps would show at the most the scene can cover: the screen it's on.
-    const frames = sceneFrames(look.layers ?? [], screenPx());
-    const anims = (look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tb${n}_${i}`, l.opacity ?? 1, frames[i]) : undefined));
     const [veil, setVeil] = createSignal<Measured>();
-    const [drawn, setDrawn] = createSignal<{ crops: (Crop | undefined)[]; images: (HTMLImageElement | undefined)[] }>();
+    const [drawn, setDrawn] = createSignal<{ crops: (Crop | undefined)[]; images: (HTMLImageElement | undefined)[]; frames: number[]; anims: (LayerAnimation | undefined)[] }>();
     const working = () => app.sessions.find((x) => x.id === app.activeId)?.status === "running";
     const px = screenPx();
     onMount(() => {
@@ -206,7 +206,13 @@ function Scene(p: { shown: Shown; sceneKey: string; up: boolean }): JSX.Element 
             const layers = look.layers ?? [];
             const loaded = await loadLayers(layers);
             // Cut first, and put in: they're drawn while the veil's measured.
-            setDrawn({ crops: await cutsFor(p.sceneKey, layers, loaded.images, px), images: loaded.images });
+            const crops = await cutsFor(p.sceneKey, layers, loaded.images, px);
+            // As often as each layer's steps would show at the most the scene can cover: the screen it's on, and a
+            // soft layer's own pixels.
+            const grains = layers.map((_, i) => (isSoft(crops[i], loaded.images[i], px) ? px / crops[i]!.density : 1));
+            const frames = sceneFrames(layers, px, grains);
+            const anims = layers.map((l, i) => (l.motion ? layerAnimation(l.motion, `tb${n}_${i}`, l.opacity ?? 1, frames[i]) : undefined));
+            setDrawn({ crops, images: loaded.images, frames, anims });
             const m = await measure(p.sceneKey, look, p.shown, loaded);
             setVeil(m);
             drawnTheme({ key: p.sceneKey, id: p.shown.id, scheme: p.shown.scheme, veil: m.mean, veilMost: m.most, ...(m.map ? { map: m.map } : {}), failed: m.failed });
@@ -215,12 +221,12 @@ function Scene(p: { shown: Shown; sceneKey: string; up: boolean }): JSX.Element 
     });
     return (
         <div class="tb-scene" classList={{ on: p.up }}>
-            <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
+            <Show when={drawn()}>{(d) => <style>{d().anims.map((a) => a?.keyframes ?? "").join("\n")}</style>}</Show>
             <div class="tb-stage">
                 <Show when={drawn()}>
                     {(d) => (
                         <For each={look.layers ?? []}>
-                            {(layer, i) => <LayerView layer={layer} index={i()} animation={anims[i()]?.animation} frame={frames[i()]!} working={working} crop={d().crops[i()]} image={d().images[i()]} px={px} />}
+                            {(layer, i) => <LayerView layer={layer} index={i()} animation={d().anims[i()]?.animation} frame={d().frames[i()]!} working={working} crop={d().crops[i()]} image={d().images[i()]} px={px} />}
                         </For>
                     )}
                 </Show>

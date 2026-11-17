@@ -352,6 +352,9 @@ describe("a scene's motion", () => {
         // Smaller, a step moves fewer pixels: in a gallery tile a layer steps less often than in the window.
         expect(frameFor(at(30), px)).toBe(SMOOTH_MS);
         expect(frameFor(at(30), 0.3)).toBe(100);
+        // A layer drawn four screen pixels to each of its own may step one of its own: as often as a sharp one a quarter as fast.
+        expect(frameFor(at(30), px, 4)).toBe(STEP_MS);
+        expect(sceneFrames([at(30), at(30)], px, [4])).toEqual([STEP_MS, SMOOTH_MS]);
     });
 
     test("eases into and out of each keyframe, and keeps to the timed ones", () => {
