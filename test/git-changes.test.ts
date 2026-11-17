@@ -72,6 +72,50 @@ describe("git changes", () => {
         expect(r.files.at(-1)!.path).toBe("f300.txt");
     });
 
+    // Files that change between `git status` and their read: listed ones are read, and one back as it was drops out (the
+    // next moves up), one gone is deleted, one now a link is a type change; an unlisted one is never read, so it's
+    // counted as git said (reading it would drop it from the count).
+    test("over the listing's limit: listed files are read after git status, the rest are counted unread", async () => {
+        const files: Record<string, string> = {};
+        const name = (i: number) => `f${String(i).padStart(3, "0")}.txt`;
+        for (let i = 0; i < 330; i++) files[name(i)] = `a\nb ${i}\nc\n`;
+        const dir = repo(files);
+        // Whatever the machine's own config says: either would have every file read.
+        git(dir, "config", "core.autocrlf", "false");
+        git(dir, "config", "core.attributesFile", "/dev/null");
+        for (let i = 0; i < 330; i++) write(dir, name(i), `a\nB ${i}\nc\n`);
+        const after = () => {
+            write(dir, name(10), `a\nb 10\nc\n`);
+            rmSync(join(dir, name(11)));
+            rmSync(join(dir, name(12)));
+            symlinkSync("elsewhere", join(dir, name(12)));
+            write(dir, name(320), `a\nb 320\nc\n`);
+        };
+        const spawn = Bun.spawn;
+        let fired = false;
+        (Bun as { spawn: unknown }).spawn = (argv: string[], o: never) => {
+            const p = spawn(argv, o);
+            if (!fired && argv.includes("status")) {
+                fired = true;
+                void p.exited.then(after);
+            }
+            return p;
+        };
+        let r: Awaited<ReturnType<typeof gitChanges>>;
+        try {
+            r = await gitChanges(dir, { scope: "uncommitted" });
+        } finally {
+            (Bun as { spawn: unknown }).spawn = spawn;
+        }
+        expect(fired).toBe(true);
+        expect(r.files).toHaveLength(300);
+        expect(r.more).toBe(29);
+        expect(r.files.some((f) => f.path === name(10))).toBe(false);
+        expect(summary(r).slice(9, 12)).toEqual(["modified f009.txt +1 -1", "deleted f011.txt +0 -3", `typechange ${name(12)} +1 -3`]);
+        expect(r.files[11]!.kind).toBe("link");
+        expect(summary(r).at(-1)).toBe("modified f300.txt +1 -1");
+    });
+
     test("modified, staged, deleted and untracked files, with awkward names", async () => {
         const dir = repo({ "a.txt": "one\ntwo\n", "gone.txt": "bye\n", "with space.txt": "x\n", "-dash.txt": "d\n", "ünï.txt": "u\n", "img.bin": Buffer.from([0, 1, 2, 3]) });
         write(dir, "a.txt", "one\nTWO\nthree\n");

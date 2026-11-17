@@ -644,11 +644,16 @@ const NO_ATTRS: Readonly<Record<string, string>> = Object.freeze({});
  */
 async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Readonly<Record<string, string>>>> {
     const out = new Map<string, Readonly<Record<string, string>>>();
-    const r = await git(root, ["check-attr", "-a", "-z", "--stdin"], { input: paths.join("\0") + "\0", deadline });
+    const input = paths.join("\0") + "\0";
+    let r = await git(root, ["check-attr", "-a", "-z", "--stdin"], { input, deadline });
+    // A .gitattributes giving every path thousands of other attributes can make `-a` print more than is read: then
+    // these five alone, by name.
+    if (r.code === 0 && r.cut) r = await git(root, ["check-attr", "-z", "--stdin", ...ATTRS], { input, deadline });
     if (r.code !== 0 || r.cut) return out;
     const recs = records(r.out);
     for (let i = 0; i + 2 < recs.length; i += 3) {
-        if (!ATTRS.has(recs[i + 1]!)) continue;
+        // Asked by name, git also prints those unspecified, which is what a missing one means.
+        if (!ATTRS.has(recs[i + 1]!) || recs[i + 2] === "unspecified") continue;
         // Filled in place: a copy for each record cost 10 ms for 5,000 paths.
         let a = out.get(recs[i]!) as Record<string, string> | undefined;
         if (!a) out.set(recs[i]!, (a = {}));
@@ -1138,7 +1143,12 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                     c.now = undefined;
                     c.kind = kindOf(was.mode);
                 } else if (now.oid === was.oid && (now.mode === was.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode)))) same.add(c);
-                else c.now = now;
+                else {
+                    // As the comparison above has it: a file that's a link (or no file) now is a type change.
+                    c.now = now;
+                    c.change = kindOf(was.mode) === kindOf(now.mode) && now.mode !== "other" ? "modified" : "typechange";
+                    c.kind = kindOf(now.mode) ?? kindOf(was.mode);
+                }
             }),
         ]);
         if (!same.size) break;
@@ -1167,7 +1177,13 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
     if (differ) await blobSizes(root, listed.flatMap((c) => (c.old ? [c.old] : [])), deadline);
     const readBlobs = oldBlobs && (async (oids: string[], deadline: number) => {
-        const have = (await oldBlobs!.catch(() => undefined)) ?? new Map<string, Buffer>();
+        const early = (await oldBlobs!.catch(() => undefined)) ?? new Map<string, Buffer>();
+        // Only those asked for: render keeps to the reply's budget, which the early fetch didn't.
+        const have = new Map<string, Buffer>();
+        for (const o of oids) {
+            const b = early.get(o);
+            if (b) have.set(o, b);
+        }
         const rest = oids.filter((o) => !have.has(o));
         if (rest.length) for (const [oid, b] of await blobs(root, rest, deadline)) have.set(oid, b);
         return have;
