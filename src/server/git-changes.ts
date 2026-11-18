@@ -1425,7 +1425,8 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         const d = fileDiff(path, b, a);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;
-        else if (c.change === "renamed" && !d.hunks.length) out.note = `Renamed from ${base.from}`;
+        // Where it was is in its heading (the review's file row): what the empty diff says is why it's empty.
+        else if (c.change === "renamed" && !d.hunks.length) out.note = "Contents unchanged";
         const n = d.hunks.reduce((s, h) => s + h.lines.length, 0);
         if (!single && lines + n > MAX_REPLY_LINES) {
             out.hunks = [];

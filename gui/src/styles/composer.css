@@ -2504,10 +2504,12 @@ button.att-card:hover {
 }
 
 /* Whose models are listed, and the listed provider's account at the row's end. */
+/* The account goes under the tabs when both don't fit: beside them, it took the room the next tab needed. */
 .mp-bar {
     position: relative;
     z-index: 2;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     flex: none;
     gap: calc(8 * var(--sp));
@@ -2519,7 +2521,7 @@ button.att-card:hover {
 /* The filters: one row of words that scrolls sideways, faded at an edge with more past it. */
 .mp-filters {
     display: flex;
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     gap: calc(2 * var(--sp));
     padding: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
@@ -2633,6 +2635,7 @@ button.att-card:hover {
     display: inline-flex;
     flex: 0 1 auto;
     min-width: 0;
+    margin-left: auto;
     max-width: 50%;
     margin-bottom: calc(4 * var(--sp));
 }

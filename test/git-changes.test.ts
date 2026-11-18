@@ -200,6 +200,8 @@ describe("git changes", () => {
         renameSync(join(dir, "old.txt"), join(dir, "new.txt"));
         const r = await gitChanges(dir, { scope: "uncommitted" });
         expect(r.files.map((f) => [f.change, f.path, f.from])).toEqual([["renamed", "new.txt", "old.txt"]]);
+        // Its diff says what its heading doesn't (that names where it was).
+        expect(r.files[0]!.note).toBe("Contents unchanged");
     });
 
     test("a mode change is a change, and its note says so", async () => {
