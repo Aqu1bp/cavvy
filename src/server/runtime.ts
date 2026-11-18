@@ -19,7 +19,8 @@ import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
-import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
+import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
@@ -108,6 +109,7 @@ import type {
     PlanRef,
     QueuedMode,
     RewindPlanInfo,
+    RewindResult,
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
@@ -335,6 +337,9 @@ const FIRST_KEPT = 4000;
  * this, a snapshot is as small (a window opens with 64 KB of turns: gui/src/state/app.ts OPEN_BYTES).
  */
 const RESUME_BYTES = 64 * 1024;
+/** Files a rewind lists, at most (the rest are counted). */
+const REWIND_LISTED = 300;
+
 /** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
 const RESET_TURNS = 100;
 /** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
@@ -654,6 +659,8 @@ export class Runtime {
     private switching?: Promise<unknown>;
     /** Reserve this session while committing or publishing. */
     private committing = false;
+    /** Reserve it while a rewind puts files back (or an Undo does): no turn starts meanwhile. */
+    private restoring = false;
     private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
     /** The title being asked for: closing the session stops it (on a CLI, its process). */
@@ -667,7 +674,9 @@ export class Runtime {
     /** The scheduled prompt starting is the resume after a usage limit (it picks a paused goal up again). */
     private scheduledResume = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
-    private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
+    private rewindShown?: { id: string; index: number; message: Message; count: number; plan: FileRestorePlan };
+    /** What can put the files a rewind restored back as they were, by its id (rewindUndo). */
+    private rewindUndone?: string;
 
     // What the current turn is building
     private turnId?: string;
@@ -4984,9 +4993,18 @@ export class Runtime {
 
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
+        const snapshots = this.rewindSnapshots();
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) }));
+            .map((t) => {
+                const { tracked, whole, files } = changedBy(snapshots, history, t.checkpoint);
+                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) };
+            });
+    }
+
+    /** The turn snapshots a rewind restores files from: only in a trusted folder, where they're recorded (they read the repository). */
+    private rewindSnapshots(): TurnSnapshots | undefined {
+        return this.ws.trusted ? TurnSnapshots.for(this.session, this.ws.cwd) : undefined;
     }
 
     /** A prompt this session was forked with: the files changed before the fork are in the original's history, not here. */
@@ -5049,23 +5067,29 @@ export class Runtime {
         return t;
     }
 
-    rewindPlan(index: number): RewindPlanInfo {
+    async rewindPlan(index: number, alongside: string[] = []): Promise<RewindPlanInfo> {
         const t = this.target(index);
-        const history = FileHistory.for(this.session);
-        const plan = history && t.checkpoint !== undefined ? history.plan(t.checkpoint) : undefined;
+        const message = this.session.messages[index]!, count = this.session.messageCount;
+        const plan = await planFileRestore({ snapshots: this.rewindSnapshots(), history: FileHistory.for(this.session), checkpoint: t.checkpoint, alongside });
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
-        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messageCount, plan };
+        // The conversation moved on while the files were read: what was planned is for another conversation.
+        if (this.session.messages[index] !== message || this.session.messageCount !== count) throw new Error("The conversation changed meanwhile. Open Rewind again.");
+        this.rewindShown = { id: planId, index, message, count, plan };
         const backends = backendsIn(this.session.messages, index);
         return {
             index,
             planId,
             ...(this.beforeFork(index) ? { forked: true } : {}),
             ...(backends.length ? { backends } : {}),
-            tracked: Boolean(plan),
-            restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
-            skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),
+            tracked: plan.whole || t.checkpoint !== undefined && !!FileHistory.for(this.session),
+            ...(plan.whole ? { whole: true } : {}),
+            ...(plan.refused ? { refused: plan.refused } : {}),
+            // A long list cut, outside changes first: they're the ones to look at.
+            restore: [...plan.items].sort((a, b) => Number(Boolean(b.outside && !b.undoable)) - Number(Boolean(a.outside && !a.undoable))).slice(0, REWIND_LISTED).map((i) => ({ path: rel(i.path), action: i.action, outside: Boolean(i.outside && !i.undoable) })),
+            ...(plan.items.length > REWIND_LISTED ? { more: plan.items.length - REWIND_LISTED } : {}),
+            skipped: plan.skipped.map((i) => ({ path: rel(i.path), reason: i.reason })),
         };
     }
 
@@ -5074,7 +5098,7 @@ export class Runtime {
      * a file changed since then is left alone (it fails, with the reason), and
      * nothing happens if the conversation moved on.
      */
-    rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
+    async rewind(index: number, planId: string, code: boolean, conversation: boolean, alongside: string[] = []): Promise<RewindResult> {
         this.checkCommitting();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
@@ -5086,22 +5110,26 @@ export class Runtime {
         this.rewindShown = undefined;
         // What the prompt carried goes back to the box with its text: a pasted text exists nowhere else.
         const attached = shown.message.role === "user" ? shown.message.content.filter((p): p is AttachedPart => p.type === "image" || p.type === "file") : [];
-        const history = FileHistory.for(this.session);
         const plan = shown.plan;
         const backends = backendsIn(this.session.messages, index);
-        const restore = plan?.filter((i) => i.action !== "skip") ?? [];
-        const skipped = plan?.filter((i) => i.action === "skip") ?? [];
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         let restored: string[] = [];
         let failed: { path: string; error: string }[] = [];
+        let undo: string | undefined;
         let rewindConversation = conversation;
-        if (code && restore.length) {
-            const r = history!.restore(restore);
+        if (code && plan.items.length) {
+            this.restoring = true;
+            let r: Awaited<ReturnType<typeof restoreFiles>>;
+            try {
+                r = await restoreFiles(plan, { alongside });
+            } finally {
+                this.restoring = false;
+            }
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
-            const done = new Set(r.done);
-            for (const p of [...this.toolState.fileState.keys()]) if (done.has(canonical(p))) this.toolState.fileState.delete(p);
+            undo = this.rewindUndone = r.undo;
+            this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
         }
@@ -5112,17 +5140,45 @@ export class Runtime {
                 resetToolState(this.toolState, this.session.messages);
                 this.classifier.clearCache();
             }
-            const kept = [...(code ? [] : restore), ...skipped];
+            const kept = [...(code ? [] : plan.items), ...plan.skipped];
             if (kept.length) this.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
-            // What a backend changed was never tracked: all of it is still there.
-            if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends, restored));
+            // What a backend changed wasn't tracked: what wasn't restored is still there.
+            if (backends.length && !(code && plan.whole)) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
         this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
-        return { restored, failed, text: t.text, ...toWire(attached) };
+        return { restored, failed, text: t.text, ...toWire(attached), ...(undo ? { undo } : {}) };
+    }
+
+    /** Read state forgotten for files changed under the model: it must read them again before editing them. */
+    private forgetReads(paths: string[]) {
+        const changed = new Set(paths);
+        for (const p of [...this.toolState.fileState.keys()]) if (changed.has(canonical(p))) this.toolState.fileState.delete(p);
+    }
+
+    /** Put the files a rewind restored (`undo`, its result's) back as they were before it. */
+    async rewindUndo(undo: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+        this.checkCommitting();
+        if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
+        if (this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error("That restore can't be undone any more.");
+        this.rewindUndone = undefined;
+        this.restoring = true;
+        let r: Awaited<ReturnType<typeof undoRestore>>;
+        try {
+            r = await undoRestore(this.rewindSnapshots(), undo, FileHistory.for(this.session));
+        } finally {
+            this.restoring = false;
+        }
+        const root = canonical(this.ws.cwd);
+        const restored = r.done.map((p) => displayPath(p, root));
+        this.forgetReads(r.done);
+        if (restored.length) this.agent?.addReminder(`The user undid a file restore (/rewind): these files are back as they were before it. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
+        this.setState({ filesChanged: this.filesChanged() });
+        this.engine.sessionChanged(this);
+        return { restored, failed: r.failed.map((f) => ({ path: displayPath(f.path, root), error: f.error })) };
     }
 
     /** The timeline again from the transcript (after a rewind). */
@@ -5259,6 +5315,7 @@ export class Runtime {
 
     private checkCommitting() {
         if (this.committing) throw new RpcError("Wait for the commit to finish before starting more work.", "busy");
+        if (this.restoring) throw new RpcError("Wait for the files to be restored before starting more work.", "busy");
     }
 
     private checkGitCommit(action = "committing") {
