@@ -3494,7 +3494,7 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
-                return await servers.update(name, p.force === true);
+                return await servers.update(name, p.force === true, p.stop === true);
             }
             case "servers.disconnect":
                 await (await this.servers(client)).disconnect(str(p.name, "name"));

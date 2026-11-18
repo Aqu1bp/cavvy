@@ -2156,7 +2156,8 @@ export interface Methods {
      * window isn't on that server, so it's still told of that server's other sessions from here.
      */
     "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean; link?: boolean }; result: ConnectResult };
-    "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
+    /** `stop`: though sessions there are working or waiting. `force`: that, and though it runs a newer build than this one. */
+    "servers.update": { params: { name: string; force?: boolean; stop?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };
     "servers.remove": { params: { name: string }; result: null };

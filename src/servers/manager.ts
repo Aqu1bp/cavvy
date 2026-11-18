@@ -386,7 +386,8 @@ export class ServerLinks {
     }
 
     /** Brings the server's Cavvy level with this one. `force`: also when that stops work there, or replaces a build that isn't older. */
-    async update(name: string, force = false): Promise<UpdateResult> {
+    /** `stop`: though sessions there are working or waiting (the user said so). `force`: that, and though it runs a newer build. */
+    async update(name: string, force = false, stop = false): Promise<UpdateResult> {
         const entry = requireServer(name);
         let busy: { working: number; waiting: number } | undefined;
         try {
@@ -395,7 +396,7 @@ export class ServerLinks {
                 progress: this.progress(name),
                 confirmRestart: async (b) => {
                     busy = b;
-                    return force;
+                    return force || stop;
                 },
                 confirmReplace: async (theirs) => force || theirs === "different",
             });

@@ -2,7 +2,7 @@
 // asks in its cover: Servers.tsx MachineCover). Offered when this computer's Cavvy says the one there is behind.
 
 import { homeRpc } from "./machines";
-import { dismissToast, reportError, rpc, toast, toasts } from "../state/app";
+import { reportError, rpc, toast, withdrawToast } from "../state/app";
 
 /** How long the offer, and the question when updating would stop work, stay: long enough to read and reach. */
 const OFFER_MS = 20_000;
@@ -10,13 +10,13 @@ const OFFER_MS = 20_000;
 /** The servers being updated: one isn't started twice. */
 const updating = new Set<string>();
 
-/** `force`: though sessions there are working or waiting (the user said so). */
-export async function updateServer(name: string, force = false): Promise<void> {
+/** `stop`: though sessions there are working or waiting (the user said so). A server that's newer by then is still left as it is. */
+export async function updateServer(name: string, stop = false): Promise<void> {
     if (updating.has(name)) return;
     updating.add(name);
     toast(`Updating ${name}…`);
     try {
-        const r = await homeRpc(rpc).call("servers.update", { name, force });
+        const r = await homeRpc(rpc).call("servers.update", { name, stop });
         if (r.status === "updated") toast(r.note ?? `Updated ${name}`, "success");
         // Updating stops them: asked, with what would stop.
         else if (r.status === "busy") {
@@ -40,7 +40,7 @@ export function serverBehind(name: string, behind: boolean | undefined) {
     if (!behind) {
         told.delete(name);
         // Level now (updated from the menu, or from another window): the offer isn't left to press.
-        for (const t of toasts.filter((t) => t.message === offer)) dismissToast(t.id);
+        withdrawToast(offer);
         return;
     }
     if (told.has(name) || updating.has(name)) return;
