@@ -1464,7 +1464,7 @@ export class Engine {
         const asked = {};
         this.mcpAsked.set(port, asked);
         const able = await server.ask("mcp.callback", { query: "" }, 15_000).then((r) => typeof (r as { status?: unknown } | null)?.status === "number", (e: Error) => (/unknown method/i.test(e.message) ? false : e));
-        if (able === false) throw new RpcError(`Cavvy on ${name} is too old to finish this sign-in. Update it: ${APP_NAME} servers update ${name}`, "failed");
+        if (able === false) throw new RpcError(`Cavvy on ${name} is too old to finish this sign-in. Update it from the list of machines (${process.platform === "darwin" ? "This Mac" : "This computer"} ▾ on a new session).`, "failed");
         if (able !== true) throw new RpcError(`${name} didn't answer. Try again.`, "failed");
         // The window went, this Cavvy is stopping, or another sign-in asked for the port, meanwhile.
         if (!this.clients.has(client) || this.stopping) throw new RpcError("Disconnected", "disconnected");
