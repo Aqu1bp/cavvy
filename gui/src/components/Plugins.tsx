@@ -513,6 +513,12 @@ function whereText(pl: PluginInfo): string {
     return on === "local" ? "On just for you here" : on === "project" ? "On for everyone in this project" : "On for you everywhere";
 }
 
+/** What uninstalling takes it out of: the settings it's set in (as the server removes it: every scope that names it, on or off). */
+function uninstallText(pl: PluginInfo): string {
+    const here = pl.scopes.project !== undefined || pl.scopes.local !== undefined;
+    return here && pl.scopes.user !== undefined ? "It's removed from this project and from your own settings." : here ? "It's removed from this project." : "It's removed from your own settings.";
+}
+
 function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; act: Act; confirm: (c: Confirm) => void; details: () => void; sameName?: boolean }) {
     let more: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
@@ -591,7 +597,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: pl().scopes.project !== undefined || pl().scopes.local !== undefined ? "It's removed from this project and from your own settings." : "It's removed from your own settings.",
+                                body: uninstallText(pl()),
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),
