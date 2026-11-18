@@ -94,80 +94,84 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
             }}
         >
             <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : reviewing() ? "Pick one, then Answer" : "Pick one, or type your own answer"} />
-            <Show when={p.it.options.length}>
-                <div class="itab-body">
-                    <div class="q-options">
-                        <For each={p.it.options}>
-                            {(o, i) => (
-                                <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} aria-pressed={p.it.multi || reviewing() ? picked().includes(o.label) : undefined} disabled={busy()} onClick={() => toggle(o.label)}>
-                                    <kbd>{i() + 1}</kbd>
-                                    <span class="q-text">
-                                        <span class="q-label">{o.label}</span>
-                                        <Show when={o.description}>
-                                            <span class="q-desc">{o.description}</span>
-                                        </Show>
-                                    </span>
-                                </button>
-                            )}
-                        </For>
+            {/* The options, the field and what's attached: in a short window the options give way first, then all of it
+                scrolls, so the question and the Answer row stay in sight (composer.css .q-mid). */}
+            <div class="q-mid">
+                <Show when={p.it.options.length}>
+                    <div class="itab-body">
+                        <div class="q-options">
+                            <For each={p.it.options}>
+                                {(o, i) => (
+                                    <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} aria-pressed={p.it.multi || reviewing() ? picked().includes(o.label) : undefined} disabled={busy()} onClick={() => toggle(o.label)}>
+                                        <kbd>{i() + 1}</kbd>
+                                        <span class="q-text">
+                                            <span class="q-label">{o.label}</span>
+                                            <Show when={o.description}>
+                                                <span class="q-desc">{o.description}</span>
+                                            </Show>
+                                        </span>
+                                    </button>
+                                )}
+                            </For>
+                        </div>
                     </div>
-                </div>
-            </Show>
-            {/* Under the options, which scroll, not among them: the field and what's attached stay in sight. */}
-            <div class="q-field">
-                <input
-                    class="itab-input"
-                    ref={(el) => {
-                        // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
-                        const here = usePane().focused;
-                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && here() && el.focus());
-                    }}
-                    value={other()}
-                    placeholder={p.it.options.length ? "Something else…" : "Your answer"}
-                    aria-label="Your own answer"
-                    onInput={(e) => setOther(e.currentTarget.value)}
-                    onPaste={(e) => {
-                        if (!p.it.attach) return;
-                        const list = Array.from(e.clipboardData?.files ?? []);
-                        if (list.length) {
-                            e.preventDefault();
-                            void addFiles(list);
-                            return;
-                        }
-                        const text = e.clipboardData?.getData("text/plain") ?? "";
-                        if (isLongPaste(text)) {
-                            e.preventDefault();
-                            setAttached((l) => [...l, pastedText(text, l)]);
-                        }
-                    }}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && (typed() || attached().length)) void answer();
-                        else if (e.key === "Escape" && !other()) void submit(undefined);
-                    }}
-                />
-                <Show when={p.it.attach}>
+                </Show>
+                {/* Under the options, which scroll, not among them: the field and what's attached stay in sight. */}
+                <div class="q-field">
                     <input
-                        ref={fileInput}
-                        type="file"
-                        multiple
-                        hidden
-                        onChange={(e) => {
-                            const input = e.currentTarget;
-                            if (input.files) void addFiles(Array.from(input.files));
-                            // Picking the same file again adds it again.
-                            input.value = "";
+                        class="itab-input"
+                        ref={(el) => {
+                            // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
+                            const here = usePane().focused;
+                            if (!p.it.options.length) queueMicrotask(() => mayFocus() && here() && el.focus());
+                        }}
+                        value={other()}
+                        placeholder={p.it.options.length ? "Something else…" : "Your answer"}
+                        aria-label="Your own answer"
+                        onInput={(e) => setOther(e.currentTarget.value)}
+                        onPaste={(e) => {
+                            if (!p.it.attach) return;
+                            const list = Array.from(e.clipboardData?.files ?? []);
+                            if (list.length) {
+                                e.preventDefault();
+                                void addFiles(list);
+                                return;
+                            }
+                            const text = e.clipboardData?.getData("text/plain") ?? "";
+                            if (isLongPaste(text)) {
+                                e.preventDefault();
+                                setAttached((l) => [...l, pastedText(text, l)]);
+                            }
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && (typed() || attached().length)) void answer();
+                            else if (e.key === "Escape" && !other()) void submit(undefined);
                         }}
                     />
-                    <button class="act hb sm" title="Attach files" aria-label="Attach files to your answer" onClick={() => fileInput?.click()}>
-                        <Plus size={15} />
-                    </button>
+                    <Show when={p.it.attach}>
+                        <input
+                            ref={fileInput}
+                            type="file"
+                            multiple
+                            hidden
+                            onChange={(e) => {
+                                const input = e.currentTarget;
+                                if (input.files) void addFiles(Array.from(input.files));
+                                // Picking the same file again adds it again.
+                                input.value = "";
+                            }}
+                        />
+                        <button class="act hb sm" title="Attach files" aria-label="Attach files to your answer" onClick={() => fileInput?.click()}>
+                            <Plus size={15} />
+                        </button>
+                    </Show>
+                </div>
+                <Show when={attached().length}>
+                    <div class="q-attached">
+                        <AttachmentChips items={attached()} readsPdf blocked={blocked()} onRemove={(i) => setAttached((l) => l.filter((_, j) => j !== i))} />
+                    </div>
                 </Show>
             </div>
-            <Show when={attached().length}>
-                <div class="q-attached">
-                    <AttachmentChips items={attached()} readsPdf blocked={blocked()} onRemove={(i) => setAttached((l) => l.filter((_, j) => j !== i))} />
-                </div>
-            </Show>
             <div class="itab-actions ask-row">
                 <Show when={p.it.multi || reviewing() || picked().length}>
                     <button class="pbtn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>

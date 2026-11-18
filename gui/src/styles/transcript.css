@@ -1393,16 +1393,37 @@
     min-width: 0;
 }
 
-/* A question's answer, after it: the part to read, so a step brighter; each gives way, the answer at most to half. */
-.run-a {
-    max-width: 55%;
+/* A question answered: the question, then its answer, the part to read, so a step brighter. The answer is placed first
+   (order, in a reversed row) so it keeps its room: the question takes what's left and is cut, and with less than a few
+   of its words' room it wraps onto the second line, out of sight, and the answer alone is cut. */
+.run-qa {
+    display: flex;
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     min-width: 0;
-    color: var(--fg-2);
+    height: 1lh;
+    overflow: hidden;
 }
 
-.run-a::before {
-    content: "· ";
+.run-q {
+    display: flex;
+    flex: 1 1 calc(84 * var(--sp));
+    min-width: 0;
+}
+
+.run-q::after {
+    content: "·";
+    flex: none;
+    padding: 0 0.35em;
     color: var(--fg-4);
+}
+
+.run-a {
+    order: -1;
+    flex: none;
+    max-width: 100%;
+    color: var(--fg-2);
 }
 
 .run-t code {
