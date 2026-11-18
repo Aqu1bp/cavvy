@@ -123,7 +123,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
     const names = (list: string[]) => Object.fromEntries(list.map((n) => [n, stub]));
     mock.module("../../gui/src/state/app", () => ({
         // On Home the picker shows the saved default, which only a saved change moves.
-        app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub,
+        app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub, awayMachine: () => undefined, homeAt: () => ({}),
         noModel: () => false,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
         agentReady: async () => {},
