@@ -157,6 +157,8 @@ export interface Settings {
     notifications?: NotificationMode;
     /** A finished turn alerts only when it took at least this long (default 30). */
     notifyAfterSeconds?: number;
+    /** Keep the computer from idling to sleep while sessions work (src/agent/keep-awake.ts; default true). User settings only. */
+    keepAwake?: boolean;
     /** A message sent while a turn runs: "steer" joins it at its next step (default), "queue" waits for it to end. Tab (TUI) or mod+shift+enter (GUI) does the other. */
     followUpBehavior?: FollowUp;
     /** After a Claude Code or Codex turn stops on the plan's usage limit, continue by itself when it resets (default true). */

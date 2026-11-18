@@ -13,6 +13,8 @@ if (!process.env.CAVVY_HOME) {
     });
 }
 process.env.CAVVY_NO_KEYCHAIN ??= "1";
+// No real inhibitor while tests run turns (src/agent/keep-awake.ts): bun test runs no "exit" handlers to stop it.
+process.env.CAVVY_NO_KEEP_AWAKE ??= "1";
 
 // After the last test file: the folders test/helpers/isolate.ts made (`bun test` doesn't run "exit" handlers).
 afterAll(() => {
