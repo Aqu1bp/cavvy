@@ -126,6 +126,7 @@ import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
+import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
 import { keepAwake } from "../agent/keep-awake";
 
@@ -161,6 +162,8 @@ export interface EngineOptions {
      * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
      */
     working?: string;
+    /** The clock snoozes wake by (tests). */
+    now?: () => number;
 }
 
 /**
@@ -223,7 +226,7 @@ export interface EngineClient {
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
 
-interface GuiStore {
+interface GuiStore extends SnoozeStore {
     recent?: { path: string; at: number }[];
     pinned?: string[];
     archived?: string[];
@@ -248,11 +251,11 @@ function runOutcome(rt: Runtime): RunOutcome {
 }
 
 /** The store's lists as sets, for asking about many sessions at once. */
-type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember> };
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember>; woke: Set<string>; snoozed: Record<string, SnoozeEntry> };
 let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
 function storeLists(store: GuiStore): StoreLists {
     // The store read is frozen and kept until the file changes: so are these.
-    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store) } };
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store), woke: new Set(store.woke ?? []), snoozed: store.snoozed ?? {} } };
     return listsOf.lists;
 }
 
@@ -276,6 +279,15 @@ function updateStore(fn: (s: GuiStore) => void): boolean {
         return false;
     }
 }
+
+/** A row's snooze (snooze.ts): when it wakes, or that it woke and hasn't been opened since. */
+function snoozeOf(id: string, lists: StoreLists): Pick<SessionSummary, "snoozedUntil" | "woke"> {
+    const until = lists.snoozed[id]?.until;
+    return { ...(until !== undefined ? { snoozedUntil: until } : {}), ...(lists.woke.has(id) ? { woke: true as const } : {}) };
+}
+
+/** How often a far-off wake is checked again: a laptop's sleep holds timers back (snooze.ts Alarm). */
+const ALARM_MAX_MS = 10 * 60_000;
 
 // ---------------------------------------------------------------------------
 
@@ -436,6 +448,11 @@ export class Engine {
     private implementing = new Set<string>();
     private archiving = new Set<string>();
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** Wakes snoozed sessions: the one timer, set for the next one due (snooze.ts). */
+    private readonly alarm = new Alarm({ now: () => this.now(), fire: () => this.sweep(), maxDelayMs: ALARM_MAX_MS });
+    private now(): number {
+        return this.o.now?.() ?? Date.now();
+    }
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
@@ -469,6 +486,8 @@ export class Engine {
         this.reopenScheduled();
         void this.resumeWorking();
         purgeTrash();
+        // Snoozes that ran out while Cavvy was closed wake now.
+        this.sweep();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
     }
@@ -522,7 +541,10 @@ export class Engine {
             this.turnsRunning.add(rt.id);
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;
-        } else this.idleNow(rt.id);
+        } else {
+            this.idleNow(rt.id);
+            this.wakeEarly(rt.id, "turn");
+        }
         if (!this.working || this.stopping) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
@@ -569,6 +591,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.alarm.stop();
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
         this.updates.stop();
@@ -661,6 +684,9 @@ export class Engine {
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
+        // Asking, or stopped by a failure: a snoozed session wakes for it. Finishing wakes only the turn it was
+        // snoozed in (turnRunning).
+        if (kind !== "done") this.wakeEarly(rt.id, "asks");
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
@@ -1002,6 +1028,7 @@ export class Engine {
             model: rt.session.model,
             live: true,
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
+            ...snoozeOf(rt.id, lists),
         };
     }
 
@@ -1012,7 +1039,7 @@ export class Engine {
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
             if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
@@ -1507,6 +1534,7 @@ export class Engine {
         for (const c of this.clients) c.subs.delete(id);
         updateStore((s) => {
             for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
+            forget(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
     }
@@ -1525,11 +1553,72 @@ export class Engine {
             if (on) list.add(id);
             else list.delete(id);
             s[key] = [...list];
+            // Archived, it's out of the list: a snooze has nothing left to bring back.
+            if (key === "archived" && on) forget(s, id);
         });
+        this.upsertRow(id, { [key]: on });
+    }
+
+    /** Every window hears how a session's row is now. */
+    private upsertRow(id: string, over?: Partial<SessionSummary>) {
         const rt = this.runtimes.get(id);
         // One that isn't open is read from its file, in whichever list its flags now put it.
         const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
-        if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+        if (!summary) return;
+        const session = { ...summary, ...over };
+        // What sessionChanged next compares with: it's what the windows have now.
+        if (rt) this.summarySent.set(id, JSON.stringify(session));
+        this.broadcast({ type: "sessions.upsert", session });
+    }
+
+    // -----------------------------------------------------------------------
+    // Snoozing (snooze.ts)
+
+    /** Snoozed until `until`, or (null) woken now by the user's hand. */
+    private snooze(id: string, until: unknown) {
+        if (until === null) {
+            if (!readStore().snoozed?.[id]) return;
+            this.wake(id, false);
+            return;
+        }
+        const at = checkSnoozeUntil(until, this.now());
+        if (at === undefined) throw new RpcError("Choose a time in the next year.", "invalid");
+        const rt = this.runtimes.get(id);
+        if (rt?.status === "waiting") throw new RpcError("This session is waiting for you. Answer it first.", "busy");
+        if (!rt && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            woken(s, id, false);
+            s.snoozed = { ...s.snoozed, [id]: { until: at, ...(rt?.busy ? { turn: true as const } : {}) } };
+        });
+        this.upsertRow(id);
+        this.alarm.arm(nextWake(readStore()));
+    }
+
+    /**
+     * Back in the list: by itself (its time, or it needs you: its row says it woke until it's opened, unless a window
+     * shows it now), or by the user's hand. Waking by itself, a settled one is back in play: it's come back to be looked at.
+     */
+    private wake(id: string, self: boolean) {
+        const mark = self && ![...this.clients].some((c) => c.shown === id);
+        updateStore((s) => {
+            woken(s, id, mark);
+            if (self && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
+        });
+        this.upsertRow(id);
+        this.alarm.arm(nextWake(readStore()));
+    }
+
+    /** It needs you (`why`), or the turn it was snoozed in ended: a snoozed session wakes early. */
+    private wakeEarly(id: string, why: "asks" | "turn") {
+        const e = readStore().snoozed?.[id];
+        if (e && (why === "asks" || e.turn)) this.wake(id, true);
+    }
+
+    /** Wakes what's due, and sets the timer for the next. */
+    private sweep() {
+        if (this.stopping) return;
+        for (const id of dueWakes(readStore(), this.now())) this.wake(id, true);
+        this.alarm.arm(nextWake(readStore()));
     }
 
     // -----------------------------------------------------------------------
@@ -2780,6 +2869,8 @@ export class Engine {
                 return { created: ensureKeybindingsFile(path), path };
             }
             case "sessions.list":
+                // The timer held back by a laptop's sleep: what's due wakes before it's listed.
+                if (this.alarm.due()) this.sweep();
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash":
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
@@ -2887,6 +2978,12 @@ export class Engine {
             }
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
+                // Opened: it no longer says it woke.
+                if (client.shown && readStore().woke?.includes(client.shown)) {
+                    const id = client.shown;
+                    updateStore((s) => forget(s, id));
+                    this.upsertRow(id);
+                }
                 const rt = client.shown ? this.runtimes.get(client.shown) : undefined;
                 rt?.flush();
                 // On screen, it's likely to be sent to: its folder's first snapshot taken now, not as the prompt waits.
@@ -2903,10 +3000,14 @@ export class Engine {
                 checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
-                if ((readStore().settled ?? []).includes(rt.id)) {
+                // Snoozed, the same: it's being worked with now.
+                const store = readStore();
+                if ((store.settled ?? []).includes(rt.id) || store.snoozed?.[rt.id] || store.woke?.includes(rt.id)) {
                     updateStore((s) => {
                         s.settled = (s.settled ?? []).filter((x) => x !== rt.id);
+                        forget(s, rt.id);
                     });
+                    if (store.snoozed?.[rt.id]) this.alarm.arm(nextWake(readStore()));
                     this.sessionChanged(rt);
                 }
                 if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
@@ -3123,6 +3224,9 @@ export class Engine {
                 this.setFlag(id, key, on);
                 return null;
             }
+            case "session.snooze":
+                this.snooze(checkId(p.id), p.until);
+                return null;
             case "session.archiveOffer":
                 return await this.archiveOffer(client, text(p.id, "id", 200));
             case "session.planInfo":
