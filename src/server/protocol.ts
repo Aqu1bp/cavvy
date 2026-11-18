@@ -1438,6 +1438,10 @@ export interface UsageSummary {
     approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;
+    /** Who each CLI account is signed in as, where its CLI has said (`source:accountId` to an email): the same one on two machines is one account. */
+    who?: Record<string, string>;
+    /** Servers whose usage isn't in this: not connected, or no answer. The rest of the user's machines are counted (usage-machines.ts). */
+    uncounted?: string[];
 }
 
 /** A commit on main the installed desktop app doesn't have yet. */

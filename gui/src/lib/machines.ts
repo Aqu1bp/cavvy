@@ -50,9 +50,9 @@ if (home) {
     home.onState((s) => s === "open" && void home.call("app.update.get", {}).then((u) => setApp("update", reconcile(u)), () => undefined));
     void home.connect();
     // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
-    // Cavvy. Set here, loaded before the window's own connection is made (its credentials come through this file).
+    // Cavvy. So does Usage: this computer's adds up every machine's. Set here, loaded before the window's own connection is made (its credentials come through this file).
     const route = rpc.route;
-    rpc.route = (method, params) => (method.startsWith("app.update.") ? (home.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : route?.(method, params));
+    rpc.route = (method, params) => (method.startsWith("app.update.") || method === "usage.summary" ? (home.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : route?.(method, params));
 }
 
 function homeOpen(): Promise<void> {
