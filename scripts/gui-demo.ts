@@ -47,7 +47,8 @@ mkdirSync(project, { recursive: true });
 createDemoProject(project);
 
 const site = startDemoSite();
-const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
+// --dump-requests <file>: each request the mock model gets is added to the file, a line each (what a model is sent).
+const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url, dumpTo: arg("--dump-requests") });
 // --fake-claude: Claude Code turned on, as a stand-in (test/fixtures/fake-claude.ts) that never reaches a model or this
 // machine's own Claude Code. Its environment variables (Settings → Providers) show in its replies: set FAKE_ECHO_ENV to
 // the names to see, as in FAKE_ECHO_ENV=ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN.

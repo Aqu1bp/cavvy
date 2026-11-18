@@ -212,3 +212,27 @@ test("engine: switching waits for the folder's sessions, and the header's branch
         await engine.stop();
     }
 });
+
+test("engine: a branch change reaches every session in the folder, however it was made", async () => {
+    const { Engine } = await import("../src/server/engine");
+    const { mine } = setup();
+    const engine = new Engine({ listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client);
+    try {
+        const [a, b] = await Promise.all([engine.handle(client, "session.create", { cwd: mine }), engine.handle(client, "session.create", { cwd: mine })]);
+        const ra = engine.runtimes.get(a.state.id)!;
+        const rb = engine.runtimes.get(b.state.id)!;
+        await Promise.all([ra.ready, rb.ready]);
+        // Committed to a new branch from one session: the other's title bar follows.
+        writeFileSync(join(mine, "a.txt"), "changed\n");
+        await engine.handle(client, "session.gitCommit", { id: a.state.id, paths: ["a.txt"], message: "change a", newBranch: "feature/x" });
+        expect([ra.view.state.branch, rb.view.state.branch]).toEqual(["feature/x", "feature/x"]);
+        // Switched outside Cavvy: the next read (a turn's end, the window's focus) brings both along.
+        git(mine, "switch", "-q", "main");
+        expect(await engine.handle(client, "git.sync", { cwd: mine, sessionId: a.state.id })).toMatchObject({ branch: "main" });
+        expect([ra.view.state.branch, rb.view.state.branch]).toEqual(["main", "main"]);
+    } finally {
+        await engine.stop();
+    }
+});

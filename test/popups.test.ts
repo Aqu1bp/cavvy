@@ -323,18 +323,29 @@ describe("plain-English summaries", () => {
 describe("session approvals", () => {
     const hostCmd = { command: "curl -O https://example.com/a", allowedHosts: ["example.com"] };
 
-    test("yes remembers the exact action only: same command, sandbox flag and hosts", () => {
+    test("allow once covers that call: the same action asks again, in every mode", () => {
+        for (const mode of ["default", "acceptEdits", "auto"] as const) {
+            const c = checker();
+            const first = c.check(Bash, hostCmd, mode, W);
+            expect(first.behavior).toBe("ask");
+            c.approve(Bash, hostCmd, W, { sandbox: first.sandbox });
+            const again = c.check(Bash, hostCmd, mode, W);
+            expect([mode, again.behavior, again.remembered]).toEqual([mode, "ask", undefined]);
+        }
+    });
+
+    test("allowed for the session, the exact action runs unasked: same command, sandbox flag and hosts", () => {
         const c = checker();
-        const first = auto(c, hostCmd);
+        const first = c.withGrant(Bash, hostCmd, auto(c, hostCmd), W);
         expect(first.behavior).toBe("ask");
-        c.approve(Bash, hostCmd, W, { sandbox: first.sandbox });
-        expect(auto(c, hostCmd)).toMatchObject({ behavior: "allow", remembered: true, sandbox: true });
+        c.approve(Bash, hostCmd, W, { sandbox: first.sandbox, grant: first.grant });
+        expect(auto(c, hostCmd)).toMatchObject({ behavior: "allow", remembered: true, reason: "allowed for the session", sandbox: true });
         expect(auto(c, { ...hostCmd, command: "curl -O https://example.com/b" }).behavior).toBe("ask");
         expect(auto(c, { ...hostCmd, allowedHosts: ["example.com", "other.example"] }).behavior).toBe("ask");
         expect(auto(c, { ...hostCmd, dangerouslyDisableSandbox: true }).behavior).toBe("ask");
     });
 
-    test("dangerous and config actions are remembered too, but only exactly", () => {
+    test("dangerous and config actions ask again after a yes", () => {
         const c = checker();
         const rm = { command: "git reset --hard" };
         const cfg = { command: "git config core.hooksPath /tmp/h" };
@@ -342,10 +353,9 @@ describe("session approvals", () => {
             const d = c.check(Bash, input, "default", W);
             expect(d).toMatchObject({ behavior: "ask", ...(input === rm ? { dangerous: true } : { config: true }) });
             c.approve(Bash, input, W, { sandbox: d.sandbox });
-            expect(c.check(Bash, input, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+            expect(c.check(Bash, input, "default", W)).toMatchObject({ behavior: "ask", ...(input === rm ? { dangerous: true } : { config: true }) });
+            expect(c.check(Bash, input, "auto", W).behavior).toBe("ask");
         }
-        expect(c.check(Bash, { command: "git reset --hard HEAD~1" }, "default", W).behavior).toBe("ask");
-        expect(c.check(Bash, { command: "git config core.hooksPath /tmp/other" }, "default", W).behavior).toBe("ask");
     });
 
     test("a scoped grant by what triggered it: host, command prefix, sensitive path", () => {
@@ -493,19 +503,19 @@ describe("session approvals", () => {
         expect(block).not.toMatch(/<\/approved>[^$]/);
     });
 
-    test("an exact approval holds only in the folder it was given in", () => {
+    test("an action allowed for the session holds only in the folder it was given in", () => {
         const c = checker({}, undefined);
         const other = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-other-")));
-        const reset = { command: "git reset --hard" };
-        c.approve(Bash, reset, W);
-        expect(c.check(Bash, reset, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
-        expect(c.check(Bash, reset, "default", other).behavior).toBe("ask");
-        // A relative path names another file elsewhere.
+        const build = { command: "npm run build" };
+        c.approve(Bash, build, W, { grant: c.withGrant(Bash, build, c.check(Bash, build, "default", W), W).grant });
+        expect(c.check(Bash, build, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+        expect(c.check(Bash, build, "default", other).behavior).toBe("ask");
+        // An edit is offered no grant: a yes to one covers that edit, and the same one asks again, here or elsewhere.
         const Write = BUILTIN_TOOLS.find((t) => t.name === "Write") as Tool<any>;
         const write = { file_path: "notes.txt", content: "x" };
         expect(c.check(Write, write, "default", W).behavior).toBe("ask");
         c.approve(Write, write, W);
-        expect(c.check(Write, write, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+        expect(c.check(Write, write, "default", W).behavior).toBe("ask");
         expect(c.check(Write, write, "default", other).behavior).toBe("ask");
     });
 
@@ -561,6 +571,109 @@ describe("approvals through the agent", () => {
         const prompt = reviewPrompt(reviews[1]);
         expect(prompt).toContain('"make release"');
         expect(prompt).not.toContain(FAKE);
+    });
+});
+
+describe("allow once through the agent", () => {
+    type Answer = { allow: boolean; grant?: boolean; rules?: string[]; scope?: "session" | "local" };
+    /** An agent whose model runs `command` once per turn; `answer` is the user's answer to each prompt. */
+    function setup(mode: string, answer: Answer, o: { reviewer?: (c: any) => any; command?: string } = {}) {
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-ws-")));
+        const settings = { autoCompact: false } as any;
+        const asked: any[] = [];
+        const reviews: any[] = [];
+        const saved: string[][] = [];
+        const checker = new PermissionChecker(() => settings, ws, () => undefined);
+        const command = o.command ?? "echo one > notes.txt";
+        let n = 0;
+        const agent = new Agent({
+            session: Session.create(ws, { persist: false, system: "S" }),
+            model: { provider: "test", id: "test" } as any,
+            client: {
+                // Each turn: the command, then done.
+                stream: async () =>
+                    n++ % 2 === 0
+                        ? { role: "assistant", provider: "test", model: "test", stopReason: "tool_use", content: [{ type: "tool_call", id: `c${n}`, name: "Bash", input: { command } }] }
+                        : { role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "done" }] },
+            } as any,
+            settings: () => settings,
+            checker,
+            classifier: o.reviewer ? ({ classify: async (c: any) => (reviews.push(c), o.reviewer!(c)), summarize: async () => undefined, userDecided() {}, clearCache() {} } as any) : undefined,
+            tools: [Bash],
+            mode: { get: () => mode, set() {} },
+            toolState: { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map() } as any,
+            host: { emit() {}, ui: {}, askPermission: async (req: any) => (asked.push(req), answer), saveRules: (r: string[]) => saved.push(r), drainQueued: () => [] } as any,
+        });
+        const turn = () => agent.run([{ type: "text", text: "write the notes" }], { signal: new AbortController().signal });
+        return { agent, asked, reviews, saved, turn, ws, checker };
+    }
+
+    for (const mode of ["default", "acceptEdits"]) {
+        test(`${mode}: the same command after "Allow once" asks again`, async () => {
+            const { asked, turn } = setup(mode, { allow: true });
+            await turn();
+            await turn();
+            expect(asked.map((r) => r.input.command)).toEqual(["echo one > notes.txt", "echo one > notes.txt"]);
+        });
+    }
+
+    test("auto: after the user allowed it once, the repeat goes to the reviewer again, and on to the user if it can't decide", async () => {
+        const { asked, reviews, turn } = setup("auto", { allow: true }, { reviewer: () => ({ decision: "ask", reason: "unsure" }) });
+        await turn();
+        await turn();
+        expect(reviews).toHaveLength(2);
+        expect(asked).toHaveLength(2);
+        // The reviewer is told what the user said yes to, as context for its own decision.
+        expect(reviews[1].context.approvals).toEqual([{ tool: "Bash", cwd: expect.any(String), command: "echo one > notes.txt" }]);
+    });
+
+    test("auto: a dangerous command allowed once asks the user again; the reviewer never decides it", async () => {
+        const { asked, reviews, turn } = setup("auto", { allow: true }, { reviewer: () => ({ decision: "allow", reason: "fine" }), command: "git reset --hard" });
+        await turn();
+        await turn();
+        expect(reviews).toHaveLength(0);
+        expect(asked).toHaveLength(2);
+    });
+
+    test("a session choice stops the repeat ask; so does an always-allow rule", async () => {
+        const grant = setup("default", { allow: true, grant: true }, { command: "touch built.txt" });
+        await grant.turn();
+        expect(grant.asked[0].decision.grant).toMatchObject({ rules: ["Bash(touch:*)"] });
+        await grant.turn();
+        expect(grant.asked).toHaveLength(1);
+
+        const always = setup("default", { allow: true, rules: ["Bash(touch:*)"], scope: "local" }, { command: "touch built.txt" });
+        await always.turn();
+        await always.turn();
+        expect(always.asked).toHaveLength(1);
+        expect(always.saved).toEqual([["Bash(touch:*)"]]);
+    });
+
+    test("a rewind changes nothing: allowed once still asks again, allowed for the session still doesn't", async () => {
+        const once = setup("default", { allow: true });
+        await once.turn();
+        once.agent.rewind(0);
+        await once.turn();
+        expect(once.asked).toHaveLength(2);
+
+        const session = setup("default", { allow: true, grant: true }, { command: "touch built.txt" });
+        await session.turn();
+        session.agent.rewind(0);
+        await session.turn();
+        expect(session.asked).toHaveLength(1);
+    });
+
+    test("a backend's own request asks again after a yes, unless the yes was for the session", async () => {
+        const ask = (s: ReturnType<typeof setup>, command: string) => (s.agent as any).backendPermission({ toolName: "Bash", input: { command } }, new AbortController().signal);
+        const once = setup("default", { allow: true });
+        expect(await ask(once, "touch release.txt")).toMatchObject({ allow: true });
+        expect(await ask(once, "touch release.txt")).toMatchObject({ allow: true });
+        expect(once.asked).toHaveLength(2);
+
+        const session = setup("default", { allow: true, grant: true });
+        await ask(session, "touch built.txt");
+        await ask(session, "touch built.txt");
+        expect(session.asked).toHaveLength(1);
     });
 });
 

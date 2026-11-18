@@ -1,12 +1,9 @@
 import { expect, test } from "bun:test";
-import { lastAnswer, quoted } from "../gui/src/lib/side-chat";
+import { lastAnswer } from "../gui/src/lib/side-chat";
 import { clientAction } from "../gui/src/lib/commands";
 
-// What the side chat's Bring back puts in the session's input (gui/src/lib/side-chat.ts), and /btw as the GUI reads it.
-
-test("Bring back quotes each line, blank ones too, and leaves room to write after it", () => {
-    expect(quoted("It's in src/auth.\n\nSee `login()`.\n")).toBe("> It's in src/auth.\n>\n> See `login()`.\n\n");
-});
+// What the side chat's Bring back attaches to the session's message (gui/src/lib/side-chat.ts; the chip itself is in
+// attachments.test.ts), and /btw as the GUI reads it.
 
 test("the last answer is the latest turn's last words, not a step's", () => {
     const turn = (blocks: unknown[]) => ({ id: "t", status: "done", blocks }) as any;

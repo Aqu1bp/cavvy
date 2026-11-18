@@ -580,6 +580,30 @@ describe("the composer's sorting (gui/src/lib/attachments)", () => {
         expect(gui.blockedBy(twelve, true)).toMatch(/10 files at most\. Remove 2/);
         expect(gui.toWire([{ kind: "refused", name: "a.zip", size: 1, reason: "x" }])).toEqual({});
     });
+
+    test("a side chat's answer brought back reaches the model as the side chat's, not as the user's words", () => {
+        const answer = "It's in `src/billing/settings.ts`.\n\n```ts\nexport const plans = [];\n```";
+        const chip = gui.sideChatText(`  ${answer}\n`, []);
+        expect(chip).toMatchObject({ kind: "text", name: "Side chat answer", lines: 5, from: "side-chat", text: answer });
+        expect(chip).not.toHaveProperty("pasted");
+        const wire = gui.toWire([chip]);
+        expect(wire.files).toEqual([{ name: "Side chat answer", data: b64(answer), from: "side-chat" }]);
+        // Handed back to the box (an edited queued message, a rewind) it's the same chip.
+        expect(gui.fromWire(undefined, wire.files)).toEqual([chip]);
+        const [part] = checkFiles(wire.files);
+        expect(part).toMatchObject({ kind: "text", name: "Side chat answer", from: "side-chat" });
+        expect(toWire([part!]).files).toEqual(wire.files);
+        expect(attachedPrompt([part!]).files).toEqual([{ name: "Side chat answer", kind: "text", size: answer.length, lines: 5, from: "side-chat" }]);
+        // API models and agent CLIs alike are sent it framed as text from the side chat.
+        const framed = framedText(part as Extract<FilePart, { kind: "text" }>);
+        expect(framed).toMatch(/^Text the user brought back from a side chat \(5 lines\)/);
+        expect(framed).toContain("not the user's own words");
+        expect(framed).toContain(`\n${answer}\n</side-chat-answer boundary=`);
+        expect(framed).not.toContain("<attached-file");
+        expect(forBackend([{ type: "text", text: "Use this" }, part!], false).text).toBe(`Use this\n\n${framed}`);
+        // Only text comes back from a side chat: a claim on anything else is dropped.
+        expect(checkFiles([{ name: "x", data: b64("p"), pasted: true, from: "side-chat" }])[0]).not.toHaveProperty("from");
+    });
 });
 
 describe("attaching a screenshot, quickly and byte for byte (gui/src/lib/attachments)", () => {

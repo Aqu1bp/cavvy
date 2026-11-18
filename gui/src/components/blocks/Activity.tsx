@@ -1133,6 +1133,8 @@ export function LiveCommandBody(p: { tool: ToolBlock }) {
 
 /** An opened command: the whole of it after "$", highlighted, over its output; then how it ended. Built when first opened. */
 function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code: number | undefined; task: string | undefined; time: string | undefined }) {
+    // The conversation it's in (a side chat's is not the session shown).
+    const session = useContext(CardFoldsContext).sessionId;
     const command = () => String(p.tool.input?.command ?? "").trim();
     const tokens = createMemo(() => firstLine(highlightShell(command())));
     const token = (tk: ShellToken) => (tk.cls ? <span class={tk.cls}>{tk.text}</span> : tk.text);
@@ -1143,7 +1145,7 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
     const load = async () => {
         setLoading(true);
         try {
-            setFull((await rpc.call("session.toolOutput", { id: app.activeId!, toolId: p.tool.id })).output);
+            setFull((await rpc.call("session.toolOutput", { id: session ?? app.activeId!, toolId: p.tool.id })).output);
         } catch (e) {
             reportError(e);
         } finally {
@@ -1227,13 +1229,14 @@ function Section(p: { label: string; children: JSX.Element; aside?: JSX.Element 
 }
 
 function Output(p: { tool: ToolBlock; bare?: boolean }) {
+    const session = useContext(CardFoldsContext).sessionId;
     const [full, setFull] = createSignal<string>();
     const [loading, setLoading] = createSignal(false);
     const text = () => stripAnsi(full() ?? p.tool.output ?? "");
     const load = async () => {
         setLoading(true);
         try {
-            setFull((await rpc.call("session.toolOutput", { id: app.activeId!, toolId: p.tool.id })).output);
+            setFull((await rpc.call("session.toolOutput", { id: session ?? app.activeId!, toolId: p.tool.id })).output);
         } catch (e) {
             reportError(e);
         } finally {

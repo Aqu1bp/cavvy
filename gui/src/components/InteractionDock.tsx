@@ -19,7 +19,7 @@ import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
 import { Counts, DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 
 const typing = () => typingIn(document.activeElement as HTMLElement | null);
 
@@ -45,7 +45,7 @@ export function useKeys(handler: (key: string) => boolean) {
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
             // Nor while an edge is dragged (Esc is the drag's then: Panes.tsx).
-            if (performance.now() - shown < SETTLE_MS || !pane.focused() || document.body.classList.contains("resizing")) return;
+            if (performance.now() - shown < SETTLE_MS || !keysHere(pane) || document.body.classList.contains("resizing")) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
             // The one shown: not one kept out of sight (Panes.tsx), which can come first.

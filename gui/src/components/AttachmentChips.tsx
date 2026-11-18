@@ -1,5 +1,5 @@
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { FileText, FileX, File as FileIcon, Image as ImageIcon, TextCursorInput, X } from "lucide-solid";
+import { FileText, FileX, File as FileIcon, Image as ImageIcon, MessageSquareText, TextCursorInput, X } from "lucide-solid";
 import { extensionOf, formatSize, previewNow, previewOf, tintOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 import { setViewedImage } from "../state/ui";
@@ -91,7 +91,9 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                         const x = f();
                                         return x.kind === "text" ? `${plural(x.lines, "line")} · ${formatSize(x.size)}` : formatSize(x.size);
                                     };
-                                    const ext = () => (pasted() ? undefined : extensionOf(f().name));
+                                    /** Brought back from the side chat: marked as the side chat's tab is. */
+                                    const sideChat = () => f().kind === "text" && (f() as { from?: string }).from === "side-chat";
+                                    const ext = () => (pasted() || sideChat() ? undefined : extensionOf(f().name));
                                     const isOpen = () => shown() === f();
                                     const Body = () => (
                                         <>
@@ -102,6 +104,9 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                                     </Match>
                                                     <Match when={pasted()}>
                                                         <FileText size={16} />
+                                                    </Match>
+                                                    <Match when={sideChat()}>
+                                                        <MessageSquareText size={16} />
                                                     </Match>
                                                     <Match when={ext()}>{(e) => <span class={`att-ext ${e().length > 3 ? "long" : ""}`}>{e()}</span>}</Match>
                                                 </Switch>

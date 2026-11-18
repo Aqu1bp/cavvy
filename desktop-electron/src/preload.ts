@@ -179,6 +179,14 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         ipcRenderer.on("window_state", listener);
         return () => void ipcRenderer.removeListener("window_state", listener);
     },
+    /** Asked to show the question before quitting (main.ts askInPage), or, with `end`, to take it down. */
+    onQuitAsk: (fn: (q: { id: number; title: string; detail: string } | { id: number; end: true }) => void) => {
+        const listener = (_e: unknown, q: { id: number; title: string; detail: string } | { id: number; end: true }) => fn(q);
+        ipcRenderer.on("quit_ask", listener);
+        return () => void ipcRenderer.removeListener("quit_ask", listener);
+    },
+    /** The question is up ("shown"), then its answer. */
+    quitReply: (id: number, answer: "shown" | "quit" | "cancel") => ipcRenderer.send("quit_reply", id, answer),
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
     browserBack: (seen: number) => ipcRenderer.send("browser_back", seen),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),

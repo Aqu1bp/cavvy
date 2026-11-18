@@ -6,7 +6,9 @@
 // pipe closes, as it does when Cavvy ends however it ends; it's also stopped as Cavvy exits. Elsewhere there's nothing
 // to start, and the setting says it isn't available.
 
+import { accessSync, constants } from "fs";
 import { homedir } from "os";
+import { join } from "path";
 import { loadScope } from "../config/settings";
 
 /** A running inhibitor. */
@@ -25,6 +27,33 @@ export function inhibitorCommand(platform: NodeJS.Platform, pid: number): string
     if (platform === "darwin") return ["/usr/bin/caffeinate", "-i", "-w", String(pid)];
     if (platform === "linux") return ["systemd-inhibit", "--what=idle:sleep", "--who=Cavvy", "--why=Agents are working", "--mode=block", "cat"];
     return undefined;
+}
+
+/** Where the system's own commands are, looked in first: what's installed there is what's meant, whatever PATH says. */
+const SYSTEM_DIRS = ["/usr/bin", "/bin"];
+
+const executable = (path: string) => {
+    try {
+        accessSync(path, constants.X_OK);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * The path `bin` runs from: itself when it's a path; else the system's own copy (/usr/bin, /bin) when there's one, else
+ * the first on PATH as it is now (the login shell's, once the server has adopted it: src/server/login-env.ts).
+ * Undefined when there's none. A spawn given this path runs what was found, not what the PATH the process started
+ * with would find.
+ */
+export function findBin(bin: string, o: { dirs?: string[]; PATH?: string } = {}): string | undefined {
+    if (bin.includes("/")) return executable(bin) ? bin : undefined;
+    for (const dir of o.dirs ?? SYSTEM_DIRS) {
+        const path = join(dir, bin);
+        if (executable(path)) return path;
+    }
+    return Bun.which(bin, { PATH: o.PATH ?? process.env.PATH ?? "" }) ?? undefined;
 }
 
 const spawnInhibitor: InhibitorSpawn = (argv) => {
@@ -49,8 +78,8 @@ export interface KeepAwakeOptions {
     spawn?: InhibitorSpawn;
     /** Whether the setting is on: read when something starts working with nothing held, and on refresh(). */
     enabled?: () => boolean;
-    /** Whether the command can be found (before it's first run). */
-    installed?: (bin: string) => boolean;
+    /** Where a command runs from (findBin): what's checked for being available is what's run. */
+    find?: (bin: string) => string | undefined;
     log?: (msg: string) => void;
 }
 
@@ -65,11 +94,27 @@ export class KeepAwake {
     /** It couldn't start, or ended by itself (refused): not tried again until the setting is turned off and on. */
     private failed = false;
     private exitHook = false;
+    /** The command with its programs found, once they are: looked up once, for both available() and running it. */
+    private found?: string[];
 
     constructor(private o: KeepAwakeOptions = {}) {}
 
     private get argv(): string[] | undefined {
         return inhibitorCommand(this.o.platform ?? process.platform, this.o.pid ?? process.pid);
+    }
+
+    /** The command to run, its program (and on Linux the cat it runs) as paths; undefined while its program isn't found. */
+    private command(): string[] | undefined {
+        if (this.found) return this.found;
+        const argv = this.argv;
+        if (!argv) return undefined;
+        const find = this.o.find ?? ((bin: string) => findBin(bin));
+        const bin = find(argv[0]!);
+        if (!bin) return undefined;
+        const rest = argv.slice(1);
+        // systemd-inhibit runs its command by name from the PATH it was given, which may not be the one that found it.
+        if (rest.at(-1) === "cat") rest[rest.length - 1] = find("cat") ?? "cat";
+        return (this.found = [bin, ...rest]);
     }
 
     /** Whether `key` (a session: anything that tells it apart) is working now. Only a change does anything. */
@@ -95,9 +140,7 @@ export class KeepAwake {
 
     /** Whether it can work on this computer, as far as is known: false where there's nothing to run, it isn't installed, or it was refused. */
     available(): boolean {
-        const argv = this.argv;
-        if (!argv || this.failed) return false;
-        return (this.o.installed ?? ((bin) => Boolean(Bun.which(bin, { PATH: process.env.PATH ?? "" }))))(argv[0]!);
+        return !this.failed && Boolean(this.command());
     }
 
     /** Whether it's holding the computer awake now. */
@@ -128,9 +171,10 @@ export class KeepAwake {
             return;
         }
         if (this.failed || !this.enabled()) return;
-        const argv = this.argv;
+        const argv = this.command();
         if (!argv) {
             this.failed = true;
+            if (this.argv) this.o.log?.(`Keeping the computer awake: ${this.argv[0]} isn't installed.`);
             return;
         }
         let held: Inhibitor;
@@ -157,7 +201,7 @@ export class KeepAwake {
         if (this.held !== held) return;
         this.held = undefined;
         this.failed = true;
-        this.o.log?.(`Keeping the computer awake: ${this.argv?.[0]} ended by itself; not trying again.`);
+        this.o.log?.(`Keeping the computer awake: ${this.found?.[0]} ended by itself; not trying again.`);
     }
 }
 

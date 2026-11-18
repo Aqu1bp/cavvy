@@ -17,7 +17,8 @@ export function sessionStatus(s: SessionSummary, now: number): { text: string; t
         return { text: ms >= 60_000 ? `Working ${duration(ms).replace(/ \d+s$/, "")}` : "Working", tone: "info" };
     }
     if (s.status === "error") return { text: "Stopped", tone: "err" };
-    if (s.messages > 0) return { text: "Done", tone: "muted" };
+    // Its last turn never finished (stopped, or cut off when Cavvy quit): not done.
+    if (s.messages > 0) return s.stopped ? { text: "Stopped", tone: "muted" } : { text: "Done", tone: "muted" };
     return undefined;
 }
 

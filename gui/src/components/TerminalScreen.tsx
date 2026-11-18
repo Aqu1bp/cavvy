@@ -276,7 +276,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         { icon: Copy, label: "Copy", off: !selected(), run: () => void copyText(term.getSelection()) },
         { icon: ClipboardPaste, label: "Paste", off: !opened || !!ended(), run: () => void paste() },
         { icon: TextSelect, label: "Select all", run: () => term.selectAll() },
-        { icon: Eraser, label: "Clear", run: () => term.clear() },
+        { icon: Eraser, label: "Clear", run: () => (term.clear(), term.clearSelection()) },
     ];
 
     onMount(() => {
