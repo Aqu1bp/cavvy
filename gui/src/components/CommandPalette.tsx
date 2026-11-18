@@ -13,6 +13,9 @@ import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
 import { entryScore, groupSections, keepSelection, messagesShown } from "../lib/palette-order";
+
+/** "box · " before a server's session's project; nothing for this computer's. */
+const atMachine = (machine?: string) => (machine ? `${machine} · ` : "");
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -163,7 +166,7 @@ export function CommandPalette() {
             { id: "theme-dark", section: "Theme", label: "Theme: Dark", keywords: "appearance color scheme", icon: <Moon size={15} />, run: () => setPrefs("scheme", "dark") },
             { id: "theme-system", section: "Theme", label: "Theme: Match system", keywords: "appearance color scheme auto", icon: <Sun size={15} />, run: () => setPrefs("scheme", "system") },
         );
-        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, end: `${s.machine ? `${s.machine} · ` : ""}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
+        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, end: `${atMachine(s.machine)}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
         for (const p of app.projects) out.push({ id: `p-${p.path}`, section: "Projects", label: `New session in ${p.name}`, desc: tildify(p.path, app.hello?.homeDir), keywords: p.path, icon: <FolderGit2 size={15} />, run: () => void openProject(p.path) });
         return out;
     });
@@ -193,7 +196,7 @@ export function CommandPalette() {
                 id: `m-${h.id}-${h.seg}-${h.index}-${i}`,
                 section: "Messages",
                 label: sn.text,
-                desc: `${h.title} · ${h.machine ? `${h.machine} · ` : ""}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
+                desc: `${h.title} · ${atMachine(h.machine)}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
                 icon: h.role === "user" ? <User size={15} /> : <Bot size={15} />,
                 snippet: sn,
                 run: () => openHit(h, said.query),
