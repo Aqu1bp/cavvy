@@ -107,7 +107,11 @@ function answer(method: string, params: any, sessionId?: string): unknown {
         case "Page.getLayoutMetrics":
             return { cssVisualViewport: { pageX: 0, pageY: t?.scrollY ?? 0, clientWidth: 1280, clientHeight: 800 }, cssContentSize: { width: 1280, height: 2000 } };
         case "Input.dispatchMouseEvent":
-            if (params.type === "mouseWheel" && t) t.scrollY = Math.max(0, (t.scrollY ?? 0) + params.deltaY);
+            if (params.type === "mouseWheel" && t) {
+                t.scrollY = Math.max(0, (t.scrollY ?? 0) + params.deltaY);
+                // scrolled: it draws again, as Chrome does
+                if (t.casting) setTimeout(() => frame(t), 0);
+            }
             return {};
         case "Page.captureScreenshot":
             return { data: params.format === "jpeg" ? JPEG : PNG };
