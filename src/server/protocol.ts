@@ -2146,6 +2146,14 @@ export interface Methods {
     /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it (`target`: the sign-in, which this machine must know with that port); until `servers.unforward` or the window goes. */
     "servers.forward": { params: { name: string; port: number; target: string }; result: null };
     "servers.unforward": { params: { name: string; port: number }; result: null };
+    /**
+     * An MCP server's sign-in started by a session on server `name`: its page (`url`) ends by calling a port on the
+     * machine with the browser, which is this one. This machine answers that call for a while and hands what it
+     * was sent to the server's Cavvy (mcp.callback).
+     */
+    "servers.mcpCallback": { params: { name: string; url: string }; result: null };
+    /** What the page of an MCP sign-in under way here ended with, brought by the machine with the browser: how it was taken (an HTTP status; 404 when no sign-in waits for it). */
+    "mcp.callback": { params: { query: string }; result: { status: number } };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
