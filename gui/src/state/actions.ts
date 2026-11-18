@@ -266,6 +266,8 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     // Home's machine as it is now: checked, made and trusted there, wherever the user goes meanwhile.
     const at = opts.to ? opts.to.at : id ? undefined : homeAt();
     let created = false;
+    // Still on that Home (the same folder on the same machine): the session made from it is shown.
+    const stillHome = () => app.activeId === undefined && app.homeCwd === cwd && homeOn() === at?.there?.on;
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd, at };
@@ -273,7 +275,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
             // A failure is shown once, in this toast, with its retry.
             if (!(await send(text, attachments, { literal: true, to, throwErrors: true, accepted: opts.accepted }))) return false;
-            if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
+            if (created && stillHome()) setApp("activeId", to.id);
             opts.sent?.();
         } });
         return false;
@@ -309,7 +311,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         }
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
-        if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
+        if (created && stillHome()) setApp("activeId", id);
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
