@@ -28,6 +28,8 @@ Object.assign(globalThis, {
 
 const summary = (id: string, o: object = {}) => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
 const opened: { url: string; id: string }[] = [];
+/** Where each question about the app's update went. */
+const updates: string[] = [];
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -58,7 +60,7 @@ class ServerSocket extends Socket {
         else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
         else if (method === "session.close" || method === "session.shown") reply(null);
         // The window's own Cavvy is box's here (no app to update); this computer's has one.
-        else if (method.startsWith("app.update.")) reply(!this.url.includes("mac.test") ? { unavailable: "not here" } : { current: "abc", checkedAt: 1, asked: method });
+        else if (method.startsWith("app.update.")) updates.push(this.url), reply(!this.url.includes("mac.test") ? { unavailable: "not here" } : { current: "abc", checkedAt: 1, asked: method });
         else reply([]);
     }
 }
@@ -99,6 +101,14 @@ await settle();
 // Asked as that connection opens (and each time it's back), with nothing else asking.
 assert.equal((app.update as any)?.unavailable, undefined, "not box's answer");
 assert.equal((app.update as any)?.asked, "app.update.get", "this computer's");
+// And what the window asks of it (About's Check, the Update button) goes there too, none of it to box.
+const { refreshUpdate } = await import("../../gui/src/state/app");
+const asked = updates.length;
+await refreshUpdate();
+assert.equal(updates.length, asked + 1);
+// (Before the servers code was loaded, this script's stand-in for it let the first one through to box: in the app
+// that code is loaded to connect the window at all.)
+assert.ok(updates.slice(asked).every((u) => u.includes("mac.test")), "nothing about the update is asked of box");
 // What this computer's Cavvy says of it later is shown; what box's says isn't.
 home!.hear({ type: "app.update", info: { current: "def" } } as never);
 assert.equal((app.update as any)?.current, "def");
