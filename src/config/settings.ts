@@ -159,6 +159,8 @@ export interface Settings {
     notifyAfterSeconds?: number;
     /** The GUI settles sessions left idle this many days: 0 (never), 1, 3, 7 (default) or 14. */
     autoSettleDays?: number;
+    /** Keep the computer from idling to sleep while sessions work (src/agent/keep-awake.ts; default true). User settings only. */
+    keepAwake?: boolean;
     /** A message sent while a turn runs: "steer" joins it at its next step (default), "queue" waits for it to end. Tab (TUI) or mod+shift+enter (GUI) does the other. */
     followUpBehavior?: FollowUp;
     /** After a Claude Code or Codex turn stops on the plan's usage limit, continue by itself when it resets (default true). */

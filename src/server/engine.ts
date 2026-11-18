@@ -128,6 +128,7 @@ import { TitleQueue } from "./title-queue";
 import { autoSettleDays, AUTO_SETTLE_DAYS, forgetPlay, notePlay, settleable, settleDue, type SettleStore } from "./auto-settle";
 import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
+import { keepAwake } from "../agent/keep-awake";
 
 export interface EngineOptions {
     /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
@@ -594,6 +595,7 @@ export class Engine {
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
+        keepAwake.releaseAll(this.runtimes.values());
         await terminalsStopped;
         // What this Cavvy signed in on its servers ends with it.
         await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
@@ -693,6 +695,8 @@ export class Engine {
     }
 
     sessionChanged(rt: Runtime) {
+        // Working (a turn running, not waiting for the user): the computer stays awake (src/agent/keep-awake.ts).
+        keepAwake.set(rt, rt.status === "running");
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
@@ -1386,6 +1390,7 @@ export class Engine {
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        keepAwake.set(rt, false);
         this.summarySent.delete(id);
         if (this.turnsRunning.has(id)) this.idleNow(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
@@ -1487,6 +1492,7 @@ export class Engine {
             try {
                 if (rt) {
                     this.runtimes.delete(id);
+                    keepAwake.set(rt, false);
                     this.summarySent.delete(id);
                     if (this.turnsRunning.has(id)) this.idleNow(id);
                     clearTimeout(this.unloadTimers.get(id));
@@ -2435,6 +2441,8 @@ export class Engine {
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
             autoSettleDays: autoSettleDays(s.autoSettleDays),
+            keepAwake: s.keepAwake !== false,
+            ...(keepAwake.available() ? {} : { keepAwakeUnavailable: true }),
         };
     }
 
@@ -2478,7 +2486,10 @@ export class Engine {
                 if (!AUTO_SETTLE_DAYS.includes(patch.autoSettleDays as (typeof AUTO_SETTLE_DAYS)[number])) throw new RpcError(`autoSettleDays must be one of ${AUTO_SETTLE_DAYS.join(", ")}`, "invalid");
                 s.autoSettleDays = patch.autoSettleDays;
             }
+            // On is the default: stored only when off.
+            if ("keepAwake" in patch) s.keepAwake = patch.keepAwake === false ? false : undefined;
         });
+        if ("keepAwake" in patch) keepAwake.refresh();
         // Shorter, or on: what's idle that long settles now.
         if ("autoSettleDays" in patch) this.sweep();
         this.reloadSettings();
@@ -2804,7 +2815,12 @@ export class Engine {
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
             case "server.unsaved":
-                return { sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })) };
+                return {
+                    sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })),
+                    // What quitting the desktop app would stop: this computer's sessions that are working (a response, a
+                    // question, queued messages, shells or tasks running). None once an update restarts the app: Update asked first.
+                    working: this.updates.get().updating?.restarting ? 0 : [...this.runtimes.values()].filter((rt) => !rt.guest && !rt.idle).length,
+                };
             case "server.memory":
                 return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":

@@ -1672,6 +1672,10 @@ export interface GuiSettings {
     editor?: string;
     /** Sessions idle this many days are settled by themselves: 0 (off), 1, 3, 7 (the default) or 14. */
     autoSettleDays?: number;
+    /** Keep the computer from idling to sleep while sessions work (default true). */
+    keepAwake?: boolean;
+    /** Set when keeping it awake can't work on this computer (nothing to run, not installed, or refused). */
+    keepAwakeUnavailable?: boolean;
 }
 
 /** An editor Cavvy knows, and whether it's on this machine (the server's). */
@@ -2180,7 +2184,8 @@ export interface Methods {
     /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
     "server.memory": { params: { types?: boolean }; result: ServerMemory };
     /** Sessions whose latest work couldn't be saved (a full disk) and would be lost if Cavvy quit now: the desktop app asks before quitting. */
-    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[] } };
+    /** `working`: this computer's sessions quitting would stop (0 while an update restarts the app). */
+    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[]; working: number } };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
