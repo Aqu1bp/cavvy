@@ -19,7 +19,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; limits?: Record<string, any>; away?: string } = {}) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; machineLimits?: Record<string, any>; limits?: Record<string, any>; away?: string } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -99,6 +99,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
         modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
         // Another machine's session has that machine's providers, never the window's own.
         providersFor: () => (more.away === undefined ? more.providers : more.machineProviders) ?? [],
+        // And that machine's accounts' limits.
+        limitsFor: () => (more.away === undefined ? more.limits : more.machineLimits) ?? {},
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
@@ -273,4 +275,9 @@ test("another machine's session opened here is offered that machine's accounts, 
     expect(text(button)).toBe("Box");
     button.focus(); f.key("Enter");
     expect(f.accountItems().map(text)).toEqual(["Box", "Second on box"]);
+    // Box's own limits are its accounts': one reached there is marked.
+    const full = picker(true, { groups, providers: mine, machineProviders: boxes, away: "box", machineLimits: { [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ label: "5-hour", usedPercent: 100, reached: true }], at: 0 } } });
+    full.tabs()[2].click();
+    full.accountButton().focus(); full.key("Enter");
+    expect(full.accountItems().map(text)).toEqual(["Box", "Second on boxLimit reached"]);
 });
