@@ -41,6 +41,7 @@ import { turnOffAgent } from "../providers/agent-env";
 import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
+import { forgetRemovedProvider, resetNote } from "../providers/model-refs";
 import { continuationGroups, modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
@@ -867,6 +868,11 @@ async function logoutCommand(app: App, args: string) {
               ? `${theme.success("✔")} Turned off ${bold(row.name)} ${theme.muted(`(it stays signed in; ${signOut} signs it out)`)}`
               : `${theme.success("✔")} Removed the ${bold(row.name)} key`,
     ]);
+    const reset = await forgetRemovedProvider(app.cwd, id).catch(() => []);
+    if (reset.length) {
+        app.reloadSettings();
+        app.print([theme.muted(resetNote(reset))]);
+    }
     const current = app.model?.provider === id ? app.model.id : undefined;
     await app.keyChanged(id);
     if (current && !app.model) app.notice(`The current model (${current}) used ${row.source === "gcloud" || row.source === "cli" ? "this setup" : "this key"}; pick another with /model.`, "warn");

@@ -419,6 +419,8 @@ interface ProvidersFile {
     keychain?: string[];
     vertex?: VertexConfig;
     agents?: Record<string, AgentCliConfig>;
+    /** The names of removed instances ("OpenRouter" for claude-code@openrouter), for what still names one: a session that was on it. */
+    removedInstances?: Record<string, string>;
 }
 
 /** As it is on disk, read again only once it's changed (readJsonCached): frozen, so change a copy (readProvidersFileForUpdate). */
@@ -585,6 +587,34 @@ export function allProviders(): readonly ProviderDef[] {
 
 export function getProvider(id: string): ProviderDef | undefined {
     return allProviders().find((p) => p.id === id);
+}
+
+/** At most this many removed instances' names are kept. */
+const REMOVED_NAMES = 50;
+
+/** Keep a removed instance's name (its sessions still say whose it was), or forget it (an instance is added under its id again). */
+export function rememberRemovedInstance(pf: ProvidersFile, id: string, name: string | undefined) {
+    const kept = { ...(pf.removedInstances ?? {}) };
+    delete kept[id];
+    if (name) kept[id] = name;
+    const ids = Object.keys(kept);
+    for (const old of ids.slice(0, Math.max(0, ids.length - REMOVED_NAMES))) delete kept[old];
+    if (Object.keys(kept).length) pf.removedInstances = kept;
+    else delete pf.removedInstances;
+}
+
+/**
+ * A provider's name as the user knows it: "Claude Code · OpenRouter", even once that instance was removed (by the
+ * name it had), never its id where there's a name to show.
+ */
+export function providerLabel(id: string): string {
+    const p = getProvider(id);
+    if (p) return p.name;
+    const m = INSTANCE_ID.exec(id);
+    const base = m ? BUILTIN_PROVIDERS.find((b) => b.id === m[1] && b.kind === "agent") : undefined;
+    if (!m || !base) return id;
+    const saved = readProvidersFile().removedInstances?.[id];
+    return `${base.name} · ${typeof saved === "string" && saved.trim() ? saved.trim().slice(0, 64) : m[2]}`;
 }
 
 /**

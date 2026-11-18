@@ -2,7 +2,7 @@ import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Check, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
-import { refreshModels, refreshProviders, rpc } from "../state/app";
+import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
@@ -10,6 +10,7 @@ import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Spinner } from "./ui/bits";
 import { EnvDialog, InstanceDialog } from "./CliEnv";
+import { resetToast } from "../lib/reset-toast";
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..") ? undefined : "Use 1–64 plain characters, starting with a letter or number, without '..'.";
@@ -267,12 +268,23 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         </Dialog>
         <Show when={envOpen()}><EnvDialog provider={p.provider} onClose={() => setEnvOpen(false)} /></Show>
         <Show when={instanceOpen()} keyed>{(i) => <InstanceDialog provider={p.provider} instance={i === "new" ? undefined : i} onClose={() => setInstanceOpen(undefined)} />}</Show>
-        <Show when={removingInstance()}>{(i) => <Dialog open onClose={() => { if (!busy()) setRemovingInstance(undefined); }} title={`Remove ${p.provider.name} · ${i().name}?`} width={420}>
+        <Show when={removingInstance()}>{(i) => <Dialog open onClose={() => { if (!busy()) setRemovingInstance(undefined); }} title={`Remove ${p.provider.name} · ${i().name}?`} width={460}>
             <p>Sessions using it will need another model.</p>
             <Show when={removeInstanceError()}><p class="account-error" role="alert">{removeInstanceError()}</p></Show>
             <div class="dialog-actions">
+                <span class="grow" />
                 <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemovingInstance(undefined)}>Cancel</button>
-                <button class="btn danger" disabled={busy()} onClick={() => void work(async () => { await rpc.call("providers.removeInstance", { id: i().id }); setRemovingInstance(undefined); await Promise.all([refreshProviders(), refreshModels()]).catch((e) => setActionError(message(e))); }, setRemoveInstanceError)}>{busy() ? "Removing…" : "Remove"}</button>
+                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => {
+                    // Read before the dialog closes: its accessor goes with it.
+                    const { id, name } = i();
+                    const r = await rpc.call("providers.removeInstance", { id });
+                    setRemovingInstance(undefined);
+                    toast(`Removed ${p.provider.name} · ${name}`, "success");
+                    resetToast(r?.reset);
+                    // Its row is gone: back to the provider's menu button, not the page.
+                    providerMenu?.focus();
+                    await Promise.all([refreshProviders(), refreshModels()]).catch((e) => setActionError(message(e)));
+                }, setRemoveInstanceError)}>{busy() ? "Removing…" : "Remove"}</button>
             </div>
         </Dialog>}</Show>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
@@ -280,6 +292,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <p>This doesn't sign it out: run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with its folder first.</p>
             <Show when={removeError()}><p class="account-error" role="alert">{removeError()}</p></Show>
             <div class="dialog-actions">
+                <span class="grow" />
                 <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemoving(undefined)}>Cancel</button>
                 <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Remove"}</button>
             </div>

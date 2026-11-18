@@ -26,6 +26,7 @@ import { checkAgentCli, vendorOf } from "./backends/index";
 import { agentCli } from "./backends/defs";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
+import { forgetRemovedProvider, resetNote } from "./providers/model-refs";
 import { turnOffAgent } from "./providers/agent-env";
 import { formatPrice, formatTokens } from "./providers/pricing";
 import { modelRef } from "./providers/types";
@@ -433,6 +434,8 @@ async function authCommand(args: string[]): Promise<number> {
         }
         forgetClient(id);
         process.stdout.write(removed ? `Turned off ${getProvider(id)!.name} (it stays signed in; ${agentCli(id)?.cli.signOut} signs it out)\n` : `${getProvider(id)!.name} isn't turned on\n`);
+        const note = removed ? resetNote(await forgetRemovedProvider(process.cwd(), id).catch(() => [])) : "";
+        if (note) process.stdout.write(`${note}\n`);
         return removed ? 0 : 1;
     }
     if ((sub === "remove" || sub === "rm" || sub === "logout") && arg?.toLowerCase() === "vertex") {
@@ -481,6 +484,8 @@ async function authCommand(args: string[]): Promise<number> {
         const removed = await removeKey(arg);
         forgetClient(arg);
         process.stdout.write(removed ? `Removed the ${arg} key\n` : `No stored key for ${arg}\n`);
+        const note = removed ? resetNote(await forgetRemovedProvider(process.cwd(), arg).catch(() => [])) : "";
+        if (note) process.stdout.write(`${note}\n`);
         return removed ? 0 : 1;
     }
     die(`unknown auth command "${sub}" (add, list, remove)`);

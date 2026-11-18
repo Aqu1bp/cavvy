@@ -45,6 +45,23 @@ export function modelName(m: { name?: string; id: string }): string {
     return paren && ID_LIKE.test(paren[2]!) ? paren[1]! : full;
 }
 
+/** What a saved model that can't be found is called: its provider was removed or turned off. Never its id. */
+const UNAVAILABLE_MODEL = "Unavailable model";
+
+/**
+ * A saved model's ref ("provider:model") as the user knows it, from the listed models: its name and its provider's, the
+ * model id alone for one its provider doesn't list (typed by hand), or `unavailable` when its provider isn't there.
+ */
+export function refLabel(ref: string, models: readonly ProviderModels[]): { name: string; provider?: string; unavailable?: true } {
+    const at = ref.indexOf(":");
+    const provider = at > 0 ? ref.slice(0, at) : "";
+    const g = models.find((x) => x.provider === provider);
+    const m = g?.models.find((x) => x.ref === ref);
+    if (m) return { name: modelName(m), provider: g!.providerName };
+    if (g) return { name: ref.slice(at + 1), provider: g.providerName };
+    return { name: UNAVAILABLE_MODEL, unavailable: true };
+}
+
 /** The model a session (or the next one) uses: what the server says, else the listed model with that ref. */
 function resolve(current: ModelSummary | undefined, ref: string | undefined, models: ProviderModels[]): ModelSummary | undefined {
     return current ?? models.flatMap((g) => g.models).find((m) => m.ref === ref);
@@ -175,18 +192,23 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
             .map((g) => ({ ...g, models: g.models.filter((m) => !m.deprecated || m.ref === currentRef()) }))
             .filter((g) => g.models.length || g.status === "error"),
     );
-    const providerName = (id: string) => models().find((g) => g.provider === id)?.providerName ?? id;
+    // A provider that's gone (an instance removed) by the name the session has for it, never its id.
+    const providerName = (id: string) => models().find((g) => g.provider === id)?.providerName ?? (p.current?.provider === id ? p.current.providerName : undefined) ?? UNAVAILABLE_MODEL;
+    /** The model can't run (its provider was removed or turned off): the chip says so rather than naming it. */
+    const unavailable = () => Boolean(p.current?.unavailable) || (!p.current && Boolean(currentRef()) && models().length > 0 && !currentModel() && Boolean(refLabel(currentRef()!, models()).unavailable));
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
-        const name = currentModel()?.name ?? currentRef() ?? "Model";
+        if (unavailable()) return p.current?.providerName ? `${UNAVAILABLE_MODEL} · ${p.current.providerName}` : UNAVAILABLE_MODEL;
+        const name = currentModel()?.name ?? (currentRef() ? refLabel(currentRef()!, models()).name : "Model");
         const provider = currentProvider();
         return provider ? `${name} · ${providerName(provider)}` : name;
     };
     /** On the chip, the name alone: what an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */
     const chipModel = () => {
+        if (unavailable()) return UNAVAILABLE_MODEL;
         const m = currentModel();
         if (m) return modelName(m).replace(/^claude[- ]/i, "");
-        return currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model";
+        return currentRef() ? refLabel(currentRef()!, models()).name : "No model";
     };
     const favorites = createMemo(() => {
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
@@ -224,7 +246,13 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (picks().length >= MAX_COMPARE) return toast(`Up to ${MAX_COMPARE} models at once`, "warn");
         setComparePicks([...picks(), ref]);
     };
-    const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
+    const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() && !unavailable() ? [currentRef()!] : []);
+    // A provider removed or turned off: its models leave the picks too, rather than staying as names that can't run.
+    createEffect(on(models, (ms) => {
+        const c = comparePicks();
+        const kept = c && ms.length ? c.filter((r) => !refLabel(r, ms).unavailable) : c;
+        if (kept && kept.length !== c!.length) setComparePicks(kept);
+    }, { defer: true }));
 
     // The provider whose heading has its accounts: a CLI provider, in its own list.
     const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
@@ -521,7 +549,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r, models())?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => refLabel(r, models()).name).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         {/* Fast mode: its bolt first, ahead of the provider's mark and the name. */}
@@ -530,7 +558,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                 <Zap size={13} stroke-width={2} />
                             </span>
                         </Show>
-                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
+                        <Show when={!unavailable() && currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
                         <span class="truncate">{chipModel()}</span>
                         {/* How hard it thinks, after its name, a step quieter: "Opus 5.5 xhigh". */}
                         <Show when={effortWord()}>{(w) => <span class="lbl pick-eff">{w()}<span class="sr-only"> effort</span></span>}</Show>
@@ -538,7 +566,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <span class="sr-only">, fast mode on</span>
                         </Show>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
-                        <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
+                        <Show when={!unavailable() && currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
                         {/* The account isn't named here (the tooltip does), except when it's gone: nothing runs until another is picked. */}
                         <Show when={showAccounts() && missingAccount()}><span class="pick-acct truncate"> · Removed account</span></Show>
                     </>

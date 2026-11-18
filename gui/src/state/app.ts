@@ -1678,6 +1678,8 @@ function onEvent(ev: ServerEvent) {
             return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
+            // A provider removed resets the defaults that named it, and changes what Automatic picks.
+            void refreshSettings().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;

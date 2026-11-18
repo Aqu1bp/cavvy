@@ -15,7 +15,7 @@ const { slimEdits } = await import("../src/server/runtime");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, GuiSettings, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 import type { SnapshotTurn } from "../src/agent/turn-snapshots";
 
@@ -2469,8 +2469,35 @@ describe("using a plan through an installed CLI", () => {
         pr = await claudeCode(c);
         expect(pr).toMatchObject({ configured: true, source: "your plan" });
 
-        await c.call("providers.removeKey", { provider: "claude-code" });
+        // Defaults that name it go back to unset as it's turned off, and the window is told which.
+        const was = await c.call<GuiSettings>("settings.get", {});
+        await c.call("settings.update", { patch: { model: "claude-code:default", smallModel: "claude-code:sonnet" } });
+        expect(await c.call("providers.removeKey", { provider: "claude-code" })).toEqual({ reset: ["model", "smallModel"] });
         expect((await claudeCode(c)).configured).toBe(false);
+        const s = await c.call<GuiSettings>("settings.get", {});
+        expect([s.model ?? null, s.smallModel ?? null]).toEqual([null, null]);
+        // As the other tests expect them.
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
+        c.close();
+    });
+
+    test("removing an instance resets the defaults that name it, and its sessions' refusal names it as the user did", async () => {
+        const c = await client();
+        process.env.PATH = `${bin}:${PATH}`;
+        await c.call("providers.connectCli", { provider: "claude-code" });
+        const was = await c.call<GuiSettings>("settings.get", {});
+        const { id } = await c.call<{ id: string }>("providers.addInstance", { base: "claude-code", name: "My Router", models: ["router/model-a", "router/model-b"] });
+        expect(id).toBe("claude-code@my-router");
+        // A model taken off its list resets what was set to it; one still there stays.
+        await c.call("settings.update", { patch: { model: `${id}:router/model-a`, smallModel: `${id}:router/model-b` } });
+        expect(await c.call("providers.updateInstance", { id, name: "My Router", models: ["router/model-a"] })).toEqual({ reset: ["smallModel"] });
+        expect((await c.call<GuiSettings>("settings.get", {})).model).toBe(`${id}:router/model-a`);
+        expect(await c.call("providers.removeInstance", { id })).toEqual({ reset: ["model"] });
+        expect((await c.call<GuiSettings>("settings.get", {})).model ?? null).toBeNull();
+        const { clientFor } = await import("../src/providers/models");
+        await expect(clientFor(id)).rejects.toThrow(/^Claude Code · My Router was removed\. Pick another model\.$/);
+        await c.call("providers.removeKey", { provider: "claude-code" });
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 

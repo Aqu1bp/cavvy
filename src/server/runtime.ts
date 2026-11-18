@@ -52,11 +52,12 @@ import type { Sampler, Tool, ToolResult, ToolState } from "../tools/types";
 import { isShellTool } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
+import { fallbackNotice, unavailableReason } from "../providers/model-refs";
 import { costOf } from "../providers/pricing";
 import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backends/types";
 import { WholeTurnsOnly } from "../backends/one-off";
 import { SessionBackground } from "../agent/background";
-import { getProvider, resolveBaseUrl } from "../providers/registry";
+import { getProvider, providerLabel, resolveBaseUrl } from "../providers/registry";
 import { agentCli, baseCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { IMAGE_KEY, imageKey, keepImages, readKept, toolImagesDir } from "./tool-images";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
@@ -515,7 +516,9 @@ export function modelSummary(m: ModelInfo): ModelSummary {
     return {
         ref: modelRef(m),
         provider: m.provider,
-        providerName: p?.name,
+        // A removed instance by the name it had: the session still on it says whose it was.
+        providerName: providerLabel(m.provider),
+        ...(p ? {} : { unavailable: true as const }),
         id: m.id,
         name: m.name ?? m.id,
         contextWindow: m.contextWindow,
@@ -2142,11 +2145,18 @@ export class Runtime {
 
     private async initModel() {
         const candidates = [this.session.model, this.ws.settings.model ?? this.engine.fallbackModel].filter((r): r is string => Boolean(r && parseModelRef(r)));
+        // The first that couldn't be used (the session's own, else the default): said once, by name, with what's used instead.
+        let missed: string | undefined;
+        const tell = async () => {
+            if (!missed || !this.model) return;
+            const why = (await unavailableReason(missed)) ?? (missed === this.session.model ? "The model this session used isn't available" : "The default model isn't available");
+            this.notice(fallbackNotice(why, this.model), "warn");
+        };
         for (const ref of new Set(candidates)) {
-            if (await this.setModel(ref, { quiet: true })) {
-                if (this.session.model && ref !== this.session.model) this.notice(`This session used ${this.session.model}, which isn't available now; using ${ref}.`, "warn");
-                return;
-            }
+            if (await this.setModel(ref, { quiet: true })) return tell();
+            // The session's own model, or (a new session) the default it would have started on. An older session that
+            // never recorded one isn't told of a default it didn't use.
+            if (ref === this.session.model || this.session.messageCount === 0) missed ??= ref;
         }
         let listings = this.engine.listings;
         let pick = defaultModelFrom(listings);
@@ -2154,7 +2164,7 @@ export class Runtime {
             listings = await this.engine.refreshListings();
             pick = defaultModelFrom(listings);
         }
-        if (pick && (await this.setModel(modelRef(pick), { quiet: true }))) return;
+        if (pick && (await this.setModel(modelRef(pick), { quiet: true }))) return tell();
         this.setState({ model: undefined });
     }
 
@@ -2364,6 +2374,11 @@ export class Runtime {
             this.releaseHeld(held);
         }
         return true;
+    }
+
+    /** A provider was removed or turned off: a session on it shows that its model can't run (its next message says why). */
+    providerGone(provider: string) {
+        if (this.model?.provider === provider) this.setState({ model: { ...modelSummary(this.model), unavailable: true } });
     }
 
     /** The model's details arrived (listings refreshed). */
@@ -2620,20 +2635,17 @@ export class Runtime {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings().smallModel;
-        if (smallRef) {
-            const p = parseModelRef(smallRef);
-            if (p) {
-                try {
-                    client = await clientFor(p.provider);
-                    model = resolveModelInfo(smallRef) ?? model;
-                } catch {
-                    // the main model it is
-                }
+        const p = smallRef ? parseModelRef(smallRef) : undefined;
+        if (p) {
+            try {
+                const c = await clientFor(p.provider);
+                return { model: resolveModelInfo(smallRef!) ?? model, client: c };
+            } catch {
+                // Its provider was removed or turned off: as when none is set.
             }
-        } else {
-            const small = smallModelFor(model.provider, this.engine.listings);
-            if (small) model = small;
         }
+        const small = smallModelFor(model.provider, this.engine.listings);
+        if (small) model = small;
         return { model, client };
     }
 

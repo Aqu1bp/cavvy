@@ -10,7 +10,7 @@
 
 import { agentCli, baseCli } from "../backends/defs";
 import { ProviderError } from "./types";
-import { getProvider, INSTANCE_ID, readAgentConfig, readProvidersFile, readProvidersFileForUpdate, validModelId, writeProvidersFile, type AgentCliConfig } from "./registry";
+import { getProvider, INSTANCE_ID, readAgentConfig, rememberRemovedInstance, readProvidersFile, readProvidersFileForUpdate, validModelId, writeProvidersFile, type AgentCliConfig } from "./registry";
 import { saveAgentEnv, turnOffAgent, validateAgentEnv, agentEnvInfo, type AgentEnvVar } from "./agent-env";
 
 export interface InstanceInput {
@@ -85,6 +85,8 @@ export async function addInstance(base: string, input: InstanceInput): Promise<s
     validateAgentEnv(id, input.env ?? []);
     const pf = readProvidersFileForUpdate();
     (pf.agents ??= {})[id] = fields;
+    // An earlier one of the same name was removed: what named it now names this one.
+    rememberRemovedInstance(pf, id, undefined);
     writeProvidersFile(pf);
     try {
         await saveAgentEnv(id, input.env ?? []);
@@ -116,7 +118,15 @@ export async function updateInstance(id: string, input: InstanceInput): Promise<
  */
 export async function removeInstance(id: string): Promise<boolean> {
     if (!isInstance(id)) throw new ProviderError(`${id} isn't an instance`);
-    return turnOffAgent(id);
+    const name = readAgentConfig(id)?.name;
+    const removed = await turnOffAgent(id);
+    if (removed && name) {
+        // Its sessions still say whose it was ("Claude Code · OpenRouter was removed"), not its id.
+        const pf = readProvidersFileForUpdate();
+        rememberRemovedInstance(pf, id, name);
+        writeProvidersFile(pf);
+    }
+    return removed;
 }
 
 /** Whether `id` names an instance that's set up now. */

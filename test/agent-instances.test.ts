@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
-const { allProviders, getProvider, readProvidersFile, saveAgentConfig, writeProvidersFile } = await import("../src/providers/registry");
+const { allProviders, getProvider, providerLabel, readProvidersFile, saveAgentConfig, writeProvidersFile } = await import("../src/providers/registry");
 const { addInstance, listInstances, removeInstance, updateInstance } = await import("../src/providers/instances");
 const { cliEnv } = await import("../src/providers/agent-env");
 const { agentCli, baseCli } = await import("../src/backends/defs");
@@ -118,7 +118,16 @@ test("removed, its secrets go, and its sessions can't start it as its CLI's own 
     expect(await removeInstance(id)).toBe(true);
     expect(getProvider(id)).toBeUndefined();
     expect(await getKey(secretEnvId(id, "ANTHROPIC_AUTH_TOKEN"))).toBeUndefined();
-    expect(() => cliEnv(id)).toThrow(/"router" was removed\. Pick another model/);
-    await expect(clientFor(id)).rejects.toThrow(/was removed/);
+    // By the name the user gave it, not its id.
+    expect(() => cliEnv(id)).toThrow(/^Claude Code · Router was removed\. Pick another model\.$/);
+    await expect(clientFor(id)).rejects.toThrow(/^Claude Code · Router was removed/);
     expect((await listAllModels()).some((l) => l.provider.id === id)).toBe(false);
+    expect(providerLabel(id)).toBe("Claude Code · Router");
+    // Added again under that name: it's the new one's.
+    expect(await addInstance("claude-code", { name: "router" })).toBe(id);
+    expect(readProvidersFile().removedInstances).toBeUndefined();
+    expect(providerLabel(id)).toBe("Claude Code · router");
+    // One never known by a name keeps its id's.
+    expect(providerLabel("claude-code@gone")).toBe("Claude Code · gone");
+    expect(providerLabel("anthropic")).toBe("Anthropic API");
 });

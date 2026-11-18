@@ -1646,7 +1646,7 @@ describe("the auto-mode reviewer's model", () => {
         const { reviewTarget } = await import("../src/providers/models");
         // Nothing chosen and no Anthropic key: the session's own model reviews.
         expect(await reviewTarget(undefined)).toBeUndefined();
-        await expect(reviewTarget("openrouter:some/model")).rejects.toThrow(/^the reviewer you chose \(openrouter:some\/model\) can't be used: /);
+        await expect(reviewTarget("openrouter:some/model")).rejects.toThrow(/^the reviewer you chose \(some\/model on OpenRouter\) can't be used: /);
         await expect(reviewTarget("not a model")).rejects.toThrow(/can't be used/);
         await expect(reviewTarget("claude-code:claude-opus-5-5")).rejects.toThrow(/can't be used/);
     });
