@@ -243,6 +243,44 @@ export function toWire(parts: readonly AttachedPart[] | undefined): { images?: {
     return { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
 }
 
+/** session.send's check of an image as it comes over the wire. */
+export function validImage(i: { mediaType: unknown; data: unknown }): boolean {
+    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
+}
+
+/**
+ * How what's attached to an answer reaches the agent that asked: as content it takes (`content`: images as images,
+ * text framed in, anything else saved, PDFs too, which a tool's result can't carry), or, where its answer is text
+ * only (an agent CLI's), each saved in the project but text, which is framed in (`paths`).
+ */
+export type AnswerAttach = "content" | "paths";
+
+const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
+/**
+ * The images and files of an answer to a question, checked as session.send's are. PDFs are saved by `save` too,
+ * and with `paths` images as well, so each is an image, text or a saved file the answer names.
+ */
+export function answerAttachments(raw: { images?: unknown; files?: unknown }, save: SaveFile, as: AnswerAttach): AttachedPart[] {
+    if (raw.images !== undefined && !Array.isArray(raw.images)) throw new RpcError("images must be a list");
+    const images = ((raw.images as { mediaType: unknown; data: unknown }[] | undefined) ?? []).map((i): ImagePart => {
+        if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
+        return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
+    });
+    const files = checkFiles(raw.files, save);
+    const parts: AttachedPart[] = [...images, ...files];
+    checkMedia(parts);
+    return parts.map((p, n): AttachedPart => {
+        if (p.type === "image" && as === "paths") {
+            const name = `image-${n + 1}.${IMAGE_EXT[p.mediaType] ?? "png"}`;
+            const bytes = Buffer.from(p.data, "base64");
+            return { type: "file", kind: "saved", name, size: bytes.length, path: save(name, bytes) };
+        }
+        if (p.type === "file" && p.kind === "pdf") return { type: "file", kind: "saved", name: p.name, size: p.size, path: save(p.name, Buffer.from(p.data, "base64")) };
+        return p;
+    });
+}
+
 /** A queued message's attachments in a few words, for the queue row. */
 export function attachedLabel(parts: readonly AttachedPart[] | undefined): string {
     if (!parts?.length) return "";

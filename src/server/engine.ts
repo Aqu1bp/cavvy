@@ -121,7 +121,7 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
@@ -423,6 +423,11 @@ export class Engine {
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
     private closingIn = new Map<string, string[]>();
+
+    /** The folders of this app's other sessions that are working now, or closing: a rewind doesn't put files back under them. */
+    private workingFolders(rt: Runtime): string[] {
+        return [...[...this.runtimes.values()].filter((r) => r !== rt && r.busy).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat()];
+    }
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
@@ -2977,12 +2982,16 @@ export class Engine {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
                 await rt.allTurns();
-                return rt.rewindPlan(num(p.index, -1));
+                return rt.rewindPlan(num(p.index, -1), this.workingFolders(rt));
             }
-            case "session.rewind":
-                await this.runtime(p.id).yieldIdleCompaction();
-                await this.runtime(p.id).allTurns();
-                return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
+            case "session.rewind": {
+                const rt = this.runtime(p.id);
+                await rt.yieldIdleCompaction();
+                await rt.allTurns();
+                return rt.rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation), this.workingFolders(rt));
+            }
+            case "session.rewindUndo":
+                return this.runtime(p.id).rewindUndo(str(p.undo, "undo"));
             case "session.fork": {
                 const original = this.runtime(p.id);
                 const text = str(p.text, "text");
@@ -3617,10 +3626,6 @@ async function launchEditor(argv: string[]): Promise<void> {
     const code = await Promise.race([proc.exited, Bun.sleep(1500).then(() => undefined)]);
     proc.unref();
     if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
-}
-
-function validImage(i: { mediaType: unknown; data: unknown }): boolean {
-    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
 }
 
 /** The fingerprints a window sends back as the user's yes to an unknown host's key. */
