@@ -581,6 +581,30 @@ test("a long session opened the first time puts its turns in its store a slice a
     await close(t.id);
 }, 60_000);
 
+// Read whole to build its turns the first time, a Claude Code session's messages were then kept while it was open
+// (2.9 MB of one of 30,000 items): once its turns are stored, the digest a reopen has is kept in their place, and
+// what asks for them after (rewind, fork, a model switch) reads them from its file.
+test("a long Claude Code session opened the first time lets go of its messages once its turns are stored, and reads them again when asked", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-let-go-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 5 });
+    const file = findSessionAnywhere(t.id)!;
+    await open(t.id, { last: 10 });
+    const rt = srv.engine.runtimes.get(t.id)!;
+    await rt.openDone();
+    expect(rt.session.historyDigest).toBeDefined();
+    expect((rt.session as any).loadedMessages).toHaveLength(0);
+    const targets = await call("session.rewindTargets", { id: t.id });
+    expect(targets.length).toBeGreaterThan(10);
+    // Read when asked for: as reading its file whole makes them.
+    expect(JSON.parse(JSON.stringify(rt.session.messages))).toEqual(JSON.parse(JSON.stringify((Session as any).read(file, false, true, false).messages)));
+    await close(t.id);
+    // Opened again (from its store and its checkpoint): the same.
+    await open(t.id, { last: 10 });
+    expect(await call("session.rewindTargets", { id: t.id })).toEqual(targets);
+    await close(t.id);
+}, 60_000);
+
 test("a session that grows long while it's open lets go of its older turns then, and opens again as it was", async () => {
     const cwd = join(tempDir("cavvy-turn-store-grows-"), "project");
     mkdirSync(cwd, { recursive: true });
