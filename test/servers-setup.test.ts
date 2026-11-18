@@ -961,7 +961,7 @@ describe("updating a server", () => {
         const list = join(serverDir, "working.json");
         const listed = () => (existsSync(list) ? Object.keys(JSON.parse(readFileSync(list, "utf-8")).sessions) : []);
         const turns = async (c: Client, id: string) => ((await c.call("session.open", { id })).turns as { status: string; prompt?: { text: string } }[]).map((t) => [t.prompt?.text, t.status]);
-        const RESTARTED = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
+        const RESTARTED = "Cavvy restarted while you were working, which cut your last turn off. A tool call that shows as declined at that moment was dropped by the restart, not refused by the user: make it again if you still need it. Continue where you left off.";
         let { link, c } = await connect();
         try {
             const id = (await c.call("session.create", { cwd: tempDir("cavvy-servers-proj-") })).state.id as string;
