@@ -1,18 +1,21 @@
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { FileText, FileX, File as FileIcon, MessageSquareText, TextCursorInput, X } from "lucide-solid";
+import { FileText, FileX, File as FileIcon, Image as ImageIcon, MessageSquareText, TextCursorInput, X } from "lucide-solid";
 import { extensionOf, formatSize, previewNow, previewOf, tintOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 import { setViewedImage } from "../state/ui";
 
-/** The chip shows at once; its thumbnail, made in a worker, when it's ready. */
-function Preview(p: { image: ImageAttachment }) {
+/** Under this (its longer side, in pixels) an image is too small to make out in a chip: its name is shown instead. */
+const TINY = 24;
+
+/** The chip shows at once; its thumbnail, made in a worker, when it's ready. `onSize`: how big it is, once drawn (0 × 0: it couldn't be). */
+function Preview(p: { image: ImageAttachment; onSize: (w: number, h: number) => void }) {
     const [src, setSrc] = createSignal<string>();
     let live = true;
     onCleanup(() => (live = false));
     void previewOf(p.image).then((u) => live && setSrc(u));
     return (
         <Show when={src()}>
-            <img src={src()} alt={p.image.name} />
+            <img src={src()} alt={p.image.name} onLoad={(e) => p.onSize(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} onError={() => p.onSize(0, 0)} />
         </Show>
     );
 }
@@ -45,14 +48,35 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                     {(a, i) => (
                         <Switch>
                             <Match when={a.kind === "image" && a}>
-                                {(img) => (
-                                    <div class="att att-image" title={`${img().name} · ${formatSize(img().size)}`}>
-                                        <button class="att-open" aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
-                                            <Preview image={img()} />
-                                        </button>
-                                        <Remove name={img().name} i={i()} />
-                                    </div>
-                                )}
+                                {(img) => {
+                                    const [size, setSize] = createSignal<[number, number]>();
+                                    /** Too small to make out at the chip's size, or not drawn: a card with its name, as a file's. */
+                                    const named = () => {
+                                        const s = size();
+                                        return Boolean(s && Math.max(s[0], s[1]) < TINY);
+                                    };
+                                    /** Smaller than the chip: shown at its own size, not blown up. */
+                                    const small = () => {
+                                        const s = size();
+                                        return Boolean(s && (s[0] < 52 || s[1] < 52));
+                                    };
+                                    return (
+                                        <div class={`att ${named() ? "att-file" : "att-image"} ${small() ? "small" : ""}`} title={`${img().name} · ${formatSize(img().size)}`}>
+                                            <button class={named() ? "att-card" : "att-open"} aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
+                                                <Show when={named()} fallback={<Preview image={img()} onSize={(w, h) => setSize([w, h])} />}>
+                                                    <span class="att-tile" aria-hidden="true">
+                                                        <ImageIcon size={16} />
+                                                    </span>
+                                                    <span class="att-body">
+                                                        <span class="att-name truncate">{img().name}</span>
+                                                        <span class="att-meta truncate">{size()![0] ? `${size()![0]}×${size()![1]} · ${formatSize(img().size)}` : formatSize(img().size)}</span>
+                                                    </span>
+                                                </Show>
+                                            </button>
+                                            <Remove name={img().name} i={i()} />
+                                        </div>
+                                    );
+                                }}
                             </Match>
                             <Match when={a.kind !== "image" && a}>
                                 {(f) => {

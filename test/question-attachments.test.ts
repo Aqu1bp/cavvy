@@ -14,7 +14,7 @@ const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { answerAttachments, attachmentsDir, fileSaver } = await import("../src/server/attachments");
 const { answerWithAttachments, attachedAsText } = await import("../src/providers/files");
-const { AskUserQuestionTool } = await import("../src/tools/meta-tools");
+const { AskUserQuestionTool, answerSummary } = await import("../src/tools/meta-tools");
 import type { AttachedPart, Message, ToolResultPart } from "../src/providers/types";
 import type { QuestionInteraction, ServerEvent, SessionSnapshot } from "../src/server/protocol";
 import type { ToolContext } from "../src/tools/types";
@@ -106,7 +106,9 @@ describe("the AskUserQuestion tool", () => {
         expect(as).toBe("content");
         expect(r.images).toEqual([attached[0]]);
         expect(r.content).toContain("It's saved at /p/.cavvy/attachments/s/x/big.zip");
-        expect(r.display?.summary).toBe("A, attached image, big.zip");
+        expect(r.display?.summary).toBe("A · attached big.zip and an image");
+        expect(answerSummary([], [{ type: "file", name: "a.md" }])).toBe("attached a.md");
+        expect(answerSummary(["A", "B"], [{ type: "image" }, { type: "image" }, { type: "file", name: "a.md" }, { type: "file", name: "b.csv" }])).toBe("A, B · attached a.md, b.csv and 2 images");
     });
 
     test("without attaching (the terminal), it asks as before", async () => {

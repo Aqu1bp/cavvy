@@ -801,6 +801,11 @@
     object-fit: cover;
 }
 
+/* An image smaller than the chip: at its own size in the middle, not blown up into a blur. */
+.att-image.small .att-open img {
+    object-fit: scale-down;
+}
+
 /* Its edge over the picture, as the cards have theirs. */
 .att-image::after {
     content: "";
@@ -1688,6 +1693,32 @@ button.att-card:hover {
     margin: calc(-16 * var(--sp)) calc(-16 * var(--sp)) calc(-14 * var(--sp)) calc(-18 * var(--sp));
     padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
     border-radius: inherit;
+}
+
+/* With files or images attached to the answer, the card may be taller, so its options keep their room. */
+.ask:has(.q-attached) {
+    max-height: min(calc(var(--column-h, 100vh) * 0.7), 760 * var(--sp));
+}
+
+/* Options that still don't fit scroll; while there are more below, the list's bottom edge fades (as base.css's lists
+   with more below, here a mask: the card's fill is see-through). The second layer covers the fade, grown over it as the
+   list reaches its end, driven by its scroll position. A list that fits, or no scroll timelines: it covers it all. */
+.q-card .itab-body {
+    mask-image: linear-gradient(#000 calc(100% - 28 * var(--sp)), rgb(0 0 0 / 0.08)), linear-gradient(#000, #000);
+    mask-size: 100% 100%, 100% 100%;
+    mask-repeat: no-repeat;
+    animation: q-more-below linear both;
+    animation-timeline: scroll(self block);
+    animation-range: calc(100% - 24px) 100%;
+}
+
+@keyframes q-more-below {
+    from {
+        mask-size: 100% 100%, 100% 0%;
+    }
+    to {
+        mask-size: 100% 100%, 100% 100%;
+    }
 }
 
 .itab-count + .q-card {
