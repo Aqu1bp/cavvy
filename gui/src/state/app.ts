@@ -1767,9 +1767,10 @@ export function start() {
     createRoot(() => createEffect(() => {
         shownNow();
         onScreen.beside();
-        // Each connection that's open hears it, the window's own or not (tellShown checks each).
+        // Each connection that's open hears it, the window's own or not (tellShown checks each). Only on these changes:
+        // not each time a row it looks a machine up in changes.
         void app.conn;
-        tellShown();
+        untrack(tellShown);
     }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
