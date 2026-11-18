@@ -1277,7 +1277,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             toBottom();
             return;
         }
-        if (!now.anchor) return;
+        if (!now.anchor) {
+            // No place read to keep: those held back were counted against the turns before (renumbered, maybe fewer).
+            if (heldBelow) unholdForEnd();
+            return;
+        }
         reading = now.anchor;
         const need = turns().length - turns().findIndex((t) => t.id === now.anchor!.turnId);
         unstage();
@@ -1287,11 +1291,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         restore();
     };
     // Its turns replaced (a rewind): those held back below were counted against the turns before, and would leave the
-    // end of these undrawn. They go in as they do once read down to.
+    // end of these undrawn. Their last page is drawn, at once.
     onCleanup(onReset(p.handle, () => {
-        if (!heldBelow) return;
-        heldBelow = 0;
-        growMore?.();
+        if (heldBelow) unholdForEnd();
     }));
     onCleanup(onRenew(p.handle, () => {
         const was = keyed(turns(), { bottom: stick(), top: 0, anchor: reading, openWork: [...openWork] });

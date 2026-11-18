@@ -833,8 +833,10 @@ try {
         assert.ok(turn("turn-0") && !turn("turn-120"), "read up, those far below held back");
         setRewTurns(turns(100));
         resets.get("rewound")?.();
+        flush();
+        assert.ok(turn("turn-99"), "rewound, the last turn left is drawn in the next frame");
         settle();
-        assert.ok(turn("turn-99"), "rewound, the last turn left is drawn");
+        assert.ok(turn("turn-99"));
         dispose();
     }
 
