@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
-import { all, component, node, renderer, text, noSplit, singlePane } from "../helpers/gui-render";
+import { all, component, node, renderer, text, noSplit, singlePane, noTerminal } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import { rawRenderText, renderDetails } from "../../gui/src/lib/render-error";
 import * as format from "../../gui/src/lib/format";
@@ -155,6 +155,7 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
         const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
+    ...noTerminal,
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
             railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, folderPickerOpen: () => undefined, viewedImage: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
