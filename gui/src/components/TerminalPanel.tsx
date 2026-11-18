@@ -58,6 +58,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     const [restored, setRestored] = createSignal(false);
     let restoring = false;
     let disposed = false;
+    /** Opened by the user before its tabs were back: a shell starts once they are, if there's none. */
+    let asked = false;
     onCleanup(() => { disposed = true; });
     const save = () => {
         if (restored()) saveTabs({ tabs: tabs().map(({ attach: _, closing: __, ...t }) => t), next, open: terminalOpen(), selected: selected(), closed: closes.ids }, at);
@@ -84,7 +86,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
             }
             setRestored(true);
             // An explicit panel opening while its list was loading still starts the first shell.
-            if (current() && showing() && terminalOpen() && !back.open && !p.hidden && !currentTabs().length) add();
+            if (asked && current() && showing() && terminalOpen() && !p.hidden && !currentTabs().length) add();
+            asked = false;
             save();
         } catch (e) {
             if (!(e instanceof RpcError && e.code === "disconnected")) reportError(e);
@@ -164,7 +167,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
     createEffect(on(terminalOpen, (open) => {
+        if (!open) asked = false;
         if (!open || reopening || !current() || !showing()) return;
+        if (!restored()) asked = true;
         // Opened by the user: its terminal takes the keyboard, even from a card that waits (lib/terminal-keys.ts).
         terminalAsked();
         if (!p.hidden && !currentTabs().length) add();

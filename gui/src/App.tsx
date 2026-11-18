@@ -699,7 +699,7 @@ export function App() {
                             </Show>
                         </div>
                         <For each={terminalMachines()}>{(m) => (
-                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} showing={terminalShowing() === m.on} cwd={terminalShowing() === m.on && !terminalLogin() ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
+                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} showing={terminalShowing() === m.on} cwd={terminalOn() === m.on ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
                         )}</For>
                     </div>
                 </div>

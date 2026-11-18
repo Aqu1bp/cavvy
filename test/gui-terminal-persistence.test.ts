@@ -122,9 +122,9 @@ import { frameDrag } from "../gui/src/lib/drag";
 import { terminalFontSize } from "../gui/src/lib/text-size";
 import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown; props?: Record<string, unknown> } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown; props?: Record<string, unknown>; open?: boolean } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
-    const [panelOpen, setPanelOpen] = solid.createSignal(false);
+    const [panelOpen, setPanelOpen] = solid.createSignal(opts.open ?? false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
     const events = new Set<(e: any) => void>();
     const states = new Set<(s: any) => void>();
@@ -282,6 +282,15 @@ test("another machine's panel opens its shells over that machine's connection an
         hidden.setPanelOpen(true); await tick(); await tick();
         expect(there.map((c) => c.method)).toEqual(["terminal.list"]);
     } finally { hidden.dispose(); }
+    // Open already as it loads (this computer's tabs, back after a reload): no shell till the user opens the panel.
+    there.length = 0;
+    const late = mounted("TerminalPanel", { open: true, saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, current: true } });
+    try {
+        await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list"]);
+        late.setPanelOpen(false); late.setPanelOpen(true); await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list", "terminal.open"]);
+    } finally { late.dispose(); }
 });
 
 test("the screen tells its shell a new size only when fitting changes it, not on every resize while a panel slides", async () => {
