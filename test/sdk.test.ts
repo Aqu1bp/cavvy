@@ -788,7 +788,7 @@ describe("trusted: false in a folder the user trusted", () => {
             const ms = await collect(query({ prompt: "hello", options: { cwd, model: "claude-code:default", trusted: false, persistSession: false, canUseTool: () => ({ behavior: "deny" }) } }));
             expect(ms[0]).toMatchObject({ subtype: "init", agent_backend: expect.any(String) });
             // Every launch (the turn's, and any side request's) leaves the project's settings out.
-            const launches = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => Array.isArray(l.argv)).map((l) => l.argv as string[]);
+            const launches = fakeLog(log).filter((l) => Array.isArray(l.argv)).map((l) => l.argv as string[]);
             expect(launches.length).toBeGreaterThan(0);
             for (const argv of launches) {
                 expect(argv).toContain("--setting-sources");

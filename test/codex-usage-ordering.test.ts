@@ -3,6 +3,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentEvent } from "../src/agent/types";
+import { fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const { Session } = await import("../src/agent/session");
@@ -104,6 +105,6 @@ test("a rerouted queued turn records its model without repricing the next reques
     expect(await run(agent)).toBe("done");
     const usage = readFileSync(session.path, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((row) => row.t === "usage");
     expect(usage.map((row) => row.usage.resolvedModel)).toEqual(["codex:gpt-6-astra", "codex:gpt-6-sol"]);
-    const requested = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((row) => row.received?.method === "turn/start");
+    const requested = fakeLog(log).filter((row) => row.received?.method === "turn/start");
     expect(requested.map((row) => row.received.params.model)).toEqual(["gpt-6-sol", "gpt-6-sol"]);
 });
