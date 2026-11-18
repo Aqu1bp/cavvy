@@ -621,7 +621,8 @@ test("a call is never asked about here, whatever this machine's mode; its deny r
         try {
             const after = ran.length;
             const refused = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
-            expect([refused.isError, refused.text.includes("Call it again"), ran.length]).toEqual([true, true, after]);
+            // A file that isn't valid stays so: said to be the user's to fix, not to try again. A blank one is being written.
+            expect([refused.isError, refused.text.includes(broken ? "isn't valid JSON" : "Call it again"), ran.length]).toEqual([true, true, after]);
         } finally {
             writeFileSync(file, was);
         }

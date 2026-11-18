@@ -253,6 +253,14 @@ export function untilText(ms: number, now = Date.now()): string {
 }
 
 /** "at 4:40 PM (in 2h 5m)": when a limit resets, for a sentence. */
+/**
+ * What a CLI's own warning about a limit window is said as. It warns well before the end (seen at 53% of a week),
+ * so the share used is said where it's known, and "close to" only at four fifths or with no figure.
+ */
+export function nearLimitWords(usedPercent: number | undefined, which: string): string {
+    return usedPercent !== undefined && Number.isFinite(usedPercent) && usedPercent < 80 ? `${Math.round(usedPercent)}% of the ${which}usage limit used.` : `close to the ${which}usage limit.`;
+}
+
 export function resetPhrase(ms: number, now = Date.now()): string {
     const when = clockTime(ms, now);
     const today = new Date(ms).toDateString() === new Date(now).toDateString();

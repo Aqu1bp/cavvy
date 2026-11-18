@@ -62,6 +62,11 @@ function sentTo(id: string, v: unknown): Sent {
     // The id it leads with is the one that machine keeps (in its own spelling): the one asked for stands in its place.
     return { ...sent, text: sent.text.replace(/^Sent to session \S+ /, () => `Sent to session ${id} `) };
 }
+/** What a machine read of its session, naming it as this machine names it (`<machine>/<id>`). */
+function readOf(id: string, v: unknown): Read {
+    const read = readFrom(v);
+    return read && { ...read, text: read.text.replace(/^Session \S+ /, () => `Session ${id} `) };
+}
 /** A server's refusal (PeerError there) is the model's to read, as one here would be. */
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
@@ -93,7 +98,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
         },
         read: async (id, turns) => {
             const s = at(id);
-            return readFrom(await s.link.ask("peers.read", { id: s.id, turns }).catch(refused));
+            return readOf(id, await s.link.ask("peers.read", { id: s.id, turns }).catch(refused));
         },
         send: async (id, message, from) => {
             const s = at(id);
@@ -176,7 +181,7 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
                 o.limit,
             );
         },
-        read: async (id, turns) => readFrom(await call("read", { id, turns }).catch(refused)),
+        read: async (id, turns) => readOf(id, await call("read", { id, turns }).catch(refused)),
         send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refused)),
     };
 }

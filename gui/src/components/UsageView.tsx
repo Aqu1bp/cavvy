@@ -133,7 +133,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
         <div class="set-h usage-bar"><h3>By {breakdown() === "model" ? "model" : p.data.interval === "hour" ? "hour" : "day"}</h3><span class="spacer" /><Segmented label="Usage breakdown" size="sm" value={breakdown()} onChange={setBreakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: p.data.interval === "hour" ? "Hour" : "Day" }]} /></div>
         <UsageTable data={p.data} metric={m()} by={breakdown()} hl={setHl} />
         <p class="set-note u-notes">
-            Only this computer's usage. Costs are at API list prices, not what a plan bills.
+            Costs are at API list prices, not what a plan bills.
             <Show when={p.data.totals.unknown}> Costs leave out unpriced usage; the Tokens view includes it.</Show>
             <Show when={p.data.totals.estimated}> ~ marks a newer model priced like the one before it.</Show>
             {p.data.approxDated ? ` Times are approximate for ${plural(p.data.approxDated, "older record")}.` : ""}{p.data.approxPriced ? ` ${plural(p.data.approxPriced, "record")} may be unpriced.` : ""}
