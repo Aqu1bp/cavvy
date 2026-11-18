@@ -1876,6 +1876,17 @@ export class Runtime {
         return found ?? [];
     }
 
+    /**
+     * Tests: what opening it set going is done (its earlier turns built, put in its store) and what Find kept is let
+     * go of now, not findKeeping.ms after: what it keeps from here is what it keeps while it's open.
+     */
+    async openDone(): Promise<void> {
+        await this.earlierBuilt;
+        while (this.storing && !this.closed) await nextSlice();
+        clearTimeout(this.findForget);
+        this.findCache = new WeakMap();
+    }
+
     /** Every sub-agent as its row in the Agents list shows it (those a window wasn't sent: agentsFor). */
     agentList(): AgentRun[] {
         this.flush();

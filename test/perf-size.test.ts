@@ -50,13 +50,21 @@ const ok = async (method: string, params: unknown) => {
 
 /** Bytes this process has read from files since it started (Linux), or undefined where that isn't known. */
 const readSoFar = () => (existsSync("/proc/self/io") ? Number(/rchar: (\d+)/.exec(readFileSync("/proc/self/io", "utf8"))?.[1]) : undefined);
-/** What the server's JavaScript keeps, after a full collection: the process's resident size moves with the allocator. */
+/** What the server's JavaScript keeps, after full collections: the process's resident size moves with the allocator. */
 const heap = () => {
-    Bun.gc(true);
+    // One collection can leave what a finalizer let go of for the next.
+    for (let i = 0; i < 3; i++) Bun.gc(true);
     return heapStats().heapSize;
 };
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1]!;
+/** Once the server has let a closed session go (its turns stored, its files released): engine.ts unload. */
+const unloaded = async (id: string) => {
+    const closing = (srv.engine as any).closing as Map<string, Promise<void>>;
+    while (closing.has(id)) await closing.get(id);
+    expect(srv.engine.runtimes.has(id)).toBe(false);
+};
 /**
- * The heap once it's steady: within 64 KB for a second, at most 8 s (as keptOpen waits, below). Read at once, the
+ * The heap once it's steady: within 64 KB for a second, at most 8 s. Read at once, the
  * session before was still letting go of what it kept (closed, its turns stored): the next one's baseline was high by
  * that, and what it kept read 4 MB less than nothing.
  */
@@ -89,15 +97,6 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
     // Find, in the turns the window doesn't have (session.find): a query found once, whatever the session's size.
     const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
     expect(find.msg.result.matches).toHaveLength(1);
-    // Kept while it's open: once its turns are in its store (a slice at a time after it opened) and Find has let go.
-    let keptOpen = heap() - before;
-    // Steady for a second (what it builds and stores after it opens is done).
-    for (let i = 0, steady = 0; i < 80 && steady < 10; i++) {
-        await Bun.sleep(100);
-        const now = heap() - before;
-        steady = Math.abs(now - keptOpen) < 64 * 1024 ? steady + 1 : 0;
-        keptOpen = now;
-    }
     let rewindSent: number | undefined;
     let sendSent: number | undefined;
     let readOnSend: number | undefined;
@@ -136,11 +135,35 @@ async function costs(kind: "cli" | "native", items: number): Promise<Cost> {
         reopen ??= { read: read2 === undefined || read3 === undefined ? undefined : read3 - read2, kept: kept2, ms };
         reopen.kept = Math.min(reopen.kept, kept2);
     }
+    await unloaded(t.id);
     return {
-        openSent: open.bytes, findSent: find.bytes, rewindSent, sendSent, readOnSend, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen,
+        openSent: open.bytes, findSent: find.bytes, rewindSent, sendSent, readOnSend, readOnOpen: read0 === undefined || read1 === undefined ? undefined : read1 - read0, keptAfterOpen: kept, keptOpen: 0,
         readOnReopen: reopen!.read, keptAfterReopen: reopen!.kept, openMs, reopenMs: reopen!.ms,
     };
 }
+
+/**
+ * What the server keeps while a session is open, opened for the first time (its turns built and put in its store
+ * after it opens) and searched with Find (what Find kept let go of, as it is findKeeping.ms after): the heap then less
+ * the heap once it's closed and let go of. Not less the heap before it opened: the engine still counts some of what
+ * earlier sessions let go of until something allocates enough to collect it, and opening does (the heap before read
+ * up to 2 MB high, once 53 MB with a JIT compile pending), where closing doesn't (within 0.1 MB from one to the next).
+ */
+async function keptOpen(kind: "cli" | "native", items: number): Promise<number> {
+    const cwd = join(tempDir(`cavvy-perf-kept-${kind}-`), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items, kind, seed: 7 });
+    const open = await ok("session.open", { id: t.id, last: OPEN_TURNS, budget: OPEN_BYTES, fold: true });
+    const find = await ok("session.find", { id: t.id, query: "Turn 7:", before: open.msg.result.turns[0].id });
+    expect(find.msg.result.matches).toHaveLength(1);
+    await srv.engine.runtimes.get(t.id)!.openDone();
+    const opened = heap();
+    await ok("session.close", { id: t.id });
+    await unloaded(t.id);
+    return opened - heap();
+}
+/** Each session's first open, this many times (a new one each time): the heap after a collection moves by a megabyte or so from one to the next. */
+const KEPT_SAMPLES = 5;
 
 const measured: Record<string, { small: Cost; large: Cost }> = {};
 const within = (small: number, large: number) => large <= small * RATIO + SLACK;
@@ -170,6 +193,19 @@ beforeAll(async () => {
         } else if (msg.event?.type === "session.ops") opsBytes += Buffer.byteLength(text);
     };
     for (const kind of ["cli", "native"] as const) measured[kind] = { small: await costs(kind, SMALL), large: await costs(kind, LARGE) };
+    // Small and large in turn, so what the process drifts by over the run falls on both.
+    const kept: Record<string, { small: number[]; large: number[] }> = { cli: { small: [], large: [] }, native: { small: [], large: [] } };
+    for (let i = 0; i < KEPT_SAMPLES; i++) {
+        for (const kind of ["cli", "native"] as const) {
+            kept[kind]!.small.push(await keptOpen(kind, SMALL));
+            kept[kind]!.large.push(await keptOpen(kind, LARGE));
+        }
+    }
+    for (const kind of ["cli", "native"] as const) {
+        measured[kind]!.small.keptOpen = median(kept[kind]!.small);
+        measured[kind]!.large.keptOpen = median(kept[kind]!.large);
+    }
+    console.log(JSON.stringify({ keptOpenSamples: kept }));
     // What it came to, for whoever reads the log (and the PR that changes it).
     console.log(JSON.stringify(measured));
 }, 180_000);
@@ -328,7 +364,7 @@ describe("a Claude Code session", () => {
         expect(readKept(toolImagesDir(file!, id), key)).toEqual({ mediaType: "image/png", data: png });
         await ok("session.close", { id });
     });
-    // Its history (every reply's text) is in it too: 4.6 MB at 3,000 items, 6.2 at 30,000.
+    // Its history (every reply's text) is in it too, and a stub of every turn: 1.2 MB at 3,000 items, 5.4 at 30,000.
     test("open, the server keeps what's on screen", () => {
         const { small, large } = measured.cli!;
         expect(keptWithin(small.keptOpen, large.keptOpen)).toBe(true);
