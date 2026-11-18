@@ -30,7 +30,8 @@ const MAX_TABS = 12;
 let reopening = false;
 /** Opened by the user while the session in view was still connecting to its machine: its panel starts a shell once it can. */
 let openedEarly = false;
-export const terminalOpenedEarly = () => void (openedEarly = true);
+/** The terminal was opened, or that's over (navigated away, `false`). A reload putting it back isn't the user opening it. */
+export const terminalOpenedEarly = (opened = true) => void (openedEarly = opened && !reopening);
 
 /**
  * Mounted while hidden: each tab keeps its emulator and shell across chat navigation. The tabs are kept
@@ -179,7 +180,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     }, { defer: true }));
     // Opened before the session in view could say whose panel it was: this one's, once it's that one and ready.
     createEffect(() => {
-        if (!restored() || !current() || !showing() || !openedEarly) return;
+        if (!restored() || !current() || !showing() || p.hidden || !openedEarly) return;
         openedEarly = false;
         if (terminalOpen() && !p.hidden && !currentTabs().length) add();
     });

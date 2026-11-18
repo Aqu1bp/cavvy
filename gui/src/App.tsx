@@ -338,6 +338,8 @@ export function App() {
     const terminalShowing = () => (terminalLogin() ? undefined : terminalOn());
     // Opened while the session in view is still connecting: its machine's panel starts a shell once it's there.
     createEffect(on(terminalOpen, (open) => { if (open && untrack(terminalOn) === null) terminalOpenedEarly(); }, { defer: true }));
+    // For that session only: going elsewhere first, it's over.
+    createEffect(on(() => app.activeId, () => terminalOpenedEarly(false), { defer: true }));
     // None shows (another machine's session still opening): the sheet keeps no terminal row for it.
     createEffect(() => { if (terminalShowing() === null) setTerminalShown(false); });
     const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);

@@ -202,7 +202,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
     });
-    return { calls, terminals, nodes, closed, saved, savedAt, dispose, setPanelOpen, fitted, early: component.early as () => void,
+    return { calls, terminals, nodes, closed, saved, savedAt, dispose, setPanelOpen, fitted, early: component.early as (opened?: boolean) => void,
         /** The screen's container changing size, and the next frame. */
         resized() { for (const fn of resizes) fn(); },
         frame() { for (const fn of frameQueue.splice(0)) fn(); },
@@ -298,13 +298,17 @@ test("opened while the session in view is still connecting: its machine's panel 
     const there: string[] = [];
     const link = { state: "open", call(method: string) { there.push(method); return Promise.resolve(method === "terminal.list" ? [] : null); }, onEvent: () => () => {}, onState: () => () => {} };
     const [current, setCurrent] = solid.createSignal(false);
-    const m = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, get current() { return current(); } } });
+    const [hidden, setHidden] = solid.createSignal(true);
+    const m = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, get current() { return current(); }, get hidden() { return hidden(); } } });
     try {
         await tick(); await tick();
         // As App.tsx does when the terminal opens with no panel current yet.
         m.setPanelOpen(true); m.early(); await tick();
         expect(there).toEqual(["terminal.list"]);
+        // Its session opened under Settings: not till Settings is left.
         setCurrent(true); await tick(); await tick();
+        expect(there).toEqual(["terminal.list"]);
+        setHidden(false); await tick(); await tick();
         expect(there).toEqual(["terminal.list", "terminal.open"]);
     } finally { m.dispose(); }
 });
