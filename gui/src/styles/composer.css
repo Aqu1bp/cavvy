@@ -1701,13 +1701,24 @@ button.att-card:hover {
 
 .q-field {
     display: flex;
+    flex: none;
     align-items: center;
+    margin-top: calc(12 * var(--sp));
     gap: calc(6 * var(--sp));
+}
+
+.itab-body + .q-field {
+    margin-top: calc(8 * var(--sp));
 }
 
 .q-field .hb.sm {
     flex: none;
     border-radius: 50%;
+}
+
+.q-attached {
+    flex: none;
+    margin-top: calc(4 * var(--sp));
 }
 
 .q-attached .attachments-wrap {
