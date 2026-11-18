@@ -23,11 +23,10 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, gitDialog, gitModule, openGit } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, gitDialog, gitModule, openGit, deletedOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
-import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
 import { Logo, Spinner } from "./components/ui/bits";
 
@@ -314,6 +313,7 @@ const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => 
 const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
 const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
+const RecentlyDeleted = lazy(() => import("./components/RecentlyDeleted").then((m) => ({ default: m.RecentlyDeleted })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
@@ -322,7 +322,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker, RecentlyDeleted]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -341,6 +341,7 @@ export function App() {
     const rewindShown = createMemo<boolean>((was) => was || rewindOpen(), false);
     const imageShown = createMemo<boolean>((was) => was || Boolean(viewedImage()), false);
     const folderShown = createMemo<boolean>((was) => was || Boolean(folderPickerOpen()), false);
+    const deletedShown = createMemo<boolean>((was) => was || deletedOpen(), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -675,7 +676,7 @@ export function App() {
             <TrustDialog />
             <Show when={planShown()}><PlanDialogs /></Show>
             <Show when={archiveShown()}><ArchiveDialog /></Show>
-            <RecentlyDeleted />
+            <Show when={deletedShown()}><RecentlyDeleted /></Show>
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
             <Show when={gitDialog()}><GitDialogs /></Show>
