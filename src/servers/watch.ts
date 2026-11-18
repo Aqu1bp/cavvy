@@ -364,6 +364,8 @@ export class MachineWatch {
         let listed = false;
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
         const lending = new Map<string, AbortController>();
+        /** The mode this machine last told the server its lent calls are held to (offers.set). */
+        let sentMode: string | undefined;
         /** The lists asked for when the connection opens: those in play, then the archived. */
         let archivedListed = false;
         const list = (rows: unknown, archived: boolean) => {
@@ -390,7 +392,7 @@ export class MachineWatch {
                 }
                 lending.clear();
             }
-            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
+            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
         };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
@@ -416,7 +418,7 @@ export class MachineWatch {
                 (told as { unref?: () => void }).unref?.();
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
-                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
                 this.resync();
                 return;
             }
@@ -484,7 +486,14 @@ export class MachineWatch {
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
                     answer(NOT_LENT);
-                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
+                }
+                // Its default mode changed since the server was told (in the terminal's /config, say): told now, and this
+                // call is decided again there, under it.
+                const mode = this.o.lendMode?.();
+                if (mode !== sentMode) {
+                    answer({ text: "Your Mac's permission mode just changed. Call it again.", isError: true });
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = mode) } }));
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);
