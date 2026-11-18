@@ -2702,6 +2702,61 @@ export class TurnSnapshots {
         for (const e of entries) e.size = size.get(e.oid);
     }
 
+    // -----------------------------------------------------------------------
+    // Restoring files (rewind-files.ts): only ever on the user's asking, never as a turn runs.
+
+    /** The turn its prompt's checkpoint `id` started. */
+    turn(id: number): SnapshotTurn | undefined {
+        return this.turns.get(id);
+    }
+
+    /** The files as they are now, outside any turn, after what's been asked for already (a turn's end). */
+    current(): Promise<TurnCapture | undefined> {
+        let captured: TurnCapture | undefined;
+        return this.record(async () => {
+            if (!this.stopped && !this.active) captured = await this.capture(true, false);
+        }).then(() => captured);
+    }
+
+    /** What differs between two captures of this repository, by repository-relative path; a side without the file has no entry. */
+    between(a: TurnCapture, b: TurnCapture): Promise<Map<string, { old?: Entry; now?: Entry }>> {
+        if (a.tree === b.tree) return Promise.resolve(new Map());
+        return this.differ(a, b, Date.now() + 20_000);
+    }
+
+    /** Each of `paths`' entry in a capture's tree (none where it has no such file). */
+    async entriesIn(c: TurnCapture, paths: string[]): Promise<Map<string, Entry | undefined>> {
+        const out = new Map<string, Entry | undefined>();
+        if (!c.tree) throw new Error("This capture has no tree.");
+        const deadline = Date.now() + 20_000, hashBytes = this.algo === "sha1" ? 20 : 32;
+        for (const path of paths) {
+            let oid: string | undefined = c.tree, found: Entry | undefined;
+            const parts = path.split("/");
+            for (let i = 0; i < parts.length && oid; i++) {
+                const e = parseTree(await this.readTree(c.root ?? this.cwd, oid, deadline), hashBytes).get(Buffer.from(parts[i]!, "utf-8").toString("latin1"));
+                oid = undefined;
+                if (!e) break;
+                if (i < parts.length - 1) { if (e.mode === "40000") oid = e.oid.toString("hex"); }
+                else if (e.mode !== "40000") found = { mode: e.mode.padStart(6, "0"), oid: e.oid.toString("hex") };
+            }
+            out.set(path, found);
+        }
+        return out;
+    }
+
+    /** A file version's bytes, from this session's objects or the repository's, checked against its id. */
+    async blob(oid: string): Promise<Buffer> {
+        const buf = await this.withReader(this.root ?? this.cwd, Date.now() + 30_000, (r) => r.read(oid, "blob"));
+        if (objectId("blob", buf, oid.length === 64 ? "sha256" : "sha1") !== oid) throw new Error("Snapshot objects are missing or unreadable.");
+        return buf;
+    }
+
+    /** These versions copied into this session's own objects, so they outlast the repository's (what a restore can be undone to). */
+    async keepVersions(entries: Entry[]): Promise<void> {
+        if (!entries.length) return;
+        await this.keep(entries.map((now) => ({ path: "", change: "modified", now })), this.root ?? this.cwd, Date.now() + END_BUDGET_MS);
+    }
+
     changes(req: { scope: GitScope; turnId?: number; path?: string }): Promise<GitChangesInfo> {
         return coalesce(this.inflight, JSON.stringify(req), () => this.collect(req));
     }

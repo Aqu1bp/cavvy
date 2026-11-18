@@ -128,9 +128,9 @@ for (const provider of CLIS)
         }, 30_000);
 
 /** Rewind the conversation (not files) to the prompt at `index`, as the GUI does. */
-function rewind(h: SwitchApp, index: number) {
-    const plan = h.rt.rewindPlan(index);
-    h.rt.rewind(index, plan.planId, false, true);
+async function rewind(h: SwitchApp, index: number) {
+    const plan = await h.rt.rewindPlan(index);
+    await h.rt.rewind(index, plan.planId, false, true);
 }
 const promptIndex = (h: SwitchApp, word: string) => h.rt.session.messages.findIndex((m) => m.role === "user" && m.meta?.kind === "prompt" && JSON.stringify(m.content).includes(word));
 
@@ -147,7 +147,7 @@ for (const provider of CLIS)
                     expect(await h.rt.switchModel(API)).toBe(true);
                     expect((await h.send(`kept ${TOKEN}`)).status).toBe("done");
                     expect((await h.send(`dropped ${DROPPED}`)).status).toBe("done");
-                    rewind(h, promptIndex(h, DROPPED));
+                    await rewind(h, promptIndex(h, DROPPED));
                     expect(h.rt.session.backends.get(provider)?.id).toBe(id);
                     expect(await h.rt.switchModel(`${provider}:default`)).toBe(true);
                     expect((await h.send("go on now")).status).toBe("done");
@@ -165,7 +165,7 @@ for (const provider of CLIS)
                 await withApp(provider, live, async (h) => {
                     expect((await h.send("first")).status).toBe("done");
                     expect((await h.send("second-word")).status).toBe("done");
-                    rewind(h, promptIndex(h, "second-word"));
+                    await rewind(h, promptIndex(h, "second-word"));
                     expect(h.rt.session.backends.has(provider)).toBe(false);
                     const before = h.opened().length;
                     expect((await h.send("go on now")).status).toBe("done");
