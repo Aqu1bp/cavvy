@@ -264,11 +264,12 @@ export function UsageView() {
             if (view() === "limits") await refreshLimits();
             else {
                 const asked = days();
-                const r = await rpc.call("usage.summary", { days: asked });
+                const r = await rpc.call("usage.summary", { days: asked, first: true });
                 if (mine === seq) setData(r);
-                // This computer's own so far: the servers' are added when they've answered.
+                // This computer's own so far: the servers' are added when they've answered. If that can't be asked
+                // for, what's shown stays, and says which weren't counted.
                 if (mine === seq && r.waiting?.length) {
-                    const all = await rpc.call("usage.summary", { days: asked, rest: true });
+                    const all = await rpc.call("usage.summary", { days: asked, rest: true }).catch(() => ({ ...r, waiting: undefined, uncounted: [...(r.uncounted ?? []), ...r.waiting!] }));
                     if (mine === seq) setData(all);
                 }
             }
@@ -290,7 +291,7 @@ export function UsageView() {
             <Show when={loading() && !data()}><p class="set-note" role="status">Loading usage…</p></Show>
             <Show when={!error() && data()}>{d => <div class={`usage-body ${stale() ? "busy" : ""}`}>
                 <Show when={d().truncated}><div class="u-partial" role="status"><Info size={14} /><span>Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
-                <Show when={d().waiting?.length}><div class="u-partial" role="status"><Info size={14} /><span>Adding {d().waiting!.join(", ")}…</span></div></Show>
+                <Show when={d().waiting?.length && d().days === days()}><div class="u-partial" role="status"><Info size={14} /><span>Adding {d().waiting!.join(", ")}…</span></div></Show>
                 <Show when={d().uncounted?.length}><div class="u-partial" role="status"><Info size={14} /><span>Not counted: {d().uncounted!.join(", ")}.</span></div></Show>
                 <Show when={d().rows.length} fallback={noModel() && !d().truncated ? <div class="set-group u-state"><b>No model connected.</b><button class="btn secondary sm" onClick={() => setSettingsTab("providers")}>Connect a model</button></div> : <div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
                     <UsageDashboard data={d()} metric={view() === "tokens" ? "tokens" : "cost"} />

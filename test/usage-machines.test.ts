@@ -117,17 +117,18 @@ test("a slow server doesn't hold this computer's own figures: they're answered a
     const slow = { ask: () => (asked++, new Promise((r) => (answer = r))) };
     (engine as any).serverLinks = { stopWatching() {}, list: () => [{ name: "box" }], connectedServers: () => new Map([["box", slow]]) };
     try {
-        const first = (await engine.handle(client as never, "usage.summary", { days: 1 })) as { waiting?: string[]; uncounted?: string[] };
+        const first = (await engine.handle(client as never, "usage.summary", { days: 1, first: true } as never)) as { waiting?: string[]; uncounted?: string[] };
         expect([first.waiting, first.uncounted, asked]).toEqual([["box"], undefined, 1]);
         // The rest of it: the same asking, waited for; a server with nothing usable to say is named.
         const rest = engine.handle(client as never, "usage.summary", { days: 1, rest: true } as never) as Promise<{ waiting?: string[]; uncounted?: string[] }>;
         answer({ not: "a summary" });
         expect([(await rest).waiting, (await rest).uncounted, asked]).toEqual([undefined, ["box"], 1]);
-        // Asked afresh, the server is asked again.
-        void engine.handle(client as never, "usage.summary", { days: 1 });
+        // Asked afresh, the server is asked again. A window that doesn't ask for its own first waits for the whole.
+        const whole = engine.handle(client as never, "usage.summary", { days: 1 }) as Promise<{ waiting?: string[]; uncounted?: string[] }>;
         await Bun.sleep(20);
         expect(asked).toBe(2);
         answer({});
+        expect([(await whole).waiting, (await whole).uncounted]).toEqual([undefined, ["box"]]);
     } finally {
         (engine as any).serverLinks = undefined;
         await engine.stop();

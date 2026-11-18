@@ -2424,7 +2424,7 @@ export interface Methods {
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */
-    "usage.summary": { params: { days: UsageDays; brief?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for (UsageSummary.waiting). */ rest?: boolean }; result: UsageSummary };
+    "usage.summary": { params: { days: UsageDays; brief?: boolean; /** This computer's own at once if its servers are slow (UsageSummary.waiting), for a window that then asks for the rest. */ first?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for. */ rest?: boolean }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
     /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */

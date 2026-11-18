@@ -434,7 +434,7 @@ export class Engine {
     private searches = new WeakMap<EngineClient, number>();
     /** What a window's latest search asked the servers (searchSessions), until it's answered with. */
     /** What a window's latest usage summary asked the servers (usage.summary), until it's answered with. */
-    private usageAsks = new WeakMap<EngineClient, { days: number; there: Promise<Asked> }>();
+    private usageAsks = new WeakMap<EngineClient, { days: number; own: Promise<Awaited<ReturnType<typeof usageSummary>>>; there: Promise<Asked> }>();
     private farSearches = new WeakMap<EngineClient, { key: string; there: ReturnType<typeof searchServers> }>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
@@ -3741,15 +3741,20 @@ export class Engine {
                 if (this.o.away || !links) return reading;
                 const names = links.list().map((s) => s.name);
                 if (!names.length) return reading;
-                // Asked once for a summary: the window asking for the rest of it (`rest`) waits on the same asking.
+                const connected = links.connectedServers();
+                // A window that shows this computer's own first (`first`) and asks for the rest (`rest`); any other
+                // asker (an older window) waits for the whole of it, as before.
+                if (p.first !== true && p.rest !== true) return withMachines(await reading, await askMachines(days, { names, connected }));
+                // Asked once for a summary, with this computer's own as read then: the rest is that same reading and
+                // that same asking, waited for.
                 let kept = p.rest === true ? this.usageAsks.get(client) : undefined;
                 const again = kept?.days === days;
-                if (!kept || !again) this.usageAsks.set(client, (kept = { days, there: askMachines(days, { names, connected: links.connectedServers() }) }));
-                const own = await reading;
+                if (!kept || !again) this.usageAsks.set(client, (kept = { days, own: reading, there: askMachines(days, { names, connected }) }));
+                const own = await kept.own;
                 // The servers get a moment past this computer's own reading. Slower than that, its own is answered
-                // now, said to be waiting for them, and the window asks for the rest.
+                // now, said to be waiting for those it asked, and the window asks for the rest.
                 const there = await (again || p.rest === true ? kept.there : Promise.race([kept.there, new Promise<undefined>((r) => setTimeout(r, USAGE_GRACE_MS))]));
-                if (!there) return { ...own, waiting: names };
+                if (!there) return { ...own, waiting: names.filter((n) => connected.has(n)), ...(names.some((n) => !connected.has(n)) ? { uncounted: names.filter((n) => !connected.has(n)) } : {}) };
                 if (this.usageAsks.get(client) === kept) this.usageAsks.delete(client);
                 return withMachines(own, there);
             }
