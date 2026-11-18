@@ -3616,7 +3616,7 @@ export class Engine {
                 // The user's own computer adds its servers' (a subscription is used on all of them); a server answers with its own.
                 // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
                 const links = this.serverLinks;
-                if (this.o.away || client.machine || !links) return own;
+                if (this.o.away || !links) return own;
                 return usageEverywhere(own, { names: links.list().map((s) => s.name), connected: links.connectedServers() });
             }
             case "app.update.get":
