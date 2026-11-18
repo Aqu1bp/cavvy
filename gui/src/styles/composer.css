@@ -1701,16 +1701,12 @@ button.att-card:hover {
 }
 
 /* Options that still don't fit scroll; while there are more below, the list's bottom edge fades (as base.css's lists
-   with more below, here a mask: the card's fill is see-through). Driven by the list's scroll position; where there are
-   no scroll timelines it ends at once, on no fade. */
-@property --q-more {
-    syntax: "<number>";
-    inherits: false;
-    initial-value: 0;
-}
-
+   with more below, here a mask: the card's fill is see-through). The second layer covers the fade, grown over it as the
+   list reaches its end, driven by its scroll position. A list that fits, or no scroll timelines: it covers it all. */
 .q-card .itab-body {
-    mask-image: linear-gradient(#000 calc(100% - 28 * var(--sp)), rgb(0 0 0 / calc(1 - 0.92 * var(--q-more))));
+    mask-image: linear-gradient(#000 calc(100% - 28 * var(--sp)), rgb(0 0 0 / 0.08)), linear-gradient(#000, #000);
+    mask-size: 100% 100%, 100% 100%;
+    mask-repeat: no-repeat;
     animation: q-more-below linear both;
     animation-timeline: scroll(self block);
     animation-range: calc(100% - 24px) 100%;
@@ -1718,10 +1714,10 @@ button.att-card:hover {
 
 @keyframes q-more-below {
     from {
-        --q-more: 1;
+        mask-size: 100% 100%, 100% 0%;
     }
     to {
-        --q-more: 0;
+        mask-size: 100% 100%, 100% 100%;
     }
 }
 
