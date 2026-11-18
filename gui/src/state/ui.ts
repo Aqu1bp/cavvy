@@ -6,6 +6,7 @@ import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 import type { InspectorPane } from "../lib/inspector";
 import type { Rpc } from "../lib/rpc";
+import type { Attachment } from "../lib/attachments";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -65,6 +66,8 @@ export const [review, setReview] = createSignal<{ path?: string; token?: string;
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
+/** For a session's composer (Home's: no `sessionId`) to take and focus: text to add at its end, or an attachment made against its list. */
+export const [composerAdd, setComposerAdd] = createSignal<{ sessionId?: string; text?: string; attach?: (list: readonly Attachment[]) => Attachment }>();
 
 /**
  * A plan of a session's, open in a dialog: to read it, save it, or carry it out
