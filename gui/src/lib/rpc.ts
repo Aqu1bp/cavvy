@@ -86,6 +86,11 @@ export class Rpc {
         return () => this.listeners.delete(fn);
     }
 
+    /** Something heard over another connection (another machine's, for its session open here), told as if heard here. */
+    hear(e: ServerEvent) {
+        for (const fn of this.listeners) fn(e);
+    }
+
     onState(fn: (s: ConnectionState, attempt: number) => void): () => void {
         this.stateListeners.add(fn);
         return () => this.stateListeners.delete(fn);
@@ -188,6 +193,11 @@ export class Rpc {
         this.setState(this.attempt > 8 ? "unavailable" : "reconnecting");
         const delay = Math.min(10_000, 250 * 2 ** Math.min(this.attempt, 6)) * (0.8 + Math.random() * 0.4);
         this.retryTimer = setTimeout(() => void this.connect(), delay);
+    }
+
+    /** Nothing under way: not asking for its sign-in, no socket open or opening (waiting to try again, say). */
+    get idle(): boolean {
+        return !this.closed && !this.connecting && !this.ws;
     }
 
     /** Retry the connection, never a request: a lost reply may still have taken effect. */

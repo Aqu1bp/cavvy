@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
-import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
-import { app, handleFor, noModel, refreshModels, toast } from "../state/app";
+import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
+import { app, awayMachine, handleFor, modelsFor, noModel, refreshModels, refreshModelsFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -46,8 +46,8 @@ export function modelName(m: { name?: string; id: string }): string {
 }
 
 /** The model a session (or the next one) uses: what the server says, else the listed model with that ref. */
-function resolve(current: ModelSummary | undefined, ref: string | undefined): ModelSummary | undefined {
-    return current ?? app.models.flatMap((g) => g.models).find((m) => m.ref === ref);
+function resolve(current: ModelSummary | undefined, ref: string | undefined, models: ProviderModels[]): ModelSummary | undefined {
+    return current ?? models.flatMap((g) => g.models).find((m) => m.ref === ref);
 }
 
 const FAVORITES = "favorites";
@@ -94,7 +94,7 @@ const FAST_BUSY = "Change speed after this response finishes";
  * account. A model with neither effort nor fast mode opens straight on the models. `effort`, `fast`: the session's,
  * or the next one's. `busy`: a reply is under way, when speed can't change.
  */
-export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
+export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     let sliderEl: HTMLDivElement | undefined;
     let modelRow: HTMLButtonElement | undefined;
@@ -116,10 +116,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     // The saved model, when nothing is connected, is no model: the chip doesn't name what can't run.
     const currentRef = () => p.current?.ref ?? (noModel() ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
-    const currentModel = createMemo(() => resolve(p.current, currentRef()));
+    // The machine's that the session is on (one of another machine's, opened in this window, has its own).
+    const models = () => modelsFor(p.sessionId);
+    const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
 
-    const accountInfo = (provider = currentProvider()) => app.providers.find((p) => p.id === provider)?.agentCli;
+    // This computer's accounts: none offered for another machine's session opened here (its machine has its own).
+    const accountInfo = (provider = currentProvider()) => (awayMachine(p.sessionId) !== undefined ? undefined : app.providers.find((p) => p.id === provider)?.agentCli);
     const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
@@ -166,11 +169,11 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
-        app.models
+        models()
             .map((g) => ({ ...g, models: g.models.filter((m) => !m.deprecated || m.ref === currentRef()) }))
             .filter((g) => g.models.length || g.status === "error"),
     );
-    const providerName = (id: string) => app.models.find((g) => g.provider === id)?.providerName ?? id;
+    const providerName = (id: string) => models().find((g) => g.provider === id)?.providerName ?? id;
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
         const name = currentModel()?.name ?? currentRef() ?? "Model";
@@ -274,7 +277,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 const provider = currentProvider();
                 setFilter(provider && groups().some((g) => g.provider === provider) ? provider : favorites().length || !groups().length ? FAVORITES : groups()[0]!.provider);
                 setSel(Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
-                if (!app.models.length) void refreshModels();
+                // None yet (their first asking failed, say): asked for again, from the session's machine.
+                if (!models().length) void refreshModelsFor(p.sessionId);
                 requestAnimationFrame(() => {
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
@@ -382,7 +386,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
-        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModels(true) } };
+        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModelsFor(p.sessionId, true) } };
         return { text: "No models." };
     };
 
@@ -515,7 +519,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r, models())?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         {/* Fast mode: its bolt first, ahead of the provider's mark and the name. */}
@@ -600,7 +604,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
+                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
                             <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
                                 <Spinner size={13} />
                             </Show>

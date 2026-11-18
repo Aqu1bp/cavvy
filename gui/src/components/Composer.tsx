@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, showSending, toast, wasDeleted } from "../state/app";
+import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -63,7 +63,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let bar: HTMLDivElement | undefined;
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
-    const draftKey = () => p.sessionId ?? "home";
+    const draftKey = () => p.sessionId ?? homeDraftKey();
     // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
     const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);
@@ -92,8 +92,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
     const busy = () => Boolean(st()?.busy);
-    const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
-    const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
+    // Home's are its machine's (another's, in a folder of its).
+    const settings = () => (p.sessionId ? app.settings : homeSettings());
+    const mode = (): PermissionModeId => st()?.mode ?? (p.sessionId ? undefined : homeModeOf()) ?? settings().defaultMode ?? "default";
+    const bypassAllowed = () => Boolean(st()?.bypassAllowed || settings().allowBypass);
     const shell = () => text().startsWith("!");
     /** Review comments left in this session's diff; they go with the next message. */
     const comments = () => (p.sessionId && !wasDeleted(p.sessionId) ? reviewComments.list(p.sessionId) : []);
@@ -218,7 +220,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     }));
     // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
-        if (provider && provider !== was) setModelPickerOpen(true);
+        if (!provider || provider === was) return;
+        // Another machine's session opened here: its accounts are that machine's, picked in a window there.
+        const away = awayMachine(p.sessionId);
+        if (away !== undefined) return toast(`Pick its account on ${away || "this computer"}`, "warn", { label: "Go there", run: () => void serversUi().then((m) => m.switchMachine(away || undefined, p.sessionId), reportError) });
+        setModelPickerOpen(true);
     }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {
@@ -370,7 +376,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             mentionTimer = setTimeout(async () => {
                 try {
                     const [found, resources] = await Promise.all([
-                        rpc.call("fs.mentions", { cwd, query: tok.query }),
+                        // Of the folder on the session's machine (another machine's, opened here: rpcFor).
+                        rpcFor(sid).call("fs.mentions", { cwd, query: tok.query }),
                         hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
@@ -439,7 +446,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [flipped, setFlipped] = createSignal(false);
     const shown = () => followUp(flipped());
     const submit = async (opposite = false) => {
-        if (app.conn !== "open") return toast("Not sent: not connected");
+        if (connFor(p.sessionId) !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
@@ -655,7 +662,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         });
     };
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
-    const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
+    const model = () => st()?.model ?? modelsFor(p.sessionId).flatMap((g) => g.models).find((m) => m.ref === settings().model);
     /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */
     const autoAsks = () => Boolean(app.providers.find((pr) => pr.id === model()?.provider)?.agentCli?.autoAsks);
     // Run members are validated separately by the server; the default model is irrelevant.
@@ -704,7 +711,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
      * that sends this way and the one that sends the other; with nothing written, the key that stops it.
      */
     const sendHint = (): [string, string][] | undefined => {
-        if (runPicks() || app.conn !== "open") return undefined;
+        if (runPicks() || connFor(p.sessionId) !== "open") return undefined;
         if (canStop(st()) && !hasContent()) {
             const k = shortcut("app:interrupt");
             return [[k === "Esc" ? "esc" : k ?? "", busy() ? "Stop" : "Pause the goal"]];
@@ -748,13 +755,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
-                effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
+                sessionId={p.sessionId} current={st()?.model} currentRef={settings().model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                effort={st() ? st()!.effort : settings().effort} fast={st() ? st()!.fastMode : settings().fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
             <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} home={p.variant === "home"} />;
     return (
         <div
             ref={root}
@@ -1029,10 +1036,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         fallback={
                             <button
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
-                                disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
+                                disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
-                                aria-description={app.conn !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
+                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                aria-description={connFor(p.sessionId) !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>

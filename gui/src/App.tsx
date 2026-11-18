@@ -3,7 +3,7 @@ import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -23,14 +23,12 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest, rewindOpen, archiveRequest } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
-import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Disconnected() {
@@ -256,12 +254,35 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
 function Reconnecting() {
     return (
         <>
-            <Show when={app.conn !== "open"}>
+            {/* The window's own connection, or the one the session on screen is shown over (another machine's). */}
+            <Show when={app.conn !== "open" || connFor(app.activeId) !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> {connNote() ?? "Not connected"} · Reconnecting…
-                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>
-                        Reconnect now
-                    </button>
+                    <Show
+                        when={app.conn === "open" && problemFor(app.activeId)}
+                        fallback={
+                            <>
+                                <Spinner size={12} /> {(app.conn !== "open" && connNote()) || "Not connected"} · Reconnecting…
+                                <button class="link-btn" onClick={() => (app.conn !== "open" ? rpc : rpcFor(app.activeId)).reconnectNow()}>
+                                    Reconnect now
+                                </button>
+                            </>
+                        }
+                    >
+                        {(issue) => (
+                            <>
+                                {/* Tried again by itself; or that machine needs the user's word (its key, an update, starting it), asked there. */}
+                                <Show when={issue().status === "failed"}><Spinner size={12} /></Show> {issue().message}
+                                <Show
+                                    when={issue().status !== "failed"}
+                                    fallback={<button class="link-btn" onClick={() => rpcFor(app.activeId).reconnectNow()}>Reconnect now</button>}
+                                >
+                                    <button class="link-btn" onClick={() => void serversUi().then((m) => m.switchMachine(issue().machine || undefined, app.activeId), reportError)}>
+                                        Go to {issue().machine}
+                                    </button>
+                                </Show>
+                            </>
+                        )}
+                    </Show>
                 </div>
             </Show>
             <Show when={app.conn === "open" && app.slowRequest}>
@@ -290,7 +311,9 @@ const planModule = () => import("./components/PlanDialogs");
 const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
 const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) => ({ default: m.ArchiveDialog })));
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
+const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
@@ -298,7 +321,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog, RewindDialog, ArchiveDialog]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -312,9 +335,11 @@ export function App() {
     // Put in the first time each opens, and kept (to close as it closes).
     const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
     const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
-    const rewindShown = createMemo<boolean>((was) => was || Boolean(rewindOpen()), false);
     const archiveShown = createMemo<boolean>((was) => was || Boolean(archiveRequest()), false);
     const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
+    const rewindShown = createMemo<boolean>((was) => was || rewindOpen(), false);
+    const imageShown = createMemo<boolean>((was) => was || Boolean(viewedImage()), false);
+    const folderShown = createMemo<boolean>((was) => was || Boolean(folderPickerOpen()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -644,14 +669,14 @@ export function App() {
             <CommandPalette />
             <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
-            <FolderPicker />
+            <Show when={folderShown()}><FolderPicker /></Show>
             <TrustDialog />
             <Show when={planShown()}><PlanDialogs /></Show>
             <Show when={archiveShown()}><ArchiveDialog /></Show>
             <RecentlyDeleted />
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
-            <ImageViewer />
+            <Show when={imageShown()}><ImageViewer /></Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
             </Show>

@@ -5,6 +5,7 @@ import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 import type { InspectorPane } from "../lib/inspector";
+import type { Rpc } from "../lib/rpc";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -13,10 +14,9 @@ export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefine
 /** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
 export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
-/** A prompt to preselect when the rewind dialog opens (from a message's rewind button). Here, not in the dialog, which
- * is loaded when first opened. */
-const [rewindAt, setRewindAt] = createSignal<number | undefined>();
-export const rewindTarget = { get: rewindAt, set: setRewindAt };
+const [rewindTargetAt, setRewindTargetAt] = createSignal<number | undefined>();
+/** A prompt to preselect when the rewind dialog opens (from a message's rewind button). */
+export const rewindTarget = { get: rewindTargetAt, set: setRewindTargetAt };
 /**
  * An image the viewer can show. `full`: the whole image, as a URL that's cheap
  * to set (an object URL, or a small data: URL), or as base64 it makes an object
@@ -29,7 +29,8 @@ export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[
 /** The files the review pane listed when Commit was clicked; the Commit dialog picks from them. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
-export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();
+/** `link`: the machine whose folders it shows, when that isn't the window's (Home on another machine). */
+export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string; link?: Rpc } | undefined>();
 /** The MCP servers dialog, and the server to show first. */
 export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined>();
 /** Recently deleted: the trashed sessions, with Restore. */

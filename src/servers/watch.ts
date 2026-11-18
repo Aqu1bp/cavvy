@@ -38,6 +38,8 @@ const REPLY_MS = 20_000;
  * many in play, as many archived: what a window lists of its own machine).
  */
 const HEARD = 300;
+/** How soon after its sessions change they're written down (kept). */
+export const KEEP_MS = 2000;
 /** How long the archived list is waited for before the sessions in play are told without it. */
 const ARCHIVED_MS = 3000;
 /** One session's change is told by itself this many times a second at most: past that, the whole list, now and then. */
@@ -128,11 +130,39 @@ export class MachineWatch {
             lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
             idleRetryMs?: number;
+            /**
+             * Its sessions as last heard, kept from one run to the next: listed (none at work) while it can't be
+             * reached, though it couldn't be from the start.
+             */
+            kept?: { read: () => unknown; write: (sessions: SessionSummary[]) => void };
         },
     ) {}
 
     start() {
+        if (this.o.kept && !this.sessions.size) {
+            const rows = this.o.kept.read();
+            for (const v of Array.isArray(rows) ? rows.slice(0, 2 * HEARD) : []) {
+                const s = heardSession(v);
+                if (s) this.sessions.set(s.id, this.resting(s));
+            }
+        }
         void this.attempt(false);
+    }
+
+    /** A session as kept: none at work (what it was doing isn't known until the server says). */
+    private resting(s: SessionSummary): SessionSummary {
+        return s.status === "idle" && !s.live ? s : { ...s, status: "idle", live: false, waitingKind: undefined, turnStartedAt: undefined };
+    }
+
+    /** Its sessions written down a moment after they change: one write for a burst of changes. */
+    private keepTimer?: ReturnType<typeof setTimeout>;
+    private keepSoon() {
+        if (!this.o.kept || this.keepTimer) return;
+        this.keepTimer = setTimeout(() => {
+            this.keepTimer = undefined;
+            this.o.kept?.write([...this.sessions.values()].map((s) => this.resting(s)));
+        }, KEEP_MS);
+        (this.keepTimer as { unref?: () => void }).unref?.();
     }
 
     /** Something changed for this server (a window connected to it, it came back): tried now, not when the wait is over. */
@@ -154,7 +184,7 @@ export class MachineWatch {
     /** A session as the list shows it now. */
     private shown(s: SessionSummary): SessionSummary {
         // While it isn't heard from, what it last said of a session at work would be a ring for news that isn't coming.
-        if (this.state !== "connected" && this.state !== "connecting") return s.status === "idle" && !s.live ? s : { ...s, status: "idle", live: false, waitingKind: undefined, turnStartedAt: undefined };
+        if (this.state !== "connected" && this.state !== "connecting") return this.resting(s);
         // Waiting, though the server doesn't know it: it's this machine that asks.
         return this.asking.has(s.id) && s.status !== "waiting" ? { ...s, status: "waiting", waitingKind: "permission" } : s;
     }
@@ -237,6 +267,8 @@ export class MachineWatch {
     stop() {
         this.stopped = true;
         clearTimeout(this.timer);
+        clearTimeout(this.keepTimer);
+        this.keepTimer = undefined;
         this.ws?.close();
     }
 
@@ -360,6 +392,7 @@ export class MachineWatch {
                 list(msg.result, true);
                 clearTimeout(told);
                 this.o.changed();
+                this.keepSoon();
                 return;
             }
             if (typeof msg.id === "number") {
@@ -379,8 +412,12 @@ export class MachineWatch {
                 this.say({ session: this.shown(s) });
                 // Bounded, whatever the server sends.
                 this.bound(true);
+                this.keepSoon();
             } else if (ev.type === "sessions.remove") {
-                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.say({ remove: ev.id });
+                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) {
+                    this.say({ remove: ev.id });
+                    this.keepSoon();
+                }
             } else if (ev.type === "notify") {
                 const kind = KINDS.find((k) => k === ev.kind);
                 if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;

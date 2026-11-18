@@ -8,6 +8,9 @@
 // window calls again with the answer.
 
 import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
@@ -19,6 +22,26 @@ import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stop
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
 import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
+
+/** A server's sessions as last heard (MachineWatch kept): listed while it can't be reached, from the next launch too. */
+const keptFile = (name: string) => join(cavvyHome(), "servers", `${encodeURIComponent(name)}.sessions.json`);
+function readKept(name: string): unknown {
+    try {
+        return existsSync(keptFile(name)) ? JSON.parse(readFileSync(keptFile(name), "utf8")) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+function writeKept(name: string, sessions: unknown[]) {
+    try {
+        ensureDir(join(cavvyHome(), "servers"));
+        const tmp = `${keptFile(name)}.tmp`;
+        writeFileSync(tmp, JSON.stringify(sessions), { mode: 0o600 });
+        renameSync(tmp, keptFile(name));
+    } catch {
+        // Not kept this time: listed again once it's reached.
+    }
+}
 
 export interface ServerProgress {
     name: string;
@@ -120,6 +143,7 @@ export class ServerLinks {
             if (names.has(name)) continue;
             w.stop();
             this.watches.delete(name);
+            rmSync(keptFile(name), { force: true });
             this.o.onOverview?.({ name, state: "removed", sessions: [] });
         }
         for (const name of names) {
@@ -132,6 +156,7 @@ export class ServerLinks {
                 lends: this.o.lends,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
                 retryMs: this.o.watchRetryMs,
+                kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
             });
             this.watches.set(name, w);
             w.start();
@@ -372,8 +397,9 @@ export class ServerLinks {
                     await this.drop(name, true);
                     return { status: "failed", problem: { message: `No server named ${name}.` } };
                 }
-                // The user's own doing (they opened it, started it, trusted its key): its sessions are listed at once.
-                if (!o.retry) this.watches.get(name)?.poke();
+                // Connected for anyone but the watch of its sessions (the user opened it, a window's connection came back
+                // by itself): those are listed at once, not when the watch's own wait is over (up to a minute).
+                if (!o.quiet) this.watches.get(name)?.poke();
                 return r;
             })
             .finally(() => {

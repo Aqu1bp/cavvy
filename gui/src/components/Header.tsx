@@ -7,7 +7,7 @@ import { createEffect, createMemo, createResource, createSignal, For, on, Show, 
 import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
@@ -273,7 +273,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
                         <span class="proj-box">
-                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
+                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
                                 <span class="truncate">{s().projectName}</span>
                                 <span class="proj-sep" aria-hidden="true">/</span>
                             </button>

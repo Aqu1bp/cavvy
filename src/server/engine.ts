@@ -3248,7 +3248,9 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
-                client.machine = name;
+                // The window is on that server now: what that server says, it hears from there. Not for a connection of
+                // its own to it (`link`): the window stays here, and what it isn't told from there it's told from here.
+                if (p.link !== true) client.machine = name;
                 return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
             }
             case "servers.update": {

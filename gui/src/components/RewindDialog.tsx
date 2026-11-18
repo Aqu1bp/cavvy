@@ -2,7 +2,7 @@ import { createEffect, createResource, createSignal, For, on, onCleanup, Show } 
 import { promptPreview } from "../lib/review-comments";
 import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
@@ -21,8 +21,6 @@ function changedLabel(t: RewindTargetInfo): string {
     return untracked ?? "no file changes";
 }
 
-const target = rewindTarget.get;
-const setTarget = rewindTarget.set;
 
 export function RewindDialog() {
     /** The session the dialog was opened for; it closes if another one is shown. */
@@ -32,15 +30,17 @@ export function RewindDialog() {
     const [busy, setBusy] = createSignal(false);
     /** Files changed outside Cavvy: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
+    /** The connection the session's shown over: another machine's, for one of its sessions opened here. */
+    const conn = () => connFor(id() ?? app.activeId);
     createEffect(() => {
         // Reconnect reopens sessions later; a plan against the old view is no longer safe.
-        if (rewindOpen() && app.conn !== "open") setRewindOpen(false);
+        if (rewindOpen() && conn() !== "open") setRewindOpen(false);
     });
     const [targets, { refetch }] = createResource(
-        () => (app.conn === "open" && rewindOpen() && id() ? id() : undefined),
+        () => (conn() === "open" && rewindOpen() && id() ? id() : undefined),
         (sid) =>
             rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
-                if (app.conn === "open") reportError(e);
+                if (conn() === "open") reportError(e);
                 return [];
             }),
     );
@@ -51,14 +51,14 @@ export function RewindDialog() {
             setPlan(undefined);
             // Through undefined, so the plan is fetched again even for the prompt chosen last time.
             setChosen(undefined);
-            setChosen(target());
-            setTarget(undefined);
+            setChosen(rewindTarget.get());
+            rewindTarget.set(undefined);
             void refetch();
         }),
     );
     // Open, the user is back: the session doesn't compact while idle under it (that would change what can be rewound to).
     createEffect(
-        on([id, rewindOpen, () => app.conn === "open"], ([sid, open, connected]) => {
+        on([id, rewindOpen, () => conn() === "open"], ([sid, open, connected]) => {
             if (!sid || !open || !connected) return;
             void rpc.call("session.draft", { id: sid, present: true, dialog: true }).catch(() => undefined);
             onCleanup(() => void rpc.call("session.draft", { id: sid, present: false, dialog: true }).catch(() => undefined));
@@ -74,7 +74,7 @@ export function RewindDialog() {
         ),
     );
     createEffect(
-        on([chosen, () => app.conn === "open", id, rewindOpen], ([index, connected, sid, open]) => {
+        on([chosen, () => conn() === "open", id, rewindOpen], ([index, connected, sid, open]) => {
             let current = true;
             onCleanup(() => {
                 current = false;

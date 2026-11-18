@@ -10,7 +10,7 @@ import { LiveLine } from "./LiveLine";
 import { liveLine, workSegments } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
-import { loadAgent, type SessionHandle } from "../state/app";
+import { loadAgent, machineFor, type SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
 import { paneDock, setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
@@ -154,7 +154,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     return (
         <>
             <TitleBar end={<ClosePane />}>
-                <Crumb title={`New session in ${st().projectName}`} onClick={() => newSession(st().cwd)}>
+                <Crumb title={`New session in ${st().projectName}`} onClick={() => newSession(st().cwd, machineFor(p.handle.id))}>
                     <Monogram name={st().projectName} size={14} />
                     <span class="truncate">{st().projectName}</span>
                 </Crumb>
