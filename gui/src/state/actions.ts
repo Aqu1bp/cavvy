@@ -393,9 +393,11 @@ export async function setModel(ref: string) {
 
 export async function setAccount(provider: string, accountId: string) {
     try {
+        // A session's call goes to its machine by its id; Home's default is its machine's (rpcFor), not always this window's.
         if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
-        else await rpc.call("accounts.setDefault", { provider, id: accountId });
-        await refreshProviders();
+        else await rpcFor(undefined).call("accounts.setDefault", { provider, id: accountId });
+        // Another machine says when its default changed (models.changed): its list is asked for again then.
+        if (awayMachine(app.activeId) === undefined) await refreshProviders();
     } catch (e) { reportError(e); }
 }
 

@@ -212,6 +212,17 @@ export function modelsFor(sessionId: string | undefined): ProviderModels[] {
 /** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
 function machineModelsAgain(on: string, link: Rpc, refresh = false) {
     void link.call("models.list", { refresh }).then((m) => setMachineModels(on, reconcile(m, { key: "provider" })), () => undefined);
+    machineProvidersAgain(on, link);
+}
+/** Each other machine's providers, as its Cavvy lists them: its CLIs' accounts, for its sessions opened in this window (providersFor). */
+const [machineProviders, setMachineProviders] = createStore<Record<string, ProviderInfo[]>>({});
+/** The providers of `sessionId`'s machine: whose accounts its model menu offers. */
+export function providersFor(sessionId: string | undefined): ProviderInfo[] {
+    const on = awayMachine(sessionId);
+    return on === undefined ? app.providers : (machineProviders[on] ?? []);
+}
+function machineProvidersAgain(on: string, link: Rpc) {
+    void link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
 }
 /** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
 export function refreshModelsFor(sessionId: string | undefined, refresh = false): Promise<void> {

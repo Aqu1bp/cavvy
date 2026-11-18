@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, modelsFor, noModel, refreshModels, refreshModelsFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -121,8 +121,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
 
-    // This computer's accounts: none offered for another machine's session opened here (its machine has its own).
-    const accountInfo = (provider = currentProvider()) => (awayMachine(p.sessionId) !== undefined ? undefined : app.providers.find((p) => p.id === provider)?.agentCli);
+    // The accounts of the machine the session is on: another machine's session opened here has that machine's.
+    const away = () => awayMachine(p.sessionId) !== undefined;
+    const accountInfo = (provider = currentProvider()) => providersFor(p.sessionId).find((p) => p.id === provider)?.agentCli;
     const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
@@ -227,12 +228,14 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The provider whose heading has its accounts: a CLI provider, in its own list.
     const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
+    // The limits known here are this computer's accounts': another machine's "Default" isn't this one's.
+    const limitOf = (provider: string, id: string) => (away() ? undefined : app.limits[planLimitKey(provider, id)]);
     const accountLimit = (provider: string, id: string) => {
-        const l = app.limits[planLimitKey(provider, id)];
+        const l = limitOf(provider, id);
         return nearLimit(meterOf(l, now()), l, now());
     };
     const accountTip = (provider: string, a: Partial<AccountInfo> & { id: string }) => {
-        const m = meterOf(app.limits[planLimitKey(provider, a.id)], now());
+        const m = meterOf(limitOf(provider, a.id), now());
         const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.filter((w) => w.pct !== undefined).map((w) => `${w.label} ${w.pct}%`).join(", ");
         return [accountDetail(a), limits].filter(Boolean).join(". ") || undefined;
     };
@@ -493,13 +496,16 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                 );
                             }}
                         </For>
-                        <div class="mp-acct-sep" role="separator" />
-                        <button class="mp-acct-it" role="menuitem" onClick={() => addAccount(provider)}>
-                            <span class="mp-acct-ck">
-                                <Plus size={13} />
-                            </span>
-                            <span class="truncate">Add account</span>
-                        </button>
+                        {/* Settings adds to this computer: not offered for another machine's session. */}
+                        <Show when={!away()}>
+                            <div class="mp-acct-sep" role="separator" />
+                            <button class="mp-acct-it" role="menuitem" onClick={() => addAccount(provider)}>
+                                <span class="mp-acct-ck">
+                                    <Plus size={13} />
+                                </span>
+                                <span class="truncate">Add account</span>
+                            </button>
+                        </Show>
                     </div>
                 </Show>
             </span>
