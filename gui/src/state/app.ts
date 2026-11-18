@@ -225,6 +225,14 @@ export function providersFor(sessionId: string | undefined): ProviderInfo[] {
 }
 function machineProvidersAgain(on: string, link: Rpc) {
     void link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
+    void link.call("limits.get", {}).then((l) => Array.isArray(l) && setMachineLimits(on, reconcile(Object.fromEntries(l.map((x) => [planLimitKey(x.provider, x.accountId), fromWireLimits(x)])))), () => undefined);
+}
+/** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
+const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
+/** The plan limits of `sessionId`'s machine's accounts. */
+export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
+    const on = awayMachine(sessionId);
+    return on === undefined ? app.limits : (machineLimits[on] ?? {});
 }
 /** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
 export function refreshModelsFor(sessionId: string | undefined, refresh = false): Promise<void> {
@@ -295,7 +303,7 @@ export function machineLink(on: string): Promise<Rpc> {
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
 async function linkFor(name: string | undefined): Promise<Rpc> {
     const link = await linkMade(name);
-    await opened(link);
+    await opened(link, name);
     return link;
 }
 
@@ -310,6 +318,8 @@ async function linkMade(name: string | undefined): Promise<Rpc> {
         if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
         // Its models changed (a key added there): asked for again, if they were asked for.
         else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
+        // Its accounts' limits, as they move: for the meter of its sessions here.
+        else if (e.type === "limits" && on in machineLimits) setMachineLimits(on, planLimitKey(e.limits.provider, e.limits.accountId), reconcile(fromWireLimits(e.limits)));
     };
     const link = linkTo(name, home ?? rpc, home, theirs);
     if (!heard.has(link)) {

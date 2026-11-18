@@ -58,6 +58,7 @@ class ServerSocket extends Socket {
             opened.push({ url: this.url, id: params.id });
             reply({ seq: 0, epoch: "e", state: { id: params.id, cwd: "/srv/app", busy: false, interactions: [] }, turns: [{ id: `${params.id}-t`, status: "done", startedAt: 1, prompt: { text: "hi" }, blocks: [] }], agents: [] });
         } else if (method === "models.list") reply(onBox ? [{ provider: "boxp", providerName: "Box's", status: "ok", models: [{ ref: "boxp:only-on-box", id: "only-on-box", name: "Only on box", provider: "boxp" }] }] : []);
+        else if (method === "limits.get") reply(onBox ? [{ provider: "claude-code", accountId: "default", windows: [{ label: "Weekly", usedPercent: 91 }], reached: false, at: 1 }] : []);
         else if (method === "providers.list") reply(cli(onBox ? [{ id: "default", name: "Default" }, { id: "work", name: "Work on box" }] : [{ id: "default", name: "Default" }]));
         else if (method === "session.setAccount" || method === "accounts.setDefault") {
             picked.push({ url: this.url, method, accountId: params.accountId ?? params.id });
@@ -81,7 +82,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, providersFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, providersFor, limitsFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
 const { folderPickerOpen } = await import("../../gui/src/state/ui");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
@@ -120,6 +121,9 @@ try {
     const names = (id: string | undefined) => providersFor(id).flatMap((p) => p.agentCli?.accounts.map((a) => a.name) ?? []);
     assert.deepEqual(names("b1"), ["Default", "Work on box"], "box's accounts for box's session");
     assert.deepEqual(names("l1"), ["Default"], "this computer's for its own");
+    // And its accounts' plan limits: box's "Default" isn't this computer's.
+    assert.deepEqual(Object.values(limitsFor("b1")).map((l) => l.windows[0]?.usedPercent), [91], "box's limits for box's session");
+    assert.equal(limitsFor("l1"), app.limits);
     const { setAccount } = await import("../../gui/src/state/actions");
     await setAccount("claude-code", "work");
     assert.deepEqual(picked.map((x) => [x.method, x.url.includes("box"), x.accountId]), [["session.setAccount", true, "work"]], "the pick goes to box");
