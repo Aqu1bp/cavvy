@@ -207,7 +207,8 @@ export function watchOthers(hereName: string) {
             servers.clear();
             for (const m of r.machines) {
                 servers.set(m.name, m);
-                serverBehind(m.name, m.behind);
+                // Only of one that's connected: while it's being reached again, what it ran isn't forgotten.
+                if (m.state === "connected") serverBehind(m.name, m.behind);
             }
             relist();
         }, reportError);
@@ -227,7 +228,6 @@ export function watchOthers(hereName: string) {
     from.onEvent((e) => {
         if (e.type === "servers.overview") {
             servers.set(e.machine.name, e.machine);
-            // Only of one that's connected: while it's being reached again, what it ran isn't forgotten.
             if (e.machine.state === "connected") serverBehind(e.machine.name, e.machine.behind);
             relist();
         } else if (e.type === "servers.session") {

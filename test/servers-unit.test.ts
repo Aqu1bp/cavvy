@@ -768,6 +768,11 @@ test("a connected server on another build that isn't newer is said to be behind;
     // The checkout is asked once for a build, however often a list is.
     links.behind("a");
     expect(asked).toEqual(["old", "fork", "next"]);
+    // With the time the server says its build is from: what tells a newer one where there's no checkout to ask.
+    const times: (number | undefined)[] = [];
+    const timed = new ServerLinks({ source: { ...source, compare: (_: string, at?: number) => (times.push(at), "newer") } } as never) as unknown as typeof links;
+    timed.links.set("a", { link: { state: { state: "connected", pairing: { build: "later", builtAt: 1_800_000_000 } } } });
+    expect([timed.behind("a"), times]).toEqual([false, [1_800_000_000]]);
     const unknown = new ServerLinks({ source: { ...source, id: "unknown-build" } } as never) as unknown as typeof links;
     unknown.links.set("a", { link: { state: { state: "connected", pairing: { build: "old" } } } });
     expect(unknown.behind("a")).toBe(false);

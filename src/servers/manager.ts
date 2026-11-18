@@ -12,7 +12,7 @@ import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, typ
 import { dirname, join, relative, sep } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
-import { compareBuilds, thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
+import { compareBuilds, thisBuild, thisBuildTime, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck } from "./host";
@@ -234,7 +234,8 @@ export class ServerLinks {
         if (s?.state !== "connected" || mine === UNKNOWN_BUILD || s.pairing.build === mine) return false;
         let behind = this.relations.get(s.pairing.build);
         if (behind === undefined) {
-            const relation = this.o.source ? this.o.source.compare(s.pairing.build) : compareBuilds(s.pairing.build, mine);
+            // With its build's time, as the update itself compares them: an app with no checkout tells a newer one by it.
+            const relation = this.o.source ? this.o.source.compare(s.pairing.build, s.pairing.builtAt) : compareBuilds(s.pairing.build, mine, undefined, { theirs: s.pairing.builtAt, mine: thisBuildTime() });
             this.relations.set(s.pairing.build, (behind = relation === "older" || relation === "different"));
         }
         return behind;
