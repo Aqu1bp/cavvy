@@ -2068,6 +2068,13 @@ describe("sessions", () => {
         expect(b.base.ref).toBe("main");
         await expect(c.call("session.gitChanges", { id, scope: "branch", base: "--output=x" })).rejects.toThrow(/isn't a branch/);
         await expect(c.call("session.gitChanges", { id, scope: "sideways" })).rejects.toThrow(/scope/);
+        // The Commit view and its list: the last commit by default; a commit id and the flags checked.
+        const log = await c.call("session.gitLog", { id });
+        expect(log.commits.map((x: { subject: string }) => x.subject)).toEqual(["Initial commit"]);
+        const one = await c.call("session.gitChanges", { id, scope: "commit" });
+        expect([one.scope, one.commit.sha]).toEqual(["commit", log.commits[0].sha]);
+        await expect(c.call("session.gitChanges", { id, scope: "commit", commit: "HEAD~1" })).rejects.toThrow(/commit id/);
+        await expect(c.call("session.gitChanges", { id, scope: "uncommitted", ignoreWhitespace: "yes" })).rejects.toThrow(/boolean/);
 
         const plain = await c.open("session.create", { cwd: project() });
         const p = await c.call("session.gitChanges", { id: plain, scope: "uncommitted" });

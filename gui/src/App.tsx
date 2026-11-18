@@ -4,7 +4,7 @@ import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onClean
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
-import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
+import { cycleSession, far, interrupt, newSession, openReview, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
@@ -418,6 +418,9 @@ export function App() {
             "app:newSession": () => void (setSettingsTab(undefined), newSession(app.homeCwd)),
             "app:toggleSidebar": () => void toggleSidebar(),
             "app:togglePanel": () => void togglePanel(),
+            // The pane opens where the title bar's Changes would: on the worktree the agent works in, if another. Over the
+            // file viewer (in the same place), it shows the diffs.
+            "app:toggleReview": () => (review() && !review()!.file ? void setReview(undefined) : active() ? void openReview() : false),
             // Not while Settings covers the session (it stays mounted under it): they'd act on it out of sight.
             "chat:modelPicker": () => void (!settingsTab() && setModelPickerOpen(true)),
             "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),

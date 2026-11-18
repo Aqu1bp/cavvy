@@ -59,7 +59,7 @@ export interface ReviewPlace {
 }
 
 /** The views another worktree has: Git's. Turns and Cavvy's edits are the session's own folder's. */
-export const OTHER_WORKTREE_SCOPES: ReadonlySet<ReviewScope> = new Set(["uncommitted", "branch"]);
+export const OTHER_WORKTREE_SCOPES: ReadonlySet<ReviewScope> = new Set(["uncommitted", "branch", "commit"]);
 
 /**
  * Looking at `worktree` (undefined: the session's own folder). Another worktree opens on its branch,

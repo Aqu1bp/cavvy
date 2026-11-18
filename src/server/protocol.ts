@@ -1569,8 +1569,19 @@ export interface ChangesInfo {
     tracked: boolean;
 }
 
-/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
-export type GitScope = "uncommitted" | "branch" | "last-turn" | "turn";
+/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. Commit: one commit against its (first) parent. */
+export type GitScope = "uncommitted" | "branch" | "commit" | "last-turn" | "turn";
+
+/** A commit, as the review pane lists them (newest first). Subject and author are redacted. */
+export interface GitLogEntry {
+    sha: string;
+    subject: string;
+    author: string;
+    /** Committed, in ms. */
+    time: number;
+    /** How many parents: 0 a root commit, 2 or more a merge (shown against its first). */
+    parents: number;
+}
 
 export interface GitFileDiff extends FileDiff {
     /** What git would call it. Renames are exact ones (the same content under a new name). */
@@ -1585,6 +1596,8 @@ export interface GitFileDiff extends FileDiff {
     filter?: string;
     /** `path` hides a registered value: send this instead of it to act on the file. */
     pathToken?: string;
+    /** Lines in the new side, when there are hunks: whether there's more of the file after the last one. */
+    lines?: number;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */
@@ -1616,6 +1629,8 @@ export interface GitChangesInfo extends ChangesInfo {
     moreAtLeast?: boolean;
     /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
     places?: TurnPlace[];
+    /** Commit scope: the commit shown. */
+    commit?: GitLogEntry;
 }
 
 /**
@@ -2431,7 +2446,13 @@ export interface Methods {
      * any other folder is refused. Turn scopes are the session's own folder's only.
      */
     /** `pathToken` / `baseToken`: handles from an earlier listing (GitFileDiff.pathToken, baseTokens), instead of `path` / `base`. */
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /**
+     * `commit`: the commit scope's (HEAD when unset). `ignoreWhitespace`: lines that differ only in whitespace are unchanged.
+     * `full`: with a path, that file's diff with every line as context (the review pane's hidden lines).
+     */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }; result: GitChangesInfo };
+    /** The recent commits of HEAD (of `worktree`, another worktree of the session's repository), newest first. */
+    "session.gitLog": { params: { id: string; worktree?: string }; result: { commits: GitLogEntry[]; more: boolean } };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
     /** `sessionId`: the session it's for, so the call goes to that session's machine. */

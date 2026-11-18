@@ -3350,14 +3350,20 @@ export class Engine {
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {
-                if (!["uncommitted", "branch", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (!["uncommitted", "branch", "commit", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (p.commit !== undefined && (typeof p.commit !== "string" || !/^[0-9a-f]{4,64}$/i.test(p.commit))) throw new RpcError("commit must be a commit id", "invalid");
+                for (const key of ["ignoreWhitespace", "full"]) if (p[key] !== undefined && typeof p[key] !== "boolean") throw new RpcError(`${key} must be a boolean`, "invalid");
                 if (p.turnId !== undefined && (!Number.isSafeInteger(p.turnId) || p.turnId < 0)) throw new RpcError("turnId must be a checkpoint id", "invalid");
                 if (p.scope === "turn" && p.turnId === undefined) throw new RpcError("turnId is required for a turn scope", "invalid");
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree });
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree, commit: p.scope === "commit" ? p.commit : undefined, ignoreWhitespace: p.ignoreWhitespace, full: p.full });
+            }
+            case "session.gitLog": {
+                if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
+                return this.runtime(p.id).gitLog(p.worktree);
             }
             case "session.worktrees": {
                 const list = await this.runtime(p.id).worktrees();
