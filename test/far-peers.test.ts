@@ -154,5 +154,5 @@ test("the worktree a removal leaves Home in is read before the dialog closes", a
     // Its request is the picker's, gone once the dialog is closed: nothing reads it after that.
     expect(remove).toContain("const { worktree: w, cwd, main } = p.request;");
     expect(remove.split("p.request").length).toBe(2);
-    expect(remove).toContain("await openProject(main, true);");
+    expect(remove).toContain("homeOn() === on && app.homeCwd === here) await openProject(main, true);");
 });

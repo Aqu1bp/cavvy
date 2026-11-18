@@ -5629,7 +5629,7 @@ export class Runtime {
             if (!this.ws.reloadReadable())
                 return {
                     text: loadScopeChecked("user", this.ws.cwd).unreadable
-                        ? "Cavvy on your Mac can't read its settings file: it isn't valid JSON. Nothing a server asks runs there until that's fixed. Tell the user, and don't call this again until they have."
+                        ? "Cavvy on your Mac can't use its settings file as it is (it can't be read, or isn't valid). Nothing a server asks runs there until that's fixed. Tell the user, and don't call this again until they have."
                         : "Cavvy on your Mac couldn't read its settings just now. Call it again.",
                     isError: true,
                 };

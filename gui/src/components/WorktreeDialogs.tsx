@@ -334,7 +334,8 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             toast(`Removed worktree ${tildify(w.path, app.hello?.homeDir)}`, "success");
             // Asked rather than compared: the new chat may have reached it through a symlink.
             const here = homeOn() === on && app.homeCwd;
-            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(main, true);
+            // Still there once it's answered: the user may have gone elsewhere meanwhile.
+            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists && homeOn() === on && app.homeCwd === here) await openProject(main, true);
         } catch (e) {
             setError(errorOf(e));
         } finally {
