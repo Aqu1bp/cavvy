@@ -2,8 +2,6 @@
 // the terminal (TerminalScreen.tsx, terminal-link-provider.ts) asks it about one line at a time, the line under the
 // pointer, never about output as it arrives.
 
-import { parsePathRef } from "./markdown";
-
 interface Span {
     /** Where it is in the line's text: from `start` up to (not including) `end`. */
     start: number;
@@ -22,6 +20,20 @@ const LEAD = /^[(\[{]+/;
 const TRAIL = /[.,:;!?]+$/;
 /** `file.ts(12,5)`, as compilers write a position. */
 const PAREN_POS = /\((\d{1,8})(?:,(\d{1,6}))?\)$/;
+
+/** A path, as replies' paths are read (lib/markdown.ts parsePathRef), with an optional :line[:col]. */
+const PATH = /^((?:~\/|\.{1,2}\/|\/)?(?:[\p{L}\p{N}_@+.\-]+\/)*[\p{L}\p{N}_@+.\-]+)(?::(\d{1,8})(?::(\d{1,6}))?)?$/u;
+
+/** A path and where in it, or undefined: it needs a slash or a file extension, and a letter. */
+function pathRef(s: string): { path: string; line?: number; col?: number } | undefined {
+    const m = PATH.exec(s);
+    const path = m?.[1];
+    if (!path || path.startsWith("-") || path.endsWith(".") || !/\p{L}/u.test(path)) return undefined;
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    if (!name || (!path.includes("/") && (path.length < 4 || !/[^.]\.\p{L}[\p{L}\p{N}]{0,9}$/u.test(name)))) return undefined;
+    const line = Number(m[2]) || undefined;
+    return { path, line, col: line ? Number(m[3]) || undefined : undefined };
+}
 
 /** Drops closing brackets that close nothing in the text before them (a link in parentheses). */
 function unclosed(s: string): string {
@@ -75,7 +87,7 @@ export function terminalLinks(text: string): TerminalLink[] {
         const named = pos ? token.slice(0, pos.index) : trimEnd(token);
         // An address of another kind (git@host:path, a scheme) isn't a file here.
         if (!named || /^[a-z][a-z0-9+.-]*:\/\//i.test(named)) continue;
-        const ref = parsePathRef(named);
+        const ref = pathRef(named);
         if (!ref) continue;
         const line = pos ? Number(pos[1]) || undefined : ref.line;
         const col = pos ? (line ? Number(pos[2]) || undefined : undefined) : ref.col;
