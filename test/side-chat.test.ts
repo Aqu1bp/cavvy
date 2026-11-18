@@ -116,6 +116,14 @@ describe("a side chat", () => {
         await until(() => !existsSync(sideChatDir(sideId)));
     });
 
+    test("goes when its parent is archived", async () => {
+        const { engine, c, id, rt } = await parentWithTurn("hello there");
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+        await engine.handle(c, "session.archive", { id, archived: true });
+        await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
+        expect(rt.snapshot().state.sideChat).toBeUndefined();
+    });
+
     test("a side chat has none of its own", async () => {
         const { engine, c, id } = await parentWithTurn("hello there");
         const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };

@@ -8,6 +8,7 @@
 import "../styles/side-chat.css";
 import { ArrowUp, CornerDownLeft, Square, X } from "lucide-solid";
 import { MODE_LABELS, type PermissionModeId, type SessionState, type Turn } from "@shared/protocol";
+import { lastAnswer, quoted } from "../lib/side-chat";
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { awayMachine, modelsFor, openSession, reportError, rpcFor, type SessionHandle } from "../state/app";
 import { PaneContext } from "../state/split";
@@ -16,23 +17,6 @@ import { Markdown } from "./blocks/Markdown";
 import { LiveLine } from "./LiveLine";
 import { liveLine } from "../lib/live-line";
 import { MODES } from "./ModePicker";
-
-/** Quoted, a line at a time, for the message box: what it's about, not what's asked. */
-export function quoted(text: string): string {
-    return `${text.trim().split("\n").map((l) => (l.trim() ? `> ${l}` : ">")).join("\n")}\n\n`;
-}
-
-/** The last thing the side chat said: its latest turn's last words. */
-export function lastAnswer(turns: readonly Turn[]): string | undefined {
-    for (let i = turns.length - 1; i >= 0; i--) {
-        const blocks = turns[i]!.blocks;
-        for (let j = blocks.length - 1; j >= 0; j--) {
-            const b = blocks[j]!;
-            if (b.t === "text" && b.text.trim()) return b.text;
-        }
-    }
-    return undefined;
-}
 
 /**
  * A turn of the side chat, as it reads in a narrow column: the question, then what was said, each step of the work as

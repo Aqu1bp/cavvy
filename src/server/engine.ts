@@ -1227,7 +1227,8 @@ export class Engine {
             const held = !parent.session.historyDigest;
             const all = parent.session.messages;
             const context = all.slice(0, sideChatCut(all));
-            if (!held) parent.session.letGoOfMessages();
+            // Once what reading them left for this task is gone (Session.readMessages), and not while it works (as Runtime).
+            if (!held) queueMicrotask(() => !parent.busy && parent.session.letGoOfMessages());
             const id = newSessionId();
             const dir = sideChatDir(id);
             mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1592,6 +1593,9 @@ export class Engine {
             s[key] = [...list];
         });
         const rt = this.runtimes.get(id);
+        // Archived, its side chat goes.
+        const side = key === "archived" && on && rt?.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
+        if (side) void this.discardSideChat(side);
         // One that isn't open is read from its file, in whichever list its flags now put it.
         const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
         if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
