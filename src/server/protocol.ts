@@ -1474,9 +1474,11 @@ export interface AppUpdateInfo {
 export interface RewindTargetInfo {
     index: number;
     text: string;
-    /** Files Cavvy's own tools changed answering it. */
+    /** Files changed answering it: by anything (`whole`), or by Cavvy's own tools. */
     files: number;
     tracked: boolean;
+    /** Everything that changed files answering it is covered, shell commands and agent backends included. */
+    whole?: boolean;
     /** From before this session was forked: files changed then are restored from the original session, not here. */
     forked?: boolean;
     /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
@@ -1487,13 +1489,30 @@ export interface RewindPlanInfo {
     index: number;
     /** Passed back to session.rewind, which restores exactly this plan (or refuses if the conversation moved on). */
     planId: string;
-    restore: { path: string; action: "write" | "delete"; outside: boolean }[];
+    /** create: it was deleted since, so it's made again. `outside`: changed outside Cavvy, and restoring it can't be undone. */
+    restore: { path: string; action: "write" | "delete" | "create"; outside: boolean }[];
+    /** Files restored too that aren't listed in `restore` (a long list is cut). */
+    more?: number;
     skipped: { path: string; reason: string }[];
     tracked: boolean;
+    /** Every file changed since then is in `restore`, whoever changed it (shell commands, agent backends). */
+    whole?: boolean;
+    /** Why only Cavvy's own edits can be restored, where everything could have been (another session working in the folder, say). */
+    refused?: string;
     /** From before the fork: `restore` has only what this session changed since. */
     forked?: boolean;
-    /** Agent backends that answered since then: their changes to files aren't in `restore`, and rewinding leaves them. */
+    /** Agent backends that answered since then: their changes to files aren't in `restore` (unless `whole`), and rewinding leaves them. */
     backends?: string[];
+}
+
+export interface RewindResult {
+    restored: string[];
+    failed: { path: string; error: string }[];
+    text: string;
+    images?: { mediaType: string; data: string }[];
+    files?: WireFile[];
+    /** Passed to session.rewindUndo to put the restored files back as they were. */
+    undo?: string;
 }
 
 export interface ChangesInfo {
@@ -2299,7 +2318,9 @@ export interface Methods {
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
-    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
+    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: RewindResult };
+    /** Put back the files a rewind restored (`undo` from its result), as they were before it. */
+    "session.rewindUndo": { params: { id: string; undo: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     /**
      * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
