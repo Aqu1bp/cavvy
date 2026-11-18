@@ -102,7 +102,7 @@ export async function openProject(path: string, home?: boolean) {
     }
 }
 
-/** The session's side chat, in the side panel; `text` asked there (it opens with it if there's none). */
+/** The session's side chat, in the side panel (/btw); `text` asked there (it opens with it if there's none). */
 export async function openSideChat(id: string, text?: string) {
     batch(() => {
         setReview(undefined);

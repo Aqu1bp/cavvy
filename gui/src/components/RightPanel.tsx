@@ -7,7 +7,7 @@
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch, lazy } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, MessageSquareText, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, machineFor, reportError, rpc, serversUi, toast } from "../state/app";
@@ -232,6 +232,9 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     );
 }
 
+/** The side chat (SideChatPane), loaded when it's first shown. */
+const SideChatPane = lazy(() => import("./SideChatPane"));
+
 /** The Simulator pane is loaded when it's first shown: only a Mac with Xcode, or a server lent one's, ever shows it. */
 const SimulatorPane = lazy(() => import("./SimulatorPane").then((m) => ({ default: m.SimulatorPane })));
 
@@ -322,6 +325,21 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
                         ),
                     },
                     {
+                        value: "sidechat",
+                        get name() {
+                            return tabName("Side chat", p.handle.view.state.sideChat?.status === "waiting" && "it needs you");
+                        },
+                        title: "Side chat",
+                        label: (
+                            <>
+                                <MessageSquareText class="seg-i" />
+                                <Show when={p.handle.view.state.sideChat?.status}>
+                                    <span class="ct-dot" />
+                                </Show>
+                            </>
+                        ),
+                    },
+                    {
                         value: "browser",
                         get name() {
                             return tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page");
@@ -380,7 +398,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
         if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("agents");
     });
     // The panes with a title line; the browser's and the simulator's own bars say what they are.
-    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" ? undefined : inspectorPane());
+    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" || inspectorPane() === "sidechat" ? undefined : inspectorPane());
     return (
         <aside class="panel" aria-label="Session details">
             {/* The folder's changes (the Changes icon's count) are the one thing here fetched once the session is open:
@@ -416,6 +434,11 @@ export function RightPanel(p: { handle: SessionHandle }) {
                             <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} shown={setBrowserShown} />}>
                                 <BrowserPane handle={p.handle} />
                             </Show>
+                        </div>
+                    </Match>
+                    <Match when={inspectorPane() === "sidechat"}>
+                        <div class="pane">
+                            <SideChatPane handle={p.handle} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>
