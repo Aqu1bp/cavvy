@@ -322,6 +322,17 @@ export class Session {
     }
     /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
     private digestible = false;
+    /**
+     * Its messages, read whole to build its turns (a first open), let go of now that those are built: a digest in their
+     * place, as a session opened from its checkpoint has, and they're read again from its file when they're asked for.
+     * Only where that checkpoint would have one (they're most of it) and the file has all of them (it writes to it).
+     */
+    letGoOfMessages(): boolean {
+        if (!this.persist || !this.digestible || this.digest || this.loadedLines || this.pushedUnread.length) return false;
+        this.digest = digestOf(this.loadedMessages);
+        this.loadedMessages = [];
+        return true;
+    }
     fastMode?: boolean;
     /** The speed the file has (a chat from before speeds were saved has it only in memory, until one is chosen). */
     private savedFastMode?: boolean;

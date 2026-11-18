@@ -1057,6 +1057,9 @@ export class Runtime {
             this.trimBuilt();
             // Its steps were to build them: they're built (and stored) now.
             this.ui.lighten();
+            // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
+            // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
+            if (!this.abort) this.session.letGoOfMessages();
         }, 0);
     }
 

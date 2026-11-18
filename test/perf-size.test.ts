@@ -364,7 +364,8 @@ describe("a Claude Code session", () => {
         expect(readKept(toolImagesDir(file!, id), key)).toEqual({ mediaType: "image/png", data: png });
         await ok("session.close", { id });
     });
-    // Its history (every reply's text) is in it too, and a stub of every turn: 1.2 MB at 3,000 items, 5.4 at 30,000.
+    // A stub of every turn is in it too (its history, read whole the first time, isn't kept): 0.95 MB at 3,000 items,
+    // 2.5 at 30,000.
     test("open, the server keeps what's on screen", () => {
         const { small, large } = measured.cli!;
         expect(keptWithin(small.keptOpen, large.keptOpen)).toBe(true);
