@@ -56,8 +56,8 @@ function sentFrom(v: unknown): Sent {
 /** What the machine a message went to said of it, naming the session as this machine names it (`<machine>/<id>`), not by the id it has there. */
 function sentTo(id: string, v: unknown): Sent {
     const sent = sentFrom(v);
-    const there = split(id)?.id;
-    return there ? { ...sent, text: sent.text.replace(`Sent to session ${there} `, `Sent to session ${id} `) } : sent;
+    // The id it leads with is the one that machine keeps (in its own spelling): the one asked for stands in its place.
+    return { ...sent, text: sent.text.replace(/^Sent to session \S+ /, () => `Sent to session ${id} `) };
 }
 /** A server's refusal (PeerError there) is the model's to read, as one here would be. */
 const refused = (e: unknown): never => {

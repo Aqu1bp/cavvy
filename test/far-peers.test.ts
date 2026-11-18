@@ -63,6 +63,9 @@ test("a server asks through the user's computer: its own sessions and the other 
     expect((await far.read(`${HOME_NAME}/m1`))?.text).toBe("turns of m1");
     // To the Mac: from `box/<id>`, which the Mac names box's sessions by. To lab: the same, through the Mac.
     await far.send(`${HOME_NAME}/m1`, "Done on the server.", { id: "s9", title: "Server work", mode: "bypassPermissions" });
+    // Whatever spelling that machine keeps the id in, and whatever its title says.
+    const odd = { ask: async () => ({ text: "Sent to session B2 (“Sent to session b2 now”). It was idle.", delivery: "started", title: "t" }) };
+    expect((await homeFarPeers(() => new Map([["box", odd]])).send("box/b2", "hi", { id: "a", title: "a", mode: "auto" })).text).toBe("Sent to session box/b2 (“Sent to session b2 now”). It was idle.");
     expect((await far.send("lab/l1", "Your turn.", { id: "s9", title: "Server work", mode: "bypassPermissions" })).text).toStartWith("Sent to session lab/l1 ");
     // Its own machine's session, named as another machine would: told how it's named here, not that box is away.
     await expect(far.read("box/s1")).rejects.toThrow("box/s1 is on this machine: a session here goes by its id alone (s1).");
