@@ -2,6 +2,7 @@
 // branches to switch to, switching and creating one. Network calls go through git-publish's rules (runGit with
 // `network`: the folder's network trust, URL rewrites refused, run away from the work tree, output redacted).
 import { redact } from "../util/redact";
+import { headBranch } from "../util/git";
 import type { GitBranchList, GitPullResult, GitSyncInfo } from "./protocol";
 import { cleanGitText, remoteUrl, runGit } from "./git-publish";
 import { RpcError } from "./rpc-error";
@@ -47,7 +48,8 @@ export function gitReason(text: string): string {
 
 /** Ahead/behind of the upstream, from what was last fetched: `git for-each-ref`'s own count, no network. */
 export async function gitSyncInfo(cwd: string, signal?: AbortSignal): Promise<GitSyncInfo> {
-    const branch = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, true);
+    // The title bar asks this as turns end: the branch comes from the HEAD file where that says it, so it's one git, not two.
+    const branch = headBranch(cwd) ?? (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, true));
     if (!branch) return { detached: true };
     // The branch's own ref, exactly: a pattern names it and what's under it, which a branch of that name can't have.
     const line = await git(cwd, ["for-each-ref", "--format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)", `refs/heads/${branch}`], signal, true);
