@@ -85,7 +85,7 @@ A new session starts on the machine named first in the strip under its composer 
 
 A click on a server's session in the sidebar opens it in the window you're in, which stays where it is: going back and forth is as quick as between this machine's own sessions. That session's model menu lists the server's models, and @ finds the server's files. Resting the pointer on its row connects to the server ahead of the click.
 
-- Search (⌘K) finds text in the sessions of this machine and of the servers it's connected to, whichever of them the window is on; a hit on a server says which. A server that's slow to answer doesn't hold the rest back: its hits follow.
+- Search (⌘K) in a window on this machine finds text in its sessions and in those of the servers it's connected to; a hit on a server says which. A server that's slow to answer doesn't hold the rest back: its hits follow. In a window on a server, it finds text in that server's sessions.
 - Recently deleted lists that machine's too.
 - A server that can't be reached, was stopped, or needs your word says so at the foot of the sidebar; its sessions stay listed, none shown as working.
 

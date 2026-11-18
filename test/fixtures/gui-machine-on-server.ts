@@ -60,8 +60,6 @@ class ServerSocket extends Socket {
         else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
         else if (method === "session.close" || method === "session.shown") reply(null);
         // The window's own Cavvy is box's here (no app to update); this computer's has one.
-        // Search: this computer's Cavvy answers for every machine (its own with no name, box's with box's); box's own, only its own.
-        else if (method === "sessions.search") reply({ partial: false, hits: this.url.includes("mac.test") ? [{ id: "m1" }, { id: "b1", machine: "box" }, { id: "l1", machine: "lab" }] : [{ id: "b1" }] });
         else if (method.startsWith("app.update.")) updates.push(this.url), reply(!this.url.includes("mac.test") ? { unavailable: "not here" } : { current: "abc", checkedAt: 1, asked: method });
         else reply([]);
     }
@@ -116,11 +114,4 @@ home!.hear({ type: "app.update", info: { current: "def" } } as never);
 assert.equal((app.update as any)?.current, "def");
 rpc.hear({ type: "app.update", info: { unavailable: "box's" } } as never);
 assert.equal((app.update as any)?.current, "def", "box's word on updates isn't the window's");
-// Search asks this computer's Cavvy, which looks through every machine's sessions; each hit is said from this
-// window: this computer's as "", box's (the window's own) with no name, another server's by its name.
-const found = (await rpc.call("sessions.search", { query: "needle" })) as { hits: { id: string; machine?: string }[] };
-assert.deepEqual(found.hits.map((h) => [h.id, h.machine]), [["m1", ""], ["b1", undefined], ["l1", "lab"]]);
-// This computer's Cavvy not reached: box's own search still answers.
-Object.assign(home!, { state: "closed" });
-assert.deepEqual(((await rpc.call("sessions.search", { query: "needle" })) as typeof found).hits.map((h) => [h.id, h.machine]), [["b1", undefined]]);
 process.exit(0);

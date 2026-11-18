@@ -4,7 +4,7 @@
 
 import { createSignal } from "solid-js";
 import { reconcile } from "solid-js/store";
-import type { ServerProblem, SessionSearchResult, UnknownHost } from "@shared/protocol";
+import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
 import { app, pendingPicked, rpc, setApp, setConnNote } from "../state/app";
@@ -52,15 +52,7 @@ if (home) {
     // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
     // Cavvy. Set here, loaded before the window's own connection is made (its credentials come through this file).
     const route = rpc.route;
-    const ask = (m: string, p: unknown) => (home.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
-    // Search too, while this computer's Cavvy is reached: it looks through every machine's sessions, where the
-    // server's own knows only its own. What it found is said from where it sits: none for its own, a server's name;
-    // here that's "" for this computer's, and none for this window's server.
-    const everywhere = (method: string, params: unknown) =>
-        home.state !== "open" || !method.startsWith("sessions.search")
-            ? undefined
-            : ask(method, params).then((r) => (method !== "sessions.search" ? r : { ...(r as SessionSearchResult), hits: (r as SessionSearchResult).hits.map((h) => ({ ...h, machine: h.machine === machine ? undefined : (h.machine ?? "") })) }));
-    rpc.route = (method, params) => (method.startsWith("app.update.") ? ask(method, params) : (everywhere(method, params) ?? route?.(method, params)));
+    rpc.route = (method, params) => (method.startsWith("app.update.") ? (home.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : route?.(method, params));
 }
 
 function homeOpen(): Promise<void> {

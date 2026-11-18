@@ -57,10 +57,14 @@ test("a slow server doesn't hold what this machine found: it's answered at once 
     try {
         const started = Date.now();
         const first = (await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20 })) as { hits: unknown[]; partial: boolean };
-        // This machine's own (none here) without the server's 900 ms, and said to be part of the answer.
-        expect([first.hits, first.partial, Date.now() - started < 800]).toEqual([[], true, true]);
-        const second = (await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20 })) as { hits: { id: string; machine?: string }[]; partial: boolean };
-        expect([second.hits.map((h) => [h.machine, h.id]), second.partial, asked]).toEqual([[["box", "s1"]], false, 1]);
+        // This machine's own (none here) without the server's 900 ms, and said to be waiting for the servers'.
+        expect([first.hits, first.partial, (first as any).pending, Date.now() - started < 800]).toEqual([[], false, true, true]);
+        // The rest of it: what the server found, from the one asking.
+        const second = (await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20, rest: true })) as { hits: { id: string; machine?: string }[]; partial: boolean };
+        expect([second.hits.map((h) => [h.machine, h.id]), second.partial, (second as any).pending, asked]).toEqual([[["box", "s1"]], false, undefined, 1]);
+        // The same words searched again are a search of their own: the server is asked again.
+        await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20 });
+        expect(asked).toBe(2);
         // A quick server is in the first answer.
         (engine as any).serverLinks = { connectedServers: () => new Map([["box", { ask: async () => ({ hits: [hit], partial: false }) }]]) };
         const quick = (await engine.handle(client as never, "sessions.search", { query: "needle two", limit: 20 })) as { hits: unknown[]; partial: boolean };
@@ -70,4 +74,20 @@ test("a slow server doesn't hold what this machine found: it's answered at once 
         await engine.stop();
         iso.cleanup();
     }
+});
+
+test("the palette shows this machine's hits while the servers answer, then asks for the rest in the same round", async () => {
+    const { searchRounds } = await import("../gui/src/lib/search");
+    const asked: (boolean | undefined)[] = [];
+    const shown: { hits: string[]; more: boolean }[] = [];
+    const answers = [
+        { hits: [hit("m1", 9)], partial: false, pending: true },
+        { hits: [hit("m1", 9), hit("b1", 5)], partial: true },
+        // A later round whose servers are slow again: what's shown keeps the servers' until the rest is in.
+        { hits: [hit("m1", 9)], partial: false, pending: true },
+        { hits: [hit("m1", 9), hit("b1", 5), hit("b0", 1)], partial: false },
+    ];
+    await searchRounds(async (rest) => (asked.push(rest), answers.shift()!), () => true, (p) => void shown.push({ hits: p.hits.map((h) => h.id), more: p.more }));
+    expect(asked).toEqual([undefined, true, undefined, true]);
+    expect(shown).toEqual([{ hits: ["m1"], more: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
 });

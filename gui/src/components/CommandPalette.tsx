@@ -97,7 +97,7 @@ export function CommandPalette() {
             wait = setTimeout(async () => {
                 try {
                     await searchRounds(
-                        () => rpc.call("sessions.search", { query, limit: MAX_HITS }),
+                        (rest) => rpc.call("sessions.search", { query, limit: MAX_HITS, ...(rest ? { rest } : {}) }),
                         () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
                             setHits({ query, hits: r.hits });
@@ -124,7 +124,7 @@ export function CommandPalette() {
         setAgentFocus(undefined);
         setJumpTarget({ sessionId: h.id, seg: h.seg, index: h.index, role: h.role, query });
         // One on a server, maybe not in the list: opened from there.
-        if (h.machine !== undefined) restoredFrom(h.id, h.machine);
+        if (h.machine) restoredFrom(h.id, h.machine);
         void activate(h.id, h.cwd);
     };
 

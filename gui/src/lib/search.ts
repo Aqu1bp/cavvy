@@ -20,10 +20,17 @@ export interface SearchProgress {
  * `show`. Stops, showing nothing more, once `current()` is false (another
  * query) or the server says a newer search replaced it.
  */
-export async function searchRounds(ask: () => Promise<SessionSearchResult>, current: () => boolean, show: (p: SearchProgress) => void, rounds = SEARCH_ROUNDS): Promise<void> {
+export async function searchRounds(ask: (rest?: boolean) => Promise<SessionSearchResult>, current: () => boolean, show: (p: SearchProgress) => void, rounds = SEARCH_ROUNDS): Promise<void> {
     for (let i = 1; i <= rounds; i++) {
-        const r = await ask();
+        let r = await ask();
         if (!current() || r.stale) return;
+        // This machine's own, its servers still to answer: shown meanwhile (the first time: later, what's shown
+        // already has the servers'), and the rest asked for. That's the same round.
+        if (r.pending) {
+            if (i === 1) show({ hits: r.hits, more: true, incomplete: false });
+            r = await ask(true);
+            if (!current() || r.stale) return;
+        }
         const again = r.partial && i < rounds;
         show({ hits: r.hits, more: again, incomplete: r.partial && !again });
         if (!again) return;

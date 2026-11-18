@@ -1091,6 +1091,8 @@ export interface SessionSearchResult {
     partial: boolean;
     /** A newer search from the same window replaced this one; its hits are dropped. */
     stale?: boolean;
+    /** These are this machine's own: its servers hadn't answered yet. Asked again with `rest`, theirs come with them. */
+    pending?: boolean;
 }
 
 export interface ProjectInfo {
@@ -2220,7 +2222,7 @@ export interface Methods {
     "scripts.setupInfo": { params: { cwd: string }; result: SetupInfo };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
-    "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean; /** The rest of the search just asked: with what its servers found (SessionSearchResult.pending). */ rest?: boolean }; result: SessionSearchResult };
     /** Search is about to be used (its box opened): what it reads is read meanwhile. Answered at once. */
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
