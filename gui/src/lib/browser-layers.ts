@@ -151,3 +151,28 @@ export class Layers<B extends { close(): void }> {
         this.moving = this.far = false;
     }
 }
+
+/**
+ * Reads a frame's pixels at half its size, for telling what changed since the one before. One canvas, kept between
+ * frames; undefined where the window can't read pictures back.
+ */
+export function pixelReader(): (picture: CanvasImageSource, size: Size) => Pixels | undefined {
+    let reader: { canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D } | undefined;
+    return (picture, size) => {
+        const scale = 0.5;
+        const width = Math.max(1, Math.round(size.width * scale));
+        const height = Math.max(1, Math.round(size.height * scale));
+        try {
+            if (!reader || reader.canvas.width !== width || reader.canvas.height !== height) {
+                const canvas = new OffscreenCanvas(width, height);
+                const ctx = canvas.getContext("2d", { willReadFrequently: true });
+                if (!ctx) return undefined;
+                reader = { canvas, ctx };
+            }
+            reader.ctx.drawImage(picture, 0, 0, width, height);
+            return { data: new Uint32Array(reader.ctx.getImageData(0, 0, width, height).data.buffer), width, height, scale };
+        } catch {
+            return undefined;
+        }
+    };
+}
