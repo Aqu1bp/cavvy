@@ -201,6 +201,16 @@ test("a call from a session there is asked about there, under that session's mod
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
+test("a session there in Bypass is asked about a call that runs here when this machine's own default asks (Bypass is the server's)", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    // This machine's default is Manual: the call is asked about, in the session's own chat there.
+    expect((await answer(remote, id, "yes")).kind).toBe("permission");
+    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+    expect(told(id)!.asks).toEqual([]);
+});
+
 test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {

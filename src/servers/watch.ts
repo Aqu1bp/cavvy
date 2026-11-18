@@ -128,6 +128,8 @@ export class MachineWatch {
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
+            /** This machine's own default permission mode: what its lent tools are held to there (tools/lent.ts lentMode). */
+            lendMode?: () => string;
             /** Brings the server level with this machine's skills and commands, asking it over this connection (sync.ts). */
             sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
             /** Runs a call of one of those, through this machine's own checks. */
@@ -388,7 +390,7 @@ export class MachineWatch {
                 }
                 lending.clear();
             }
-            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
         };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
@@ -414,7 +416,7 @@ export class MachineWatch {
                 (told as { unref?: () => void }).unref?.();
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
-                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
                 this.resync();
                 return;
             }
@@ -482,7 +484,7 @@ export class MachineWatch {
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
                     answer(NOT_LENT);
-                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: this.o.lendMode?.() } }));
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);

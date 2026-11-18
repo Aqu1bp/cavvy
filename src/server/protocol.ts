@@ -2078,7 +2078,7 @@ export interface Methods {
      * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
      * server sent it (offers.call).
      */
-    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.set": { params: { kinds: string[]; mode?: string }; result: null };
     "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
     /**
      * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers

@@ -126,6 +126,7 @@ export class ServerLinks {
             onNotice?: (name: string, n: MachineNotice) => void;
             /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
             lends?: () => string[];
+            lendMode?: () => string;
             lend?: (name: string, call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             /** This machine's skills and commands are kept on its servers (src/servers/sync.ts): the user's own machine. */
             sync?: boolean;
@@ -159,6 +160,7 @@ export class ServerLinks {
                 session: (change) => this.o.onSession?.(name, change),
                 notice: (n) => this.o.onNotice?.(name, n),
                 lends: this.o.lends,
+                lendMode: this.o.lendMode,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
                 sync: this.o.sync ? syncTo : undefined,
                 retryMs: this.o.watchRetryMs,

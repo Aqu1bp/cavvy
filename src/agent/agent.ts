@@ -76,6 +76,8 @@ import { findRecipe, signedOutIn, signInRecipes, type SignInRecipe } from "./sig
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
+import { lentMode } from "../tools/lent";
+import { narrowerMode } from "./peers";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
@@ -3546,7 +3548,9 @@ export class Agent {
             }
         }
 
-        const mode = this.o.mode.get();
+        // A tool another machine lends: no freer than that machine's own default (tools/lent.ts).
+        const lender = lentMode(tool.name);
+        const mode = lender ? narrowerMode(this.o.mode.get(), lender) : this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
         // What an approval is remembered by: the call as the model made it, before hosts are added.
