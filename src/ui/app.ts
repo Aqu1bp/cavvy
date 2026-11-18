@@ -88,6 +88,7 @@ import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import { steersMidTurn } from "../backends/defs";
 import type { PlanLimits, StoppedTask } from "../server/protocol";
+import { keepAwake } from "../agent/keep-awake";
 
 export interface AppInit {
     cwd: string;
@@ -2663,6 +2664,8 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // The computer stays awake while it works (src/agent/keep-awake.ts).
+        keepAwake.set(this, true);
         // Busy now: what's sent waits behind this turn, and the rest released for an account follows it.
         this.draining = undefined;
         this.idleCompact.disarm();
@@ -2718,6 +2721,7 @@ export class App {
             reason = "error";
         } finally {
             this.busy = false;
+            keepAwake.set(this, false);
             this.persistBackground();
             this.takeBackBlockedAt = 0;
             this.abort = undefined;
