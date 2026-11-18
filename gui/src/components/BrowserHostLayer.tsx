@@ -5,7 +5,7 @@
 // rest clipped to a pixel in the corner, behind everything, at the size the agent works at. Inside the window, so they go on rendering: Electron stops a page that's entirely
 // outside it, and the agent's clicks and screenshots then fail.
 
-import { createEffect, createSignal, For, onCleanup, onMount } from "solid-js";
+import { createEffect, For, onCleanup, onMount } from "solid-js";
 import { electron } from "../lib/platform";
 import { keepFocus } from "../lib/page-focus";
 import { painted } from "../lib/page-painted";
@@ -13,9 +13,6 @@ import { hostedTabs, hostedTargets, setHostedTabs, setHostedTargets, shownBrowse
 
 /** The size of a tab no pane shows (or the floating view shows, scaled): the agent's, as a headless browser's would be. */
 export const AGENT_SIZE = { width: 1280, height: 800 };
-
-/** Each shown webview's answer to the app's asking for its page at its own scale, for a screenshot (HostedWebview). */
-const sharpeners = new Map<string, (id: number, on: boolean) => void>();
 
 export function BrowserHostLayer() {
     onMount(() => {
@@ -31,10 +28,6 @@ export function BrowserHostLayer() {
                 // as its pane widens, there's no line of another colour.
                 const view = document.querySelector<HTMLElement>(`webview[data-key="${e.key}"]`);
                 if (view?.parentElement) view.parentElement.style.backgroundColor = e.color;
-            } else if (e.type === "sharp") {
-                const sharpen = sharpeners.get(e.key);
-                if (sharpen) sharpen(e.id, e.on);
-                else if (e.on) electron!.browserSharp?.(e.id);
             } else if (e.type === "destroy") {
                 setHostedTabs((tabs) => tabs.filter((t) => t.key !== e.key));
                 setHostedTargets(({ [e.key]: _, ...ids }) => ids);
@@ -64,52 +57,6 @@ function HostedWebview(p: { tab: HostedTab }) {
     let placedAs = "";
     /** Each time the page is kept out of sight for a new size: only the latest shows it again. */
     let holding = 0;
-    /** Whether the pane draws the page smaller than its size, as the app was last told (told at first either way). */
-    let small: boolean | undefined;
-    // A screenshot of a page drawn smaller than its size: Chromium draws it only as finely as it's shown, so the
-    // screenshot would be that small picture enlarged. For as long as one is taken the page is drawn at its own scale
-    // (cut to the box) under a still of how it looked, so the pane looks the same.
-    const [sharp, setSharp] = createSignal(false);
-    let sharpHolds = 0;
-    let sharpRound = 0;
-    let still: HTMLImageElement | undefined;
-    let sharpReady: Promise<void> | undefined;
-    const sharpen = (id: number, on: boolean) => {
-        if (!on) {
-            if (sharpHolds === 0 || --sharpHolds > 0) return;
-            sharpRound++;
-            sharpReady = undefined;
-            setSharp(false);
-            still?.remove();
-            still = undefined;
-            return;
-        }
-        sharpHolds++;
-        const round = sharpRound;
-        sharpReady ??= (async () => {
-            // Out of sight the window draws nothing, so the page can't be drawn otherwise: taken as it is.
-            if (document.visibilityState === "hidden") return;
-            const r = wrap.getBoundingClientRect();
-            const url = await electron!.browserStill?.({ x: r.x, y: r.y, width: r.width, height: r.height });
-            // No still: taken as it's drawn rather than show the page cut to the box.
-            if (!url || round !== sharpRound) return;
-            const img = new Image();
-            // Over the box, which clips it to the page's corners (styled here: this chunk loads only in the desktop app).
-            img.style.cssText = "position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none";
-            img.alt = "";
-            img.src = url;
-            await img.decode().catch(() => undefined);
-            if (round !== sharpRound) return;
-            wrap.appendChild(img);
-            still = img;
-            setSharp(true);
-            // Once the next frame has drawn it so (the page then draws at its own scale).
-            await new Promise((done) => requestAnimationFrame(() => setTimeout(done)));
-        })();
-        void sharpReady.then(() => electron!.browserSharp?.(id));
-    };
-    sharpeners.set(p.tab.key, sharpen);
-    onCleanup(() => sharpeners.get(p.tab.key) === sharpen && sharpeners.delete(p.tab.key));
     onMount(() => {
         // Made by hand, so the partition is set before it loads anything (it can't change after).
         const view = document.createElement("webview");
@@ -140,11 +87,7 @@ function HostedWebview(p: { tab: HostedTab }) {
             // The pane's page, rounded where it lies in a rounded corner (the floating view's is its own: browser.css).
             wrap.style.borderRadius = shown?.corners ?? "";
             Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
-            Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 || sharp() ? "" : `scale(${scale})` });
-            if (scale < 1 !== small) {
-                small = scale < 1;
-                electron!.browserSmall?.(p.tab.key, small);
-            }
+            Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
             // A size picked in the pane's menu (or back to filling it): the page draws at it a moment after it's given
             // it, and until then the window shows its old picture stretched or cut to the new box. It's kept out of
