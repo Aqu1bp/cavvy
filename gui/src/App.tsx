@@ -23,11 +23,10 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, deletedOpen, gitDialog, gitModule, openGit } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
-import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
 import { Logo, Spinner } from "./components/ui/bits";
 
@@ -313,15 +312,19 @@ const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) =
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+const RecentlyDeleted = lazy(() => import("./components/RecentlyDeleted").then((m) => ({ default: m.RecentlyDeleted })));
+const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
+    /** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
+    const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker, RecentlyDeleted]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -340,6 +343,7 @@ export function App() {
     const rewindShown = createMemo<boolean>((was) => was || rewindOpen(), false);
     const imageShown = createMemo<boolean>((was) => was || Boolean(viewedImage()), false);
     const folderShown = createMemo<boolean>((was) => was || Boolean(folderPickerOpen()), false);
+    const deletedShown = createMemo<boolean>((was) => was || deletedOpen(), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -414,16 +418,20 @@ export function App() {
             "app:newSession": () => void (setSettingsTab(undefined), newSession(app.homeCwd)),
             "app:toggleSidebar": () => void toggleSidebar(),
             "app:togglePanel": () => void togglePanel(),
-            // The pane opens where the title bar's Changes would: on the worktree the agent works in, if another.
-            "app:toggleReview": () => (review() ? void setReview(undefined) : active() ? void openReview() : false),
+            // The pane opens where the title bar's Changes would: on the worktree the agent works in, if another. Over the
+            // file viewer (in the same place), it shows the diffs.
+            "app:toggleReview": () => (review() && !review()!.file ? void setReview(undefined) : active() ? void openReview() : false),
             // Not while Settings covers the session (it stays mounted under it): they'd act on it out of sight.
             "chat:modelPicker": () => void (!settingsTab() && setModelPickerOpen(true)),
             "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
             "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            "app:goToFile": () => openFinder("files"),
+            "app:searchFiles": () => openFinder("search"),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
+            "app:switchBranch": () => void (!settingsTab() && openGit("openBranches")),
         };
         /** Those that work with a dialog open (nothing behind one changes otherwise: it may be about the session in view). */
         const overDialogs = new Set(["app:commandPalette", "app:settings"]);
@@ -668,16 +676,17 @@ export function App() {
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
-            <CommandPalette />
+            <CommandPalette files={openFinder} />
             <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
             <Show when={folderShown()}><FolderPicker /></Show>
             <TrustDialog />
             <Show when={planShown()}><PlanDialogs /></Show>
             <Show when={archiveShown()}><ArchiveDialog /></Show>
-            <RecentlyDeleted />
+            <Show when={deletedShown()}><RecentlyDeleted /></Show>
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
+            <Show when={gitDialog()}><GitDialogs /></Show>
             <Show when={imageShown()}><ImageViewer /></Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}

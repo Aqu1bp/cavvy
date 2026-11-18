@@ -43,6 +43,8 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "app:commandPalette", context: "Global", description: "Search sessions, messages and actions", defaults: { gui: ["mod+k"] } },
     { id: "app:newSession", context: "Global", description: "New session", defaults: { gui: ["mod+n"] } },
     { id: "app:find", context: "Global", description: "Find in the conversation", defaults: { gui: ["mod+f"] } },
+    { id: "app:goToFile", context: "Global", description: "Go to file", defaults: { gui: ["mod+p"] } },
+    { id: "app:searchFiles", context: "Global", description: "Search in project", defaults: { gui: ["mod+shift+f"] } },
     { id: "app:settings", context: "Global", description: "Settings", defaults: { gui: ["mod+,"] } },
     { id: "app:toggleSidebar", context: "Global", description: "Toggle the sidebar", defaults: { gui: ["mod+b"] } },
     { id: "app:togglePanel", context: "Global", description: "Toggle the side panel", defaults: { gui: ["mod+."] } },
@@ -54,6 +56,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "app:toggleTodos", context: "Global", description: "Show or hide the todo list", defaults: { tui: ["ctrl+t"] } },
     { id: "app:toggleTranscript", context: "Global", description: "Verbose output on or off", defaults: { tui: ["ctrl+o"] } },
     { id: "app:redraw", context: "Global", description: "Clear and redraw the screen", defaults: { tui: ["ctrl+l"] } },
+    { id: "app:switchBranch", context: "Global", description: "Switch or create a Git branch", defaults: { gui: ["mod+shift+b"] } },
     { id: "chat:modelPicker", context: "Global", description: "Switch model", defaults: { gui: ["mod+/"] } },
     { id: "chat:focusInput", context: "Global", description: "Focus the input box", defaults: { gui: ["mod+l"] } },
     // Global, like the shortcut it replaced: any binding of its key, in any context, takes the key from it.

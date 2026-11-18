@@ -168,6 +168,15 @@ test("a server's sessions are listed and kept up to date, each change told by it
     expect(((await remote.call("sessions.list", { limit: 50, archived: true })) as { id: string; pinned: boolean }[]).map((s) => [s.id, s.pinned])).toEqual([[id, true]]);
     await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
     await until("it to be told back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
+    // Snoozed there, by the server's own timer, and told back with when it wakes; woken from here.
+    const until_ = Date.now() + 3_600_000;
+    expect(await here.call("servers.relay", { name: "box", method: "session.snooze", params: { id, until: until_, extra: "x" } })).toBeNull();
+    await until("it to be told snoozed", () => here.machine("box")?.sessions.find((s) => s.id === id)?.snoozedUntil === until_);
+    await here.call("servers.relay", { name: "box", method: "session.snooze", params: { id, until: null } });
+    await until("it to be told awake", () => here.machine("box")?.sessions.find((s) => s.id === id)?.snoozedUntil === undefined);
+    // Named again there, by the server's model; the new title is told back.
+    expect(await here.call("servers.relay", { name: "box", method: "session.regenerateTitle", params: { id } })).toBeNull();
+    await until("the new title to be told", () => here.machine("box")?.sessions.find((s) => s.id === id)?.title === "Say hi");
     // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
     await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");
     // What asks about folders there (removing a session's worktree as it's archived) isn't done from here. Only

@@ -1,0 +1,253 @@
+/* ---- Go to file and Search in project (FileFinder): the command palette's shape (overlays.css), and ---- */
+
+.finder .pal-in .ff-tog {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: calc(7 * var(--sp));
+    color: var(--fg-3);
+}
+
+.finder .pal-in .ff-tog:hover {
+    background: var(--hover);
+    color: var(--fg-2);
+}
+
+.finder .pal-in .ff-tog[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+}
+
+.ff-err,
+.ff-sum {
+    padding: calc(2 * var(--sp)) calc(12 * var(--sp)) calc(6 * var(--sp));
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.ff-err {
+    color: var(--danger, var(--fg-2));
+}
+
+/* A file's header over its hits: the name, its folder, how many. */
+.pal-h.ff-file {
+    gap: calc(6 * var(--sp));
+    padding-top: calc(10 * var(--sp));
+    color: var(--fg-2);
+    font-weight: 500;
+    min-width: 0;
+}
+
+.ff-name {
+    flex: none;
+    color: var(--fg);
+    font-weight: 600;
+}
+
+.ff-dir {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 400;
+    color: var(--fg-3);
+}
+
+.ff-file .grow {
+    flex: 1;
+}
+
+.ff-count {
+    flex: none;
+    font-weight: 500;
+    color: var(--fg-3);
+}
+
+.pal-row.ff-hit {
+    grid-template-columns: calc(44 * var(--sp)) minmax(0, 1fr);
+    min-height: calc(28 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(10 * var(--sp));
+}
+
+.ff-ln {
+    text-align: right;
+    font: 0.786rem/1 var(--font-mono);
+    color: var(--fg-3);
+}
+
+.ff-pre {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre;
+    font: 0.857rem/1.5 var(--font-mono);
+}
+
+.ff-pre mark {
+    color: inherit;
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+    border-radius: calc(3 * var(--sp));
+}
+
+/* Under the list: what the keys do on a row. */
+.ff-keys {
+    display: flex;
+    gap: calc(14 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp)) calc(4 * var(--sp));
+    border-top: 0.5px solid var(--line);
+    font-size: 0.786rem;
+    color: var(--fg-3);
+}
+
+.ff-keys kbd {
+    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
+    margin-right: calc(3 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font: 500 0.75rem/1 var(--font-ui);
+    background: var(--hover);
+}
+
+/* ---- The file viewer (FileViewer), in the diff reader's place (review.css .review, .rv-h) ---- */
+
+.fv-title {
+    display: flex;
+    align-items: baseline;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    padding-left: calc(4 * var(--sp));
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.fv-name {
+    flex: none;
+    font-weight: 600;
+}
+
+.fv-dir {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.fv .rv-h .segmented {
+    flex: none;
+    margin-right: calc(4 * var(--sp));
+}
+
+.fv-line-in {
+    flex: none;
+    width: calc(72 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border: 1px solid var(--line-strong);
+    border-radius: calc(7 * var(--sp));
+    background: var(--sheet);
+    color: var(--fg);
+    font: inherit;
+}
+
+.fv-body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    border-top: 0.5px solid var(--line);
+}
+
+.fv-msg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    padding: calc(40 * var(--sp)) calc(20 * var(--sp));
+    color: var(--fg-2);
+    text-align: center;
+}
+
+.fv-msg p {
+    margin: 0;
+}
+
+/* Code: rows of one height, no wrapping, so only those in view are drawn (FileViewer Lines). */
+.fv-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overflow-anchor: none;
+    scrollbar-width: thin;
+    outline: none;
+}
+
+.fv-lines {
+    position: relative;
+    /* The widest line's columns, the gutter and the padding: the box doesn't change width as rows come and go. */
+    min-width: calc((var(--fv-cols) + var(--fv-digits) + 5) * 1ch + 32 * var(--sp));
+    font: 0.857rem var(--font-mono);
+    tab-size: 4;
+}
+
+.fv-win {
+    will-change: transform;
+}
+
+.fv-row {
+    display: flex;
+    height: calc(20 * var(--sp));
+    line-height: calc(20 * var(--sp));
+    white-space: pre;
+}
+
+.fv-row.at {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.fv-n {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    flex: none;
+    width: calc((var(--fv-digits) + 2) * 1ch);
+    padding-right: 1ch;
+    text-align: right;
+    color: var(--fg-3);
+    background: var(--sheet);
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.fv-row.at .fv-n {
+    color: var(--fg);
+}
+
+.fv-c {
+    padding: 0 calc(16 * var(--sp)) 0 calc(12 * var(--sp));
+    color: var(--shiki-foreground, var(--fg));
+}
+
+.fv-md {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: calc(16 * var(--sp)) calc(24 * var(--sp)) calc(40 * var(--sp));
+}
+
+.fv-img {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    overflow: auto;
+    padding: calc(20 * var(--sp));
+}
+
+.fv-img img {
+    max-width: 100%;
+    max-height: 100%;
+    cursor: zoom-in;
+    background: repeating-conic-gradient(var(--hover) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}

@@ -146,6 +146,9 @@ const POPUP: BrowserWindowConstructorOptions = {
     webPreferences: { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true, spellcheck: false },
 };
 
+/** Ctrl+F, or ⌘F on a Mac, alone. */
+const findKey = (input: Input) => input.type === "keyDown" && input.key.toLowerCase() === "f" && (process.platform === "darwin" ? input.meta && !input.control : input.control && !input.meta) && !input.alt && !input.shift;
+
 export class BrowserHost {
     private ws?: WebSocket;
     private channels = new Map<string, Channel>();
@@ -359,6 +362,18 @@ export class BrowserHost {
      */
     back(seen?: number) {
         for (const tab of this.tabsByKey.values()) if (seen === undefined || (tab.theirsSeq ?? 0) <= seen) tab.theirs = false;
+    }
+
+    /**
+     * The person asked for a tab's DevTools (the Browser pane's menu): Chromium's own, in a window of their own, for that
+     * page alone. The tab is woken first, so they're never looking at a page that's asleep.
+     */
+    devTools(key: string) {
+        const tab = this.tabsByKey.get(key);
+        if (!tab || tab.closed || tab.wc.isDestroyed()) return;
+        void this.wake(tab).then(() => {
+            if (!tab.closed && !tab.wc.isDestroyed()) tab.wc.openDevTools({ mode: "detach", activate: true });
+        });
     }
 
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
@@ -720,6 +735,9 @@ export class BrowserHost {
         wc.on("before-input-event", (e, input) => {
             // Typed in the window while the page had the keyboard for the agent: the window's, not the page's.
             if (this.strayKey(tab, input)) return e.preventDefault();
+            // Ctrl+F (⌘F) of the person's in the page opens the pane's find bar, as a browser's own find does, rather
+            // than reaching the page.
+            if (findKey(input) && !tab.agentKeys) return void (e.preventDefault(), this.toGui({ type: "find", key }));
             person(input.type);
             if (tab.agentInputs === 0) this.tabKey(input);
         });
