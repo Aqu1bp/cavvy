@@ -111,7 +111,8 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
                 </div>}</For>
             </div>
         </section>
-        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1)}>
+        {/* Also for one account alone when it's another machine's (`<id>@<server>`): its row says where that usage was. */}
+        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1) || accounts().some((a) => a.source !== "api" && a.accountId.includes("@"))}>
             <UsageAccounts accounts={accounts()} names={p.data.names} metric={m()} total={total()} hl={setHl} />
         </Show>
         <UsageChart data={p.data} metric={m()} />

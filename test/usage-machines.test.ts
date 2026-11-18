@@ -75,7 +75,7 @@ test("two accounts of a server's with one name stay two rows; each server is ask
 
 test("only numbers and short names are kept of what a server says", () => {
     const said = wire(summary(5, "default"));
-    said.totals.cost = "1e9";
+    said.totals.planEquivalent = "1e9";
     said.rows[0].cost = 1e308;
     said.totals.inputTokens = -4;
     said.totals.outputTokens = Infinity;
@@ -87,7 +87,7 @@ test("only numbers and short names are kept of what a server says", () => {
     said.limits = [{ provider: "claude-code", windows: [] }];
     said.uncounted = ["mac"];
     const s = machineSummary(said, 1)!;
-    expect([s.totals.cost, s.totals.inputTokens, s.totals.outputTokens]).toEqual([0, 0, 0]);
+    expect([s.totals.planEquivalent, s.totals.inputTokens, s.totals.outputTokens]).toEqual([0, 0, 0]);
     expect(s.rows[0]!.model.length).toBe(200);
     expect(s.rows[0]!.cost).toBe(1e15);
     expect(s.buckets).toEqual([]);
@@ -101,5 +101,6 @@ test("only numbers and short names are kept of what a server says", () => {
     expect(machineSummary(said, 7)).toBeUndefined();
     // Not a summary: an answer with the range and nothing else isn't a server with no usage.
     expect(machineSummary({ days: 1, interval: "hour" }, 1)).toBeUndefined();
+    expect(machineSummary({ ...said, totals: {} }, 1)).toBeUndefined();
     expect(machineSummary({ ...said, interval: "day" }, 1)).toBeUndefined();
 });

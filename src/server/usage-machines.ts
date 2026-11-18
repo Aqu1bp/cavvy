@@ -45,7 +45,7 @@ export function machineSummary(raw: unknown, days: UsageDays): Said | undefined 
     const o = obj(raw);
     if (o.days !== days || !USAGE_DAYS.includes(days) || o.interval !== (days === 1 ? "hour" : "day")) return undefined;
     // An answer that isn't one (an error's object, a part of one) isn't a server with no usage.
-    if (!o.totals || typeof o.totals !== "object" || ![o.rows, o.accounts, o.series, o.sources].every(Array.isArray)) return undefined;
+    if (typeof obj(o.totals).cost !== "number" || typeof obj(o.totals).inputTokens !== "number" || ![o.rows, o.accounts, o.series, o.sources].every(Array.isArray)) return undefined;
     const accounts: Full<UsageAccountRow>[] = [];
     for (const a of list(o.accounts, MOST.accounts)) {
         const s = source(obj(a).source);
