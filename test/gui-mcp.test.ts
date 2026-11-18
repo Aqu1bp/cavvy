@@ -266,3 +266,13 @@ test("McpDialog discards late details and requests the cancel-only MCP trust flo
     d.trustRequests[0]![1]();
     expect(d.calls).toHaveLength(3); // A late trust completion must not reload B.
 });
+
+test("a server session's MCP sign-in has this computer answer the page's call before the browser is sent to it", async () => {
+    const src = await Bun.file(new URL("../gui/src/components/McpDialog.tsx", import.meta.url)).text();
+    const at = src.indexOf('rpc.call("session.mcpSignIn"');
+    const body = src.slice(at, at + 1200);
+    // The session's server, or the one the window is on; asked of this computer's Cavvy, and before the page is opened.
+    expect(body).toContain("const on = awayMachine(sid) ?? windowMachine;");
+    expect(body).toContain('if (on) await (windowMachine ? home! : rpc).call("servers.mcpCallback", { name: on, url });');
+    expect(body.indexOf("servers.mcpCallback")).toBeLessThan(body.indexOf("win.location.href = url"));
+});

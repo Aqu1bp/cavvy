@@ -332,6 +332,23 @@ export interface SignInOptions {
 const PAGE = (title: string, body: string) =>
     `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h2>${title}</h2><p>${body}</p></body>`;
 
+/**
+ * Sign-ins waiting for their page's answer, by the `state` each made up. The page ends on the machine with the
+ * browser; when that isn't this one (a session on a server), that machine's Cavvy brings the answer here
+ * (deliverCallback) instead of the browser reaching this machine's listener.
+ */
+const waiting = new Map<string, (req: Request) => boolean>();
+
+/**
+ * The answer a sign-in's page ended with (`query`, as the browser was sent back with), given to the sign-in waiting
+ * for it: whether it was an authorization that sign-in took (not a refusal, nor another's), or undefined when none
+ * waits for it.
+ */
+export function deliverCallback(query: string): boolean | undefined {
+    const state = new URLSearchParams(query).get("state");
+    return (state ? waiting.get(state) : undefined)?.(new Request(`http://127.0.0.1/callback?${query}`));
+}
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
@@ -370,6 +387,8 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
     let settle!: { resolve: (v: { code: string }) => void; reject: (e: Error) => void };
     const got = new Promise<{ code: string }>((resolve, reject) => (settle = { resolve, reject }));
     got.catch(() => undefined);
+    /** An authorization code came back for this sign-in. */
+    let taken = false;
     const answer = (req: Request): Response => {
         const q = new URL(req.url);
         if (q.pathname !== "/callback") return new Response("Not found", { status: 404 });
@@ -388,6 +407,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         }
         const code = q.searchParams.get("code");
         if (!code) return new Response(PAGE("Sign-in didn't finish", "No authorization code came back."), { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } });
+        taken = true;
         settle.resolve({ code });
         return new Response(PAGE(`Signed in to ${escapeHtml(name)}`, `You can close this tab and go back to ${APP_TITLE}.`), { headers: { "Content-Type": "text/html; charset=utf-8" } });
     };
@@ -413,6 +433,13 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         throw new McpError(`couldn't listen on 127.0.0.1:${fixedPort ?? 0} for the sign-in (${(e as Error).message})${fixedPort ? "; free that port or change oauth.callbackPort" : ""}`);
     }
     try {
+        // Each answer by itself: only the one whose code is taken is a sign-in, and none is waited for after it.
+        waiting.set(state, (req) => {
+            if (taken) return false;
+            answer(req);
+            if (taken) waiting.delete(state);
+            return taken;
+        });
         const redirect = `http://127.0.0.1:${server.port}/callback`;
         let client: Entry["client"];
         if (oauth.clientId) {
@@ -456,6 +483,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
             s.servers![keyOf(name, url)] = { url, issuer: meta.issuer, tokenEndpoint: meta.token_endpoint, resource, client: oauth.clientId ? { client_id: client.client_id, redirect_uri: redirect, auth_method: client.auth_method } : client, tokens };
         });
     } finally {
+        waiting.delete(state);
         // Not forced: the browser still gets its page.
         void server.stop();
     }
