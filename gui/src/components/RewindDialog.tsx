@@ -1,10 +1,11 @@
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { promptPreview } from "../lib/review-comments";
-import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
+import { AlertTriangle, FileMinus2, FilePen, FilePlus2, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
+import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -14,13 +15,27 @@ const names = (backends: string[]) => backends.join(" and ");
 /** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
     if (t.forked) return "from before the fork";
-    // Claude Code and Codex change files with their own tools: Cavvy doesn't see what they did.
-    const untracked = t.backends?.length ? `${names(t.backends)} changes not tracked` : undefined;
+    // Without a record of the whole folder, Claude Code and Codex change files with their own tools that Cavvy doesn't see.
+    const untracked = t.backends?.length && !t.whole ? `${names(t.backends)} changes not tracked` : undefined;
     if (!t.tracked) return untracked ?? "files not tracked";
     if (t.files) return untracked ? `${plural(t.files, "file")} changed · ${untracked}` : `${plural(t.files, "file")} changed`;
     return untracked ?? "no file changes";
 }
 
+
+/** Put back the files a rewind restored. A failure keeps the toast's Undo, to try again. */
+async function undoRestore(sid: string, undo: string): Promise<boolean> {
+    try {
+        const r = await rpc.call("session.rewindUndo", { id: sid, undo });
+        refreshGitChanges();
+        for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
+        if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
+        return true;
+    } catch (e) {
+        reportError(e);
+        return true;
+    }
+}
 
 export function RewindDialog() {
     /** The session the dialog was opened for; it closes if another one is shown. */
@@ -28,6 +43,8 @@ export function RewindDialog() {
     const [chosen, setChosen] = createSignal<number>();
     const [plan, setPlan] = createSignal<RewindPlanInfo>();
     const [busy, setBusy] = createSignal(false);
+    /** The chosen prompt's plan is being worked out (the files are read for it). */
+    const [planning, setPlanning] = createSignal(false);
     /** Files changed outside Cavvy: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
     /** The connection the session's shown over: another machine's, for one of its sessions opened here. */
@@ -81,7 +98,9 @@ export function RewindDialog() {
             });
             setPlan(undefined);
             setConfirming(undefined);
+            setPlanning(false);
             if (index === undefined || !sid || !connected || !open) return;
+            setPlanning(true);
             void rpc.call("session.rewindPlan", { id: sid, index }).then(
                 (value) => {
                     if (current) setPlan(value);
@@ -89,7 +108,9 @@ export function RewindDialog() {
                 (e) => {
                     if (current) reportError(e);
                 },
-            );
+            ).finally(() => {
+                if (current) setPlanning(false);
+            });
         }),
     );
     const close = () => setRewindOpen(false);
@@ -106,9 +127,13 @@ export function RewindDialog() {
         setBusy(true);
         try {
             const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
+            // The files moved under every view of them: the changes chip and pane read them again.
+            if (code) refreshGitChanges();
             if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text, images: r.images, files: r.files });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
-            toast(code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation", "success");
+            const message = code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation && !r.failed.length ? " and the conversation" : ""}` : "Rewound the conversation";
+            const undo = r.undo;
+            toast(message, "success", undo ? { label: conversation && !r.failed.length ? "Undo files" : "Undo", run: () => undoRestore(sid, undo) } : undefined);
             close();
         } catch (e) {
             reportError(e);
@@ -134,6 +159,9 @@ export function RewindDialog() {
                                 )}
                             </For>
                         </div>
+                        <Show when={planning()}>
+                            <Spinner />
+                        </Show>
                         <Show when={plan()}>
                             <div class="rw-plan">
                                 <Show when={plan()!.forked}>
@@ -142,7 +170,13 @@ export function RewindDialog() {
                                         <span class="small">Files changed before the fork can only be restored in the original session.</span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.backends?.length}>
+                                <Show when={plan()!.refused}>
+                                    <div class="rw-file warn">
+                                        <AlertTriangle size={13} />
+                                        <span class="small">{plan()!.refused} Only Cavvy's own edits can be restored.</span>
+                                    </div>
+                                </Show>
+                                <Show when={plan()!.backends?.length && !plan()!.whole}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">
@@ -150,20 +184,23 @@ export function RewindDialog() {
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div>}>
-                                    <div class="small">Cavvy changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
+                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div>}>
+                                    <div class="small">{plan()!.whole ? `${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} changed since then:` : `Cavvy changed ${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">
-                                                {r.action === "delete" ? <FileMinus2 size={13} class="tone-del" /> : <FilePen size={13} />}
+                                                {r.action === "delete" ? <FileMinus2 size={13} class="tone-del" /> : r.action === "create" ? <FilePlus2 size={13} /> : <FilePen size={13} />}
                                                 <span class="mono truncate">{r.path}</span>
-                                                <span class="muted small">{r.action === "delete" ? "delete" : "restore"}</span>
+                                                <span class="muted small">{r.action === "delete" ? "delete" : r.action === "create" ? "recreate" : "restore"}</span>
                                                 <Show when={r.outside}>
                                                     <span class="chip tiny warn">changed outside</span>
                                                 </Show>
                                             </div>
                                         )}
                                     </For>
+                                    <Show when={plan()!.more}>
+                                        <div class="muted small">and {plan()!.more} more</div>
+                                    </Show>
                                 </Show>
                                 <For each={plan()!.skipped}>
                                     {(s) => (
@@ -174,7 +211,9 @@ export function RewindDialog() {
                                         </div>
                                     )}
                                 </For>
-                                <div class="muted small">Changes made by shell commands aren't undone.</div>
+                                <Show when={!plan()!.whole}>
+                                    <div class="muted small">Changes made by shell commands aren't undone.</div>
+                                </Show>
                                 <Show when={confirming()}>
                                     <div class="rw-confirm">
                                         <AlertTriangle size={14} />
