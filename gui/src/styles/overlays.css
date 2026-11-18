@@ -1486,6 +1486,11 @@
     color: var(--fg-3);
 }
 
+/* When it was sent: the same prompt sent twice is told apart by it. */
+.rw-item .rw-when {
+    font-variant-numeric: tabular-nums;
+}
+
 .rw-item:hover {
     background: var(--hover);
 }

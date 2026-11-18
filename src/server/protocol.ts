@@ -1535,6 +1535,8 @@ export interface RewindTargetInfo {
     forked?: boolean;
     /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
     backends?: string[];
+    /** When it was sent, where its turn is one the server has (the window's, and those read since). */
+    at?: number;
 }
 
 export interface RewindPlanInfo {
