@@ -6,7 +6,7 @@
 
 import { Rpc, type Credentials } from "./rpc";
 import { windowKey } from "./platform";
-import { keyOn, leaveTabs, takeLeftTabs } from "./terminal";
+import { keepOwnTabs, keyOn, leaveTabs, takeLeftTabs } from "./terminal";
 import type { ConnectResult } from "@shared/protocol";
 
 /** Why a machine's Cavvy couldn't be reached: what servers.connect said, when it didn't sign the window in. */
@@ -118,4 +118,8 @@ export function opened(link: Rpc): Promise<void> {
 }
 
 // A window that goes (closed, or the app quitting) leaves word of its shells on servers for the next one.
-if (typeof window !== "undefined") window.addEventListener?.("pagehide", () => leaveTabs(windowKey));
+// Back after a reload, it keeps what it left itself.
+if (typeof window !== "undefined") {
+    keepOwnTabs(windowKey);
+    window.addEventListener?.("pagehide", () => leaveTabs(windowKey));
+}

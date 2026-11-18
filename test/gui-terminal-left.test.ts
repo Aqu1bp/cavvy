@@ -12,7 +12,7 @@ const stores = () => {
 };
 const s = stores();
 Object.assign(globalThis, { sessionStorage: s.session, localStorage: s.local });
-const { keyOn, leaveTabs, loadTabs, saveTabs, takeLeftTabs } = await import("../gui/src/lib/terminal");
+const { keepOwnTabs, keyOn, leaveTabs, loadTabs, saveTabs, takeLeftTabs } = await import("../gui/src/lib/terminal");
 
 const OLD = "a".repeat(32);
 const NEW = "b".repeat(32);
@@ -43,28 +43,38 @@ test("a window that goes leaves its server tabs; the next one takes them, once, 
     expect([loadTabs("box").tabs.length, keyOn("box", () => "c".repeat(32))]).toEqual([0, "c".repeat(32)]);
 });
 
-test("not taken once the server would have let the shells go, nor by a window that has tabs there, nor by the same window after a reload", () => {
+test("not taken once the server would have let the shells go, nor by a window that has tabs there, nor from a window that's back after a reload", () => {
     saveTabs(tabs as never, "box");
     leaveTabs(() => OLD, 1000);
     reopen();
     takeLeftTabs("box", () => NEW, 1000 + 10 * 60_000 + 1);
-    expect([loadTabs("box").tabs.length, keyOn("box", () => NEW), s.local.getItem("cavvy.terminals.left")]).toEqual([0, NEW, null]);
-    // A window with its own tabs there keeps them, and its own key.
+    expect([loadTabs("box").tabs.length, keyOn("box", () => NEW)]).toEqual([0, NEW]);
+    // A window with its own tabs there keeps them, and its own key; what the other left stays for one without.
     saveTabs(tabs as never, "box");
     leaveTabs(() => OLD, 1000);
     saveTabs({ ...tabs, tabs: [{ ...tabs.tabs[0], id: "mine", terminal: "mine" }] } as never, "box");
     takeLeftTabs("box", () => NEW, 2000);
     expect([loadTabs("box").tabs.map((t) => t.id), keyOn("box", () => NEW)]).toEqual([["mine"], NEW]);
-    // A reload: the window leaves word as it goes and is itself back, with what it had.
+    // That window leaving too doesn't cover the first one's: a third window takes the latest, a fourth the other.
+    leaveTabs(() => NEW, 3000);
+    reopen();
+    takeLeftTabs("box", () => "c".repeat(32), 4000);
+    expect([loadTabs("box").tabs.map((t) => t.id), keyOn("box", () => "c".repeat(32))]).toEqual([["mine"], NEW]);
+    reopen();
+    takeLeftTabs("box", () => "d".repeat(32), 4000);
+    expect([loadTabs("box").tabs.map((t) => t.id), keyOn("box", () => "d".repeat(32))]).toEqual([["t1"], OLD]);
+    // A reload: the window leaves word as it goes and is itself back, with what it had. Nobody else gets it.
     s.session.clear();
+    s.local.clear();
     saveTabs(tabs as never, "box");
     leaveTabs(() => OLD, 1000);
-    takeLeftTabs("box", () => OLD, 1500);
-    expect([loadTabs("box").tabs.map((t) => t.id), keyOn("box", () => OLD), s.local.getItem("cavvy.terminals.left")]).toEqual([["t1"], OLD, null]);
+    keepOwnTabs(() => OLD, 1100);
+    expect(s.local.getItem("cavvy.terminals.left")).toBeNull();
+    expect([loadTabs("box").tabs.map((t) => t.id), keyOn("box", () => OLD)]).toEqual([["t1"], OLD]);
 });
 
 test("what's left is read as carefully as what's saved: a key or tabs of another shape are not taken", () => {
-    s.local.setItem("cavvy.terminals.left", JSON.stringify({ box: { key: "not-a-key", saved: tabs, at: 1000 }, lab: { key: OLD, saved: { tabs: "x" }, at: 1000 } }));
+    s.local.setItem("cavvy.terminals.left", JSON.stringify({ box: { "not-a-key": { saved: tabs, at: 1000 } }, lab: { [OLD]: { saved: { tabs: "x" }, at: 1000 } }, odd: 7 }));
     takeLeftTabs("box", () => NEW, 1500);
     takeLeftTabs("lab", () => NEW, 1500);
     expect([keyOn("box", () => NEW), keyOn("lab", () => NEW), loadTabs("box").tabs.length, loadTabs("lab").tabs.length]).toEqual([NEW, NEW, 0, 0]);
