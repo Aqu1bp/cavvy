@@ -266,6 +266,11 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         }
         term.focus();
     };
+    const contextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+        setSelected(term.hasSelection());
+        setMenuAt({ x: e.clientX, y: e.clientY });
+    };
     const menuItems = () => [
         { icon: MessageSquarePlus, label: "Add to chat", off: !selected(), run: addToChat },
         { icon: Copy, label: "Copy", off: !selected(), run: () => void copyText(term.getSelection()) },
@@ -288,14 +293,6 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
                 container.title = !on ? "" : l.kind === "path" ? "Open in editor" : session() && isLocalUrl(l.url) && browserState(session()!)?.status !== "unavailable" ? "Open in the Browser pane" : "Open in your browser";
             },
         }));
-        const contextMenu = (e: MouseEvent) => {
-            e.preventDefault();
-            setSelected(term.hasSelection());
-            setMenuAt({ x: e.clientX, y: e.clientY });
-        };
-        container.addEventListener("contextmenu", contextMenu);
-        // The emulator's dispose (below) lets go of the links.
-        onCleanup(() => container.removeEventListener("contextmenu", contextMenu));
         const theme = () => {
             const style = getComputedStyle(container);
             // No ground of its own: the panel's tint over the window's glass shows through (terminal.css).
@@ -378,7 +375,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
     createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
-        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} />
+        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} onContextMenu={contextMenu} />
         <Menu label="Terminal actions" open={!!menuAt()} point={menuAt()} anchor={() => container} returnFocus={() => term.textarea} onClose={closeMenu} width={200}>
             <For each={menuItems()}>{(it) => (
                 <button role="menuitem" class="menu-item compact" disabled={it.off} onClick={() => (closeMenu(), it.run())}>
