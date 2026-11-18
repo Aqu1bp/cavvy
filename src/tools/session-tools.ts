@@ -82,7 +82,7 @@ export async function listSessions(peers: SessionPeers | undefined, input: Recor
     const far = await reach.list({ query, limit: left }).catch((e) => ((why = e instanceof PeerError ? e.message : "they didn't answer."), []));
     const count = r.count + far.length;
     const note = why && `Sessions on the user's other machines couldn't be listed: ${why}`;
-    return { text: [r.text, note ?? farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : why ? "Other machines didn't answer" : "No other sessions" };
+    return { text: [r.text, note ?? farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : why ? "Other machines weren't listed" : "No other sessions" };
 }
 
 export async function readSession(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {
