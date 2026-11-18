@@ -8,6 +8,7 @@
 import { createEffect, For, onCleanup, onMount } from "solid-js";
 import { electron } from "../lib/platform";
 import { keepFocus } from "../lib/page-focus";
+import { painted } from "../lib/page-painted";
 import { hostedTabs, hostedTargets, setHostedTabs, setHostedTargets, shownBrowser, type HostedTab } from "../state/browser-host";
 
 /** The size of a tab no pane shows (or the floating view shows, scaled): the agent's, as a headless browser's would be. */
@@ -52,6 +53,10 @@ export function BrowserHostLayer() {
 function HostedWebview(p: { tab: HostedTab }) {
     let wrap!: HTMLDivElement;
     let reported = "";
+    /** How the pane last showed it: "" (it didn't), "fill", or "fit" and the size it was given. */
+    let placedAs = "";
+    /** Each time the page is kept out of sight for a new size: only the latest shows it again. */
+    let holding = 0;
     onMount(() => {
         // Made by hand, so the partition is set before it loads anything (it can't change after).
         const view = document.createElement("webview");
@@ -84,6 +89,19 @@ function HostedWebview(p: { tab: HostedTab }) {
             Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
+            // A size picked in the pane's menu (or back to filling it): the page draws at it a moment after it's given
+            // it, and until then the window shows its old picture stretched or cut to the new box. It's kept out of
+            // sight (its canvas colour shows: BrowserHostLayer's parent) until it has drawn at the new size.
+            const as = shown?.by === "pane" ? (shown.fit ? `fit ${key}` : "fill") : "";
+            if (as && placedAs && as !== placedAs && key !== reported) {
+                const mine = ++holding;
+                view.style.opacity = "0";
+                void painted(p.tab.key, size).then(() => requestAnimationFrame(() => mine === holding && (view.style.opacity = "")));
+            } else if (!as && view.style.opacity) {
+                holding++;
+                view.style.opacity = "";
+            }
+            placedAs = as;
             if (key !== reported) {
                 reported = key;
                 electron!.browserSized(p.tab.key, { ...size, scale: window.devicePixelRatio || 1 });

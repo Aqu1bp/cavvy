@@ -29,8 +29,8 @@ export interface ElectronBridge {
      * it, `person` when the person presses (`press`), types or scrolls in one. Returns how to stop.
      */
     onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "canvas"; key: string; color: string } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string } | { type: "refocus"; key: string } | { type: "find"; key: string }) => void): () => void;
-    /** Opens a tab's page's DevTools, in a window of their own. */
-    browserDevTools?(key: string): void;
+    /** Opens a tab's page's DevTools, in a window of their own placed clear of `pane` (the Browser pane's box) where it can be. */
+    browserDevTools?(key: string, pane?: { x: number; y: number; width: number; height: number }): void;
     /** The person is back in the window (a press or focus of theirs there): no page is theirs any more. */
     browserBack(seen: number): void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
@@ -43,6 +43,8 @@ export interface ElectronBridge {
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
+    /** Resolves once a tab's page has laid itself out at its webview's size and drawn at it (false: not within a moment). */
+    browserPainted?(key: string, size: { width: number; height: number }): Promise<boolean>;
 }
 
 export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;
