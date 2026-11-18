@@ -30,6 +30,10 @@ Custom commands are markdown files in `~/.cavvy/commands/` or `.cavvy/commands/`
 
 The command gets `{session_id, cwd, model: {id, display_name}, permission_mode, cost_usd, context_tokens, context_window}` as JSON on stdin. The first line it prints replaces the right side of the footer. It runs at most every 2 seconds and is killed after 3. Colors are kept; any other escape sequence is stripped.
 
+## Keeping the computer awake
+
+While a turn runs, the computer doesn't go to sleep on its own (the display still can): see [the desktop app's notes](desktop.md#using-it). `"keepAwake": false` in your user `settings.json` turns it off.
+
 ## Notifications
 
 When the terminal window isn't focused, Cavvy lets you know when a turn that took 30 seconds or more finishes, when it's waiting for you (a permission prompt, a question, or a plan to approve), and when a turn stops with an error.

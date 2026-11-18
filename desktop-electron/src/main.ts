@@ -67,6 +67,8 @@ let server: ChildProcessWithoutNullStreams | undefined;
 let info: SidecarInfo | undefined;
 let infoWaiters: ((i: SidecarInfo) => void)[] = [];
 let quitting = false;
+/** The user already chose to quit (the crash dialog's Quit): sessions that are working don't ask again. */
+let quitAsked = false;
 const starts: number[] = [];
 
 function startServer() {
@@ -125,39 +127,41 @@ function sidecarInfo(): Promise<SidecarInfo> {
 }
 
 /**
- * How many sessions have work the server couldn't save (server.unsaved). 0 when it can't say within a moment (not
- * started, or stuck): quitting isn't held up for it.
+ * What quitting now would cost (server.unsaved): sessions whose work couldn't be saved (a full disk), and this
+ * computer's sessions that are working. Nothing when the server can't say within a moment (not started, or stuck):
+ * quitting isn't held up for it.
  */
-function unsavedSessions(): Promise<number> {
+function quitCost(): Promise<{ unsaved: number; working: number }> {
+    const none = { unsaved: 0, working: 0 };
     const i = info;
-    if (!i) return Promise.resolve(0);
+    if (!i) return Promise.resolve(none);
     return new Promise((resolve) => {
         let ws: WebSocket | undefined;
-        const done = (n: number) => {
+        const done = (cost: { unsaved: number; working: number }) => {
             clearTimeout(timer);
             try {
                 ws?.close();
             } catch {
                 // already closed
             }
-            resolve(n);
+            resolve(cost);
         };
-        const timer = setTimeout(() => done(0), 1500);
+        const timer = setTimeout(() => done(none), 1500);
         try {
             ws = new WebSocket(`ws://127.0.0.1:${i.port}/ws`, ["cavvy.v1", `auth.${i.token}`]);
         } catch {
-            return done(0);
+            return done(none);
         }
         ws.onopen = () => ws!.send(JSON.stringify({ id: 1, method: "server.unsaved", params: {} }));
         ws.onmessage = (m) => {
             try {
-                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[] } };
-                if (r.id === 1) done(r.result?.sessions?.length ?? 0);
+                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[]; working?: unknown } };
+                if (r.id === 1) done({ unsaved: r.result?.sessions?.length ?? 0, working: typeof r.result?.working === "number" ? r.result.working : 0 });
             } catch {
                 // not the answer
             }
         };
-        ws.onerror = () => done(0);
+        ws.onerror = () => done(none);
     });
 }
 
@@ -300,7 +304,12 @@ async function pageGone() {
     if (goneAt.length >= MAX_STARTS) {
         console.error("[cavvy] the window's page keeps crashing; asking");
         const { response } = await dialog.showMessageBox(w, { type: "warning", message: "Reload Cavvy's window?", detail: "It keeps crashing.", buttons: ["Reload", "Quit"], defaultId: 0, cancelId: 0 });
-        if (response === 1) { app.quit(); return; }
+        if (response === 1) {
+            // Asked already: quitting doesn't ask again about sessions that are working.
+            quitAsked = true;
+            app.quit();
+            return;
+        }
         goneAt.length = 0;
     }
     if (!w.isDestroyed() && !quitting) w.webContents.reload();
@@ -543,15 +552,22 @@ else {
         e.preventDefault();
         if (asking) return;
         asking = true;
-        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk).
-        void unsavedSessions().then(async (n) => {
+        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk), or sessions on
+        // this computer that are working (a server's carry on without the app). An update's restart asked before it began.
+        void quitCost().then(async ({ unsaved, working }) => {
             const w = win && !win.isDestroyed() ? win : undefined;
-            if (n > 0) {
-                const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
-                const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
+            const question =
+                unsaved > 0
+                    ? { message: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
+                    : working > 0 && !quitAsked
+                      ? { message: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
+                      : undefined;
+            if (question) {
+                const o = { type: "warning" as const, ...question, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 };
+                const { response } = await (w ? dialog.showMessageBox(w, o) : dialog.showMessageBox(o));
                 if (response === 1) {
                     asking = false;
-                    // Its last window closed to quit: it comes back, so the work can still be saved.
+                    // Its last window closed to quit: it comes back, so the work can still be saved, or watched.
                     if (!win || win.isDestroyed()) createWindow();
                     return;
                 }
