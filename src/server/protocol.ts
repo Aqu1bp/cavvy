@@ -2228,7 +2228,7 @@ export interface Methods {
     "scripts.setupInfo": { params: { cwd: string }; result: SetupInfo };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
-    "sessions.search": { params: { query: string; limit?: number; archived?: boolean; /** The rest of the search just asked: with what its servers found (SessionSearchResult.pending). */ rest?: boolean; /** From a window on a server, of the user's own computer: its sessions and the other servers', that server searching its own. */ others?: boolean }; result: SessionSearchResult };
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean; /** The rest of the search just asked: with what its servers found (SessionSearchResult.pending). */ rest?: boolean; /** From a window on a server (its name), of the user's own computer: its sessions and the other servers', that server searching its own. */ others?: string }; result: SessionSearchResult };
     /** Search is about to be used (its box opened): what it reads is read meanwhile. Answered at once. */
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };

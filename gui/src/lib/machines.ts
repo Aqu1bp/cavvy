@@ -64,11 +64,15 @@ if (home) {
         own = true;
         const here = rpc.call("sessions.search", params as never);
         own = false;
-        const there = (ask("sessions.search", { ...(params as object), others: true }) as Promise<SessionSearchResult>).catch(() => undefined);
+        const there = (ask("sessions.search", { ...(params as object), others: machine }) as Promise<SessionSearchResult>).catch(() => undefined);
         return Promise.all([here, there]).then(([a, b]) => {
             if (a.stale || !b || b.stale || !Array.isArray(b.hits)) return a;
-            const limit = Number((params as { limit?: unknown }).limit) || 50;
-            return { partial: a.partial || b.partial, ...(a.pending || b.pending ? { pending: true } : {}), hits: [...a.hits, ...b.hits.filter((h) => h.machine !== machine).map((h) => ({ ...h, machine: h.machine ?? "" }))].sort((x, y) => y.at - x.at).slice(0, limit) };
+            // As many as were asked for, as the Cavvys count them (engine.ts searchSessions).
+            const asked = Number((params as { limit?: unknown }).limit);
+            const limit = Math.max(1, Math.min(Math.floor(Number.isFinite(asked) ? asked : 50), 200));
+            // Only what can be shown and opened; the window's own server's are its own to find.
+            const theirs = b.hits.filter((h) => h && typeof h === "object" && typeof h.id === "string" && typeof h.at === "number" && h.machine !== machine).map((h) => ({ ...h, machine: h.machine ?? "" }));
+            return { partial: a.partial || b.partial === true, ...(a.pending || b.pending === true ? { pending: true } : {}), hits: [...a.hits, ...theirs].sort((x, y) => y.at - x.at).slice(0, limit) };
         });
     };
     rpc.route = (method, params) => {

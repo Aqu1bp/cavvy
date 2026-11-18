@@ -1041,21 +1041,21 @@ export class Engine {
     /** Search's files being read ahead (sessions.searchWarm). */
     private searchWarming?: Promise<unknown>;
 
-    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean, rest?: boolean, others?: boolean): Promise<SessionSearchResult> {
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean, rest?: boolean, others?: string): Promise<SessionSearchResult> {
         if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
         const seq = (this.searches.get(client) ?? 0) + 1;
         this.searches.set(client, seq);
         if (query.trim().length < 2) return { hits: [], partial: false };
         const most = Math.max(1, Math.min(Math.floor(limit), 200));
         // On the user's own computer, for its windows: the servers it's connected to are searched at the same time.
-        // For a window that's on one of them (`others`): the rest of them, that one searching itself.
+        // For a window that's on one of them (`others`, its name): the rest of them, that one searching itself.
         // Asked once for a search: the window asking for the rest of it (`rest`, after an answer the servers' weren't
         // in yet) waits on the same asking. Any other asking is a search of its own.
-        const key = JSON.stringify([query, most, archived]);
+        const key = JSON.stringify([query, most, archived, others]);
         let far = rest ? this.farSearches.get(client) : undefined;
         const again = far?.key === key;
         if (!far || !again) {
-            far = { key, there: !this.o.away && (!client.machine || others) ? searchServers(new Map([...(this.serverLinks?.connectedServers() ?? [])].filter(([name]) => name !== client.machine)), { query, limit: most, archived }) : Promise.resolve([]) };
+            far = { key, there: !this.o.away && (!client.machine || others) ? searchServers(new Map([...(this.serverLinks?.connectedServers() ?? [])].filter(([name]) => name !== others)), { query, limit: most, archived }) : Promise.resolve([]) };
             this.farSearches.set(client, far);
         }
         const arch = new Set(readStore().archived ?? []);
@@ -1068,7 +1068,8 @@ export class Engine {
         if (r.stale) return { hits: [], partial: true, stale: true };
         // The servers get a moment past this machine's own answer. One slower than that doesn't hold what was found
         // here: that's answered now, said to be waiting for them (pending), and the window asks for the rest.
-        const there = await (again ? far.there : Promise.race([far.there, new Promise<undefined>((r) => setTimeout(r, FAR_GRACE_MS))]));
+        // (The rest asked for with nothing kept, on a connection made since: waited for too, not said to be pending again.)
+        const there = await (again || rest ? far.there : Promise.race([far.there, new Promise<undefined>((r) => setTimeout(r, FAR_GRACE_MS))]));
         if (this.searches.get(client) !== seq) return { hits: [], partial: true, stale: true };
         if (there && this.farSearches.get(client) === far) this.farSearches.delete(client);
         const here = r.hits.map((h): SessionSearchHit => ({
@@ -2825,7 +2826,7 @@ export class Engine {
                 return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
-                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined, p.rest === true, p.others === true);
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined, p.rest === true, typeof p.others === "string" && p.others ? p.others.slice(0, 100) : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);

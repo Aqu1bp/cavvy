@@ -100,16 +100,15 @@ test("for a window on one of its servers, the user's computer searches its own s
     const asked: string[] = [];
     const server = (name: string) => ({ ask: async () => (asked.push(name), { hits: [{ ...hit(`${name}1`, 5) }], partial: false }) });
     (engine as any).serverLinks = { connectedServers: () => new Map([["box", server("box")], ["lab", server("lab")]]) };
-    // The connection a window on box keeps to this computer's Cavvy.
-    const client = { subs: new Set<string>(), send() {}, machine: "box" };
+    // The connection a window on box keeps to this computer's Cavvy (which may not know yet which server it's for).
+    const client = { subs: new Set<string>(), send() {} };
     engine.clients.add(client as never);
     try {
-        const r = (await engine.handle(client as never, "sessions.search", { query: "migration", limit: 20, others: true } as never)) as { hits: { id: string; machine?: string }[] };
+        const r = (await engine.handle(client as never, "sessions.search", { query: "migration", limit: 20, others: "box" } as never)) as { hits: { id: string; machine?: string }[] };
         expect([r.hits.map((h) => [h.id, h.machine]), asked]).toEqual([[["lab1", "lab"]], ["lab"]]);
-        // Not asked for the others: this computer's own only, as before.
-        asked.length = 0;
-        await engine.handle(client as never, "sessions.search", { query: "migration two", limit: 20 });
-        expect(asked).toEqual([]);
+        // The rest of a search this connection never started (it was made anew meanwhile): waited for, not pending again.
+        const rest = (await engine.handle(client as never, "sessions.search", { query: "migration two", limit: 20, others: "box", rest: true } as never)) as { hits: unknown[]; pending?: boolean };
+        expect([rest.hits.length, rest.pending]).toEqual([1, undefined]);
     } finally {
         (engine as any).serverLinks = undefined;
         await engine.stop();
