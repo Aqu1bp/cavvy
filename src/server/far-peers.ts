@@ -75,6 +75,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
     return {
         list: async ({ query, limit }) => {
             const asked = [...servers()];
+            if (!asked.length) throw new PeerError("none of the user's servers is connected right now.");
             const lists = await Promise.allSettled(asked.map(([on, link]) => link.ask("peers.list", { query, limit }).then((rows) => (Array.isArray(rows) ? rows : []).flatMap((r) => rowFrom(r, on) ?? []))));
             // None answered: why, not none (one that didn't, among others that did, is left out).
             const failed = lists.flatMap((r, i) => (r.status === "rejected" ? [`${asked[i]![0]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
