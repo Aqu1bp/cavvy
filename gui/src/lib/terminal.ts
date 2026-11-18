@@ -116,7 +116,8 @@ const LEFT_MS = 10 * 60_000;
 type Left = Record<string, Record<string, { saved: SavedTabs; at: number }>>;
 const isKey = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{32}$/.test(v);
 function readLeft(now: number): Left {
-    const out: Left = {};
+    // No names of its own: a server can be called "constructor".
+    const out: Left = Object.create(null);
     try {
         const v = JSON.parse(localStorage.getItem(LEFT_KEY) ?? "{}");
         if (!v || typeof v !== "object" || Array.isArray(v)) return out;

@@ -79,3 +79,11 @@ test("what's left is read as carefully as what's saved: a key or tabs of another
     takeLeftTabs("lab", () => NEW, 1500);
     expect([keyOn("box", () => NEW), keyOn("lab", () => NEW), loadTabs("box").tabs.length, loadTabs("lab").tabs.length]).toEqual([NEW, NEW, 0, 0]);
 });
+
+test("whatever the server is called", () => {
+    saveTabs(tabs as never, "constructor");
+    leaveTabs(() => OLD, 1000);
+    reopen();
+    takeLeftTabs("constructor", () => NEW, 2000);
+    expect([loadTabs("constructor").tabs.length, keyOn("constructor", () => NEW)]).toEqual([1, OLD]);
+});
