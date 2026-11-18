@@ -42,6 +42,8 @@ export interface PaneToolsOptions {
     root: () => HTMLElement | undefined;
     address: () => HTMLInputElement | undefined;
     keyboard: () => HTMLElement | undefined;
+    /** A bar closes, giving its height back to the page: `close` runs once the page can take it without a blank strip. */
+    giveBack: (px: number, close: () => void) => void;
 }
 
 export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element } {
@@ -126,21 +128,26 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         if (tab !== undefined) void rpc.call("browser.find", { id: o.id(), tab, query: "" }).catch(() => undefined);
     };
     const openFind = () => {
+        findOpens++;
         setMenuOpen(false);
         setFinding(true);
         requestAnimationFrame(() => (findInput?.focus(), findInput?.select()));
         // Opened again on what it last looked for: found again, in the page as it is now.
         if (query() && !found()) void search(0);
     };
+    let findBar: HTMLDivElement | undefined;
+    /** Each opening and closing of the bar: one opened again before it has gone stays. */
+    let findOpens = 0;
     const closeFind = () => {
         clearTimeout(typed);
         asked++;
-        setFinding(false);
         setFound(undefined);
         if (query()) clearFound();
         // Back to the page, as a browser's find bar does.
         if (o.native) webview()?.focus();
         else o.keyboard()?.focus({ preventScroll: true });
+        const closing = ++findOpens;
+        o.giveBack(findBar?.offsetHeight ?? 0, () => closing === findOpens && setFinding(false));
     };
     // Another tab: what was found was the one before's.
     createEffect(on(() => o.tab()?.id, () => {
@@ -255,7 +262,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     const bars = () => (
         <>
             <Show when={finding()}>
-                <div class="br-strip" role="search" aria-label="Find in page">
+                <div ref={findBar} class="br-strip" role="search" aria-label="Find in page">
                     <Search size={13} class="br-strip-ic" />
                     <input
                         ref={findInput}

@@ -33,6 +33,8 @@ export interface ElectronBridge {
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
+    /** Resolves once a tab's page has laid itself out at its webview's size and drawn at it (false: not within a moment). */
+    browserPainted?(key: string, size: { width: number; height: number }): Promise<boolean>;
 }
 
 export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;

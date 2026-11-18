@@ -517,6 +517,10 @@ function bridge() {
     ipcMain.on("browser_devtools", (e, key: unknown) => {
         if (fromGui(e) && typeof key === "string") host.devTools(key);
     });
+    ipcMain.handle("browser_painted", (e, key: unknown, size: { width: number; height: number }) => {
+        if (!fromGui(e) || typeof key !== "string" || !size || ![size.width, size.height].every((n) => Number.isFinite(n) && n > 0)) return false;
+        return host.painted(key, size);
+    });
     ipcMain.on("browser_sized", (e, key: string, size: { width: number; height: number; scale: number }) => {
         if (fromGui(e) && typeof key === "string" && size && [size.width, size.height, size.scale].every((n) => Number.isFinite(n) && n > 0)) host.sized(key, size);
     });
