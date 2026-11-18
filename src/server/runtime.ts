@@ -4463,7 +4463,7 @@ export class Runtime {
         const attached = attachedPrompt(opts.attachments, false);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }), ...(opts.from ? { from: opts.from } : {}) },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true, ...(opts.adopt ? { background: true as const } : {}) } : { index }), ...(opts.from ? { from: opts.from } : {}) },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,

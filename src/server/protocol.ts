@@ -411,6 +411,11 @@ export interface TurnPrompt {
     scheduled?: string;
     /** Started by an event the agent asked to be woken for (a watched pull request, a monitor), not by the user. */
     wake?: boolean;
+    /**
+     * A wake that is the agent CLI's own turn, reporting on its background work (a command, a sub-agent, a monitor
+     * ended): the GUI shows no row for it, and `text` as a line of the turn's work.
+     */
+    background?: true;
     /** A wake that is a message from the agent in another session: who sent it (`text` is the message). */
     from?: { id: string; title: string };
     /** Position of the prompt in the session's messages, when it can be rewound to. */

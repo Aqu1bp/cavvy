@@ -829,7 +829,7 @@ export class Agent {
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
         const late = keepNotes ? undefined : this.lateDiagnostics();
         if (late) parts.push(late);
-        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint, ...(opts.from ? { from: opts.from } : {}) } });
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint, ...(opts.from ? { from: opts.from } : {}), ...(opts.kind === "wake" && opts.adopt ? { background: true as const } : {}) } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).

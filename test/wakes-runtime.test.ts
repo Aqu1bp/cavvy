@@ -161,8 +161,8 @@ test("a turn an agent CLI started by itself becomes a wake turn that adopts it: 
         const wakes = rt.session.messages.filter((m) => m.meta?.kind === "wake");
         expect(wakes.map((m) => m.meta?.display)).toEqual(["Background task finished: Map auth", "Background task finished: Write docs"]);
         expect(rt.snapshot().turns.filter((t) => t.prompt?.wake).map((t) => t.prompt)).toEqual([
-            { text: "Background task finished: Map auth", wake: true },
-            { text: "Background task finished: Write docs", wake: true },
+            { text: "Background task finished: Map auth", wake: true, background: true },
+            { text: "Background task finished: Write docs", wake: true, background: true },
         ]);
         // The one on a model that can't take it says so; the adopted one has the CLI's answer.
         expect(rt.session.notices.some((n) => n.text.includes("fake-cli started a turn of its own, but this session can't take it over now"))).toBe(true);
