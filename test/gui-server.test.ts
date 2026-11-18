@@ -18,6 +18,7 @@ const { gitArgv, gitEnv } = await import("../src/util/git");
 import type { AgentRun, Block, CliSessionsList, GuiSettings, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 import type { SnapshotTurn } from "../src/agent/turn-snapshots";
+import { fakeLog } from "./helpers/fake-env";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -1176,7 +1177,7 @@ describe("connecting", () => {
             await engine.handle(c, "session.send", { id, text: "map the auth module" });
             for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
             expect(rt.session.title).toBe("Sign-in strategy registry");
-            const oneOffs = readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => ("oneOffConfigDir" in l ? [l.oneOffConfigDir] : l.oneOffThread ? [l.oneOffThread.codexHome] : []));
+            const oneOffs = fakeLog(process.env.FAKE_LOG!).flatMap((l) => ("oneOffConfigDir" in l ? [l.oneOffConfigDir] : l.oneOffThread ? [l.oneOffThread.codexHome] : []));
             const home = accountEnv(provider, work.id)[provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"];
             expect(home).toBeTruthy();
             expect(oneOffs).toEqual([home]);
@@ -3439,7 +3440,7 @@ describe("reopening a Claude Code session", () => {
             process.env.FAKE_LOG = log;
             await c.call("session.send", { id, text: "and now?" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 1, 30_000);
-            const sent = readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
+            const sent = fakeLog(log).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
             expect(sent.at(-1)).toContain("weren't undone (rewind can't restore them), except in these files, which were restored to how they were then:\\n- src/auth/index.ts\\n- src/auth/sso.ts");
             c.close();
         } finally {
@@ -3463,7 +3464,7 @@ describe("reopening a Claude Code session", () => {
             process.env.FAKE_LOG = log;
             await c.call("session.send", { id, text: "and now?" });
             await c.until(id, (v) => done(v) && v.turns.length === 1 && v.turns[0]!.prompt?.text === "and now?", 30_000);
-            const sent = readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
+            const sent = fakeLog(log).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
             expect(sent.at(-1)).toContain("changes Claude Code made to files after that point weren't undone");
             c.close();
         } finally {
@@ -3483,7 +3484,7 @@ describe("reopening a Claude Code session", () => {
         return out;
     }
     /** What a fake CLI was started with and sent (FAKE_LOG). */
-    const logged = (log: string) => readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const logged = (log: string) => fakeLog(log);
     const sentPrompts = (log: string) => logged(log).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
     const working = (v: { turns: Turn[] }) => v.turns.length > 0 && tools(lastTurn(v)).map((b) => `${b.name}:${b.status}`).join() === "Write:ok,Bash:running";
     const shown = (t: Turn) => t.blocks.filter((b) => b.t !== "notice").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t));
@@ -4343,7 +4344,7 @@ describe("CLI accounts over RPC", () => {
                     if (Date.now() > deadline) throw new Error("Login fixture did not exit");
                     await Bun.sleep(10);
                 }
-                const starts = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((v) => v.argv);
+                const starts = fakeLog(log).filter((v) => v.argv);
                 const login = starts.find((v) => v.argv.includes("login"));
                 expect(login.argv).toEqual(provider === "codex" ? ["login"] : ["auth", "login"]);
                 expect(login[provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(a.folder);
