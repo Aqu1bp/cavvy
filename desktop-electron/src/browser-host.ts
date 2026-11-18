@@ -22,7 +22,7 @@ import { app, BrowserWindow, nativeTheme, screen, session, type BrowserWindowCon
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DEVTOOLS_MIN, devToolsBounds, devToolsTitle } from "./devtools-place";
+import { DEVTOOLS_MIN, LINUX_FRAME, NO_FRAME, devToolsBounds, devToolsTitle } from "./devtools-place";
 import type { Rect } from "./window-state";
 import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
@@ -378,7 +378,8 @@ export class BrowserHost {
     /**
      * The person asked for a tab's DevTools (the Browser pane's menu): Chromium's own, for that page alone, in a window
      * the app makes for them, titled for the page, placed beside the app's window (devtools-place.ts: where it was
-     * last, else beside the window, else away from the Browser pane, `pane` in the window's CSS pixels) and closed with
+     * last while that's on screen and off the Browser pane, else beside the window, else away from the pane, a step off
+     * another tab's DevTools; `pane` in the window's CSS pixels) and closed with
      * the tab. Asked again, the one that's open comes to the front. The tab is woken first, so they're never looking at
      * a page that's asleep.
      */
@@ -454,7 +455,17 @@ export class BrowserHost {
         const content = win && !win.isDestroyed() ? win.getContentBounds() : app;
         const zoom = win && !win.isDestroyed() ? win.webContents.getZoomFactor() : 1;
         const onScreen = pane && { x: content.x + pane.x * zoom, y: content.y + pane.y * zoom, width: pane.width * zoom, height: pane.height * zoom };
-        return devToolsBounds({ app, pane: onScreen, work: screen.getDisplayMatching(app).workArea, displays: screen.getAllDisplays().map((d) => d.workArea), saved: readDevToolsPlace() });
+        const others = [...this.devToolsWindows.values()].filter((w) => !w.isDestroyed() && w.isVisible() && !w.isMinimized()).map((w) => w.getBounds());
+        return devToolsBounds({
+            app,
+            pane: onScreen,
+            work: screen.getDisplayMatching(app).workArea,
+            displays: screen.getAllDisplays().map((d) => d.workArea),
+            saved: readDevToolsPlace(),
+            // Linux window managers frame a window outside the bounds it's given: room for the title bar is kept.
+            frame: process.platform === "linux" ? LINUX_FRAME : NO_FRAME,
+            others,
+        });
     }
 
     /**
