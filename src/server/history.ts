@@ -40,6 +40,18 @@ export function promptText(m: UserMessage): string {
     return (m.meta?.display ?? (first?.type === "text" ? first.text : textOf(m))).replace(REMINDERS, "").trim();
 }
 
+/**
+ * A wake turn its agent CLI started by itself (background work ended), not one Cavvy queued. Logs from before these
+ * were marked (meta.background) say it by what was sent: the label alone, where a queued wake's text wraps its events
+ * (formatWakes), and is never its label.
+ */
+export function startedByCli(m: UserMessage): boolean {
+    if (m.meta?.background) return true;
+    if (m.meta?.kind !== "wake" || m.meta.from || m.meta.display === undefined) return false;
+    const first = m.content.find((p) => p.type === "text");
+    return first?.type === "text" && first.text === m.meta.display;
+}
+
 // ---------------------------------------------------------------------------
 // The transcript, all segments
 
@@ -1025,7 +1037,7 @@ export function replay(o: ReplayInput): Turn[] {
                 const rec = o.ui.turn(si, index) ?? (index === 1 && before >= 0 ? o.ui.turn(si - 1, before) : undefined);
                 const imported = Boolean(m.meta?.imported);
                 // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(m.meta?.steered ? { steered: true } : {}), ...(kind === "wake" ? { wake: true, ...(m.meta?.from ? { from: m.meta.from } : {}), ...(m.meta?.background ? { background: true as const } : {}) } : archived || imported ? {} : { index }) }, rec?.at, index);
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(m.meta?.steered ? { steered: true } : {}), ...(kind === "wake" ? { wake: true, ...(m.meta?.from ? { from: m.meta.from } : {}), ...(startedByCli(m) ? { background: true as const } : {}) } : archived || imported ? {} : { index }) }, rec?.at, index);
                 t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
