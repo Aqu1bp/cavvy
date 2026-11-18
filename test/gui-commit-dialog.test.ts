@@ -56,6 +56,7 @@ async function mountDialog(branch: string | undefined, o: { paths?: string[]; fi
         },
         Dialog: "Dialog",
         plural: (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`,
+        modelName: (ref: string) => ref,
         os: "macos",
         mod: "⌘",
         Spinner: "Spinner",
