@@ -115,9 +115,13 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     let input: HTMLInputElement | undefined;
     let listEl: HTMLDivElement | undefined;
     const close = () => !busy() && setGitDialog(undefined);
-    const failed = (e: unknown) => setNote({ text: e instanceof Error ? e.message : String(e), level: "error" });
+    /** Why `what` ("Can't pull") didn't happen: git's reason after it, so a blocked switch doesn't read as a blocked pull. */
+    const failed = (what: string, e: unknown) => {
+        const why = e instanceof Error ? e.message : String(e);
+        setNote({ text: `${what}: ${/^[A-Z][a-z]/.test(why) ? why[0]!.toLowerCase() + why.slice(1) : why}`, level: "error" });
+    };
 
-    const act = async <T,>(kind: "fetch" | "pull" | "switch", work: () => Promise<T>, done: (r: T) => void) => {
+    const act = async <T,>(kind: "fetch" | "pull" | "switch", what: string, work: () => Promise<T>, done: (r: T) => void) => {
         if (busy()) return;
         setBusy(kind);
         setNote(undefined);
@@ -125,20 +129,20 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             done(await work());
             afterGit();
         } catch (e) {
-            failed(e);
+            failed(what, e);
         } finally {
             setBusy(undefined);
             input?.focus();
         }
     };
     const fetchNow = () =>
-        act("fetch", () => rpc.call("git.fetch", where), (r) => {
+        act("fetch", "Can't fetch", () => rpc.call("git.fetch", where), (r) => {
             setSync(r);
             void refetch();
             setNote({ text: `Fetched ${r.remote}. ${syncWords(r)}.`, level: "info" });
         });
     const pull = () =>
-        act("pull", () => rpc.call("git.pull", where), (r) => {
+        act("pull", "Can't pull", () => rpc.call("git.pull", where), (r) => {
             void refetch();
             void refetchSync();
             if (r.result === "pulled") setNote({ text: `Pulled ${plural(r.pulled ?? r.behind, "commit")} from ${r.upstream}.`, level: "info" });
@@ -146,12 +150,12 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             else setNote({ text: `Diverged: ${r.ahead} ahead, ${r.behind} behind ${r.upstream}. Merge or rebase it in a terminal.`, level: "warn" });
         });
     const switchTo = (branch: string, remote?: boolean) =>
-        act("switch", () => rpc.call("git.switch", { ...where, branch, ...(remote ? { remote } : {}) }), (r) => {
+        act("switch", `Can't switch to ${branch}`, () => rpc.call("git.switch", { ...where, branch, ...(remote ? { remote } : {}) }), (r) => {
             setGitDialog(undefined);
             toast(r.created ? `Switched to new branch ${r.branch}` : `Switched to ${r.branch}`, "success");
         });
     const create = (name: string) =>
-        act("switch", () => rpc.call("git.createBranch", { ...where, name }), (r) => {
+        act("switch", `Can't create ${name}`, () => rpc.call("git.createBranch", { ...where, name }), (r) => {
             setGitDialog(undefined);
             toast(`Created ${r.branch}`, "success");
         });
@@ -381,7 +385,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             <Show when={failure()}>
                 {(f) => (
                     <div class="br-note error br-fail" role="alert">
-                        <span>{f().text}{f().code === "sign_in" && !signInSession() ? " Run gh auth login in a terminal, then try again." : ""}</span>
+                        <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Sign in from a session, or run <code>gh auth login</code> in a terminal.</Show></span>
                         <Show when={f().code === "sign_in" && signInSession()}>
                             <button class="btn sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>
                         </Show>

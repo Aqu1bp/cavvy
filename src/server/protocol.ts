@@ -47,7 +47,12 @@ export interface WireFile {
     data: string /* base64 */;
     /** Pasted into the box rather than a file. */
     pasted?: boolean;
+    /** Text brought back from the session's side chat (its answer, or part of it), not a file. */
+    from?: AttachedFrom;
 }
+
+/** Where attached text came from, when it isn't a file or the user's own paste. */
+export type AttachedFrom = "side-chat";
 
 /** What a prompt shows of an attached file: never its contents. */
 export interface FileChip {
@@ -56,6 +61,7 @@ export interface FileChip {
     size: number;
     lines?: number;
     pasted?: boolean;
+    from?: AttachedFrom;
 }
 
 export type PermissionModeId = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
@@ -974,6 +980,8 @@ export interface SessionSummary {
     settled: boolean;
     /** Snoozed: out of the list until then (or until it needs you), under Snoozed. */
     snoozedUntil?: number;
+    /** Its last turn didn't finish: stopped, or cut off when Cavvy quit or stopped while it worked. */
+    stopped?: true;
     /** It woke from a snooze and hasn't been opened since. */
     woke?: true;
     /** Never settled by itself (Settings → General, "Settle idle sessions after"). */
@@ -1537,6 +1545,8 @@ export interface RewindTargetInfo {
     forked?: boolean;
     /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
     backends?: string[];
+    /** When it was sent, where its turn is one the server has (the window's, and those read since). */
+    at?: number;
 }
 
 export interface RewindPlanInfo {

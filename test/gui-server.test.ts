@@ -1837,6 +1837,40 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("rewind: each prompt says when it was sent; files alone keep the context; a rewound turn leaves Recorded turns", async () => {
+        const dir = project();
+        await snapshotRepo(dir);
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust: true });
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        for (const n of [1, 2]) {
+            await c.call("session.send", { id, text: "justrun: echo made > shell.txt" });
+            // Allowed once: the same command asks again the second time.
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === n, 15_000);
+        }
+        const targets = await c.call("session.rewindTargets", { id });
+        expect(targets.length).toBe(2);
+        // The same prompt twice: told apart by when it was sent.
+        for (const t of targets) expect(t.at).toBeNumber();
+        expect(targets[0].at).toBeGreaterThanOrEqual(targets[1].at);
+        const context = c.view(id).state.contextTokens;
+        expect(context).toBeGreaterThan(0);
+        const turnsListed = async () => ((await c.call("session.gitChanges", { id, scope: "uncommitted" })).turns ?? []).length;
+        expect(await turnsListed()).toBe(2);
+
+        const first = targets[1];
+        let plan = await c.call("session.rewindPlan", { id, index: first.index });
+        await c.call("session.rewind", { id, index: first.index, planId: plan.planId, code: true, conversation: false });
+        expect(c.view(id).state.contextTokens).toBe(context);
+
+        const second = (await c.call("session.rewindTargets", { id }))[0];
+        plan = await c.call("session.rewindPlan", { id, index: second.index });
+        await c.call("session.rewind", { id, index: second.index, planId: plan.planId, code: false, conversation: true });
+        expect(await turnsListed()).toBe(1);
+        c.close();
+    }, 30_000);
+
     test("rewind leaves a file alone that changed after the plan was shown", async () => {
         const dir = project();
         const c = await client();

@@ -467,6 +467,34 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await nav({ action: "close_tab", tab });
     });
 
+    test("sizes picked one after another, however fast, end with the page laid out at the last one, screenshots or not", async () => {
+        const { tab } = await openMain();
+        const page = (session as any).tabs.get(tab);
+        const frames: { width: number; height: number }[] = [];
+        const key = {};
+        session.watch(key, (f, frameId) => {
+            frames.push(f);
+            queueMicrotask(() => session.ack(key, frameId));
+        }, { width: 974, height: 645, scale: 1 });
+        await until(() => frames.at(-1)?.width === 974, "the pane's size");
+        const inner = async () => (await run(BrowserEvalTool, { expression: "innerWidth + 'x' + innerHeight" })).content;
+        // Fill pane, Phone, Tablet, Laptop, rotated, in the orders a person clicks them; a still being taken as each
+        // starts (the pane's own, or the agent's screenshot), which Chrome would undo a size with as it ends.
+        const sizes = { fill: [974, 645], phone: [390, 844], tablet: [820, 1180], laptop: [1280, 800], rotated: [800, 1280] } as const;
+        for (const order of [["tablet", "laptop"], ["fill", "tablet", "laptop"], ["laptop", "tablet"], ["phone", "tablet", "laptop", "rotated", "laptop"], ["tablet", "fill"]] as const) {
+            const shot = page.capture({ format: "jpeg", quality: 90, captureBeyondViewport: false });
+            for (const name of order) session.resize({ width: sizes[name][0], height: sizes[name][1], scale: 1 });
+            await shot;
+            const [w, h] = sizes[order.at(-1)!];
+            await until(async () => frames.at(-1)!.width === w && frames.at(-1)!.height === h && (await inner()) === `"${w}x${h}"`, `${order.join(" → ")} to end at ${w}×${h}`);
+            // and stays there once everything under way has finished
+            await Bun.sleep(400);
+            expect(await inner()).toBe(`"${w}x${h}"`);
+        }
+        session.unwatch(key);
+        await nav({ action: "close_tab", tab });
+    });
+
     test("sessions of one project share a browser, and each has its own tabs", async () => {
         const other = new BrowserSession({ root, settings: () => ({}), pool: { startupMs: STARTUP_MS } });
         try {

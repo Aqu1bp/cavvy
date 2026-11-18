@@ -1,15 +1,5 @@
-/* Snooze in a session's row menu (RowExtras.tsx): its times under it, each with when it wakes at its end. */
-.snz-chev {
-    margin-left: auto;
-    transition: transform var(--dur-fast);
-}
-
-.snz-chev.open {
-    transform: rotate(90deg);
-}
-
+/* Snooze ▸ in a session's row menu (RowExtras.tsx): each time with when it wakes at its end. */
 .menu-item.compact.snz-opt {
-    padding-left: calc(39 * var(--sp));
     white-space: nowrap;
 }
 
@@ -31,10 +21,4 @@
 
 .snz-custom .dialog-actions {
     margin-top: calc(14 * var(--sp));
-}
-
-/* Never auto-settle's check, at the end of its row while it's on. */
-.snz-tick {
-    margin-left: auto;
-    color: var(--fg-2);
 }

@@ -651,15 +651,9 @@
     flex: none;
 }
 
-/* The commit's subject gives way before the view's name: it has only the room left. */
+/* The commit's short hash (its subject is in the tooltip and the list), or "Pick a commit". */
 .tb.rv-pick {
-    flex: 100 1 0;
-    min-width: calc(84 * var(--sp));
-    max-width: max-content;
-}
-
-.tb.rv-pick .lbl {
-    max-width: calc(220 * var(--sp));
+    flex: none;
 }
 
 /* Lines a diff leaves out, before a hunk or after the last: a button in the hunk's header. */

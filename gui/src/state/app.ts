@@ -572,6 +572,23 @@ export function markSeenAll(list: SessionSummary[], unlisted: string[] = []) {
     saveSeen();
 }
 
+/**
+ * Sessions the list had working that come back stopped (the server was stopped or died while they worked, and was
+ * started again): news, as a turn that ended while you were elsewhere is, even when nothing was written since you
+ * last looked (the row says "Stopped").
+ */
+function noteStopped(next: readonly SessionSummary[]) {
+    let was: Map<string, SessionSummary> | undefined;
+    for (const s of next) {
+        if (!s.stopped || s.status !== "idle" || s.id === app.activeId) continue;
+        was ??= new Map(app.sessions.map((x) => [x.id, x]));
+        const before = was.get(s.id);
+        if (before?.status !== "running" && before?.status !== "waiting") continue;
+        const seen = app.seen[s.id];
+        if (seen === undefined || s.updatedAt <= seen + 1500) markSeen(s.id, s.updatedAt - 1501);
+    }
+}
+
 export function isUnread(s: SessionSummary): boolean {
     if (s.id === app.activeId || s.status === "running") return false;
     const seen = app.seen[s.id];
@@ -1392,6 +1409,7 @@ export async function refreshSessions() {
         setApp("seen", seen);
         saveSeen();
     }
+    noteStopped(list);
     batch(() => {
         setApp("sessions", reconcile(orderSessions(list), { key: "id" }));
         setApp("archived", reconcile(orderSessions(archived), { key: "id" }));
@@ -1582,6 +1600,7 @@ function upsertSessions(all: readonly SessionSummary[]) {
         });
     const archived = all.filter((s) => s.archived);
     const live = all.filter((s) => !s.archived);
+    noteStopped(live);
     batch(() => {
         put("sessions", live, new Set(archived.map((s) => s.id)));
         put("archived", archived, new Set(live.map((s) => s.id)));

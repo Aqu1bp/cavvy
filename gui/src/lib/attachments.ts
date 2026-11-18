@@ -6,12 +6,13 @@
 // it can where that's possible. Past the message's caps it's refused here
 // with its reason, before it's sent. The server checks it all again.
 
-import { ATTACH_LIMITS, LONG_PASTE, MEDIA_BUDGET, base64Size, type WireFile } from "@shared/protocol";
+import { ATTACH_LIMITS, LONG_PASTE, MEDIA_BUDGET, base64Size, type AttachedFrom, type WireFile } from "@shared/protocol";
 import { thumbnail } from "./thumbnail";
 
 export type Attachment =
     | { kind: "image"; name: string; size: number; mediaType: string; data: string }
-    | { kind: "text"; name: string; size: number; data: string; text: string; lines: number; pasted?: boolean }
+    /** `from`: brought back from the session's side chat, not a file. */
+    | { kind: "text"; name: string; size: number; data: string; text: string; lines: number; pasted?: boolean; from?: AttachedFrom }
     | { kind: "pdf"; name: string; size: number; data: string }
     /** Anything else: saved in the project, for the model to open with its tools. */
     | { kind: "file"; name: string; size: number; data: string }
@@ -105,7 +106,7 @@ export function previewNow(a: ImageAttachment): string | undefined {
 const isPdf = (b: Uint8Array) => b.length >= 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d; // %PDF-
 
 /** Bytes as a text file or a PDF, or past their caps or neither, a file to save. */
-function fromBytes(name: string, bytes: Uint8Array, pasted = false): Attachment {
+function fromBytes(name: string, bytes: Uint8Array, pasted = false, from?: AttachedFrom): Attachment {
     const size = bytes.length;
     const saved = (): Attachment => ({ kind: "file", name: pasted ? "Pasted text.txt" : name, size, data: toBase64(bytes) });
     if (!pasted && isPdf(bytes)) return size > ATTACH_LIMITS.pdfBytes ? saved() : { kind: "pdf", name, size, data: toBase64(bytes) };
@@ -117,7 +118,7 @@ function fromBytes(name: string, bytes: Uint8Array, pasted = false): Attachment 
         return saved();
     }
     if (looksBinary(bytes)) return saved();
-    return { kind: "text", name, size, data: toBase64(bytes), text, lines: lineCount(text), ...(pasted ? { pasted: true } : {}) };
+    return { kind: "text", name, size, data: toBase64(bytes), text, lines: lineCount(text), ...(pasted ? { pasted: true } : {}), ...(from ? { from } : {}) };
 }
 
 /** An image drawn again as PNG, where this page can draw it; undefined where it can't. */
@@ -233,17 +234,22 @@ export function pastedText(text: string, list: readonly Attachment[], name?: str
     return over ? { kind: "refused", name: a.name, size: a.size, reason: over } : a;
 }
 
+/** What a side chat's Bring back attaches: its answer, or what was selected in it, as text from there (not the user's own words). */
+export function sideChatText(text: string, list: readonly Attachment[]): Attachment {
+    return withinLimits(fromBytes("Side chat answer", new TextEncoder().encode(text.trim()), false, "side-chat"), list);
+}
+
 /** What the server hands back to the box (an edited or interrupted queued message). */
 export function fromWire(images: { mediaType: string; data: string }[] | undefined, files: WireFile[] | undefined): Attachment[] {
     const out: Attachment[] = (images ?? []).map((i) => ({ kind: "image", name: "image", size: base64Size(i.data), mediaType: i.mediaType, data: i.data }));
-    for (const f of files ?? []) out.push(fromBytes(f.name, fromBase64(f.data), f.pasted));
+    for (const f of files ?? []) out.push(fromBytes(f.name, fromBase64(f.data), f.pasted, f.from));
     return out;
 }
 
 /** The attachments of a `session.send`. Refused ones never go (and block sending until removed). */
 export function toWire(list: readonly Attachment[]): { images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
     const images = list.flatMap((a) => (a.kind === "image" ? [{ mediaType: a.mediaType, data: a.data }] : []));
-    const files = list.flatMap((a): WireFile[] => (a.kind === "text" || a.kind === "pdf" || a.kind === "file" ? [{ name: a.name, data: a.data, ...(a.kind === "text" && a.pasted ? { pasted: true } : {}) }] : []));
+    const files = list.flatMap((a): WireFile[] => (a.kind === "text" || a.kind === "pdf" || a.kind === "file" ? [{ name: a.name, data: a.data, ...(a.kind === "text" && a.pasted ? { pasted: true } : {}), ...(a.kind === "text" && a.from ? { from: a.from } : {}) }] : []));
     return { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
 }
 

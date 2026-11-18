@@ -66,6 +66,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // The page's picture
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
+    /** The box's size as last seen, for what the strip says of it (BrowserTools.tsx). */
+    const [paneBox, setPaneBox] = createSignal<Size>({ width: 0, height: 0 });
     /** Where a frame is drawn: a device's page no larger than it is (at its zoom). */
     const placed = (f: Size) => placeFrame(boxSize(), f, view()?.device ? view()!.zoom : undefined);
 
@@ -149,6 +151,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void loadBrowserState(id()).catch(() => undefined);
         const observer = new ResizeObserver(() => {
             fit();
+            setPaneBox(boxSize());
             if (!watching()) return;
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => resized(sized, paneSize(boxSize())) && watch(), RESIZE_MS);
@@ -203,7 +206,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         draw();
         if (!native && watching()) watch();
     }, { defer: true }));
-    const tools = paneTools({ id, native, tab, view, setView, root: () => root, address: () => address, keyboard: () => keyboard, status });
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, root: () => root, address: () => address, keyboard: () => keyboard, status });
 
     // The tab's own page (BrowserHostLayer) is kept over the page box (lib/page-follow.ts, loaded here: only the
     // desktop app has such a page). What moves or hides it besides the box itself: a panel's slide beginning or
