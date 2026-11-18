@@ -367,8 +367,8 @@ test("a call this machine can't take now is answered, not left waiting: over fou
                 ws.send(JSON.stringify({ id: m.id, result: [] }));
                 // Once, on the list of those in play (the archived are asked for after it).
                 if (m.params?.archived) return;
-                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, session: { id: `s${i}`, title: "t" } } }));
-                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, session: { id: "s9", title: "t" } } }));
+                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, mode: "default", session: { id: `s${i}`, title: "t" } } }));
+                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, mode: "default", session: { id: "s9", title: "t" } } }));
                 ws.send(JSON.stringify({ event: { type: "offers.call", callId: "odd", tool: 7, input: {}, session: { id: "../x" } } }));
             },
         },
@@ -408,7 +408,8 @@ test("a call decided there under another mode than this machine's now is turned 
                 ws.send(JSON.stringify({ id: m.id, result: [] }));
                 if (m.params?.archived) return;
                 // On its way while the mode here went from Bypass to Manual: then one decided under Manual.
-                for (const [callId, mode] of [["old", "bypassPermissions"], ["new", "default"]]) ws.send(JSON.stringify({ event: { type: "offers.call", callId, tool: "SimulatorControl", input: { action: "list" }, mode, session: { id: "s", title: "t" } } }));
+                // And one from a server too old to say.
+                for (const [callId, mode] of [["old", "bypassPermissions"], ["new", "default"], ["unsaid", undefined]]) ws.send(JSON.stringify({ event: { type: "offers.call", callId, tool: "SimulatorControl", input: { action: "list" }, mode, session: { id: "s", title: "t" } } }));
             },
         },
     });
@@ -416,8 +417,8 @@ test("a call decided there under another mode than this machine's now is turned 
     const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => ["simulator"], lendMode: () => "default", lend: () => (started.push("ran"), Promise.resolve({ text: "ok" })) });
     watch.start();
     try {
-        await until("both answered", () => results.length === 2);
-        expect(results.map((r) => [r.callId, !!r.isError])).toEqual([["old", true], ["new", false]]);
+        await until("all answered", () => results.length === 3);
+        expect(results.map((r) => [r.callId, !!r.isError])).toEqual([["old", true], ["unsaid", true], ["new", false]]);
         expect(started).toEqual(["ran"]);
         // Already told this mode when the connection opened: not told again.
         expect(told).toEqual(["default"]);

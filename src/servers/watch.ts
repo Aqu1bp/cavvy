@@ -7,6 +7,7 @@
 // is and said to be so.
 
 import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
+import { APP_NAME } from "../config/name";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
 /** A call of a tool this machine lends, as the server sent it. */
@@ -392,7 +393,7 @@ export class MachineWatch {
                 }
                 lending.clear();
             }
-            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
+            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
         };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
@@ -418,7 +419,7 @@ export class MachineWatch {
                 (told as { unref?: () => void }).unref?.();
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
-                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
                 this.resync();
                 return;
             }
@@ -486,12 +487,15 @@ export class MachineWatch {
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
                     answer(NOT_LENT);
-                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
                 }
+                // A server older than the mode it decides lent calls under: it may have let one through that this
+                // machine's own mode would ask about.
+                if (typeof ev.mode !== "string") return answer({ text: `Cavvy on ${this.name} is too old to run this on the user's Mac. Ask the user to update it: ${APP_NAME} servers update ${this.name}`, isError: true });
                 // Decided there under another default mode than this machine's now (changed in the terminal's /config, or
                 // the call was on its way when it changed): decided again there, under this one.
-                const mode = this.o.lendMode?.();
-                if ((typeof ev.mode === "string" ? ev.mode : sentMode) !== mode) {
+                const mode = (this.o.lendMode?.() ?? "default");
+                if (ev.mode !== mode) {
                     answer({ text: "Your Mac's permission mode just changed. Call it again.", isError: true });
                     if (mode !== sentMode) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = mode) } }));
                     return;
