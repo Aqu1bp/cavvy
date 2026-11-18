@@ -201,6 +201,25 @@ test("a call from a session there is asked about there, under that session's mod
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
+test("a window on this machine that shows a server's session hears what this machine lends it, as the windows on the server do", async () => {
+    // Not on the server: it opened that session here (state/app.ts awayMachine), and asked what this machine has for it.
+    const mac = await window();
+    try {
+        expect((await mac.call("offers.session", { name: "box", sessionId: "shown-here" })).id).toBeUndefined();
+        // The user starts a device for it (here, from a window on the server): this window hears of it, and of the device.
+        const opened = (await here.call("offers.session", { name: "box", sessionId: "shown-here", title: "Shown", open: true })) as LentSession;
+        await until("the window here to hear it has one", () => mac.events.some((e) => e.type === "offers.session" && e.sessionId === "shown-here" && e.lent.id === opened.id));
+        await here.call("simulator.command", { id: opened.id, command: "select", udid: "AAAA" });
+        await until("its simulator to be told of here", () => mac.events.some((e) => e.type === "simulator.state" && e.sessionId === opened.id));
+        // A session it never showed isn't its business: the windows on the server hear of it, this one doesn't.
+        await here.call("offers.session", { name: "box", sessionId: "not-shown", title: "Not shown", open: true });
+        await until("the window on the server to hear of the other", () => here.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown"));
+        expect(mac.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown")).toBe(false);
+    } finally {
+        await mac.close();
+    }
+});
+
 test("a session there in Bypass is asked about a call that runs here when this machine's own default asks (Bypass is the server's)", async () => {
     const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
     await remote.call("session.setMode", { id, mode: "bypassPermissions" });

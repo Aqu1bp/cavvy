@@ -56,7 +56,7 @@ async function run() {
     await until(() => rpc.state === "open", "main connection failed");
     adoptBrowserState(id, await rpc.call("browser.state", { id }));
     const root = document.getElementById("root")!;
-    const dispose = render(() => <div class="insp-body br-body" style="width:100%"><div class="pane"><BrowserPane handle={{ id } as SessionHandle}/></div></div>, root);
+    const dispose = render(() => <div class="insp-body br-body" style="width:100%"><div class="pane"><BrowserPane handle={{ id, ready: () => true } as SessionHandle}/></div></div>, root);
     try {
         await until(() => decoded > 1, "no decoded pictures from the real stream");
         const canvas = root.querySelector("canvas")!;

@@ -83,6 +83,8 @@ test("when this computer has none to lend, the pane is told so, not left waiting
 test("it's part of the servers code: the window's own code only leaves room for it, and answers go to this computer only for its own sessions", () => {
     const read = (f: string) => readFileSync(new URL(`../gui/src/${f}`, import.meta.url), "utf8");
     expect(read("components/Servers.tsx")).toContain('import "../lib/lent";');
+    // In a window on this computer, it's loaded once another machine's session is shown.
+    expect(read("components/RightPanel.tsx")).toContain('(awayMachine(id) === undefined ? Promise.resolve() : import("../lib/lent"))');
     for (const f of ["state/simulator.ts", "state/actions.ts", "components/Composer.tsx", "components/SimulatorPane.tsx"]) expect(read(f)).not.toContain("lib/lent\"");
     // An answer goes to this computer's Cavvy only for a session this computer said is its own; any other goes
     // where the window's sessions are.

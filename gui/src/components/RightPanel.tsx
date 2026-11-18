@@ -10,7 +10,7 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, Mat
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, awayMachine, machineFor, reportError, rpc, serversUi, toast } from "../state/app";
+import { app, awayMachine, machineFor, reportError, rpc, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
 import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
@@ -25,8 +25,8 @@ import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
-import { browserUnseen, loadBrowserState, setBrowserShown } from "../state/browser";
-import { loadSimulatorState, setSimulatorShown, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
+import { browserUnseen, loadBrowserState } from "../state/browser";
+import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
 /** The folder the session works in: its actions, from the header's button (the path on hover). */
 function WorkspaceButton(p: { handle: SessionHandle }) {
@@ -242,9 +242,11 @@ function usePanelWork(handle: () => SessionHandle) {
     const agents = createMemo(() => uncleared(handle().id, agentRows(tasks(), handle().view.agents)));
     const commands = createMemo(() => uncleared(handle().id, commandRows(tasks())));
     // What the agent does in the browser is told even while the pane isn't showing (a dot on its icon).
-    createEffect(on(() => handle().id, (id) => void loadBrowserState(id).catch(() => undefined)));
+    // Asked again once the session is open again on its machine (its connection came back).
+    createEffect(on([() => handle().id, () => handle().ready()], ([id, ready]) => void (ready && loadBrowserState(id).catch(() => undefined))));
     // And on the simulator, whose view shows only on a Mac with Xcode.
-    createEffect(on(() => handle().id, (id) => void loadSimulatorState(id).catch(() => undefined)));
+    // Another machine's session: what this computer lends it is asked of first (lib/lent.ts).
+    createEffect(on([() => handle().id, () => handle().ready()], ([id, ready]) => void (ready && (awayMachine(id) === undefined ? Promise.resolve() : import("../lib/lent")).then(() => loadSimulatorState(id)).catch(() => undefined))));
     return { changes, agents, commands };
 }
 
@@ -413,41 +415,17 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
-                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} shown={setBrowserShown} />}>
-                                <BrowserPane handle={p.handle} />
-                            </Show>
+                            <BrowserPane handle={p.handle} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>
                         <div class="pane">
-                            <Show when={awayMachine(p.handle.id) === undefined} fallback={<OnItsMachine id={p.handle.id} shown={setSimulatorShown} />}>
-                                <SimulatorPane handle={p.handle} />
-                            </Show>
+                            <SimulatorPane handle={p.handle} />
                         </div>
                     </Match>
                 </Switch>
             </div>
             </div>
         </aside>
-    );
-}
-
-/**
- * The Browser or Simulator of another machine's session opened in this window: what it shows is that machine's (its
- * pictures come over the window's connection there), so it's seen in a window on that machine.
- */
-function OnItsMachine(p: { id: string; shown: (id: string, on: boolean) => void }) {
-    const name = () => awayMachine(p.id) || "this computer";
-    // On screen, as the pane would be: what the agent opened there is seen (its tab's dot goes).
-    const id = p.id;
-    p.shown(id, true);
-    onCleanup(() => p.shown(id, false));
-    return (
-        <div class="panel-empty">
-            <p>This session runs on {name()}.</p>
-            <button class="btn secondary sm" onClick={() => void serversUi().then((m) => m.switchMachine(awayMachine(p.id) || undefined, p.id), reportError)}>
-                Open in a window on {name()}
-            </button>
-        </div>
     );
 }
