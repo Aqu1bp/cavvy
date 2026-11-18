@@ -408,6 +408,7 @@ export function App() {
     // The desktop app's question before it quits, in the window rather than the system's box (QuitDialog.tsx).
     const [quitAsk, setQuitAsk] = createSignal<QuitAsk>();
     onMount(() => {
+        if (!isElectron) return;
         const off = electron?.onQuitAsk?.((q) => {
             if ("end" in q) return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
             // Asked again (quit again while it's up): it's still on screen.
