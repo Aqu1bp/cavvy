@@ -127,7 +127,7 @@ export function CommitPicker(p: { value?: GitLogEntry; load: () => Promise<{ com
     const label = () => (p.value ? `${p.value.sha.slice(0, 7)} ${p.value.subject}` : undefined);
     return (
         <>
-            <button ref={anchor} class="tb base" title={label() ? `${label()}. Show another commit` : "Show another commit"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+            <button ref={anchor} class="tb base rv-pick" title={label() ? `${label()}. Show another commit` : "Show another commit"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
                 <Show when={p.value} fallback={<span class="lbl">Pick a commit</span>}>
                     {(c) => (
                         <>

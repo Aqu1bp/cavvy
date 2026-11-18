@@ -548,7 +548,8 @@ function FileCard(p: {
     const [opened, setOpened] = createSignal<ReadonlySet<number>>(new Set());
     const [whole, setWhole] = createSignal<Row>();
     const [fetching, setFetching] = createSignal(false);
-    createEffect(on(() => shapeOf(shown()), () => batch(() => {
+    const shape = createMemo(() => shapeOf(shown()));
+    createEffect(on(shape, () => batch(() => {
         setOpened(new Set<number>());
         setWhole(undefined);
     }), { defer: true }));
@@ -558,10 +559,10 @@ function FileCard(p: {
         let all = whole();
         if (!all) {
             setFetching(true);
-            const shape = shapeOf(shown());
+            const was = shape();
             const r = await p.whole!(shown()).finally(() => setFetching(false));
             if (!r.file) return void toast(r.error ?? "Couldn't load the file", "warn");
-            if (shapeOf(shown()) !== shape) return;
+            if (shape() !== was) return;
             setWhole((all = r.file));
         }
         const next = new Set(opened()).add(at);

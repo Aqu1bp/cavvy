@@ -651,7 +651,14 @@
     flex: none;
 }
 
-.tb.base .truncate {
+/* The commit's subject gives way before the view's name: it has only the room left. */
+.tb.rv-pick {
+    flex: 100 1 0;
+    min-width: calc(84 * var(--sp));
+    max-width: max-content;
+}
+
+.tb.rv-pick .lbl {
     max-width: calc(220 * var(--sp));
 }
 
