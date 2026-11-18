@@ -1955,7 +1955,7 @@ export class Engine {
      * On a server: the connected machines that lend this one their tools (offers.set), the latest to say so last, and
      * the calls they're running. A call goes to the latest; when a machine leaves, the others still lend.
      */
-    private lenders = new Map<EngineClient, Lendable[]>();
+    private lenders = new Map<EngineClient, { kinds: Lendable[]; mode: PermissionMode }>();
     private lentCalls = new Map<string, { client: EngineClient; done: (r: ToolResult) => void }>();
 
     /**
@@ -1964,8 +1964,8 @@ export class Engine {
      * machine goes away.
      */
     borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
-        const client = [...this.lenders.keys()].at(-1);
-        if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        const [client, lender] = [...this.lenders].at(-1) ?? [];
+        if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
             const done = (r: ToolResult) => {
@@ -1979,17 +1979,19 @@ export class Engine {
             };
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
-            client.send({ type: "offers.call", callId, tool, input, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            // With the mode it was decided under: the lender turns it away if its own has changed since.
+            client.send({ type: "offers.call", callId, tool, input, mode: lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 
     /** A machine says what it lends now (nothing: it stopped, or left): its calls end when it lends nothing, and sessions learn what they have. */
-    private setLender(client: EngineClient, kinds: Lendable[], left = false) {
+    private setLender(client: EngineClient, kinds: Lendable[], left = false, mode: PermissionMode = "default") {
         this.lenders.delete(client);
-        if (kinds.length) this.lenders.set(client, kinds);
+        if (kinds.length) this.lenders.set(client, { kinds, mode });
         // Only its leaving ends what it was asked: a machine that stops lending still answers the calls it has.
         if (left) for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
-        setLent(new Set([...this.lenders.values()].flat()));
+        // Calls go to the latest lender (borrow): its mode holds them.
+        setLent(new Set([...this.lenders.values()].flatMap((l) => l.kinds)), [...this.lenders.values()].at(-1)?.mode);
     }
 
     /** On a server: the user's own computers connected here that answer for the other machines' sessions (far-peers.ts), the latest last. */
@@ -2209,6 +2211,7 @@ export class Engine {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
+                lendMode: () => defaultMode(loadSettings(homedir(), { trusted: false }), homedir()).mode,
                 lend: (name, call, signal) => this.lend(name, call, signal),
                 // The user's own machine keeps its skills and commands on its servers.
                 sync: !this.o.away,
@@ -2370,8 +2373,9 @@ export class Engine {
             }
         });
         this.reloadSettings();
-        // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
-        if ("simulator" in patch) this.serverLinks?.relend();
+        // The Simulator turned off or on, or the mode its calls are held to changed: the servers this machine lends it to
+        // hear now, and what waits here for it ends.
+        if ("simulator" in patch || "defaultMode" in patch || "allowBypass" in patch) this.serverLinks?.relend();
         return this.guiSettings(cwd);
     }
 
@@ -3233,7 +3237,7 @@ export class Engine {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
                 if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
-                this.setLender(client, kinds);
+                this.setLender(client, kinds, false, PERMISSION_MODES.find((m) => m === p.mode) ?? "default");
                 return null;
             }
             case "sync.files": {
