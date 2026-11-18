@@ -414,13 +414,12 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
-                            {/* A pane for each machine: it's watched over the session's machine's connection. */}
-                            <For each={[awayMachine(p.handle.id) ?? ""]}>{() => <BrowserPane handle={p.handle} />}</For>
+                            <BrowserPane handle={p.handle} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>
                         <div class="pane">
-                            <For each={[awayMachine(p.handle.id) ?? ""]}>{() => <SimulatorPane handle={p.handle} />}</For>
+                            <SimulatorPane handle={p.handle} />
                         </div>
                     </Match>
                 </Switch>

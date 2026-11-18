@@ -218,6 +218,8 @@ export interface EngineClient {
     shown?: string | null;
     /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
     machine?: string;
+    /** Sessions of servers this machine lends to that this window shows (offers.session), by `name\0id`: it hears how what's lent them changes. */
+    lentShown?: Set<string>;
     /** It shows the other machines' sessions (servers.overview): it's told how they change, and what they have to say. */
     watching?: boolean;
 }
@@ -600,8 +602,10 @@ export class Engine {
     /** The session's simulator changed: the windows that have it open hear of it. */
     sendSimulator(sessionId: string, state: SimulatorState) {
         // One that lends to a session on a server shows in that session: this machine's windows on that server hear of it too.
-        const lentTo = this.runtimes.get(sessionId)?.guestOf;
-        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo)) c.send({ type: "simulator.state", sessionId, state });
+        const rt = this.runtimes.get(sessionId);
+        const lentTo = rt?.guestOf;
+        const shown = lentTo !== undefined && rt?.guestSession ? `${lentTo}\0${rt.guestSession.id}` : undefined;
+        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo) || (shown && c.lentShown?.has(shown))) c.send({ type: "simulator.state", sessionId, state });
     }
 
     /** The session's browser changed: the windows that have it open hear of it. */
@@ -2132,7 +2136,7 @@ export class Engine {
         const at = rt.guestSession;
         if (name === undefined || !at) return;
         const lent = this.lentSession(gone ? undefined : rt);
-        for (const c of this.clients) if (c.machine === name) c.send({ type: "offers.session", name, sessionId: at.id, lent });
+        for (const c of this.clients) if (c.machine === name || c.lentShown?.has(`${name}\0${at.id}`)) c.send({ type: "offers.session", name, sessionId: at.id, lent });
         // And its row in the list, in any window, says it waits for the user.
         this.serverLinks?.asking(name, at.id, lent.asks.length > 0);
     }
@@ -3257,6 +3261,9 @@ export class Engine {
                 const sessionId = str(p.sessionId, "sessionId");
                 if (!/^[\w.-]{1,120}$/.test(sessionId)) throw new RpcError("That isn't a session's id.", "invalid");
                 if (!(await this.servers(client)).list().some((s) => s.name === name)) throw new RpcError(`No server is called ${name}.`, "invalid");
+                // A window on this machine that shows that session (a server's, opened here) hears how it changes, as the
+                // windows on that server do (lentChanged, sendSimulator).
+                if (!client.machine) (client.lentShown ??= new Set()).add(`${name}\0${sessionId}`);
                 let opening = this.guests.get(`${name}\0${sessionId}`);
                 const settings = loadSettings(homedir(), { trusted: false });
                 // The user started or chose a device in the session's Simulator pane: there's one to show from then on.

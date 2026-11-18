@@ -30,7 +30,7 @@ function decode(data: string | Uint8Array<ArrayBuffer>): Promise<ImageBitmap> {
 
 /**
  * The pane of a session's browser. One on another machine than the window's (a server's, in a window on this computer)
- * is watched over that machine's connection: RightPanel makes another pane when the session's machine changes.
+ * is watched over that machine's connection (the panel is made again for each session: App).
  */
 export function BrowserPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;

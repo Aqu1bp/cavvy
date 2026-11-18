@@ -201,6 +201,23 @@ test("a call from a session there is asked about there, under that session's mod
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
+test("a window on this machine that shows a server's session hears what this machine lends it, as the windows on the server do", async () => {
+    // Not on the server: it opened that session here (state/app.ts awayMachine), and asked what this machine has for it.
+    const mac = await window();
+    try {
+        expect((await mac.call("offers.session", { name: "box", sessionId: "shown-here" })).id).toBeUndefined();
+        // The user starts a device for it (here, from a window on the server): this window hears of it, and of the device.
+        const opened = (await here.call("offers.session", { name: "box", sessionId: "shown-here", title: "Shown", open: true })) as LentSession;
+        await until("the window here to hear it has one", () => mac.events.some((e) => e.type === "offers.session" && e.sessionId === "shown-here" && e.lent.id === opened.id));
+        await here.call("simulator.command", { id: opened.id, command: "select", udid: "AAAA" });
+        await until("its simulator to be told of here", () => mac.events.some((e) => e.type === "simulator.state" && e.sessionId === opened.id));
+        // A session it never showed isn't its business.
+        expect(mac.events.some((e) => e.type === "offers.session" && e.sessionId !== "shown-here")).toBe(false);
+    } finally {
+        await mac.close();
+    }
+});
+
 test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {

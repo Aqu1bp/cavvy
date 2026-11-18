@@ -61,7 +61,10 @@ if (home && machine) {
     const h = home;
     sim.state = (id) => state(h, id);
     sim.stream = (session) =>
-        ownSimulators
+        // Another machine's session opened in this window: its own machine's simulator, over its connection.
+        awayMachine(session()) !== undefined
+            ? rpcFor(session()).browserStream()
+            : ownSimulators
             ? rpc.browserStream()
             : lentStream(h.browserStream(), { session, guest: () => lent[session()]?.id, open: async (at) => (await ask(h, at, true)).id, outlook: async (at) => lentState(h, await ask(h, at)), none: adoptSimulatorState });
     far.rpc = (id) => (sessionOf.has(id) ? h : undefined);
@@ -158,5 +161,12 @@ if (!machine) {
             const session = sessionOf.get(e.sessionId);
             if (session) adoptSimulatorState(session, e.state);
         }
+    });
+    // This computer's Cavvy came back (it may be another one, with none of what it had): the session on screen is asked
+    // about again, so its pane goes on with what this one has, and this window hears of it.
+    rpc.onState((st) => {
+        const id = app.activeId;
+        if (st !== "open" || !id || awayMachine(id) === undefined || own.has(id)) return;
+        void askHere(id).then((l) => lentState(rpc, l)).then((state) => adoptSimulatorState(id, state), () => undefined);
     });
 }
