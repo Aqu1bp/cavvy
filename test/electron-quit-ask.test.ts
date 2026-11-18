@@ -27,17 +27,20 @@ function fakes(page: Partial<{ loading: boolean; crashed: boolean }> = {}) {
     });
     const ipc = new EventEmitter();
     const reply = (id: number, answer: string, from = "page") => ipc.emit("quit_reply", { from }, id, answer);
-    const ask = (ackMs = 40) => askInPage(win as unknown as AskWindow, Q, { ipc, fromPage: (e: { from: string }) => e.from === "page", ackMs, id: 7 });
-    return { sent, contents, win, state, ipc, reply, ask };
+        const clock = { t: 0 };
+    const ask = (ackMs = 40, againMs = 1000) => askInPage(win as unknown as AskWindow, Q, { ipc, fromPage: (e: { from: string }) => e.from === "page", ackMs, againMs, id: 7, now: () => clock.t });
+    return { sent, contents, win, state, ipc, reply, ask, clock };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-test("the page says it has the question, and its answer decides however long drawing it takes", async () => {
+test("the page says it has the question, is told to show it, and its answer decides however long drawing takes", async () => {
     const f = fakes();
     const a = f.ask();
+    // Asked, not shown: the page shows it only when told to.
     expect(f.sent).toEqual([{ id: 7, ...Q }]);
     f.reply(7, "asked");
+    expect(f.sent).toEqual([{ id: 7, ...Q }, { id: 7, ...Q, show: true }]);
     // Acknowledged: no deadline for drawing it or for the answer (a busy computer, the dialog's code loading).
     await sleep(200);
     f.reply(7, "quit");
@@ -51,14 +54,29 @@ test("the page says it has the question, and its answer decides however long dra
     expect(await b.answer).toBe(false);
 });
 
-test("a page that doesn't say it has the question in time is told to take it down, and the system's box asks", async () => {
+test("a page that doesn't say it has the question in time is told to drop it, and the system's box asks", async () => {
     const f = fakes();
     const a = f.ask();
     expect(await a.answer).toBeUndefined();
     expect(f.sent.at(-1)).toEqual({ id: 7, end: true });
-    // A late answer changes nothing.
+    // Coming to late, it's never told to show it: one question up at a time.
+    f.reply(7, "asked");
     f.reply(7, "quit");
+    expect(f.sent.filter((m) => (m as { show?: boolean }).show)).toEqual([]);
     expect(f.ipc.listenerCount("quit_reply")).toBe(0);
+});
+
+test("one answer, from the question that's up: none before it's shown, none after it's over", async () => {
+    const f = fakes();
+    const a = f.ask(5000);
+    // An answer before it was told to show it isn't one.
+    f.reply(7, "quit");
+    f.reply(7, "asked");
+    f.reply(7, "asked");
+    expect(f.sent.filter((m) => (m as { show?: boolean }).show).length).toBe(1);
+    f.reply(7, "cancel");
+    f.reply(7, "quit");
+    expect(await a.answer).toBe(false);
 });
 
 test("a page that couldn't put it up falls back at once", async () => {
@@ -73,6 +91,7 @@ test("a page that couldn't put it up falls back at once", async () => {
 test("only the window's page, and this question, answer", async () => {
     const f = fakes();
     const a = f.ask(200);
+    f.reply(7, "asked");
     f.reply(7, "quit", "elsewhere");
     f.reply(6, "quit");
     f.reply(7, "cancel");
@@ -93,38 +112,50 @@ test("a hidden or minimized window comes back first", async () => {
     f.state.visible = false;
     const a = f.ask();
     expect(f.state).toEqual({ minimized: false, visible: true, focused: true });
+    f.reply(7, "asked");
     f.reply(7, "cancel");
     expect(await a.answer).toBe(false);
 });
 
-test("the page going away while it's up falls back", async () => {
+test("the page going away, or found unresponsive, falls back", async () => {
     for (const end of ["crash", "load", "hang", "close"] as const) {
-        const f = fakes();
-        const a = f.ask(1000);
-        f.reply(7, "asked");
-        if (end === "crash") f.contents.emit("render-process-gone", {}, { reason: "crashed" });
-        if (end === "load") {
-            // Moving within the page doesn't count.
-            f.contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
-            f.contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+        for (const shown of [false, true]) {
+            const f = fakes();
+            const a = f.ask(5000);
+            if (shown) f.reply(7, "asked");
+            if (end === "crash") f.contents.emit("render-process-gone", {}, { reason: "crashed" });
+            if (end === "load") {
+                // Moving within the page doesn't count.
+                f.contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+                f.contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+            }
+            if (end === "hang") f.win.emit("unresponsive");
+            if (end === "close") f.win.emit("closed");
+            expect(await a.answer).toBeUndefined();
+            expect(f.sent.at(-1)).toEqual({ id: 7, end: true });
         }
-        if (end === "hang") f.win.emit("unresponsive");
-        if (end === "close") f.win.emit("closed");
-        expect(await a.answer).toBeUndefined();
     }
 });
 
-test("asked to quit again while it's up: it stays if the page still answers, else the system's box asks", async () => {
+test("asked to quit again: a page that hasn't answered is asked again, then given up on once they've waited", async () => {
     const f = fakes();
-    const a = f.ask();
-    f.reply(7, "asked");
+    const a = f.ask(5000, 1000);
+    f.clock.t = 500;
     a.recheck();
     expect(f.sent).toEqual([{ id: 7, ...Q }, { id: 7, ...Q }]);
-    f.reply(7, "asked");
-    await sleep(80);
+    f.clock.t = 1200;
     a.recheck();
-    // No word from the page this time (stuck since).
     expect(await a.answer).toBeUndefined();
+
+    // Shown already: it stays, untimed.
+    const g = fakes();
+    const b = g.ask(50, 1000);
+    g.reply(7, "asked");
+    g.clock.t = 5000;
+    b.recheck();
+    await sleep(120);
+    g.reply(7, "quit");
+    expect(await b.answer).toBe(true);
 });
 
 test("the app asks through it, closing the window asks too, and the bridge carries it", () => {
@@ -132,6 +163,7 @@ test("the app asks through it, closing the window asks too, and the bridge carri
     const preload = readFileSync(join(import.meta.dir, "../desktop-electron/src/preload.ts"), "utf8");
     const ask = main.slice(main.indexOf("async function askToQuit"), main.indexOf("async function stopServer"));
     expect(ask).toContain("askInPage(win, q");
+    expect(main).toContain("const PAGE_ACK_MS = 10_000;");
     // The system's box, Cancel the default, where the page can't ask.
     expect(ask).toContain("dialog.showMessageBox");
     expect(ask).toContain('buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1');
@@ -146,5 +178,7 @@ test("the page says it has the question before loading or drawing the dialog", (
     const ack = listener.indexOf('electron?.quitReply?.(q.id, "asked")');
     expect(ack).toBeGreaterThan(0);
     expect(ack).toBeLessThan(listener.indexOf("QuitDialog.preload()"));
+    // Shown only when the app says so.
+    expect(listener.indexOf("if (!q.show) return void")).toBeLessThan(listener.indexOf("QuitDialog.preload()"));
     expect(listener).toContain('quitReply?.(q.id, "unable")');
 });
