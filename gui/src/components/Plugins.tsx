@@ -265,7 +265,7 @@ export function Plugins() {
                 <Switch>
                     {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
                     <Match when={!info()}>
-                        {empty(Puzzle, where() ? `Couldn't load ${where()}'s plugins` : "Couldn't load plugins", undefined, () => (
+                        {empty(Puzzle, where() || windowMachine ? `Couldn't load ${where() || windowMachine}'s plugins` : "Couldn't load plugins", undefined, () => (
                             <button class="btn secondary sm" onClick={() => (setLoading(true), void load())}>
                                 Try again
                             </button>
@@ -591,7 +591,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: pl().scopes.project || pl().scopes.local ? "It's removed from this project and from your own settings." : "It's removed from your own settings.",
+                                body: pl().scopes.project !== undefined || pl().scopes.local !== undefined ? "It's removed from this project and from your own settings." : "It's removed from your own settings.",
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),

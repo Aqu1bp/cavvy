@@ -10,7 +10,7 @@ function dialog(purpose?: "mcp-approval") {
         node, Show: "Show", ShieldAlert: "ShieldAlert", Dialog: "Dialog",
         createResource: () => [() => ({ needsTrust: [".mcp.json", ".cavvy/settings.json"] })],
         trustRequest: () => request,
-        app: {}, awayMachine: () => undefined, homeOn: () => undefined, machine: undefined,
+        app: {}, machine: undefined,
         setTrustRequest: (next: unknown) => { request = next; },
         trustAndContinue: async (...args: unknown[]) => { decisions.push(args); },
         reportError: (error: unknown) => { throw error; },

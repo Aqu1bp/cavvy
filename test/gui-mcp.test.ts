@@ -91,6 +91,7 @@ function dialogHandlers() {
             return response.promise;
         } },
         requestTrust: (...args: any[]) => trustRequests.push(args),
+        awayMachine: (id: string | undefined) => `on ${id}`,
         // The session's machine's connection, by session (state/app.ts rpcFor).
         rpcFor: (id: string | undefined) => ({ linkFor: id }),
         reportError: (error: unknown) => notices.push(error),
@@ -257,6 +258,8 @@ test("McpDialog discards late details and requests the cancel-only MCP trust flo
     expect(d.trustRequests[0]![2]).toBe("mcp-approval");
     // Trusted on the session's own machine.
     expect(d.trustRequests[0]![4]).toEqual({ linkFor: expect.any(String) });
+    // And said to be that machine's.
+    expect(d.trustRequests[0]![5]).toBe("on A");
     d.open("B");
     d.calls[2]!.response.resolve(emptyList("B"));
     await flushResponses();

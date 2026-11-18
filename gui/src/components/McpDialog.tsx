@@ -201,7 +201,7 @@ export function McpDialog() {
         if (cwd && request) {
             requestTrust(cwd, () => {
                 if (request.current()) void load();
-            }, "mcp-approval", undefined, rpcFor(id()));
+            }, "mcp-approval", undefined, rpcFor(id()), awayMachine(id()));
         }
     };
 
