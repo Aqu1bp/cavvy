@@ -16,6 +16,10 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const [busy, setBusy] = createSignal(false);
     const [loading, setLoading] = createSignal(false);
     const [error, setError] = createSignal<string>();
+    // Generate: the model that drafted the title and description, what they were before (for Undo), or why it couldn't.
+    const [generating, setGenerating] = createSignal(false);
+    const [drafted, setDrafted] = createSignal<{ model: string; title: string; body: string }>();
+    const [genError, setGenError] = createSignal<string>();
     let revision = 0;
     const close = () => { if (!busy()) p.onClose(); };
     const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
@@ -23,6 +27,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         const version = ++revision;
         setView(undefined);
         setTitle(""); setBody(""); setBase(""); setDraft(false); setConfirmed(false); setError(undefined);
+        setGenerating(false); setDrafted(undefined); setGenError(undefined);
         setLoading(Boolean(id));
         if (!id) return;
         try {
@@ -53,6 +58,27 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             else setError(errorText(e));
         }
         finally { setBusy(false); }
+    };
+    /** A title and description from the small model; the commits' text stays if it can't. */
+    const generate = async () => {
+        const id = p.id, version = revision;
+        if (!id || !view() || busy() || generating()) return;
+        setGenerating(true); setGenError(undefined);
+        try {
+            const r = await rpc.call("session.gitPrText", { id, base: base().trim() || undefined });
+            if (revision !== version) return;
+            setDrafted({ model: r.model, title: title(), body: body() });
+            setTitle(r.title); setBody(r.body);
+        } catch (e) {
+            if (revision === version) setGenError(errorText(e).split("\n")[0]!.slice(0, 200));
+        } finally {
+            if (revision === version) setGenerating(false);
+        }
+    };
+    const undoDraft = () => {
+        const d = drafted();
+        if (!d) return;
+        setTitle(d.title); setBody(d.body); setDrafted(undefined);
     };
     // GitHub is only signed out: the session's own card takes it from here, and this closes to let it show.
     const signIn = async () => {
@@ -87,9 +113,19 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <label class="commit-message-label" for="pr-base">Base branch</label>
                             <input id="pr-base" class="input mono" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-title">Pull request title</label>
-                            <input id="pr-title" class="input" maxlength={250} value={title()} disabled={busy()} onInput={(e) => setTitle(e.currentTarget.value)} />
+                            <input id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>
-                            <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy()} onInput={(e) => setBody(e.currentTarget.value)} />
+                            <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
+                            <div class="commit-generate">
+                                <button class="btn ghost sm" disabled={busy() || generating()} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate title and description"}</button>
+                                <Show when={drafted()?.model}>
+                                    {(m) => <>
+                                        <span class="muted small">Drafted by {m()}.</span>
+                                        <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
+                                    </>}
+                                </Show>
+                                <Show when={genError()}><span class="commit-warning small" role="status">{genError()}</span></Show>
+                            </div>
                             <label><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /> Draft</label>
                         </Show>
                     </Show>
@@ -100,7 +136,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>
                     <span class="grow" />
                     <button class="btn" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Publishing…" : "Confirm push"}</button>
-                    <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Confirm · Open pull request</button></Show>
+                    <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Confirm · Open pull request</button></Show>
                 </div>
             </div>
         </Dialog>

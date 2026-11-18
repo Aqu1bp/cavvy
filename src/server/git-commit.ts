@@ -167,6 +167,15 @@ async function checkOperation(root: string, signal?: AbortSignal) {
     }
 }
 
+/** A new branch's full ref, checked as git checks a branch's name. */
+async function newBranchRef(root: string, name: string, signal?: AbortSignal): Promise<string> {
+    const bad = () => new RpcError(`“${name.slice(0, 200)}” isn't a valid branch name.`, "invalid");
+    if (!name || name.startsWith("-") || name === "HEAD") throw bad();
+    const r = await runGit(root, ["check-ref-format", "--branch", name], { allowFailure: true, signal });
+    if (r.code || r.out.trim() !== name) throw bad();
+    return `refs/heads/${name}`;
+}
+
 /** A path as one literal shell word, safe to paste whatever it contains. */
 const sh = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
 
@@ -182,7 +191,11 @@ function recoverySteps(hash: string, lock: string, index: string, dir: string | 
     ].join("\n");
 }
 
-export async function gitCommit(cwd: string, paths: string[], message: string, options: { expectedHead?: GitCommitHead; signal?: AbortSignal } = {}): Promise<GitCommitInfo> {
+/**
+ * `newBranch`: the commit goes on a new branch made where HEAD is, which is checked out (the files and the index are
+ * already as it has them); the branch HEAD was on doesn't move. Refused when a branch of that name exists.
+ */
+export async function gitCommit(cwd: string, paths: string[], message: string, options: { expectedHead?: GitCommitHead; signal?: AbortSignal; newBranch?: string } = {}): Promise<GitCommitInfo> {
     const git = (root: string, args: string[], opts: GitOptions = {}) => runGit(root, args, { signal: options.signal, ...opts });
     cwd = canonical(cwd);
     if (!message.trim() || message.includes("\0") || Buffer.byteLength(message) > 64 * 1024) throw new RpcError("Enter a commit message (at most 64 KiB, without NUL characters).", "invalid");
@@ -192,6 +205,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { pathOutput: true });
     const head = await git(root, ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
     if (!head.code) await git(root, ["ls-tree", "-r", "--name-only", "-z", head.out.trim()], { pathOutput: true });
+    const newRef = options.newBranch === undefined ? undefined : await newBranchRef(root, options.newBranch, options.signal);
     const files = await selectForCommit(cwd, paths, options.signal);
     await checkOperation(root, options.signal);
     const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"], { pathOutput: true })).out.replace(/\n$/, "");
@@ -337,10 +351,20 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         const subject = (await git(root, ["log", "-1", "--format=%s", hash])).out.trimEnd();
         await validateUnselected();
         if ((await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true, pathOutput: true })).out.trimEnd() !== headRef) throw new RpcError("The checked-out branch changed. Refresh the Review pane and try again.", "git");
+        // A new branch: HEAD names it, not yet made, so the commit below makes it, from nothing (as a first commit
+        // would), and its parent is still the old HEAD. Put back if the commit isn't published.
+        if (newRef) {
+            if (!(await git(root, ["rev-parse", "--verify", "--quiet", newRef], { allowFailure: true })).code) throw new RpcError(`A branch named ${options.newBranch} already exists. Pick another name.`, "invalid");
+            await git(root, ["symbolic-ref", "HEAD", newRef]);
+        }
+        const restoreHead = async () => {
+            if (!newRef) return;
+            await git(root, headRef ? ["symbolic-ref", "HEAD", headRef] : ["update-ref", "--no-deref", "HEAD", oldHead.out.trim()], { allowFailure: true, recovery: true });
+        };
         try {
             await git(
                 root,
-                ["update-ref", "-m", `commit${oldHead.code ? " (initial)" : ""}: ${subject}`, "HEAD", hash, oldHead.code ? zero : oldHead.out.trim()],
+                ["update-ref", "-m", `commit${oldHead.code ? " (initial)" : ""}: ${subject}`, "HEAD", hash, oldHead.code || newRef ? zero : oldHead.out.trim()],
                 { index: privateIndex, author, hooks: true },
             );
         } catch (e) {
@@ -348,11 +372,12 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             // timeout cannot undo the commit; finish reconciling the real index.
             preserveRecovery = true;
             try {
-                const published = await git(root, ["rev-parse", "--quiet", "--verify", headRef || "HEAD"], { allowFailure: true, recovery: true });
+                const published = await git(root, ["rev-parse", "--quiet", "--verify", newRef || headRef || "HEAD"], { allowFailure: true, recovery: true });
                 const tip = published.out.trim();
-                // An unchanged tip is the ordinary pre-publication failure case.
-                if ((!published.code && tip === oldHead.out.trim()) || (published.code === 1 && oldHead.code)) {
+                // An unchanged tip is the ordinary pre-publication failure case (for a new branch: none yet).
+                if ((!published.code && tip === oldHead.out.trim() && !newRef) || (published.code === 1 && (oldHead.code || newRef))) {
                     preserveRecovery = false;
+                    await restoreHead();
                     throw e;
                 }
                 if (published.code) throw new Error(published.err || "Cannot read the current branch tip.");
@@ -381,7 +406,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         await hook("post-commit", [], true).catch((e) => {
             if (!(e instanceof RpcError) || (e.code !== "git_timeout" && e.code !== "git_cancelled")) throw e;
         });
-        return { hash, subject, branch: headRef.replace(/^refs\/heads\//, "") || undefined };
+        return { hash, subject, branch: (newRef ?? headRef).replace(/^refs\/heads\//, "") || undefined };
     } finally {
         await held.close().catch(() => {});
         if (ownsLock && !preserveRecovery) {

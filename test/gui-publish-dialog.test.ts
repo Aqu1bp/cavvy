@@ -3,7 +3,7 @@ import { componentCode, elements } from "./gui-component-harness";
 
 const node = (tag: string, props: object | null, ...children: unknown[]) => ({ tag, props: props ?? {}, children });
 const defaults = { fingerprint: "a".repeat(64), branch: "feature", remote: "origin", target: "feature", destination: "https://github.com/example/project.git", base: "main", protected: false, defaultUnknown: false, gh: true, title: "Prefilled", body: "Commits", hasUpstream: false };
-function dialog(info = defaults, read?: () => Promise<unknown>) {
+function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => Promise<unknown>) {
     const effects: (() => unknown)[] = [], calls: { method: string; params: any }[] = [];
     let closed = false, result: unknown, blocked: string | undefined;
     const props = { id: "one" as string | undefined, onClose: () => { closed = true; }, onPublished: (pr: unknown) => { result = pr; } };
@@ -11,7 +11,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>) {
         createSignal: (initial: unknown) => { let value = initial; return [() => value, (next: unknown) => { value = next; }]; },
         createEffect: (effect: () => unknown) => effects.push(effect),
         on: (read: () => unknown, effect: (value: unknown) => unknown) => () => effect(read()),
-        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : { pr: { number: 7 } }; } },
+        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : { pr: { number: 7 } }; } },
         toast() {}, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal() {},
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
     });
@@ -45,6 +45,21 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     d.button("Open pull request").props.onClick(); await tick();
     expect(d.calls[1]!.params).toMatchObject({ action: "pr", title: "Edited", base: "release", body: "Description", draft: true, fingerprint: defaults.fingerprint });
     expect(d.result()).toEqual({ number: 7 });
+});
+
+test("Generate fills the title and description from the small model, for the base shown; a failure keeps the commits' text", async () => {
+    const d = dialog(defaults, undefined, async () => ({ title: "Add SSO", body: "## Summary\nAdds it.", model: "mock:mock-haiku" }));
+    await d.effects[0]!();
+    d.button("Generate title and description").props.onClick(); await tick();
+    expect(d.calls[1]).toEqual({ method: "session.gitPrText", params: { id: "one", base: "main" } });
+    d.button("Open pull request").props.onClick(); await tick();
+    expect(d.calls[2]!.params).toMatchObject({ action: "pr", title: "Add SSO", body: "## Summary\nAdds it." });
+
+    const failing = dialog(defaults, undefined, async () => { throw new Error("Set a small model in Settings to generate pull request text."); });
+    await failing.effects[0]!();
+    failing.button("Generate title and description").props.onClick(); await tick();
+    failing.button("Open pull request").props.onClick(); await tick();
+    expect(failing.calls[2]!.params).toMatchObject({ action: "pr", title: "Prefilled", body: "Commits" });
 });
 
 test("busy/untrusted guard and unavailable gh prevent effects even if handler is invoked", async () => {

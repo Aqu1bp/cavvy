@@ -644,10 +644,11 @@ export async function deleteSessions(ids: readonly string[]): Promise<string[]> 
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
 /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), beside `paths`. */
-export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = []) {
+/** `newBranch`: commit on a new branch made where HEAD is, and switch to it. */
+export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = [], newBranch?: string) {
     try {
-        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, ...(pathTokens.length ? { pathTokens } : {}) });
-        toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
+        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, newBranch, ...(pathTokens.length ? { pathTokens } : {}) });
+        toast(`Committed ${result.hash.slice(0, 7)}${newBranch ? ` to ${result.branch}` : ` ${result.subject}`}`, "success");
         return result;
     } finally {
         // Failed hooks can still edit working files; a post-publication error

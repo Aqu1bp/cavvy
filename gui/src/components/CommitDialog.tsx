@@ -21,6 +21,12 @@ export function CommitDialog() {
     const [loading, setLoading] = createSignal(false);
     const [generating, setGenerating] = createSignal(false);
     const [committing, setCommitting] = createSignal(false);
+    // Commit to a new branch (offered on the main branch or a detached HEAD): its name, suggested by the small model as
+    // the box is ticked and on Suggest, or typed.
+    const [toNew, setToNew] = createSignal(false);
+    const [newName, setNewName] = createSignal("");
+    const [naming, setNaming] = createSignal(false);
+    const [nameNote, setNameNote] = createSignal<{ model?: string; error?: string }>();
     let revision = 0;
     const close = () => {
         if (!committing()) setCommitRequest(undefined);
@@ -36,6 +42,10 @@ export function CommitDialog() {
             setModel(undefined);
             setError(undefined);
             setGenerating(false);
+            setToNew(false);
+            setNewName("");
+            setNaming(false);
+            setNameNote(undefined);
             setLoading(Boolean(request));
             if (!request) return;
             try {
@@ -103,9 +113,33 @@ export function CommitDialog() {
             if (commitRequest() === request) setGenerating(false);
         }
     };
+    /** What the new branch is for: the message's subject, else what the session is about. */
+    const about = () => {
+        const h = handleFor(commitRequest()?.id);
+        return message().split("\n")[0]!.trim() || h?.view.state.title || h?.view.turns.find((t) => t.prompt)?.prompt?.text || "";
+    };
+    const suggestName = async () => {
+        const request = commitRequest();
+        const text = about();
+        if (!request || naming()) return;
+        if (!text.trim()) return setNameNote({ error: "Write a commit message first." });
+        setNaming(true);
+        setNameNote(undefined);
+        try {
+            const r = await rpc.call("session.gitBranchName", { id: request.id, text });
+            if (commitRequest() !== request) return;
+            setNewName(r.branch);
+            setNameNote({ model: r.model });
+        } catch (e) {
+            if (commitRequest() === request) setNameNote({ error: errorText(e).split("\n")[0]!.slice(0, 200) });
+        } finally {
+            if (commitRequest() === request) setNaming(false);
+        }
+    };
+    const branching = () => Boolean(warning() && toNew());
     const commit = async () => {
         const request = commitRequest();
-        if (!request || !ready() || !message().trim() || committing() || generating()) return;
+        if (!request || !ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())) return;
         setCommitting(true);
         setError(undefined);
         try {
@@ -115,7 +149,7 @@ export function CommitDialog() {
                 ? { branchToken: head.branchToken, detached: false }
                 : head?.branch
                   ? { branch: head.branch, detached: false }
-                  : { sha: head?.sha, detached: true }, tokens);
+                  : { sha: head?.sha, detached: true }, tokens, branching() ? newName().trim() : undefined);
             setCommitRequest(undefined);
         } catch (e) {
             setError(errorText(e));
@@ -144,6 +178,30 @@ export function CommitDialog() {
                     <Show when={view()?.repo}>
                         <Show when={warning()}>
                             <p class="commit-warning" role="status">{warning()}</p>
+                            <div class="commit-branch">
+                                <label class="check-row">
+                                    <input
+                                        type="checkbox"
+                                        checked={toNew()}
+                                        disabled={committing()}
+                                        onChange={(e) => {
+                                            setToNew(e.currentTarget.checked);
+                                            if (e.currentTarget.checked && !newName()) void suggestName();
+                                        }}
+                                    />
+                                    <span>Commit to a new branch</span>
+                                </label>
+                                <Show when={toNew()}>
+                                    <div class="commit-generate">
+                                        <input class="input mono grow" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
+                                        <button class="btn ghost sm" disabled={committing() || naming()} onClick={() => void suggestName()}>
+                                            {naming() ? "Suggesting…" : "Suggest"}
+                                        </button>
+                                    </div>
+                                    <Show when={nameNote()?.model}>{(m) => <span class="muted small">Suggested by {m()}.</span>}</Show>
+                                    <Show when={nameNote()?.error}>{(m) => <span class="commit-warning small">{m()}</span>}</Show>
+                                </Show>
+                            </div>
                         </Show>
                         <div class="commit-files" role="group" aria-label="Files to commit">
                             <For each={files()}>
@@ -207,8 +265,8 @@ export function CommitDialog() {
                         Cancel
                     </button>
                     <span title={blocked()}>
-                        <button class="btn primary" disabled={!ready() || !message().trim() || committing() || generating()} onClick={() => void commit()}>
-                            {committing() ? "Committing…" : "Commit"}
+                        <button class="btn primary" disabled={!ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())} onClick={() => void commit()}>
+                            {committing() ? "Committing…" : branching() ? "Commit to new branch" : "Commit"}
                             <kbd aria-hidden="true">{os === "macos" ? "⌘↵" : `${mod}+↵`}</kbd>
                         </button>
                     </span>

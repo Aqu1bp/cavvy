@@ -1635,6 +1635,17 @@ export interface GitCommitInfo {
     branch?: string;
 }
 
+export interface GitPrTextInfo {
+    title: string;
+    body: string;
+    model: string;
+}
+
+export interface GitBranchNameInfo {
+    branch: string;
+    model: string;
+}
+
 export interface GitCommitMessageInfo {
     message: string;
     model: string;
@@ -2265,7 +2276,14 @@ export interface Methods {
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
     /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
-    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
+    /** `newBranch`: commit there instead, a branch made from HEAD, which then checks it out (the old branch stays where it was). */
+    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead; newBranch?: string }; result: GitCommitInfo };
+    /** A small model's title and description for a pull request from this branch into `base`. */
+    "session.gitPrText": { params: { id: string; base?: string }; result: GitPrTextInfo };
+    /** A small model's branch name for `text` (what the work is), after the `worktree.branchPrefix` setting. */
+    "session.gitBranchName": { params: { id: string; text: string }; result: GitBranchNameInfo };
+    /** The same, from Home (no session yet): the project's settings and small model. */
+    "projects.suggestBranch": { params: { path: string; text: string }; result: GitBranchNameInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[]; pathTokens?: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     /**
