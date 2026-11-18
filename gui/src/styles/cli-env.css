@@ -10,11 +10,15 @@
 .env-remove { color: var(--fg-3); }
 .env-row .env-name { flex: 0 1 40%; min-width: 0; }
 .env-row .env-value { flex: 1 1 60%; min-width: 0; }
-/* Narrow (a small window): the name gets a line of its own, so a long one isn't cut to a few letters. */
+/* Narrow (a small window): the name gets a line of its own, so a long one isn't cut to a few letters, and what's
+   wrong with it goes right under it, above the value. */
 .env-editor { container-type: inline-size; }
 @container (width < 400px) {
-    .env-row { flex-wrap: wrap; }
+    .env-item { display: flex; flex-wrap: wrap; align-items: center; gap: calc(6 * var(--sp)); }
+    .env-row { display: contents; }
     .env-row .env-name { flex: 1 0 100%; }
+    .env-error { flex: 1 0 100%; order: 1; margin-top: calc(-2 * var(--sp)); }
+    .env-row > :not(.env-name) { order: 2; }
     .env-item + .env-item { margin-top: calc(6 * var(--sp)); }
 }
 .env-lock { color: var(--fg-3); }
@@ -29,3 +33,6 @@
 .instance-form label > span, .instance-field > span { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
 .dialog .instance-form textarea.input { resize: vertical; min-height: calc(56 * var(--sp)); }
 .instance-form details label { margin-top: calc(8 * var(--sp)); }
+/* Its placeholders read as such, in the app's own type: in a code font, "One model id a line" or the program it runs
+   (a path) looked typed in. */
+.env-form .input.mono::placeholder { font-family: var(--font-ui); }

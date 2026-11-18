@@ -1,6 +1,6 @@
 import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
-import { Check, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
+import { Check, ChevronRight, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
@@ -136,7 +136,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             void work(async () => { await rpc.call("accounts.rename", { provider: p.provider.id, id: a.id, name: newName() }); setEditing(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRenameError);
         }}>
             <input class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="New account name" aria-invalid={!!renameError()} aria-describedby={renameError() ? `${uid}-rename-error` : undefined} maxLength={64} disabled={busy()} value={newName()} onInput={(e) => { setNewName(e.currentTarget.value); setRenameError(undefined); }} />
-            <button class="btn primary sm" disabled={busy()}>Save</button><button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button>
+            <button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button><button class="btn primary sm" disabled={busy()}>Save</button>
             <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
         </form>
     </Show>;
@@ -153,7 +153,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <div class="prov-lab">
                 <div class="prov-name">
                     <span class="truncate">{p.provider.name}</span>
-                    <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
+                    {/* Turned off (not set up), it has no plan in Cavvy: none is shown. */}
+                    <Show when={p.provider.configured && planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
                     <Show when={p.provider.configured && env().length}>
                         <button class="tag env-tag" title={env().map((v) => v.name).join(", ")} onClick={() => setEnvOpen(true)}>
                             {env().length === 1 ? "1 variable" : `${env().length} variables`}
@@ -246,15 +247,16 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <input id={`${uid}-name`} class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="Account name" aria-invalid={error()?.field === "name"} aria-describedby={error()?.field === "name" ? `${uid}-name-error` : undefined} value={name()} maxLength={64} disabled={busy()} onInput={(e) => { setName(e.currentTarget.value); setError(undefined); }} placeholder="Work" />
                 <Show when={error()?.field === "name"}><span id={`${uid}-name-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 <details class="account-advanced" open={advanced()} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-                    <summary>Use an existing folder</summary>
+                    <summary><ChevronRight size={14} class="chev" />Use an existing folder</summary>
                     <input id={`${uid}-folder`} class="input mono" aria-label="Account folder" aria-invalid={error()?.field === "folder"} aria-describedby={`${uid}-folder-help${error()?.field === "folder" ? ` ${uid}-folder-error` : ""}`} value={folder()} maxLength={1024} disabled={busy()} onInput={(e) => { setFolder(e.currentTarget.value); setError(undefined); }} placeholder="/path/to/cli-home" />
                     <span id={`${uid}-folder-help`} class="account-hint">Used as it is, without Default's settings and history.</span>
                     <Show when={error()?.field === "folder"}><span id={`${uid}-folder-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 </details>
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
+                {/* Cancel, then the form's own action, at the trailing edge, as in the app's dialogs and Settings' other forms. */}
                 <div class="account-actions">
-                    <button class="btn primary sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
                     <button class="btn ghost sm" type="button" disabled={busy()} onClick={cancelAdd}>Cancel</button>
+                    <button class="btn primary sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
                 </div>
             </form>
         </Show>
