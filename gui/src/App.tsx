@@ -7,7 +7,7 @@ import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor
 import { cycleSession, far, interrupt, newSession, openReview, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
-import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
+import { electron, isDesktop, isElectron, isTauri, machine, os, windowCommand, type QuitAsk } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
@@ -315,6 +315,7 @@ const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => 
 const RecentlyDeleted = lazy(() => import("./components/RecentlyDeleted").then((m) => ({ default: m.RecentlyDeleted })));
 const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
+const QuitDialog = lazy(() => import("./components/QuitDialog").then((m) => ({ default: m.QuitDialog })));
 
 export function App() {
     /** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
@@ -324,7 +325,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker, RecentlyDeleted]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker, RecentlyDeleted, ...(isElectron ? [QuitDialog] : [])]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -403,6 +404,19 @@ export function App() {
         const focused = document.activeElement as HTMLElement | null;
         if (focused?.closest?.("[data-covered], .keep.covered")) focused.blur();
     }, { defer: true }));
+
+    // The desktop app's question before it quits, in the window rather than the system's box (QuitDialog.tsx).
+    const [quitAsk, setQuitAsk] = createSignal<QuitAsk>();
+    onMount(() => {
+        if (!isElectron) return;
+        const off = electron?.onQuitAsk?.((q) => {
+            if ("end" in q) return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
+            // Asked again (quit again while it's up): it's still on screen.
+            if (quitAsk()?.id === q.id) return void requestAnimationFrame(() => quitAsk()?.id === q.id && electron?.quitReply?.(q.id, "shown"));
+            setQuitAsk(q);
+        });
+        if (off) onCleanup(off);
+    });
 
     // The window moves from its top strip and its edges (lib/window-drag.ts).
     onMount(() => {
@@ -688,6 +702,9 @@ export function App() {
             <Show when={commitShown()}><CommitDialog /></Show>
             <Show when={gitDialog()}><GitDialogs /></Show>
             <Show when={imageShown()}><ImageViewer /></Show>
+            <Show when={quitAsk()} keyed>
+                {(q) => <QuitDialog ask={q} onDone={() => quitAsk() === q && setQuitAsk(undefined)} />}
+            </Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
             </Show>

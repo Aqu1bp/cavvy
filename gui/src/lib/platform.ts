@@ -5,6 +5,12 @@ import type { Credentials } from "./rpc";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+export interface QuitAsk {
+    id: number;
+    title: string;
+    detail: string;
+}
+
 /** The Electron desktop app's bridge (desktop-electron/src/preload.ts). */
 export interface ElectronBridge {
     sidecarInfo(): Promise<{ port: number; token: string }>;
@@ -30,6 +36,10 @@ export interface ElectronBridge {
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     /** Whether the window can be seen (not minimized or hidden) and has the focus, each time either changes. */
     onWindowState?(fn: (s: { seen: boolean; focused: boolean }) => void): () => void;
+    /** The app asks whether to quit (sessions working, work unsaved): components/QuitDialog.tsx shows it. `end`: take it down. */
+    onQuitAsk?(fn: (q: QuitAsk | { id: number; end: true }) => void): () => void;
+    /** The question is up ("shown"), then its answer. */
+    quitReply?(id: number, answer: "shown" | "quit" | "cancel"): void;
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
