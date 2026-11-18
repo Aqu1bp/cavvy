@@ -178,7 +178,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const tracked = new Set(l.local.map((b) => b.upstream).filter(Boolean));
         for (const b of l.remote.filter((b) => match(b) && !tracked.has(b.name))) out.push({ key: `r:${b.name}`, label: b.name, end: when(b), icon: "remote", run: () => void switchTo(b.name, true) });
         const name = q().trim();
-        if (name && !l.local.some((b) => b.name === name)) out.push({ key: "create", label: `Create branch “${name}”`, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
+        if (name && !pr && !l.local.some((b) => b.name === name)) out.push({ key: "create", label: `Create branch “${name}”`, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
         return out;
     });
     // On the first row that can be picked (not the current branch), for each new query and new list.
@@ -320,19 +320,15 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
         }
     };
     if (p.start && p.query) void start(p.query.trim());
+    // The session's own sign-in card takes it from here: this closes to let it show, and opens again once signed in.
     const signIn = async () => {
         const id = signInSession();
         if (!id) return;
-        setBusy("sign-in");
+        setGitDialog(undefined);
         try {
-            if ((await rpc.call("session.askSignIn", { id, target: "gh" })) === "signed-in") {
-                setFailure(undefined);
-                void refetch();
-            }
+            if ((await rpc.call("session.askSignIn", { id, target: "gh" })) === "signed-in") setGitDialog({ kind: "pr", cwd: p.cwd, sessionId: p.sessionId, query: q() });
         } catch (e) {
-            setFailure({ text: e instanceof Error ? e.message : String(e) });
-        } finally {
-            setBusy(undefined);
+            toast(e instanceof Error ? e.message : String(e), "error");
         }
     };
 

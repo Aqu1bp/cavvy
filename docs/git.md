@@ -52,6 +52,18 @@ Fetching follows the same rules as publishing: the repository's own transport co
 
 The terminal app has no command for these; use `git` there.
 
+## Working on a pull request
+
+**Work on a pull request…** (in the command palette, and in Home's worktree menu) lists the open pull requests of the folder's GitHub repository, with their author, branch, and whether they're drafts or from a fork. Pick one, or type its number (`#123`) or URL; typing either in the branch dialog offers the same. Cavvy then:
+
+- fetches it from the remote, as **Fetch** does (the same trust and URL rules): a pull request from this repository by its branch, one from a fork by `refs/pull/<n>/head`;
+- checks it out in a new worktree in `.claude/worktrees`, as **New worktree…** does (the same trust checks and `WorktreeCreate` hooks): one from this repository on its own branch, tracking the remote's, so ahead/behind, **Pull** and **Push…** work; one from a fork on `pr-<n>`, at its head, with no upstream (pushing to a fork is for a terminal);
+- opens a new session there, with `Pull request #123: <title>` and its URL in the message box, for you to say what to do with it.
+
+If a worktree is already on that branch, it's opened as it is, without fetching. A local branch of that name that isn't checked out gets a worktree as it is too: update it with **Pull**.
+
+It needs the GitHub CLI, signed in (`gh auth status`). Signed out, the dialog offers **Sign in to GitHub** when a session is open (its sign-in card, see [Signing in](sign-in.md)), and says to run `gh auth login` otherwise. A remote that isn't on github.com is refused: it works only with GitHub for now. A URL of another repository's pull request is refused too.
+
 ## Worktrees
 
 Under the new-chat composer, click the branch to select a Git worktree. The menu refreshes each time it opens and shows branches and full paths, including detached worktrees. Selection changes the new chat's folder; existing chats keep their own folders.
