@@ -77,6 +77,7 @@ import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
+import { usageEverywhere } from "./usage-machines";
 import type {
     ArchiveOffer,
     ArchiveResult,
@@ -3609,8 +3610,23 @@ export class Engine {
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
             case "limits.get":
                 return [...this.limits.values()];
-            case "usage.summary":
-                return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
+            case "usage.summary": {
+                const days = usageDays(p.days);
+                const reading = usageSummary(days, Date.now(), [...this.limits.values()]).then((own) => {
+                    const who: Record<string, string> = {};
+                    for (const [key, s] of this.accountStatus) if (s.email) who[key] = s.email;
+                    own.who = who;
+                    own.names = Object.fromEntries(AGENT_CLIS.flatMap((d) => (d.account ? listAccounts(d.id) : []).filter((a) => a.id !== "default").map((a) => [`${d.id}:${a.id}`, a.name])));
+                    // Asked by the user's own computer, to add to its own (usage-machines.ts): the detail isn't added.
+                    if (p.brief === true) own.buckets = [];
+                    return own;
+                });
+                // The user's own computer adds its servers' (a subscription is used on all of them); a server answers with its own.
+                // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
+                const links = this.serverLinks;
+                if (this.o.away || !links) return reading;
+                return usageEverywhere(days, reading, { names: links.list().map((s) => s.name), connected: links.connectedServers() });
+            }
             case "app.update.get":
                 return this.updates.get();
             case "app.update.check":
