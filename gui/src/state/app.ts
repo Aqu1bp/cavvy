@@ -221,7 +221,10 @@ export function problemFor(sessionId: string | undefined): (LinkProblem & { mach
 }
 /** The state of the connection `sessionId` is shown over: its machine's, or the window's own. */
 export function connFor(sessionId: string | undefined): ConnectionState {
-    const on = awayMachine(sessionId);
+    return connOn(awayMachine(sessionId));
+}
+/** The state of the connection to machine `on` (awayMachine's names; undefined: the window's own). */
+export function connOn(on: string | undefined): ConnectionState {
     return on === undefined ? app.conn : (linkStates[on] ?? "connecting");
 }
 /**

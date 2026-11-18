@@ -1,8 +1,9 @@
 import { batch, createEffect, createMemo, createSignal, For, lazy, on, onCleanup, Show } from "solid-js";
 import { ChevronDown, Maximize2, Minimize2, Play, Plus, TerminalIcon, X } from "lucide-solid";
 import "../styles/terminal.css";
-import { app, reportError, rpc, toast } from "../state/app";
-import { RpcError } from "../lib/rpc";
+import { app, connOn, reportError, rpc, toast } from "../state/app";
+import { RpcError, type Rpc } from "../lib/rpc";
+import { machine } from "../lib/platform";
 import { prefs, setPrefs } from "../state/prefs";
 import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
 import { frameDrag } from "../lib/drag";
@@ -30,16 +31,24 @@ const MAX_TABS = 12;
  * Mounted while hidden: each tab keeps its emulator and shell across chat navigation. The tabs are kept
  * in this window's sessionStorage, and come back after a reload to their shells, which the server keeps
  * running for a while when the window goes.
+ *
+ * One for each machine whose sessions the window has shown (App.tsx): `on` is that machine (awayMachine; none, the
+ * window's own) and `link` the connection to its Cavvy, where its shells run. `current`: the session in view is on it.
  */
-export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
-    const saved = loadTabs();
+export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; link?: Rpc; current?: boolean }) {
+    const link = p.link ?? rpc;
+    const conn = () => connOn(p.on);
+    const current = () => p.current !== false;
+    // Where its tabs are kept: under the machine the shells are on (lib/terminal.ts tabsKey).
+    const at = p.on === undefined ? machine : p.on || undefined;
+    const saved = loadTabs(at);
     const [tabs, setTabs] = createSignal<Tab[]>([]);
     const [selected, setSelected] = createSignal<string | undefined>(saved.selected);
     const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
-    const visible = () => terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
-    // The sheet gives the panel its row while it shows.
-    createEffect(() => setTerminalShown(visible()));
+    const visible = () => current() && terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
+    // The sheet gives the panel its row while it shows: the one of the machine in view says.
+    createEffect(() => { if (current()) setTerminalShown(visible()); });
     let next = saved.next;
     // Not saved until the saved tabs are back, which would lose them to a reload meanwhile.
     const [restored, setRestored] = createSignal(false);
@@ -48,9 +57,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     onCleanup(() => { disposed = true; });
     let reopening = false;
     const save = () => {
-        if (restored()) saveTabs({ tabs: tabs().map(({ attach: _, closing: __, ...t }) => t), next, open: terminalOpen(), selected: selected(), closed: closes.ids });
+        if (restored()) saveTabs({ tabs: tabs().map(({ attach: _, closing: __, ...t }) => t), next, open: terminalOpen(), selected: selected(), closed: closes.ids }, at);
     };
-    const closes = new TerminalClosures(saved.closed ?? [], rpc, save);
+    const closes = new TerminalClosures(saved.closed ?? [], link, save);
     createEffect(on([tabs, selected, terminalOpen], save));
     // Main's RPC intentionally rejects offline calls. Reconcile only after a live
     // connection, and retry if that connection disappears before the list arrives.
@@ -59,32 +68,32 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         restoring = true;
         try {
             await closes.flush();
-            const listed = await rpc.call("terminal.list", {});
+            const listed = await link.call("terminal.list", {});
             if (disposed) return;
             const back = restoreTabs({ ...saved, closed: closes.ids }, listed);
             next = Math.max(next, back.next);
             setTabs(back.tabs.map((t) => ({ ...t, attach: true })));
-            if (back.open && back.tabs.length) {
+            if (back.open && back.tabs.length && current()) {
                 reopening = true;
                 setTerminalOpen(true);
                 reopening = false;
             }
             setRestored(true);
             // An explicit panel opening while its list was loading still starts the first shell.
-            if (terminalOpen() && !back.open && !p.hidden && !currentTabs().length) add();
+            if (current() && terminalOpen() && !back.open && !p.hidden && !currentTabs().length) add();
             save();
         } catch (e) {
             if (!(e instanceof RpcError && e.code === "disconnected")) reportError(e);
         } finally { restoring = false; }
     };
     createEffect(() => {
-        if (app.conn !== "open") return;
+        if (conn() !== "open") return;
         if (!restored()) void restore();
         else void closes.flush();
     });
     const full = () => tabs().length >= MAX_TABS;
     const add = () => {
-        if (!restored() || !p.cwd || app.conn !== "open" || full()) return;
+        if (!restored() || !p.cwd || conn() !== "open" || full()) return;
         const id = crypto.randomUUID();
         const tab = { id, cwd: p.cwd, number: next++, terminal: id };
         terminalAsked();
@@ -96,7 +105,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
         const cant = (why: string, plain: string) => (setup ? toast(`Setup script “${script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn") : toast(plain, "error"));
         if (!restored()) return cant("terminal tabs are reconnecting.", "Terminal tabs are reconnecting. Try again in a moment.");
-        if (app.conn !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
+        if (conn() !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
         if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
         const tab = { id, terminal: id, cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
@@ -108,7 +117,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     };
     const loginAccount = (provider: string, accountId: string, name: string) => {
         if (!restored()) return toast("Terminal tabs are reconnecting. Try again in a moment.");
-        if (app.conn !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
+        if (conn() !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
         const id = crypto.randomUUID();
         const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
         terminalAsked();
@@ -119,7 +128,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     };
     // A sign-in card's "Open in terminal": a tab in the session's folder with the command typed in, not run.
     const signIn = (session: string, interaction: string) => {
-        if (!restored() || !p.cwd || app.conn !== "open" || full()) return toast("Close a terminal, then try again", "warn"), false;
+        if (!restored() || !p.cwd || conn() !== "open" || full()) return toast("Close a terminal, then try again", "warn"), false;
         const id = crypto.randomUUID();
         signInTabs.set(id, { session, interaction });
         terminalAsked();
@@ -128,16 +137,25 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setTerminalOpen(true);
         return true;
     };
-    terminalActions.signIn = signIn;
-    onCleanup(() => { if (terminalActions.signIn === signIn) delete terminalActions.signIn; });
-    terminalActions.loginAccount = loginAccount;
-    onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
-    terminalActions.runScript = runScript;
-    onCleanup(() => { if (terminalActions.runScript === runScript) delete terminalActions.runScript; });
+    // What opens a tab from elsewhere opens it on the machine of the session in view: this panel's, while it's that one.
+    // Signing an account in is the window's own machine's (Settings).
+    createEffect(() => {
+        if (!current()) return;
+        terminalActions.signIn = signIn;
+        terminalActions.runScript = runScript;
+        onCleanup(() => {
+            if (terminalActions.signIn === signIn) delete terminalActions.signIn;
+            if (terminalActions.runScript === runScript) delete terminalActions.runScript;
+        });
+    });
+    if (p.on === undefined) {
+        terminalActions.loginAccount = loginAccount;
+        onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
+    }
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
     createEffect(on(terminalOpen, (open) => {
-        if (!open || reopening) return;
+        if (!open || reopening || !current()) return;
         // Opened by the user: its terminal takes the keyboard, even from a card that waits (lib/terminal-keys.ts).
         terminalAsked();
         if (!p.hidden && !currentTabs().length) add();
@@ -194,22 +212,22 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                         <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
-                <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
+                <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || conn() !== "open" || full()} onClick={add}><Plus size={15} /></button>
                 <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
                 <button class="hb sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
                 <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={15} /></button>
             </div>
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
-                    <span>{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
-                    <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || app.conn !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
+                    <span>{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open a terminal here.` : conn() !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
+                    <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || conn() !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
                 </div>
             </Show>
             {/* `shown` worked out once, owned by the tab: `visible={a() && b()}` makes a memo each time it's read, and the
                 screen reads it from resize frames and after awaits, where nothing owns it: each was kept for good. */}
-            <For each={tabs()}>{(tab) => { const shown = createMemo(() => visible() && active()?.id === tab.id); return <TerminalScreen tab={tab} visible={shown()} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
+            <For each={tabs()}>{(tab) => { const shown = createMemo(() => visible() && active()?.id === tab.id); return <TerminalScreen tab={tab} visible={shown()} link={link} conn={conn} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
                 if (previous) {
-                    try { await rpc.call("terminal.close", { id: previous }); }
+                    try { await link.call("terminal.close", { id: previous }); }
                     catch (e) {
                         if (e instanceof RpcError && e.code === "disconnected") closes.close(previous);
                         if (!(e instanceof RpcError && e.code === "terminal_not_open")) throw e;

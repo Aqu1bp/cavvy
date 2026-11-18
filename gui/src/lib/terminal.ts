@@ -72,18 +72,21 @@ const TABS_KEY = "cavvy.terminals";
 export const tabsKey = (at: string | undefined = machine) => (at ? `${TABS_KEY}.${at}` : TABS_KEY);
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
-/** sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's). */
-export function loadTabs(): SavedTabs {
+/**
+ * sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's).
+ * `at`: the machine the shells run on (tabsKey), the window's own unless said.
+ */
+export function loadTabs(at: string | undefined = machine): SavedTabs {
     try {
-        return parseTabs(sessionStorage.getItem(tabsKey()));
+        return parseTabs(sessionStorage.getItem(tabsKey(at)));
     } catch {
         return EMPTY;
     }
 }
 
-export function saveTabs(saved: SavedTabs) {
+export function saveTabs(saved: SavedTabs, at: string | undefined = machine) {
     try {
-        sessionStorage.setItem(tabsKey(), JSON.stringify(saved));
+        sessionStorage.setItem(tabsKey(at), JSON.stringify(saved));
     } catch {}
 }
 

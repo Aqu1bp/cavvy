@@ -1,9 +1,10 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { watchCodeMetrics } from "./lib/code-metrics";
-import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, awayMachine, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -316,6 +317,19 @@ const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => 
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
+    // A terminal panel for each machine whose sessions the window has shown, each with its own shells there: a session
+    // of another machine's opens its terminal on that machine, over the connection its session is shown over.
+    const terminalOn = () => awayMachine(app.activeId);
+    const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);
+    createEffect(() => {
+        const on = terminalOn();
+        if (on === undefined) return;
+        const link = rpcFor(app.activeId);
+        // A new connection to it (the last one was given up): its panel is made again on it, its tabs from where they're kept.
+        untrack(() => {
+            if (!terminalMachines().some((m) => m.on === on && m.link === link)) setTerminalMachines((all) => [...all.filter((m) => m.on !== on), { on, link }]);
+        });
+    });
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {
@@ -661,7 +675,9 @@ export function App() {
                                 </RenderBoundary>
                             </Show>
                         </div>
-                        <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
+                        <For each={terminalMachines()}>{(m) => (
+                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} cwd={terminalOn() === m.on ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
+                        )}</For>
                     </div>
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
