@@ -2090,6 +2090,12 @@ export interface Methods {
     /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
     "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
     /**
+     * Only a server takes these, from the user's own machine (src/servers/sync.ts): what that machine gave it of its
+     * skills and commands (path under the home: sha256 of what it held), and more of them, or some gone.
+     */
+    "sync.files": { params: Record<string, never>; result: Record<string, string> };
+    "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
+    /**
      * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
      * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,
      * `peers.read`, `peers.send`: asked of a server by that computer, about the server's own sessions.

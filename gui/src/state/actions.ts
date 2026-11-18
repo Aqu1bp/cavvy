@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -81,7 +81,8 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            requestTrust(cwd, () => void continueCliSession(cwd, s));
+            // Imported over the window's own connection (importCliSession): trusted there.
+            requestTrust(cwd, () => void continueCliSession(cwd, s), undefined, undefined, rpc);
             return false;
         }
         reportError(e);
@@ -258,19 +259,23 @@ export async function exportSession(id: string) {
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  * `accepted` identifies the receiving session, including one just created from Home.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string; at?: HomeAt }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    // Home's machine as it is now: checked, made and trusted there, wherever the user goes meanwhile.
+    const at = opts.to ? opts.to.at : id ? undefined : homeAt();
     let created = false;
+    // Still on that Home (the same folder on the same machine): the session made from it is shown.
+    const stillHome = () => app.activeId === undefined && app.homeCwd === cwd && homeOn() === at?.there?.on;
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
-        const to = { id, cwd };
+        const to = { id, cwd, at };
         // The toast stays, with its action, until the send succeeds.
         toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
             // A failure is shown once, in this toast, with its retry.
             if (!(await send(text, attachments, { literal: true, to, throwErrors: true, accepted: opts.accepted }))) return false;
-            if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
+            if (created && stillHome()) setApp("activeId", to.id);
             opts.sent?.();
         } });
         return false;
@@ -283,8 +288,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             }
             // Check before creating a session, so a typo on Home doesn't start one.
             const command = opts.literal ? undefined : slashName(text);
-            if (command) await rpcFor(undefined).call("commands.list", { cwd, command });
-            const h = await createIn(cwd);
+            const home = at ?? {};
+            if (command) await (home.there?.link ?? rpc).call("commands.list", { cwd, command });
+            const h = await createIn(cwd, home);
             if (!h) return false;
             id = h.id;
             created = true;
@@ -305,13 +311,13 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         }
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
-        if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
+        if (created && stillHome()) setApp("activeId", id);
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
         // Its model (Antigravity) would run the folder's own hooks: the message stays in the box until it's trusted.
         if (e instanceof RpcError && e.code === "needs_trust" && e.folder) {
-            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message));
+            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message), rpcFor(id));
             return false;
         }
         if (opts.throwErrors) throw e;
@@ -325,22 +331,23 @@ function agentTrustReason(message: string): string {
     return message.replace(/\s*\(\/trust\)/, "");
 }
 
-async function createIn(cwd: string) {
+async function createIn(cwd: string, at: HomeAt) {
+    const link = at.there?.link ?? rpc;
     try {
-        return await createSession(cwd, homeModeOf());
+        return await createSession(cwd, at);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
-            requestTrust(cwd, requestComposerFocus);
+            requestTrust(cwd, requestComposerFocus, undefined, undefined, link);
             return undefined;
         }
         throw e;
     }
 }
 
-export async function trustAndContinue(path: string, trust: boolean) {
-    // Home's folder: on its machine.
-    await (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc).call("projects.trust", { path, trust });
+/** `link`: the folder's machine, when the request said (requestTrust); else Home's folder on its machine, or the window's. */
+export async function trustAndContinue(path: string, trust: boolean, link?: Rpc) {
+    await (link ?? (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc)).call("projects.trust", { path, trust });
     void refreshProjects();
 }
 
@@ -672,7 +679,8 @@ export async function archive(id: string, archived: boolean) {
             const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
             // On another machine: removing a worktree asks about folders there, which a window on that machine does.
             // From here it's kept, and said to be.
-            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this computer"}.`);
+            const away = awayMachine(id);
+            if ((row && row.machine !== machine) || away !== undefined) return setArchived(id, archived, `Archived. Its worktree stays on ${(row ? row.machine : away) || "this computer"}.`);
             const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;

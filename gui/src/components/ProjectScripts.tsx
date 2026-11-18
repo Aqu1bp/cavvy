@@ -7,7 +7,8 @@ import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { ArrowUp, Bug, ChevronDown, FlaskConical, Hammer, ListChecks, Pencil, Play, Plus, Trash2, Wrench } from "lucide-solid";
 import { SCRIPT_ICONS, SCRIPT_LIMITS, type ProjectScript, type ProjectScripts as ScriptList, type ScriptIcon } from "@shared/protocol";
-import { app, reportError, rpc } from "../state/app";
+import { app, connFor, reportError, rpcFor } from "../state/app";
+import type { Rpc } from "../lib/rpc";
 import { terminalActions } from "../state/ui";
 import { Popover } from "./ui/Popover";
 import { Dialog } from "./ui/Dialog";
@@ -26,7 +27,10 @@ const ScriptGlyph = (p: { icon?: ScriptIcon; size: number }) => <Dynamic compone
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function ProjectScripts(p: { cwd: string }) {
+/** `sessionId`: the session in view, whose machine the scripts are kept and run on (another machine's, opened here: rpcFor). */
+export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
+    const link = () => rpcFor(p.sessionId);
+    const online = () => connFor(p.sessionId) === "open";
     const [list, setList] = createSignal<ScriptList>();
     const [failed, setFailed] = createSignal<string>();
     const [open, setOpen] = createSignal(false);
@@ -36,22 +40,25 @@ export function ProjectScripts(p: { cwd: string }) {
     let loads = 0;
 
     const load = async () => {
-        if (app.conn !== "open") return;
+        if (!online()) return;
         const n = ++loads;
         try {
-            const result = await rpc.call("scripts.list", { cwd: p.cwd });
+            const result = await link().call("scripts.list", { cwd: p.cwd });
             if (n === loads) (setList(result), setFailed(undefined));
         } catch (e) {
             if (n === loads) (setList(undefined), setFailed(message(e)));
         }
     };
-    createEffect(on(() => p.cwd, () => (setList(undefined), void load())));
+    createEffect(on([() => p.cwd, link], () => (setList(undefined), void load())));
     // Other windows' edits: told by the server, and caught up on after a reconnect or on coming back to the window.
-    const offEvent = rpc.onEvent((e) => { if (e.type === "scripts.changed" && (!list() || list()!.project === e.project)) void load(); });
-    const offState = rpc.onState((s) => { if (s === "open") void load(); });
+    createEffect(on(link, (l) => {
+        const offEvent = l.onEvent((e) => { if (e.type === "scripts.changed" && (!list() || list()!.project === e.project)) void load(); });
+        const offState = l.onState((s) => { if (s === "open") void load(); });
+        onCleanup(() => (offEvent(), offState()));
+    }));
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
-    onCleanup(() => (offEvent(), offState(), window.removeEventListener("focus", onFocus)));
+    onCleanup(() => window.removeEventListener("focus", onFocus));
 
     const scripts = () => list()?.scripts ?? [];
     const main = () => scripts().find((s) => s.id === list()?.lastUsed) ?? scripts()[0];
@@ -67,7 +74,7 @@ export function ProjectScripts(p: { cwd: string }) {
     const remove = async (script: ProjectScript) => {
         setConfirming(undefined);
         try {
-            await rpc.call("scripts.delete", { cwd: p.cwd, id: script.id });
+            await link().call("scripts.delete", { cwd: p.cwd, id: script.id });
         } catch (e) {
             reportError(e);
         }
@@ -78,13 +85,13 @@ export function ProjectScripts(p: { cwd: string }) {
         if (index < 1) return;
         [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
         try {
-            setList(await rpc.call("scripts.reorder", { cwd: p.cwd, ids }));
+            setList(await link().call("scripts.reorder", { cwd: p.cwd, ids }));
         } catch (e) {
             reportError(e);
             await load();
         }
     };
-    const offline = () => app.conn !== "open";
+    const offline = () => !online();
 
     return (
         <>
@@ -177,12 +184,12 @@ export function ProjectScripts(p: { cwd: string }) {
                     </button>
                 </Show>
             </Popover>
-            <ScriptDialog cwd={p.cwd} scripts={scripts()} editing={editing()} onClose={() => setEditing(undefined)} onSaved={() => void load()} />
+            <ScriptDialog cwd={p.cwd} link={link()} online={online()} scripts={scripts()} editing={editing()} onClose={() => setEditing(undefined)} onSaved={() => void load()} />
         </>
     );
 }
 
-function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { script?: ProjectScript }; onClose: () => void; onSaved: () => void }) {
+function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: ProjectScript[]; editing?: { script?: ProjectScript }; onClose: () => void; onSaved: () => void }) {
     const [name, setName] = createSignal("");
     const [command, setCommand] = createSignal("");
     const [icon, setIcon] = createSignal<ScriptIcon>();
@@ -206,7 +213,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
         setBusy(true);
         setError(undefined);
         try {
-            await rpc.call("scripts.save", { cwd: p.cwd, id: p.editing?.script?.id, name: name(), command: command(), icon: icon() ?? null, runOnWorktreeCreate: setup() });
+            await p.link.call("scripts.save", { cwd: p.cwd, id: p.editing?.script?.id, name: name(), command: command(), icon: icon() ?? null, runOnWorktreeCreate: setup() });
             p.onSaved();
             p.onClose();
         } catch (e) {
@@ -268,7 +275,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
             <div class="dialog-actions">
                 <button class="btn ghost" onClick={p.onClose}>Cancel</button>
                 <span class="grow" />
-                <button class="btn primary" disabled={!ready() || app.conn !== "open"} onClick={() => void save()}>
+                <button class="btn primary" disabled={!ready() || !p.online} onClick={() => void save()}>
                     {p.editing?.script ? "Save" : "Add script"}
                 </button>
             </div>

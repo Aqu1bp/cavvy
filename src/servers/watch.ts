@@ -47,6 +47,8 @@ const CHANGES_PER_SECOND = 20;
 /** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
 const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
+/** A server's record of the skills and commands it was given: a path and a hash for each of at most 3000 files. */
+const SYNC_ANSWER = 1024 * 1024;
 /** What a server says of its sessions to another machine's agent (src/server/far-peers.ts): a session's last turns, as text. */
 const PEERS_ANSWER = 1024 * 1024;
 /** At most this many of a server's requests about sessions elsewhere are answered at once. */
@@ -130,6 +132,8 @@ export class MachineWatch {
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
+            /** Brings the server level with this machine's skills and commands, asking it over this connection (sync.ts). */
+            sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
             /**
              * Answers what a session on the server asks about the user's other machines' sessions (far-peers.ts
              * answerPeers): this one says so on connecting.
@@ -276,6 +280,29 @@ export class MachineWatch {
         });
     }
 
+    /** A sync under way, and whether another was asked for meanwhile (it runs once this one ends). */
+    private syncing?: Promise<void>;
+    private syncAgain = false;
+
+    /**
+     * Brings the server's skills and commands level with this machine's (src/servers/sync.ts): when the connection
+     * opens, and when they change here. One at a time; asked for meanwhile, it runs once more after.
+     */
+    resync() {
+        if (!this.o.sync || this.state !== "connected") return;
+        if (this.syncing) return void (this.syncAgain = true);
+        this.syncing = this.o
+            .sync((method, params) => this.request(method, params, SYNC_ANSWER))
+            .catch(() => undefined)
+            .finally(() => {
+                this.syncing = undefined;
+                if (this.syncAgain) {
+                    this.syncAgain = false;
+                    this.resync();
+                }
+            });
+    }
+
     /** What this machine lends changed: said to the server on the connection there is, if any. */
     relend() {
         if (this.ws?.open) this.relendNow?.();
@@ -404,6 +431,7 @@ export class MachineWatch {
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
                 if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                this.resync();
                 if (this.o.peers) ws.send(JSON.stringify({ id: this.nextId++, method: "peers.hub", params: {} }));
                 return;
             }
