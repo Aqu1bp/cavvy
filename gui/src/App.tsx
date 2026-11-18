@@ -409,11 +409,22 @@ export function App() {
     const [quitAsk, setQuitAsk] = createSignal<QuitAsk>();
     onMount(() => {
         if (!isElectron) return;
+        /** The question being put up (its code loading), until it's up or taken down. */
+        let coming: number | undefined;
         const off = electron?.onQuitAsk?.((q) => {
-            if ("end" in q) return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
-            // Asked again (quit again while it's up): it's still on screen.
-            if (quitAsk()?.id === q.id) return void requestAnimationFrame(() => quitAsk()?.id === q.id && electron?.quitReply?.(q.id, "shown"));
-            setQuitAsk(q);
+            if ("end" in q) {
+                if (coming === q.id) coming = undefined;
+                return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
+            }
+            // Said at once, before loading or drawing anything: the app then waits for the answer, however long drawing
+            // it takes, rather than asking in the system's box. Asked again while it's up: it still has it.
+            electron?.quitReply?.(q.id, "asked");
+            if (quitAsk()?.id === q.id || coming === q.id) return;
+            coming = q.id;
+            QuitDialog.preload().then(
+                () => coming === q.id && (coming = undefined, setQuitAsk(q)),
+                () => coming === q.id && (coming = undefined, electron?.quitReply?.(q.id, "unable")),
+            );
         });
         if (off) onCleanup(off);
     });

@@ -38,8 +38,8 @@ export interface ElectronBridge {
     onWindowState?(fn: (s: { seen: boolean; focused: boolean }) => void): () => void;
     /** The app asks whether to quit (sessions working, work unsaved): components/QuitDialog.tsx shows it. `end`: take it down. */
     onQuitAsk?(fn: (q: QuitAsk | { id: number; end: true }) => void): () => void;
-    /** The question is up ("shown"), then its answer. */
-    quitReply?(id: number, answer: "shown" | "quit" | "cancel"): void;
+    /** The page has the question ("asked", at once), then its answer, or "unable": it couldn't put it up. */
+    quitReply?(id: number, answer: "asked" | "quit" | "cancel" | "unable"): void;
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
