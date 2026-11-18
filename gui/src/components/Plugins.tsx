@@ -7,7 +7,7 @@
 import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, reportError, rpc, toast } from "../state/app";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -92,7 +92,9 @@ export function Plugins() {
     /** The details dialog, one object per opening: an install started in one closes only that one. */
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
-    const cwd = () => app.homeCwd;
+    // These are this window's machine's plugins. The folder in view counts (its project's own) only when it's on
+    // that machine: another machine's folder names nothing here.
+    const cwd = () => (awayMachine(app.activeId) !== undefined || awayUnopened(app.activeId) ? undefined : app.homeCwd);
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 

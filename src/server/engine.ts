@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { applySync, readSynced } from "../servers/sync";
-import { FAR_GRACE_MS, searchServers, withServers } from "./far-search";
+import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
@@ -2895,8 +2895,12 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
-            case "sessions.trash":
+            case "sessions.trash": {
+                // `servers`: what was deleted on the servers this machine is connected to instead (the user's own
+                // computer, for its windows). Asked apart, so a slow server doesn't hold this machine's own list.
+                if (p.servers === true) return this.o.away || client.machine ? [] : await trashOnServers(this.serverLinks?.connectedServers() ?? new Map());
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
+            }
             case "sessions.searchWarm":
                 // Not waited for: the first search finds what's been read by then, and reads the rest itself.
                 this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));

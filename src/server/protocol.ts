@@ -69,6 +69,8 @@ export interface TrashedSessionSummary {
     cwd?: string;
     projectName?: string;
     deletedAt: number;
+    /** The server it was deleted on, for a window on the user's own computer (none: this machine's own). */
+    machine?: string;
 }
 
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {
@@ -2323,7 +2325,8 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
-    "sessions.trash": { params: Record<string, never>; result: TrashedSessionSummary[] };
+    /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */
+    "sessions.trash": { params: { servers?: boolean }; result: TrashedSessionSummary[] };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /**
      * Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. `left`: also
