@@ -78,9 +78,11 @@ export async function listSessions(peers: SessionPeers | undefined, input: Recor
     // One limit for both: what's left of it after this machine's.
     const left = Math.max(1, Math.min(Math.floor(limit ?? 20), PEER_LIMITS.maxList)) - r.count;
     if (left <= 0) return { text: `${r.text}\nSessions on the user's other machines aren't listed: the limit is reached. Narrow it with query, or raise limit.`, summary: `${r.count} session${r.count === 1 ? "" : "s"}` };
-    const far = await reach.list({ query, limit: left }).catch(() => []);
+    let why: string | undefined;
+    const far = await reach.list({ query, limit: left }).catch((e) => ((why = e instanceof PeerError ? e.message : "they didn't answer."), []));
     const count = r.count + far.length;
-    return { text: [r.text, farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : "No other sessions" };
+    const note = why && `Sessions on the user's other machines couldn't be listed: ${why}`;
+    return { text: [r.text, note ?? farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : "No other sessions" };
 }
 
 export async function readSession(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {

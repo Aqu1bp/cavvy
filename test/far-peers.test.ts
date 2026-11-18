@@ -71,6 +71,16 @@ test("a server asks through the user's computer: its own sessions and the other 
     const named = machine([row("x1", 60)]);
     const rows = await answerPeers("box", "list", { limit: 10 }, mac.ops, new Map([...servers, [HOME_NAME, named.link]]));
     expect((rows as { id: string }[]).map((r) => r.id)).toEqual([`${HOME_NAME}/m1`, "lab/l1"]);
+    // ...and one named so reaches none: its sessions would be taken for the computer's.
+    await expect(answerPeers(HOME_NAME, "list", { limit: 10 }, mac.ops, servers)).rejects.toThrow(`named ${HOME_NAME}`);
+    // The computer's own deny rules hold for its sessions, not for the other servers'.
+    const deny = (tool: string) => (tool === "ListSessions" || tool === "ReadSession" ? `denies ${tool}` : undefined);
+    const denied = await answerPeers("box", "list", { limit: 10 }, mac.ops, servers, deny);
+    expect((denied as { id: string }[]).map((r) => r.id)).toEqual(["lab/l1"]);
+    await expect(answerPeers("box", "read", { id: `${HOME_NAME}/m1` }, mac.ops, servers, deny)).rejects.toThrow("denies ReadSession");
+    expect(((await answerPeers("box", "read", { id: "lab/l1" }, mac.ops, servers, deny)) as { text: string }).text).toBe("turns of l1");
+    // A refused list is said, not taken for none.
+    await expect(serverFarPeers(() => Promise.reject(new Error("busy"))).list({ limit: 5 })).rejects.toThrow("busy");
 });
 
 test("a server answers its sessions for the user's computer, and asks it about the others; with none connected, says so", async () => {
@@ -81,7 +91,7 @@ test("a server answers its sessions for the user's computer, and asks it about t
     engine.clients.add(client as never);
     try {
         const none = engine.farPeers()!;
-        await expect(none.list({ limit: 5 })).resolves.toEqual([]);
+        await expect(none.list({ limit: 5 })).rejects.toThrow("isn't connected to this server right now");
         await expect(none.read(`${HOME_NAME}/x`)).rejects.toThrow("isn't connected to this server right now");
         await engine.handle(client as never, "peers.hub", {});
         const far = engine.farPeers()!;

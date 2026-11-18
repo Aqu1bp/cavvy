@@ -25,7 +25,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
@@ -2213,19 +2213,13 @@ export class Engine {
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
                 // What a session on a server asks about the user's other machines' sessions: this computer answers.
-                peers: async (name, op, params) => {
-                    // This computer's own rules for the session tools hold for what a server asks too.
-                    const tool = op === "list" ? "ListSessions" : op === "read" ? "ReadSession" : "SendToSession";
-                    let deny: string[] = [];
-                    try {
-                        deny = loadScope("user", homedir()).permissions?.deny ?? [];
-                    } catch {
-                        // An unreadable settings file: nothing is let through on it.
-                        throw new PeerError("Cavvy on your computer couldn't read its settings, so it can't answer.");
-                    }
-                    if (findMatch(deny, { toolName: tool }, homedir(), "deny")) throw new PeerError(`Your computer's settings deny ${tool}, so sessions on other machines can't use it there.`);
-                    return answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map());
-                },
+                peers: (name, op, params) =>
+                    answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map(), (tool) => {
+                        // This computer's own rules for the session tools hold for what a server asks of its sessions.
+                        const { settings, unreadable } = loadScopeChecked("user", homedir());
+                        if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about its sessions.";
+                        return findMatch(settings.permissions?.deny ?? [], { toolName: tool }, homedir(), "deny") ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
+                    }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;

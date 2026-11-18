@@ -100,14 +100,21 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
  * On the user's own computer: what a server asks it for a session of that server's (`asker`), over its connection
  * there: this computer's sessions (`mac/<id>`) and the other servers' (`<name>/<id>`).
  */
-export async function answerPeers(asker: string, op: string, params: Record<string, unknown>, here: PeerOps, servers: Map<string, ServerAsk>): Promise<unknown> {
+export async function answerPeers(asker: string, op: string, params: Record<string, unknown>, here: PeerOps, servers: Map<string, ServerAsk>, denied: (tool: "ListSessions" | "ReadSession" | "SendToSession") => string | undefined = () => undefined): Promise<unknown> {
+    // Its sessions would be named as this computer's are, there and everywhere else.
+    if (asker === HOME_NAME) throw new PeerError(`A server named ${HOME_NAME} can't reach sessions on other machines: rename it in Cavvy on your computer to reach them.`);
+    /** This computer's own rules, for one of its own sessions. */
+    const allowed = (tool: "ListSessions" | "ReadSession" | "SendToSession") => {
+        const why = denied(tool);
+        if (why) throw new PeerError(why);
+    };
     // Not one named as this computer is there: its sessions would pass for this computer's.
     const others = new Map([...servers].filter(([n]) => n !== asker && n !== HOME_NAME));
     const far = homeFarPeers(() => others);
     const limit = Math.max(1, Math.min(Number(params.limit) || 20, 200));
     if (op === "list") {
         const query = typeof params.query === "string" ? params.query : undefined;
-        const mine = here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
+        const mine = denied("ListSessions") ? [] : here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
         return newest([...mine, ...(await far.list({ query, limit }))], limit);
     }
     const id = str(params.id, 300);
@@ -115,7 +122,9 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     if (!s) throw new PeerError(`No session ${id}. ListSessions (all: true) shows the ones there are.`);
     if (op === "read") {
         const turns = typeof params.turns === "number" ? params.turns : undefined;
-        return s.on === HOME_NAME ? here.read(s.id, turns) : far.read(id, turns);
+        if (s.on !== HOME_NAME) return far.read(id, turns);
+        allowed("ReadSession");
+        return here.read(s.id, turns);
     }
     if (op === "send") {
         const f = (params.from && typeof params.from === "object" ? params.from : {}) as Record<string, unknown>;
@@ -127,7 +136,10 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         const message = checkMessage(params.message);
         // Into one of this computer's: a server's session counts as Auto at most, so one here in Bypass takes no work
         // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't).
-        if (s.on === HOME_NAME) return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
+        if (s.on === HOME_NAME) {
+            allowed("SendToSession");
+            return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
+        }
         const link = others.get(s.on);
         if (!link) throw new PeerError(`No session ${id}: ${s.on} isn't connected right now.`);
         return sentFrom(await link.ask("peers.send", { id: s.id, message, from }).catch(refused));
@@ -142,7 +154,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
 export function serverFarPeers(call: (op: string, params: Record<string, unknown>) => Promise<unknown>): FarPeers {
     return {
         list: async (o) => {
-            const rows = await call("list", o).catch(() => []);
+            // Refused or not answered: said (session-tools.ts), not taken for none.
+            const rows = await call("list", o).catch(refused);
             return newest(
                 (Array.isArray(rows) ? rows : []).flatMap((r) => {
                     // Each already named as this machine names it (`mac/<id>`, `box/<id>`).
