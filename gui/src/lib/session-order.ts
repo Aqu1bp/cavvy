@@ -43,7 +43,7 @@ export type SidebarEntry =
     /** A project heading; `collapsed`: its sessions in play (`ids`) are folded under it. */
     /** `cwd`: the project (projectOf). `machine`: the server it's on. */
     | { key: string; kind: "project"; cwd: string; name: string; machine?: string; collapsed?: boolean; ids?: string[] }
-    | { key: string; kind: "settled" | "archived" }
+    | { key: string; kind: "settled" | "archived" | "snoozed" }
     /** Listed by date: the day its sessions below were last at work (dayOf); `collapsed`: they're folded under it (`ids`). */
     | { key: string; kind: "day"; label: DayLabel; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
@@ -60,6 +60,8 @@ export interface SidebarOptions {
     groupBy: "date" | "project";
     archived: boolean;
     settledOpen: boolean;
+    /** Snoozed's rows are shown (folded by default). */
+    snoozedOpen?: boolean;
     cards: number;
     settled: number;
     archive: number;
@@ -112,8 +114,8 @@ export function toggleProject<T extends string>(collapsed: readonly T[], cwd: T)
  * The same array when there's nothing to unfold (a settled or archived one is
  * listed elsewhere; listed by date, nothing folds).
  */
-export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived"> | undefined, groupBy: "date" | "project"): readonly string[] {
-    if (!s || groupBy !== "project" || s.settled || s.archived || !collapsed.includes(projectOf(s))) return collapsed;
+export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived" | "snoozedUntil" | "status"> | undefined, groupBy: "date" | "project"): readonly string[] {
+    if (!s || groupBy !== "project" || s.settled || s.archived || isSnoozed(s) || !collapsed.includes(projectOf(s))) return collapsed;
     return collapsed.filter((c) => c !== projectOf(s));
 }
 
@@ -123,6 +125,9 @@ export function revealDay(folded: readonly DayLabel[], s: Pick<SessionSummary, "
     const day = dayOf(s, now);
     return folded.includes(day) ? folded.filter((d) => d !== day) : folded;
 }
+
+/** Out of the list until it wakes, under Snoozed. Waiting on you, it's back (the server wakes it, a moment later). */
+export const isSnoozed = (s: Pick<SessionSummary, "snoozedUntil" | "status">) => s.snoozedUntil !== undefined && s.status !== "waiting";
 
 /** A single projection drives the DOM and keyboard navigation, including paging. */
 export function sidebarEntries(sessions: readonly SessionSummary[], archived: readonly SessionSummary[], o: SidebarOptions): SidebarEntry[] {
@@ -150,7 +155,7 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     }
     if (o.needs?.length) entries.push({ key: "heading:needs", kind: "needs", ids: [...o.needs] });
     requiredElsewhere(archived);
-    const all = orderSessions(sessions.filter((s) => !s.settled));
+    const all = orderSessions(sessions.filter((s) => !s.settled && !isSnoozed(s)));
     // A folded project's sessions take no page slots: only its heading shows, where its latest session would be.
     const folded = new Set(o.groupBy === "project" ? o.collapsed ?? [] : []);
     let cards = folded.size ? all.filter((s) => !folded.has(projectOf(s))) : all;
@@ -209,7 +214,13 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
             if (label === last) more("cards", remaining());
         }
     }
-    const settled = orderSessions(sessions.filter((s) => s.settled));
+    // The next to wake first. Folded, only the open one shows under it.
+    const snoozed = sessions.filter(isSnoozed).sort((a, b) => a.snoozedUntil! - b.snoozedUntil!);
+    if (snoozed.length) {
+        entries.push({ key: "heading:snoozed", kind: "snoozed" });
+        rows(pageSessions(snoozed, o.snoozedOpen ? Infinity : 0, o.activeId), "row", "snoozed");
+    }
+    const settled = orderSessions(sessions.filter((s) => s.settled && !isSnoozed(s)));
     if (settled.length) {
         entries.push({ key: "heading:settled", kind: "settled" });
         const visibleSettled = pageSessions(settled, o.settledOpen ? o.settled : 0, o.activeId);

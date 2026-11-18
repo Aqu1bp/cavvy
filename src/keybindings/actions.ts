@@ -55,6 +55,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "app:toggleTodos", context: "Global", description: "Show or hide the todo list", defaults: { tui: ["ctrl+t"] } },
     { id: "app:toggleTranscript", context: "Global", description: "Verbose output on or off", defaults: { tui: ["ctrl+o"] } },
     { id: "app:redraw", context: "Global", description: "Clear and redraw the screen", defaults: { tui: ["ctrl+l"] } },
+    { id: "app:switchBranch", context: "Global", description: "Switch or create a Git branch", defaults: { gui: ["mod+shift+b"] } },
     { id: "chat:modelPicker", context: "Global", description: "Switch model", defaults: { gui: ["mod+/"] } },
     { id: "chat:focusInput", context: "Global", description: "Focus the input box", defaults: { gui: ["mod+l"] } },
     // Global, like the shortcut it replaced: any binding of its key, in any context, takes the key from it.

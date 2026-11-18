@@ -90,6 +90,12 @@ export function runGh(cwd: string, args: string[], signal?: AbortSignal): Promis
     return run(cwd, ["gh", ...args], true, signal);
 }
 
+/** One `git` call with the publish rules (run()): a `network` one needs the folder's network trust and runs away from it. */
+export function runGit(cwd: string, args: string[], network: boolean, signal?: AbortSignal): Promise<{ out: string; err: string; code: number }> {
+    return run(cwd, ["git", ...args], network, signal);
+}
+export { clean as cleanGitText };
+
 /** The GitHub repository ("owner/name") the current branch pushes to. */
 export async function currentGithubRepo(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
     return githubRepo((await local(cwd, signal)).url);
@@ -132,12 +138,29 @@ async function local(cwd: string, signal?: AbortSignal) {
     const remote = hasUpstream ? upstreamRemote : remotes.length === 1 && remotes[0] === "origin" ? "origin" : "";
     if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("No unambiguous push remote. Configure an upstream, or a single origin remote, in a terminal.", "invalid");
     if (hasUpstream && !merge.startsWith("refs/heads/")) throw fail("The upstream is not a branch.", "invalid");
-    const [target, configuredPushUrls, configuredUrls, rewrites, tracking] = await Promise.all([
+    const [target, url, tracking] = await Promise.all([
         branchName(cwd, hasUpstream ? merge.slice(11) : branch, signal),
-        git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.pushurl`], signal, false, true),
+        remoteUrl(cwd, remote, true, signal),
+        git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
+    ]);
+    let ahead: number | undefined, behind: number | undefined;
+    if (tracking) {
+        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
+        if (/^\d+\s+\d+$/.test(counts)) [ahead, behind] = counts.split(/\s+/).map(Number);
+    }
+    const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
+    return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+}
+/**
+ * The one URL git uses for `remote` (its push URL when `push`), checked as publishing checks it: no URL rewrite
+ * applies, one ordinary URL, and a relative folder path made absolute (network calls run elsewhere: run()).
+ */
+export async function remoteUrl(cwd: string, remote: string, push: boolean, signal?: AbortSignal): Promise<string> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("Use a remote with a plain name.", "invalid");
+    const [configuredPushUrls, configuredUrls, rewrites] = await Promise.all([
+        push ? git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.pushurl`], signal, false, true) : "",
         git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.url`], signal, false, true),
         git(cwd, ["config", "--includes", "-z", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"], signal, false, true),
-        git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
     ]);
     const configValues = (value: string) => value ? value.split("\0").slice(0, -1) : [];
     const fetchUrls = configValues(configuredUrls);
@@ -150,11 +173,11 @@ async function local(cwd: string, signal?: AbortSignal) {
         if (newline < 0) throw fail("Cannot verify Git URL rewrite configuration.", "invalid");
         const prefix = entry.slice(newline + 1);
         if ([...fetchUrls, ...pushUrls].some((url) => url.startsWith(prefix))) {
-            throw fail("A Git URL rewrite applies to this remote. Configure its literal destination URL without insteadOf/pushInsteadOf before publishing.", "invalid");
+            throw fail(`A Git URL rewrite applies to this remote. Configure its literal ${push ? "destination " : ""}URL without insteadOf/pushInsteadOf before ${push ? "publishing" : "fetching"}.`, "invalid");
         }
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
-    if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
+    if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail(`Use one ordinary ${push ? "push " : ""}URL for this remote.`, "invalid");
     // A relative folder path, from the work tree's top, where git read it: the network calls run elsewhere (run()). Not
     // normalized, so the system follows links before a `..` as it did there. Git reads ~ as home wherever it runs.
     let url = urls[0];
@@ -164,13 +187,7 @@ async function local(cwd: string, signal?: AbortSignal) {
         throw fail("Use a full path for this remote, with its drive.", "invalid");
     }
     if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
-    let ahead: number | undefined, behind: number | undefined;
-    if (tracking) {
-        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
-        if (/^\d+\s+\d+$/.test(counts)) [ahead, behind] = counts.split(/\s+/).map(Number);
-    }
-    const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
-    return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+    return url;
 }
 /** Whether a remote URL is a folder's path, as git tells: no scheme://, and no host: before a slash (scp-like ssh). */
 function localPath(url: string): boolean {
@@ -192,7 +209,7 @@ async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     return name ? branchName(cwd, name, signal) : undefined;
 }
 /** How the GitHub CLI stands here: usable, installed but signed out (a sign-in is all that's missing), or not installed. */
-async function ghState(cwd: string, signal?: AbortSignal): Promise<"ready" | "signed-out" | "missing"> {
+export async function ghState(cwd: string, signal?: AbortSignal): Promise<"ready" | "signed-out" | "missing"> {
     try { return (await run(cwd, ["gh", "auth", "status", "--hostname", "github.com"], true, signal)).code === 0 ? "ready" : "signed-out"; }
     catch (e) { if (e instanceof RpcError && e.code === "unavailable") return "missing"; throw e; }
 }

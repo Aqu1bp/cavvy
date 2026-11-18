@@ -23,7 +23,7 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, gitDialog, gitModule, openGit } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
@@ -313,6 +313,7 @@ const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) =
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
@@ -426,6 +427,7 @@ export function App() {
             "app:searchFiles": () => openFinder("search"),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
+            "app:switchBranch": () => void (!settingsTab() && openGit("openBranches")),
         };
         /** Those that work with a dialog open (nothing behind one changes otherwise: it may be about the session in view). */
         const overDialogs = new Set(["app:commandPalette", "app:settings"]);
@@ -680,6 +682,7 @@ export function App() {
             <RecentlyDeleted />
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
+            <Show when={gitDialog()}><GitDialogs /></Show>
             <Show when={imageShown()}><ImageViewer /></Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}

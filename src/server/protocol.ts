@@ -961,6 +961,12 @@ export interface SessionSummary {
     archived: boolean;
     /** Set aside: done with for now, listed apart from the sessions still in play. */
     settled: boolean;
+    /** Snoozed: out of the list until then (or until it needs you), under Snoozed. */
+    snoozedUntil?: number;
+    /** It woke from a snooze and hasn't been opened since. */
+    woke?: true;
+    /** Never settled by itself (Settings → General, "Settle idle sessions after"). */
+    neverSettle?: true;
     /** The model it last used ("provider:id"). */
     model?: string;
     /** Loaded in the server right now. */
@@ -1616,6 +1622,40 @@ export interface GitPublishInfo {
     compareUrl?: string;
     pr?: GitPrInfo;
 }
+/** A branch against its upstream, from what was last fetched (GitSyncInfo is read without the network). */
+export interface GitSyncInfo {
+    detached: boolean;
+    branch?: string;
+    /** "origin/main"; unset when the branch has none. */
+    upstream?: string;
+    ahead?: number;
+    behind?: number;
+    /** The upstream's branch was deleted on the remote. */
+    gone?: boolean;
+}
+export interface GitPullResult {
+    /** current: nothing to pull; pulled: fast-forwarded by `pulled` commits; diverged: commits on both sides, nothing changed. */
+    result: "current" | "pulled" | "diverged";
+    branch: string;
+    upstream: string;
+    ahead: number;
+    behind: number;
+    pulled?: number;
+}
+export interface GitBranchEntry {
+    /** Local: "feature"; remote: "origin/feature". */
+    name: string;
+    upstream?: string;
+    /** Last commit, ms. */
+    at?: number;
+    /** Checked out in this other worktree. */
+    worktree?: string;
+}
+export interface GitBranchList {
+    current?: string;
+    local: GitBranchEntry[];
+    remote: GitBranchEntry[];
+}
 export interface GitPublishRequest {
     fingerprint: string;
     action: "push" | "pr";
@@ -1686,6 +1726,8 @@ export interface GuiSettings {
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
+    /** Sessions idle this many days are settled by themselves: 0 (off), 1, 3, 7 (the default) or 14. */
+    autoSettleDays?: number;
     /** Keep the computer from idling to sleep while sessions work (default true). */
     keepAwake?: boolean;
     /** Set when keeping it awake can't work on this computer (nothing to run, not installed, or refused). */
@@ -1893,7 +1935,7 @@ export interface LentSession {
  * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
  * as it's archived, which asks about folders on that machine.
  */
-export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore"] as const;
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze", "session.neverSettle"] as const;
 /**
  * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
  * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
@@ -2213,6 +2255,8 @@ export interface Methods {
      * `list` is that list's id: a pick made in a list that's been replaced since picks nothing.
      */
     "browser.choose": { params: { id: string; index?: number; tab?: number; list?: number }; result: null };
+    /** The pane's find bar, in a page of the headless browser: `query` ("" clears what it marked); `step` 0 searches anew, 1 and -1 go to the next and previous match. `active` counts from 1 (0: none). */
+    "browser.find": { params: { id: string; query: string; step?: number; tab?: number }; result: { matches: number; active: number } };
     /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
     "simulator.state": { params: { id: string }; result: SimulatorState };
     /**
@@ -2332,6 +2376,18 @@ export interface Methods {
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
+    /** `sessionId`: the session it's for, so the call goes to that session's machine. */
+    /** The branch of the folder against its upstream, from local refs (no network). */
+    "git.sync": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo };
+    "git.branches": { params: { cwd: string; sessionId?: string }; result: GitBranchList };
+    /** Fetch the branch's remote (or origin). */
+    "git.fetch": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo & { remote: string } };
+    /** Fetch, then fast-forward only; refused while a session works in the folder. */
+    "git.pull": { params: { cwd: string; sessionId?: string }; result: GitPullResult };
+    /** Refused while a session works in the folder. `remote`: `branch` is a remote one (origin/x). */
+    "git.switch": { params: { cwd: string; sessionId?: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
+    /** A new branch at HEAD, switched to. */
+    "git.createBranch": { params: { cwd: string; sessionId?: string; name: string }; result: { branch: string } };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
@@ -2352,6 +2408,13 @@ export interface Methods {
     /** Writes the plan as Markdown, in the session's folder or the Cavvy home; an existing file only with `replace`. */
     "session.savePlan": { params: { id: string; toolId?: string; path?: string; replace?: boolean }; result: { path: string } };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
+    /**
+     * Out of the list until `until` (the server's clock, ms), or until it needs you: a question, an approval, a
+     * failure, or the end of the turn it was running. `until: null` wakes it now.
+     */
+    "session.snooze": { params: { id: string; until: number | null }; result: null };
+    /** Never settled by itself when it's been idle (`on`), or as any other again. */
+    "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };

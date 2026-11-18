@@ -5,7 +5,7 @@
 // dot; sending to one brings it back. The ones waiting on you are pinned above
 // them all, under Needs you, with what they ask, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
@@ -14,8 +14,8 @@ import { archive, archiveSessions, chooseProject, deleteSessions, newSession, op
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { ago, monogram, projectColor, since } from "../lib/format";
-import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
+import { ago, monogram, projectColor, promptTime, since } from "../lib/format";
+import { dayOf, folderOf, holdSidebar, isSnoozed, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -29,6 +29,9 @@ import { Logo, Spinner } from "./ui/bits";
 import { updateView } from "../lib/app-update";
 import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
 import { besideInFront, inSplit, setDraggedSession, SESSION_DRAG } from "../state/split";
+
+/** Snooze and Wake now in a row's menu, and the menu of several picked rows: loaded as the rail is first pointed at or focused. */
+const RowExtras = lazy(() => import("./RowExtras"));
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -93,45 +96,6 @@ interface RailPick {
     clear: () => void;
 }
 
-/** The actions on several selected sessions, as menu items (a selected row's context menu). */
-function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) {
-    // Read once: closing the menu ends the selection it was opened on before an item's action runs.
-    const plan = p.plan;
-    const n = (ids: readonly string[]) => sessionCount(ids.length);
-    return (
-        <>
-            <div class="menu-head">{n(plan.delete)} selected</div>
-            <Show when={plan.settle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
-                    <CheckCheck size={14} /> Settle {n(plan.settle)}
-                </button>
-            </Show>
-            <Show when={plan.unsettle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.unsettle, false))}>
-                    <Undo2 size={14} /> Back in play
-                </button>
-            </Show>
-            <Show when={plan.archive.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.archive, true))}>
-                    <Archive size={14} /> Archive {n(plan.archive)}
-                </button>
-            </Show>
-            <Show when={plan.restore.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.restore, false))}>
-                    <ArchiveRestore size={14} /> Restore {n(plan.restore)}
-                </button>
-            </Show>
-            <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), p.clear())}>
-                <X size={14} /> Clear selection
-            </button>
-            <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), void deleteSessions(plan.delete))}>
-                <Trash2 size={14} /> Delete {n(plan.delete)}
-            </button>
-        </>
-    );
-}
-
 function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; onRename: () => void }) {
     const close = () => p.setOpen(false);
     // Taken as the menu opens, so it doesn't change under the pointer.
@@ -141,7 +105,7 @@ function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen:
         // menu in one place, inside the rail, and what's behind doesn't peek out at its edge.
         <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} open={p.open} anchor={p.anchor} span={() => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
             <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
-                {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
+                {(ids) => <RowExtras ids={ids()} plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
             </Show>
         </Menu>
     );
@@ -162,6 +126,7 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
+            <RowExtras ids={[p.s.id]} close={close} />
             <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
                 {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
                 <Plus size={14} /> New session
@@ -227,10 +192,11 @@ function RowLead(p: { s: SessionSummary; picked?: boolean }) {
 function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     // Set again only when it changes, not at each tick of the clock it's worked out from.
     const word = createMemo(() =>
-        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : undefined,
+        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : p.s.woke ? "Woke" : undefined,
     );
     const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
-    return <span class={`when ${tone()}`}>{word() ?? (now(), since(p.s.updatedAt))}</span>;
+    // Snoozed: when it wakes.
+    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? promptTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
 
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
@@ -627,6 +593,7 @@ export function Sidebar() {
     const [viewOpen, setViewOpen] = createSignal(false);
     const [shown, setShown] = createSignal(PAGE);
     const [settledShown, setSettledShown] = createSignal(PAGE);
+    const [snoozedOpen, setSnoozedOpen] = createSignal(false);
     const [archiveShown, setArchiveShown] = createSignal(PAGE);
     const [hovered, setHovered] = createSignal(false);
     const [manualLayout, setManualLayout] = createSignal(false);
@@ -645,7 +612,8 @@ export function Sidebar() {
     const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
-    const settledCount = () => app.sessions.filter((s) => s.settled).length;
+    const settledCount = () => app.sessions.filter((s) => s.settled && !isSnoozed(s)).length;
+    const snoozedCount = () => app.sessions.filter(isSnoozed).length;
     // Providers by the sessions that used them, most recent first: the plan used last leads when no session is open.
     const recent = createMemo(() => [...new Set([...app.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => modelOf(s)?.split(":")[0]).filter((p): p is string => Boolean(p)))]);
     // The signed-in plans (Claude Code, Codex): the session in view's first, else the one used last.
@@ -666,7 +634,7 @@ export function Sidebar() {
     const heldLayout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
-            settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
+            settledOpen: prefs.settledOpen, snoozedOpen: snoozedOpen(), cards: shown(), settled: settledShown(), archive: archiveShown(),
             collapsed: prefs.collapsedProjects, foldedDays: prefs.foldedDays, needs: needs(), now: prefs.groupBy === "date" ? today() : undefined,
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
@@ -991,7 +959,8 @@ export function Sidebar() {
             <nav ref={listEl} class="side-list" data-group={prefs.groupBy} aria-label="Session list" onKeyDown={onRailKey}
                 onDragStart={dragRow}
                 onDragEnd={() => setDraggedSession(undefined)}
-                onPointerEnter={() => setHovered(true)}
+                onPointerEnter={() => (setHovered(true), RowExtras.preload())}
+                onFocusIn={() => RowExtras.preload()}
                 onPointerLeave={() => setHovered(false)}
                 // Another machine's session: connected to as the pointer comes to it (warmFor), not as it's clicked.
                 onPointerOver={(e) => {
@@ -1067,12 +1036,17 @@ export function Sidebar() {
                         </button>;
                     }
                     // At the foot of the list, under a gap that takes the room left: it stays put as sessions come and go above it.
-                    if (kind === "settled") return <><div class="settled-gap" aria-hidden="true" /><button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
-                        <span>Settled</span>
-                        {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
-                        <Show when={!prefs.settledOpen}><span class="n">{settledCount()}</span></Show>
-                        <ChevronRight size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
-                    </button></>;
+                    // Snoozed (above Settled) the same, folded until opened: the gap goes above whichever comes first.
+                    if (kind === "settled" || kind === "snoozed") {
+                        const z = kind === "snoozed";
+                        const open = () => (z ? snoozedOpen() : prefs.settledOpen);
+                        return <><Show when={z || !snoozedCount()}><div class="settled-gap" aria-hidden="true" /></Show><button class="shelf settled-head" data-head={key} aria-expanded={open()} onClick={() => { allowLayout(); z ? setSnoozedOpen(!open()) : setPrefs("settledOpen", !open()); }}>
+                            <span>{z ? "Snoozed" : "Settled"}</span>
+                            {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
+                            <Show when={!open()}><span class="n">{z ? snoozedCount() : settledCount()}</span></Show>
+                            <ChevronRight size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
+                        </button></>;
+                    }
                     if (kind === "archived") return <div class="shelf"><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;

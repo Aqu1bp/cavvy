@@ -5300,6 +5300,25 @@ export class Runtime {
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
+    /** Still at work (a turn, a question, a shell, a task): its folder's branch and files mustn't change under it. */
+    async workingForGit(): Promise<boolean> {
+        await this.yieldIdleCompaction();
+        return !this.closed && !this.settled(false);
+    }
+
+    /** Holds the session (no turn starts) while `work` changes its folder's branch or files; the header's branch after. */
+    async holdForGit<T>(work: Promise<T>): Promise<T> {
+        this.committing = true;
+        this.commitDone = work;
+        try {
+            return await work;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            if (!this.closed) this.showWorkingIn(this.workingIn);
+        }
+    }
+
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
@@ -5336,7 +5355,14 @@ export class Runtime {
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
         if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
-            this.prRead = { at: Date.now(), promise: gitPrState(this.ws.cwd).then((pr) => ({ pr })) };
+            this.prRead = {
+                at: Date.now(),
+                promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
+                    if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
+                    return { pr };
+                }),
+            };
         }
         return this.prRead.promise;
     }
