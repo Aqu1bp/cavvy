@@ -192,4 +192,10 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
     browserDevTools: (key: string, pane?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send("browser_devtools", key, pane),
     browserPainted: (key: string, size: { width: number; height: number }): Promise<boolean> => ipcRenderer.invoke("browser_painted", key, size),
+    /** The tab's page is drawn smaller than its size, or no longer is. */
+    browserSmall: (key: string, small: boolean) => ipcRenderer.send("browser_small", key, small),
+    /** A still of part of the window, as it looks now (a data URL). */
+    browserStill: (rect: { x: number; y: number; width: number; height: number }): Promise<string | undefined> => ipcRenderer.invoke("browser_still", rect),
+    /** The page is drawn at its own scale for screenshot `id`. */
+    browserSharp: (id: number) => ipcRenderer.send("browser_sharp", id),
 });
