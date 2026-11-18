@@ -61,7 +61,7 @@ const lastRestore = new WeakMap<object, string>();
 
 /** The turn snapshots files are restored from: only in a trusted folder, where they're recorded. */
 function snapshotsOf(app: App): TurnSnapshots | undefined {
-    return app.init.trusted ? (app.agent?.turnSnapshots ?? TurnSnapshots.for(app.session, app.toolState.projectRoot)) : undefined;
+    return app.init?.trusted ? (app.agent?.turnSnapshots ?? TurnSnapshots.for(app.session, app.toolState.projectRoot)) : undefined;
 }
 
 async function undoLastRestore(app: App) {
