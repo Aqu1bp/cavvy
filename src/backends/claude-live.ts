@@ -2033,11 +2033,13 @@ export class ClaudeConnection implements CliConnection {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        // Its sub-agent asks (agent_id, its task's id): by its task, as the sub-agent's card names it.
+        const asker = typeof req.agent_id === "string" ? (this.agentLabels.get(this.agentOfTask.get(req.agent_id) ?? "") ?? agentType) : undefined;
         // One of a background sub-agent's (its task is running in the background): not the turn's to withdraw.
         const background = typeof req.agent_id === "string" && this.tasks.get(req.agent_id)?.status === "running";
         liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
         // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}) });
+        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}), ...(background ? { background: true } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

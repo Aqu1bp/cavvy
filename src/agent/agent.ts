@@ -3408,7 +3408,7 @@ export class Agent {
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel || req.asker ? { agentLabel: req.agentLabel ?? req.asker } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {

@@ -3740,7 +3740,9 @@ export class Runtime {
             it.heading = tool.name === "Write" ? (exists ? "Overwrite a file" : "Create a file") : tool.name === "NotebookEdit" ? "Edit a notebook" : "Edit a file";
             it.path = displayPath(abs, this.ws.cwd);
             const diff = req.preview?.diff;
-            if (diff) it.diff = fileDiff(it.path, diff.before === "" && !exists ? null : redact(diff.before), redact(diff.after));
+            const shown = diff && fileDiff(it.path, diff.before === "" && !exists ? null : redact(diff.before), redact(diff.after));
+            // Nothing that changes (a file written with what it already holds) leaves no empty diff in the card.
+            if (shown && (shown.hunks.length || shown.note)) it.diff = shown;
             if (decision.offerAcceptEdits) it.options.push({ id: "session-edits", label: "Allow all edits this session" });
             else if (suggestions.length) it.options.push({ id: "always", label: `Allow edits in ${suggestions[0]!.replace(/^Edit\(\/?(.*?)\/\*\*\)$/, "$1")} this session` });
         } else if (tool.category === "read") {

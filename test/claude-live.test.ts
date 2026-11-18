@@ -848,6 +848,8 @@ describe("background work across turns", () => {
         expect(asked.map((r) => r.tool.name)).toEqual(["Bash"]);
         // A background sub-agent's: the turn's end or Esc doesn't withdraw it (#295 review, P1-1).
         expect(asked[0]!.background).toBe(true);
+        // It says which sub-agent asks (agent_id names its task): by the task it was given.
+        expect(asked[0]!.agentLabel).toBe("Map auth");
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
     });

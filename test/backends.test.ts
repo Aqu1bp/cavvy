@@ -4267,6 +4267,8 @@ describe("Cavvy's agents on Claude Code", () => {
             rmSync(LOG, { force: true });
             const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
             await a.run("go");
+            // Each card says which sub-agent asks: by its task.
+            for (const r of a.asked) expect(r.agentLabel).toBe("Write it");
             return { asked: a.asked.length, answer: answers()[0] };
         };
         // Claude Code decided in its own mode that the user should see it: the card, in every mode but bypass.
