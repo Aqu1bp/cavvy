@@ -13,6 +13,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { startDemoServer } from "./demo-server";
 
 const repo = resolve(import.meta.dir, "..");
 const TOKEN = "perf-idle-token-0123456789";
@@ -100,13 +101,9 @@ export async function measureIdleHome(chrome: string): Promise<{ memoryMB: numbe
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let tools: Awaited<ReturnType<typeof devtools>> | undefined;
     try {
-        const free = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
-        const port = free.port;
-        free.stop(true);
-        demo = Bun.spawn([process.execPath, "--no-env-file", `--config=${join(repo, "bunfig.toml")}`, join(repo, "scripts/gui-demo.ts"), "--dir", join(scratch, "demo"), "--port", String(port), "--token", TOKEN], {
-            cwd: repo, env: { ...process.env, CAVVY_GUI_DIST: join(repo, "gui/dist") } as Record<string, string>, stdout: "ignore", stderr: "ignore",
-        });
-        await until("the demo server", 60_000, () => fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false));
+        const started = await startDemoServer({ dir: join(scratch, "demo"), token: TOKEN, dist: join(repo, "gui/dist") });
+        demo = started.proc;
+        const port = started.port;
         const profile = join(scratch, "chrome");
         browser = Bun.spawn([
             chrome, "--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
