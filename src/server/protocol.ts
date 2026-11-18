@@ -1656,6 +1656,22 @@ export interface GitBranchList {
     local: GitBranchEntry[];
     remote: GitBranchEntry[];
 }
+/** A repository's open pull requests (git.pullRequests). */
+export interface GitPrListInfo {
+    /** "owner/name" on github.com. */
+    repo: string;
+    prs: { number: number; title: string; branch: string; author: string; draft: boolean; fork: boolean; updatedAt?: number }[];
+}
+/** A pull request checked out in a worktree for a new session (git.prWorktree). */
+export interface GitPrWorktree {
+    path: string;
+    branch: string;
+    /** A worktree was already on that branch: it's used as it is. */
+    reused?: boolean;
+    /** The branch was there already (not checked out): it got a worktree, unchanged. */
+    existing?: boolean;
+    pr: { number: number; title: string; url: string; state: string };
+}
 export interface GitPublishRequest {
     fingerprint: string;
     action: "push" | "pr";
@@ -2346,6 +2362,10 @@ export interface Methods {
     "git.switch": { params: { cwd: string; sessionId?: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
     /** A new branch at HEAD, switched to. */
     "git.createBranch": { params: { cwd: string; sessionId?: string; name: string }; result: { branch: string } };
+    /** The open pull requests of the folder's GitHub repository (needs gh, signed in: codes gh_missing, sign_in, not_github). */
+    "git.pullRequests": { params: { cwd: string; sessionId?: string }; result: GitPrListInfo };
+    /** Pull request `pr` (#123, 123 or its URL) checked out in a worktree of its own. */
+    "git.prWorktree": { params: { cwd: string; sessionId?: string; pr: string }; result: GitPrWorktree };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };

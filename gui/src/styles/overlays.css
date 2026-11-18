@@ -2282,3 +2282,13 @@
 .br-note.error {
     color: var(--danger);
 }
+
+.br-fail {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+}
+
+.br-fail > span {
+    flex: 1;
+}
