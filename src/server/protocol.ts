@@ -2295,17 +2295,18 @@ export interface Methods {
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
+    /** `sessionId`: the session it's for, so the call goes to that session's machine. */
     /** The branch of the folder against its upstream, from local refs (no network). */
-    "git.sync": { params: { cwd: string }; result: GitSyncInfo };
-    "git.branches": { params: { cwd: string }; result: GitBranchList };
+    "git.sync": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo };
+    "git.branches": { params: { cwd: string; sessionId?: string }; result: GitBranchList };
     /** Fetch the branch's remote (or origin). */
-    "git.fetch": { params: { cwd: string }; result: GitSyncInfo & { remote: string } };
+    "git.fetch": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo & { remote: string } };
     /** Fetch, then fast-forward only; refused while a session works in the folder. */
-    "git.pull": { params: { cwd: string }; result: GitPullResult };
+    "git.pull": { params: { cwd: string; sessionId?: string }; result: GitPullResult };
     /** Refused while a session works in the folder. `remote`: `branch` is a remote one (origin/x). */
-    "git.switch": { params: { cwd: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
+    "git.switch": { params: { cwd: string; sessionId?: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
     /** A new branch at HEAD, switched to. */
-    "git.createBranch": { params: { cwd: string; name: string }; result: { branch: string } };
+    "git.createBranch": { params: { cwd: string; sessionId?: string; name: string }; result: { branch: string } };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };

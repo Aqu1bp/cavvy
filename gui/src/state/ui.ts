@@ -26,6 +26,11 @@ export const rewindTarget = { get: rewindTargetAt, set: setRewindTargetAt };
 export type ViewerImage = { name: string; full: string | { mediaType: string; data: string }; preview?: string; size?: { width: number; height: number } };
 /** The image shown full size over everything, the others it steps to (a prompt's, a reply's, the composer's), and what it was opened from. */
 export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[]; index: number; from?: Element } | undefined>();
+/** The branch dialog (GitBranches.tsx) for a folder; `sessionId`: the session it was opened from (its machine's). */
+export const [gitDialog, setGitDialog] = createSignal<{ kind: "branch"; cwd: string; sessionId?: string; query?: string } | undefined>();
+/** The chunk with the branch chip and dialogs; `open`: one of its dialogs, for the session in front or Home. */
+export const gitModule = () => import("../components/GitBranches");
+export const openGit = (open: "openBranches") => void gitModule().then((m) => m[open]());
 /** The files the review pane listed when Commit was clicked; the Commit dialog picks from them. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
