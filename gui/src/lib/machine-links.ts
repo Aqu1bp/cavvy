@@ -6,6 +6,7 @@
 
 import { Rpc, type Credentials } from "./rpc";
 import { windowKey } from "./platform";
+import { keyOn, leaveTabs, takeLeftTabs } from "./terminal";
 import type { ConnectResult } from "@shared/protocol";
 
 /** Why a machine's Cavvy couldn't be reached: what servers.connect said, when it didn't sign the window in. */
@@ -60,7 +61,9 @@ export function linkTo(name: string | undefined, via: Rpc, own: Rpc | undefined,
         unproven = true;
         return { url: r.url, token: r.token };
     };
-    link = new Rpc(credentials, windowKey);
+    // A server's shells left by a window that went are this window's now, under that window's key (lib/terminal.ts).
+    if (name) takeLeftTabs(name, windowKey);
+    link = new Rpc(credentials, name ? () => keyOn(name, windowKey) : windowKey);
     const made = link;
     made.retriesCredentials = true;
     made.onState((s) => { if (s === "open") unproven = false; });
@@ -113,3 +116,6 @@ export function opened(link: Rpc): Promise<void> {
         });
     });
 }
+
+// A window that goes (closed, or the app quitting) leaves word of its shells on servers for the next one.
+if (typeof window !== "undefined") window.addEventListener?.("pagehide", () => leaveTabs(windowKey));
