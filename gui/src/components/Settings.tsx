@@ -289,6 +289,19 @@ function General() {
                     <Toggle label="Enter sends" checked={prefs.enterSends} onChange={(v) => setPrefs("enterSends", v)} />
                 </Row>
             </Section>
+            <Section title="Sidebar">
+                <Row title="Settle idle sessions after" desc="Moves them under Settled. Pinned ones stay." changed={(s().autoSettleDays ?? 7) !== 7} reset={() => void update({ autoSettleDays: 7 })}>
+                    <SelectButton>
+                        <select class="select" aria-label="Settle idle sessions after" value={String(s().autoSettleDays ?? 7)} onChange={(e) => void update({ autoSettleDays: Number(e.currentTarget.value) })}>
+                            <option value="0">Off</option>
+                            <option value="1">1 day</option>
+                            <option value="3">3 days</option>
+                            <option value="7">7 days</option>
+                            <option value="14">14 days</option>
+                        </select>
+                    </SelectButton>
+                </Row>
+            </Section>
             <Section title="This computer">
                 <Row title="Open files with" desc="For file links in replies, changed files and tool rows.">
                     {/* Each option says whether it's the one chosen: the list arrives after the

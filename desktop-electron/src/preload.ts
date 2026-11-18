@@ -182,4 +182,5 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
     browserBack: (seen: number) => ipcRenderer.send("browser_back", seen),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
+    browserDevTools: (key: string) => ipcRenderer.send("browser_devtools", key),
 });

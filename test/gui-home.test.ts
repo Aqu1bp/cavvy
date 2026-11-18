@@ -358,8 +358,8 @@ function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | un
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
-        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, rpc: {},
+        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2",
+        app: { conn: "open" }, rpc: {}, openGit: stub,
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
@@ -378,7 +378,7 @@ test("the worktree picker never offers another project's worktrees while this on
     // This folder's own, kept while it lists them again: still there.
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
-    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…"]);
+    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
 });
 
 // ---- The limit pill ---------------------------------------------------------------------------------

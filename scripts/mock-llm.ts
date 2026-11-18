@@ -24,7 +24,7 @@
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
-//   "untitled"       the request for the session's title is refused (HTTP 400)
+//   "untitled"       the request for the session's title is refused (HTTP 400); so is Regenerate title's, once it's in the conversation
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
 //                    the states a call goes through, and the moves between them
@@ -576,6 +576,12 @@ function goalVerdict(prompt: string): string {
     return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
 }
 
+/** A title asked again from the conversation so far (Regenerate title): named after the user's latest request in it. */
+function latestAsk(prompt: string): string {
+    if (!prompt.startsWith("First request:")) return prompt;
+    return prompt.split("\n").filter((l) => l.startsWith("User: ")).at(-1)?.slice(6) ?? prompt;
+}
+
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
     if (/\bperfturn 9\d\d\b/.test(p)) return "Short session";
@@ -793,7 +799,7 @@ export function startMockLlm(o: MockOptions = {}) {
             }
 
             let step: Step;
-            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
+            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(latestAsk(prompt)) };
             else if (/check whether a coding agent has reached a goal/.test(system)) {
                 // A real check takes a moment: long enough to see it (not in tests, which run with no delay).
                 if (delay) await Bun.sleep(delay * 100);

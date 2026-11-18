@@ -22,6 +22,7 @@ import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/hist
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
 import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
+import { SIDE_CHAT_REMINDER, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -116,6 +117,7 @@ import type {
     SessionResumed,
     SessionTurnsPage,
     SessionState,
+    SessionStatus,
     WorkingIn,
     ToolBlock,
     ToolCategoryId,
@@ -415,11 +417,48 @@ function reportsAgent(name: string, isError: boolean | undefined): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust", "btw"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
     return title.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+/** What a session's title is asked to be. */
+const TITLE_RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+
+/** A model's answer as a title: its first line, without a label, quotes or marks; undefined when it's a paragraph. */
+export function modelTitle(raw: string | undefined): string | undefined {
+    const title = raw
+        ?.replace(/<[^>]*>/g, "")
+        .split("\n")
+        .map((l) => l.trim())
+        .find(Boolean)
+        ?.replace(/^(session\s+)?(title|name):\s*/i, "")
+        .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
+        .slice(0, 60);
+    return title && title.split(/\s+/).length <= 10 ? title : undefined;
+}
+
+/**
+ * The conversation as a title is made from: its first request, then the latest of what was said (newest last), each
+ * line marked with who said it. Text only: no tool calls or results, no system reminders. Empty with nothing said.
+ */
+export function conversationGist(messages: readonly Message[], max = 4000): string {
+    const said = messages
+        .map((m) => ({ who: m.role === "user" ? "User" : "Assistant", text: m.content.map((p) => (p.type === "text" ? p.text : "")).join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim() }))
+        .filter((m) => m.text);
+    if (!said.length) return "";
+    const line = (m: (typeof said)[number], n: number) => `${m.who}: ${m.text.length > n ? `${m.text.slice(0, n)}…` : m.text}`;
+    const first = said[0]!.who === "User" ? line(said[0]!, 800) : "";
+    const latest: string[] = [];
+    let room = max - first.length;
+    for (let i = said.length - 1; i >= (first ? 1 : 0) && room > 100; i--) {
+        const l = line(said[i]!, Math.min(600, room - 20));
+        latest.unshift(l);
+        room -= l.length + 1;
+    }
+    return [first && `First request:\n${first}`, latest.length ? `Latest:\n${latest.join("\n")}` : ""].filter(Boolean).join("\n\n");
 }
 
 /** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
@@ -694,9 +733,10 @@ export class Runtime {
         private engine: Engine,
         readonly ws: Workspace,
         session: Session,
-        opts: { mode?: PermissionMode; resumed: boolean },
+        opts: { mode?: PermissionMode; resumed: boolean; side?: SideChatOrigin },
     ) {
         this.session = session;
+        this.side = opts.side;
         // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
         session.onSaving = (error) => queueMicrotask(() => {
             if (!error) return this.notice("Saved again.", "info");
@@ -1331,6 +1371,7 @@ export class Runtime {
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
+            ...(this.side ? { sideOf: this.side.of } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
         };
@@ -2626,6 +2667,7 @@ export class Runtime {
         this.placeAgent(this.model.provider);
         this.agent = new Agent({
             session: this.session,
+            ...(this.side ? { context: () => this.side?.context ?? [] } : {}),
             trusted: () => this.ws.trusted,
             skills: () => this.ws.freshSkills(),
             model: this.model,
@@ -2693,6 +2735,8 @@ export class Runtime {
         if (this.session.model === undefined && this.model) this.session.setModel(modelRef(this.model));
         // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
         if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
+        // A side chat's model hears what it is with the first question (an agent made again before then too).
+        if (this.side && !this.session.messageCount) this.agent.addReminder(SIDE_CHAT_REMINDER);
         this.leftIn = undefined;
     }
 
@@ -4207,7 +4251,7 @@ export class Runtime {
         if (!trimmed && !attachments?.length) return { queued: false };
         this.toolState.wakes?.resume();
         // These answer here and send nothing to the model, so what's attached would be lost: the message stays in the box.
-        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust)(?=\s|$)/i)?.[1]?.toLowerCase();
+        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust|btw)(?=\s|$)/i)?.[1]?.toLowerCase();
         if (bare) throw new RpcError(`/${bare} doesn't take attachments. Send them in a message of their own.`, "no_attachments");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
@@ -4219,6 +4263,12 @@ export class Runtime {
             if (this.nativeGoalCommand(trimmed, goal[1] ?? "")) return { queued: false };
         } else if (goal && !(this.busy && parseGoalCommand(goal[1] ?? "").kind === "set")) {
             await this.goalCommand(goal[1] ?? "", attachments);
+            return { queued: false };
+        }
+        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here.
+        const btw = literal || this.side ? undefined : trimmed.match(/^\/btw(?:\s+([\s\S]*))?$/i);
+        if (btw) {
+            await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
         if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
@@ -4815,7 +4865,7 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        const RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+        const RULES = TITLE_RULES;
         // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model: a CLI process of its
         // own each time. Sessions asking while one runs are asked about together after it (title-queue.ts).
         try {
@@ -4839,19 +4889,9 @@ export class Runtime {
                 return titlesByNumber(reply, prompts.length);
             });
             mine.throwIfAborted();
-            title = raw
-                ?.replace(/<[^>]*>/g, "")
-                .split("\n")
-                .map((l) => l.trim())
-                .find(Boolean)
-                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
-                .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
-                .slice(0, 60);
+            title = modelTitle(raw);
             // Not a title: the prompt said back, or a paragraph.
-            if (title && title.split(/\s+/).length > 10) {
-                this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
-                title = undefined;
-            }
+            if (raw && !title) this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
         } catch (e) {
             // Its model can't answer one at all (Antigravity, an ACP agent): the prompt names it now.
             if (e instanceof WholeTurnsOnly) this.titleTries = TITLE_TRIES;
@@ -4862,6 +4902,31 @@ export class Runtime {
         if (title && !this.session.title) this.rename(title);
         // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
         else if (!title) this.titleAsked = false;
+    }
+
+    /**
+     * Named again from the conversation so far (the row's or the title bar's Regenerate title), by the model and rules
+     * the first title was made with. The new title, or an error: the old title stays.
+     */
+    async regenerateTitle(): Promise<string> {
+        await this.ready;
+        if (!this.client || this.closed) throw new RpcError("This session has no model to name it with.", "no_model");
+        const about = conversationGist(this.session.messages);
+        if (!about) throw new RpcError("There's nothing in this session to name it after yet.", "empty");
+        let raw: string;
+        try {
+            const target = await this.smallTarget();
+            raw = await this.complete(`You name coding-assistant sessions for a sidebar, from the conversation so far: what it's about now, not only how it started. Reply with only the title: ${TITLE_RULES}`, redactPrefix(about, 4000), AbortSignal.timeout(60_000), { target });
+        } catch (e) {
+            if (e instanceof WholeTurnsOnly) throw new RpcError("This session's model can't make a title.", "unsupported");
+            this.engine.log(`session ${this.id}: no new title: ${(e as Error).message}`);
+            throw new RpcError(`The model didn't answer: ${redact((e as Error).message).split("\n")[0]!.slice(0, 200)}`, "failed");
+        }
+        const title = modelTitle(raw);
+        if (!title) throw new RpcError("The model's answer wasn't a title.", "failed");
+        if (this.closed) throw new RpcError("The session was closed.", "closed");
+        this.rename(title);
+        return title;
     }
 
     /** `!command` from the input box: the user runs it themselves; the model sees it with the next prompt. */
@@ -5301,6 +5366,25 @@ export class Runtime {
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
+    /** Still at work (a turn, a question, a shell, a task): its folder's branch and files mustn't change under it. */
+    async workingForGit(): Promise<boolean> {
+        await this.yieldIdleCompaction();
+        return !this.closed && !this.settled(false);
+    }
+
+    /** Holds the session (no turn starts) while `work` changes its folder's branch or files; the header's branch after. */
+    async holdForGit<T>(work: Promise<T>): Promise<T> {
+        this.committing = true;
+        this.commitDone = work;
+        try {
+            return await work;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            if (!this.closed) this.showWorkingIn(this.workingIn);
+        }
+    }
+
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
@@ -5337,7 +5421,14 @@ export class Runtime {
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
         if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
-            this.prRead = { at: Date.now(), promise: gitPrState(this.ws.cwd).then((pr) => ({ pr })) };
+            this.prRead = {
+                at: Date.now(),
+                promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
+                    if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
+                    return { pr };
+                }),
+            };
         }
         return this.prRead.promise;
     }
@@ -5693,6 +5784,18 @@ export class Runtime {
     }
     get guest(): boolean {
         return this.lentTo !== undefined;
+    }
+
+    /** A side chat's: whose it is, and that session's conversation as it sees it (src/agent/side-chat.ts). */
+    side?: SideChatOrigin;
+    /** This session's side chat, while it has one open. */
+    sideChat?: string;
+
+    /** The side chat's state, as its parent shows it (its tab's dot): undefined once it's gone. */
+    sideChatChanged(id: string | undefined, status?: SessionStatus) {
+        this.sideChat = id;
+        const now = id ? { id, ...(status && status !== "idle" ? { status } : {}) } : undefined;
+        if (JSON.stringify(now) !== JSON.stringify(this.view.state.sideChat)) this.setState({ sideChat: now });
     }
     /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
     guestSession?: { id: string; title: string };
