@@ -4,6 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { applySync, readSynced } from "../servers/sync";
+import { searchServers, withServers } from "./far-search";
 import { answerPeers, homeFarPeers, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
@@ -111,6 +112,7 @@ import type {
     RunOutcome,
     SessionOp,
     SessionSnapshot,
+    SessionSearchHit,
     SessionSearchResult,
     SessionSummary,
     WorktreeInfo,
@@ -1030,30 +1032,33 @@ export class Engine {
         const seq = (this.searches.get(client) ?? 0) + 1;
         this.searches.set(client, seq);
         if (query.trim().length < 2) return { hits: [], partial: false };
+        const most = Math.max(1, Math.min(Math.floor(limit), 200));
+        // On the user's own computer, for its windows: the servers it's connected to are searched at the same time.
+        const far = !this.o.away && !client.machine ? searchServers(this.serverLinks?.connectedServers() ?? new Map(), { query, limit: most, archived }) : Promise.resolve([]);
         const arch = new Set(readStore().archived ?? []);
         const r = await searchSessions(query, {
-            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            limit: most,
             include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
             stale: () => this.searches.get(client) !== seq || this.stopping,
             open: new Set(this.runtimes.keys()),
         });
         if (r.stale) return { hits: [], partial: true, stale: true };
-        return {
-            partial: r.partial,
-            hits: r.hits.map((h) => ({
-                id: h.id,
-                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
-                cwd: h.cwd,
-                projectName: basename(h.cwd) || h.cwd,
-                archived: arch.has(h.id),
-                seg: h.seg,
-                index: h.index,
-                role: h.role,
-                snippet: h.snippet,
-                ...(h.match ? { match: h.match } : {}),
-                at: h.at,
-            })),
-        };
+        const there = await far;
+        if (this.searches.get(client) !== seq) return { hits: [], partial: true, stale: true };
+        const here = r.hits.map((h): SessionSearchHit => ({
+            id: h.id,
+            title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+            cwd: h.cwd,
+            projectName: basename(h.cwd) || h.cwd,
+            archived: arch.has(h.id),
+            seg: h.seg,
+            index: h.index,
+            role: h.role,
+            snippet: h.snippet,
+            ...(h.match ? { match: h.match } : {}),
+            at: h.at,
+        }));
+        return withServers({ partial: r.partial, hits: here }, there, most);
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -2785,6 +2790,8 @@ export class Engine {
             case "sessions.searchWarm":
                 // Not waited for: the first search finds what's been read by then, and reads the rest itself.
                 this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));
+                // And the servers it searches too (far-search.ts), so their first search isn't a cold one.
+                if (!this.o.away && !client.machine) for (const w of this.serverLinks?.connectedServers().values() ?? []) void w.ask("sessions.searchWarm", {}).catch(() => undefined);
                 return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).

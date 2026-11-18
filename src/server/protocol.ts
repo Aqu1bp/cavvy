@@ -1062,6 +1062,8 @@ export interface SessionSearchHit {
     match?: [number, number];
     /** When the matched message's turn started, or the session's last change when that isn't known. */
     at: number;
+    /** The server it's on, when it isn't the machine that was asked (a search on the user's computer looks on its servers too). */
+    machine?: string;
 }
 
 /**

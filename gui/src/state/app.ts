@@ -524,7 +524,7 @@ const NAVIGATION_KEY = "cavvy.navigation";
  * window's: it's opened from there again (machineOf), its row maybe not listed yet.
  */
 const restoredOn = new Map<string, string>();
-/** `id` was shown from machine `on` before the reload (a split's other pane, state/split.ts): opened from there again. */
+/** `id` is on machine `on` though its row may not be listed: shown from there before the reload (a split's other pane, state/split.ts), or found there by search. */
 export function restoredFrom(id: string, on: string) {
     restoredOn.set(id, on);
 }

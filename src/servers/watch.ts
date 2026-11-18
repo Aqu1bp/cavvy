@@ -250,12 +250,13 @@ export class MachineWatch {
         return this.request(method, params, MAX_ANSWER);
     }
 
-    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts). */
-    ask(method: "peers.list" | "peers.read" | "peers.send", params: Record<string, unknown>): Promise<unknown> {
-        return this.request(method, params, PEERS_ANSWER);
+    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts), or for a search here. */
+    ask(method: "peers.list" | "peers.read" | "peers.send" | "sessions.search" | "sessions.searchWarm", params: Record<string, unknown>, ms?: number): Promise<unknown> {
+        return this.request(method, params, PEERS_ANSWER, ms);
     }
 
-    private request(method: string, params: Record<string, unknown>, maxAnswer: number): Promise<unknown> {
+    /** `ms`: how long it waits for the answer before it gives up (and the call's place is free again). */
+    private request(method: string, params: Record<string, unknown>, maxAnswer: number, ms = REPLY_MS): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
         if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));
@@ -264,7 +265,7 @@ export class MachineWatch {
             const timer = setTimeout(() => {
                 this.calls.delete(id);
                 reject(new Error(`${this.name} didn't answer.`));
-            }, REPLY_MS);
+            }, ms);
             (timer as { unref?: () => void }).unref?.();
             this.calls.set(id, {
                 timer,
