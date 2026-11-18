@@ -304,6 +304,8 @@ const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.Setti
 /** The diff reader: shown when a diff is opened, not with the window. */
 const reviewModule = () => import("./components/ReviewPane");
 const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
+/** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
+const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
 /** Dialogs opened now and then (MCP servers, a plan): chunks of their own, fetched at idle like Settings. */
 const mcpModule = () => import("./components/McpDialog");
 const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
@@ -420,6 +422,8 @@ export function App() {
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
             "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            "app:goToFile": () => openFinder("files"),
+            "app:searchFiles": () => openFinder("search"),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
         };
@@ -666,7 +670,7 @@ export function App() {
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
-            <CommandPalette />
+            <CommandPalette files={openFinder} />
             <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
             <Show when={folderShown()}><FolderPicker /></Show>

@@ -2426,8 +2426,8 @@ export interface Methods {
      * stops its last one, which answers with `cancelled`. A query that can't be searched for is refused ("invalid").
      */
     "fs.search": { params: { sessionId?: string; cwd?: string; query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }; result: ProjectSearchResult };
-    /** Stop this window's search under way, if any. */
-    "fs.searchCancel": { params: Record<string, never>; result: null };
+    /** Stop this window's search under way, if any (`sessionId`: the session it was for, so it goes to that session's machine). */
+    "fs.searchCancel": { params: { sessionId?: string }; result: null };
     /** A file inside the session's folders, for the file viewer: refused ("outside") past them, links followed included. */
     "fs.read": { params: { sessionId?: string; cwd?: string; path: string }; result: FileContent };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */

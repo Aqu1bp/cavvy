@@ -12,7 +12,7 @@ import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, machineFor, reportError, rpc, serversUi, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
-import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
+import { inspectorPane, panelFull, review, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { sessionReadReady, useGitChanges } from "../state/changes";
@@ -251,7 +251,7 @@ function usePanelWork(handle: () => SessionHandle) {
 /**
  * The panel's views, as icons down its outer edge (first for the keyboard; panel.css puts it there): one look at any
  * width. A view's name is its tooltip, and the title of its pane. It stays beside the diff reader too (`reviewing`:
- * Changes is the view the reader belongs to), so the reader reads as part of the panel: an icon leaves it for that view.
+ * Changes is the view the reader belongs to; none for the file viewer), so the reader reads as part of the panel: an icon leaves it for that view.
  */
 function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelWork>; reviewing?: boolean }) {
     const { changes, agents, commands } = p.work;
@@ -269,7 +269,7 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
         <div class="insp-rail">
             <Segmented
                 label="Side panel"
-                value={p.reviewing ? "changes" : inspectorPane()}
+                value={p.reviewing ? (review()?.file ? (undefined as never) : "changes") : inspectorPane()}
                 onChange={show}
                 options={[
                     {

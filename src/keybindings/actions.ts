@@ -43,6 +43,8 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "app:commandPalette", context: "Global", description: "Search sessions, messages and actions", defaults: { gui: ["mod+k"] } },
     { id: "app:newSession", context: "Global", description: "New session", defaults: { gui: ["mod+n"] } },
     { id: "app:find", context: "Global", description: "Find in the conversation", defaults: { gui: ["mod+f"] } },
+    { id: "app:goToFile", context: "Global", description: "Go to file", defaults: { gui: ["mod+p"] } },
+    { id: "app:searchFiles", context: "Global", description: "Search in project", defaults: { gui: ["mod+shift+f"] } },
     { id: "app:settings", context: "Global", description: "Settings", defaults: { gui: ["mod+,"] } },
     { id: "app:toggleSidebar", context: "Global", description: "Toggle the sidebar", defaults: { gui: ["mod+b"] } },
     { id: "app:togglePanel", context: "Global", description: "Toggle the side panel", defaults: { gui: ["mod+."] } },

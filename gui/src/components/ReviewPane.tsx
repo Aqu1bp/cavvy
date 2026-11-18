@@ -10,7 +10,7 @@
 // committing, pushing and opening in the editor stay with the session's own folder. Only the files
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
-import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { batch, createEffect, createMemo, createResource, createSignal, For, lazy, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -66,7 +66,7 @@ function SplitToggle() {
  * The reader's left edge, while it docks: drag (or arrow keys) to widen it; double-click for
  * the default. It starts from the width shown, which the layout may have widened past the saved one.
  */
-function ReviewResizer() {
+export function ReviewResizer() {
     const [dragging, setDragging] = createSignal(false);
     const shown = () => shellLayout().inspector.width;
     const set = (w: number) => setPrefs("reviewWidth", w);
@@ -607,7 +607,22 @@ function FileCard(p: {
     );
 }
 
+/** Go to file and Search in project come with the reader (App.tsx loads this chunk at idle). */
+export { openFinder } from "./FileFinder";
+
+/** The file viewer (Go to file, Search in project): in the diff reader's place, its own chunk. */
+const FileViewer = lazy(() => import("./FileViewer").then((m) => ({ default: m.FileViewer })));
+
+/** The diff reader, or the file viewer when a file is open in its place (review().file). */
 export function ReviewPane(p: { handle: SessionHandle }) {
+    return (
+        <Show when={review()?.file} fallback={<DiffReader handle={p.handle} />}>
+            <FileViewer handle={p.handle} />
+        </Show>
+    );
+}
+
+function DiffReader(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
     const [publishRequest, setPublishRequest] = createSignal<string>();
     createEffect(on(id, () => setPublishRequest(undefined)));
