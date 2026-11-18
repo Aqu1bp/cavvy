@@ -200,6 +200,11 @@
     background: var(--danger);
 }
 
+/* Can't be changed here: faded as a disabled button is. */
+.toggle:disabled {
+    opacity: 0.45;
+}
+
 .toggle-knob {
     width: calc(18 * var(--sp));
     height: calc(18 * var(--sp));
