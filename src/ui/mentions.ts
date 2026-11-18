@@ -17,6 +17,8 @@ const IGNORE = new Set(["node_modules", ".git", "dist", "build", ".next", "targe
 
 /** How long an index serves before it's listed again (in the background, on the server). */
 const INDEX_FRESH_MS = 30_000;
+/** The server's index is let go of this long after its last search (@-mentions, Go to file): listed again when next asked. */
+export const INDEX_IDLE_MS = 5 * 60_000;
 
 export class FileIndex {
     private index = new PathIndex();
@@ -30,6 +32,8 @@ export class FileIndex {
     private noShards = process.env.CAVVY_MENTION_WORKERS === "0";
     /** Let go of (dispose): nothing more is listed or started for it. */
     private disposed = false;
+    /** Lets go of the server's index once it's gone unused for INDEX_IDLE_MS (one timer, set again by each search). */
+    private idle?: ReturnType<typeof setTimeout>;
 
     constructor(private root: string) {}
 
@@ -142,6 +146,7 @@ export class FileIndex {
      * than INDEX_FRESH_MS ago is used as it is, and listed again meanwhile.
      */
     async searchSoon(query: string, limit = 12, again = 0): Promise<string[]> {
+        if (!again) this.keepAwhile();
         if (!this.builtAt) await this.buildSoon();
         else if (Date.now() - this.builtAt >= INDEX_FRESH_MS && !this.building) void this.buildSoon();
         const shards = this.shards;
@@ -164,8 +169,28 @@ export class FileIndex {
         return this.find(query, limit);
     }
 
+    /** Kept INDEX_IDLE_MS from now, then let go of: nothing of a project's paths stays while nothing searches them. */
+    private keepAwhile() {
+        clearTimeout(this.idle);
+        this.idle = setTimeout(() => this.release(), INDEX_IDLE_MS);
+        this.idle.unref?.();
+    }
+
+    /** Back to as it was made (listed again when next asked); not while it's being listed. */
+    release() {
+        if (this.building) return this.keepAwhile();
+        clearTimeout(this.idle);
+        this.idle = undefined;
+        this.shards?.stop();
+        this.shards = undefined;
+        this.index = new PathIndex();
+        this.builtAt = 0;
+        this.listedHash = undefined;
+    }
+
     /** Its workers let go of (it's not used again). */
     dispose() {
+        clearTimeout(this.idle);
         this.disposed = true;
         this.shards?.stop();
         this.shards = undefined;

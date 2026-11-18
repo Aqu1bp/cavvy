@@ -27,7 +27,7 @@ export function cwdGitEnv(): Record<string, string> {
     return env;
 }
 
-function untrustedGitEnv(): Record<string, string> {
+export function untrustedGitEnv(): Record<string, string> {
     // Git before 2.45 ignores GIT_NO_LAZY_FETCH. As in git-changes, deny every
     // real protocol too, so missing objects cannot invoke a promisor transport.
     // A relative PATH entry ("." or empty) would let the repo supply the program a

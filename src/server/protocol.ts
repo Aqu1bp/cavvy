@@ -1670,6 +1670,48 @@ export interface GuiSettings {
     keepAwakeUnavailable?: boolean;
 }
 
+/**
+ * A line Search in project found: its number (1-based) and the line, cut to a part around its first match when it's
+ * long (`from`: the characters cut off its start), with where the matches are in that part (UTF-16 offsets).
+ */
+export interface SearchHit {
+    line: number;
+    preview: { text: string; ranges: [number, number][]; from?: number };
+}
+
+/** A file's hits, in line order; `more`: it has more than were sent. */
+export interface SearchFileHits {
+    path: string;
+    hits: SearchHit[];
+    more?: boolean;
+}
+
+/**
+ * What Search in project found, by file (paths relative to the session's folder). `truncated`: it stopped at the cap
+ * (or, the scan, at its most files); `timedOut`: at its time limit. `via`: ripgrep, git grep or Cavvy's own scan.
+ * `skippedLarge`: files the scan didn't read for their size. `cancelled`: a newer search (or fs.searchCancel) stopped it.
+ */
+export interface ProjectSearchResult {
+    files: SearchFileHits[];
+    matches: number;
+    truncated: boolean;
+    via: "rg" | "git" | "js";
+    timedOut?: boolean;
+    skippedLarge?: number;
+    cancelled?: boolean;
+}
+
+/**
+ * A file of the session's, for the file viewer. `path`: absolute, as named; `rel`: from the session's folder. Text
+ * comes whole up to a cap (`large` past it), an image as its bytes, anything else that isn't text as `binary`.
+ */
+export type FileContent = { path: string; rel: string; size: number } & (
+    | { kind: "text"; text: string }
+    | { kind: "image"; mediaType: string; data: string }
+    | { kind: "binary" }
+    | { kind: "large" }
+);
+
 /** An editor Cavvy knows, and whether it's on this machine (the server's). */
 export interface EditorInfo {
     id: string;
@@ -2377,6 +2419,17 @@ export interface Methods {
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     /** A PNG, JPEG, GIF or WebP file anywhere on this machine (judged by its bytes; a relative path is the session's), for showing an image the model's reply names. */
     "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
+    /** Go to file: the files of the session's folder (as @-mentions list them: ignored ones left out) that best match `query`, best first. */
+    "fs.files": { params: { sessionId?: string; cwd?: string; query: string; limit?: number }; result: { paths: string[] } };
+    /**
+     * Search in project: text in the session's folder, nothing outside it. A window's newer search (or fs.searchCancel)
+     * stops its last one, which answers with `cancelled`. A query that can't be searched for is refused ("invalid").
+     */
+    "fs.search": { params: { sessionId?: string; cwd?: string; query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }; result: ProjectSearchResult };
+    /** Stop this window's search under way, if any. */
+    "fs.searchCancel": { params: Record<string, never>; result: null };
+    /** A file inside the session's folders, for the file viewer: refused ("outside") past them, links followed included. */
+    "fs.read": { params: { sessionId?: string; cwd?: string; path: string }; result: FileContent };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
     /** Plugins and marketplaces, with each plugin's state for `cwd`'s folder (without one: the user's own settings only). */
