@@ -1440,6 +1440,8 @@ export interface UsageSummary {
     truncated?: string;
     /** Who each CLI account is signed in as, where its CLI has said (`source:accountId` to an email): the same one on two machines is one account. */
     who?: Record<string, string>;
+    /** What the user called each CLI account they added (`source:accountId` to its name): another machine's is shown by it. */
+    names?: Record<string, string>;
     /** Servers whose usage isn't in this: not connected, or no answer. The rest of the user's machines are counted (usage-machines.ts). */
     uncounted?: string[];
 }

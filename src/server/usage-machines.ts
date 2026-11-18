@@ -36,8 +36,11 @@ function row(v: unknown): Full<UsageRow> {
 }
 const source = (v: unknown): UsageSource | undefined => SOURCES.find((s) => s === v);
 
+/** A server's summary, cleaned: who its accounts are and what they're called are always there, if empty. */
+export type Said = UsageSummary & { who: Record<string, string>; names: Record<string, string> };
+
 /** What a server said its usage is, with nothing kept but numbers and short names; undefined if it isn't a summary of `days`. */
-export function machineSummary(raw: unknown, days: UsageDays): (UsageSummary & { who: Record<string, string> }) | undefined {
+export function machineSummary(raw: unknown, days: UsageDays): Said | undefined {
     const o = obj(raw);
     if (o.days !== days || !USAGE_DAYS.includes(days) || (o.interval !== "hour" && o.interval !== "day")) return undefined;
     const accounts: Full<UsageAccountRow>[] = [], buckets: Full<UsageDetailBucket>[] = [];
@@ -60,9 +63,11 @@ export function machineSummary(raw: unknown, days: UsageDays): (UsageSummary & {
     }
     const who: Record<string, string> = {};
     for (const [k, v] of Object.entries(obj(o.who)).slice(0, 100)) if (typeof v === "string" && v.includes("@")) who[text(k, 200)] = text(v, 200).toLowerCase();
+    const names: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj(o.names)).slice(0, 100)) if (typeof v === "string" && v.trim()) names[text(k, 200)] = text(v.trim(), 60);
     return {
         days, since: num(o.since), interval: o.interval, totals: totals(o.totals), rows: list(o.rows, MOST.rows).map(row), sources, accounts, buckets, series, limits: [],
-        sessions: num(o.sessions), approxDated: num(o.approxDated), approxPriced: num(o.approxPriced), ...(typeof o.truncated === "string" ? { truncated: text(o.truncated, 300) } : {}), who,
+        sessions: num(o.sessions), approxDated: num(o.approxDated), approxPriced: num(o.approxPriced), ...(typeof o.truncated === "string" ? { truncated: text(o.truncated, 300) } : {}), who, names,
     };
 }
 
@@ -87,7 +92,7 @@ export const whoKey = (source: string, accountId: string) => `${source}:${accoun
  * known to be the same sign-in (the same email, as each CLI says); otherwise it's a row of its own, named with its
  * server, since "default" there is whoever signed in there.
  */
-export function addMachines(own: UsageSummary, others: { name: string; summary: UsageSummary & { who: Record<string, string> } }[]): UsageSummary {
+export function addMachines(own: UsageSummary, others: { name: string; summary: Said }[]): UsageSummary {
     if (!others.length) return own;
     const mine = new Map(Object.entries(own.who ?? {}).map(([k, email]) => [`${k.slice(0, k.indexOf(":"))}:${email.toLowerCase()}`, k.slice(k.indexOf(":") + 1)]));
     const rows = new Map((own.rows as Full<UsageRow>[]).map((r) => [`${r.provider}:${r.model}`, r]));
@@ -100,7 +105,7 @@ export function addMachines(own: UsageSummary, others: { name: string; summary: 
         const account = (source: UsageSource, id: string) => {
             if (source === "api") return id;
             const email = s.who[whoKey(source, id)];
-            return (email && mine.get(`${source}:${email}`)) ?? `${id === "default" ? "Default" : id} on ${name}`;
+            return (email && mine.get(`${source}:${email}`)) ?? `${s.names[whoKey(source, id)] ?? (id === "default" ? "Default" : id)} on ${name}`;
         };
         add(own.totals, s.totals);
         own.sessions += s.sessions;

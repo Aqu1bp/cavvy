@@ -3613,6 +3613,7 @@ export class Engine {
                 const who: Record<string, string> = {};
                 for (const [key, s] of this.accountStatus) if (s.email) who[key] = s.email;
                 own.who = who;
+                own.names = Object.fromEntries(AGENT_CLIS.flatMap((d) => (d.account ? listAccounts(d.id) : []).filter((a) => a.id !== "default").map((a) => [`${d.id}:${a.id}`, a.name])));
                 // The user's own computer adds its servers' (a subscription is used on all of them); a server answers with its own.
                 // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
                 const links = this.serverLinks;

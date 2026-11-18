@@ -42,7 +42,8 @@ test("an account not known to be this computer's is a row of its own, named with
     // Another sign-in there, and one whose CLI hasn't said who it is: neither is this computer's "default".
     const own = summary(300, "default", { "claude-code:default": "me@example.com" });
     const box = summary(500, "default", { "claude-code:default": "other@example.com" });
-    const den = summary(20, "work");
+    // One the user named there is shown by that name, not by its id.
+    const den = { ...summary(20, "9db7-id"), names: { "claude-code:9db7-id": "work" } };
     const all = await usageEverywhere(own, { names: ["box", "den"], connected: new Map([["box", server(wire(box))], ["den", server(wire(den))]]) });
     expect(all.totals.cost).toBe(820);
     expect(all.accounts.map((a) => [a.accountId, a.cost])).toEqual([["default", 300], ["Default on box", 500], ["work on den", 20]]);
@@ -69,6 +70,7 @@ test("only numbers and short names are kept of what a server says", () => {
     said.rows[0].extra = { nested: true };
     said.accounts.push({ source: "elsewhere", accountId: "x", cost: 9 });
     said.who = { "claude-code:default": "not an address", "codex:default": "A@B.c" };
+    said.names = { "claude-code:x": "n".repeat(500), "codex:y": 7 };
     said.limits = [{ provider: "claude-code", windows: [] }];
     said.uncounted = ["mac"];
     const s = machineSummary(said, 1)!;
@@ -77,6 +79,7 @@ test("only numbers and short names are kept of what a server says", () => {
     expect("extra" in s.rows[0]!).toBe(false);
     expect(s.accounts).toHaveLength(1);
     expect(s.who).toEqual({ "codex:default": "a@b.c" });
+    expect(s.names).toEqual({ "claude-code:x": "n".repeat(60) });
     expect(s.limits).toEqual([]);
     expect(s.uncounted).toBeUndefined();
     expect(machineSummary(null, 1)).toBeUndefined();
