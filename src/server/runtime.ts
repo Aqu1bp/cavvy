@@ -286,6 +286,16 @@ function lastPromptsFrom(messages: readonly Message[], n: number): number | unde
     return at.length > n ? at[at.length - n] : undefined;
 }
 
+/** The first turn's prompt among `messages` (replay starts one at each of these kinds), as firstPrompt gives it. */
+function firstPromptIn(messages: readonly Message[]): string | undefined {
+    for (const m of messages) {
+        if (m.role !== "user") continue;
+        const kind = m.meta?.kind ?? "prompt";
+        if (kind === "prompt" || kind === "command" || kind === "wake") return reviewGist(promptText(m));
+    }
+    return undefined;
+}
+
 /** How many prompts come before `end`. */
 function promptsBefore(messages: readonly Message[], end: number): number {
     return promptIndices(messages, end).length;
@@ -816,10 +826,13 @@ export class Runtime {
             if (opts.resumed && tailAt !== undefined) {
                 // At least a turn for each prompt before these.
                 this.earlierAtLeast = promptsBefore(session.messages, tailAt);
+                // Named after its first prompt meanwhile, not the first of these.
+                this.storedFirst = firstPromptIn(session.messages);
                 this.earlierBuilt = this.buildHead(segs, tailAt);
             } else if (tailFirst) {
                 // At least each later segment's compaction (a turn of its own) comes before these.
                 this.earlierAtLeast = segs.length - 1;
+                this.storedFirst = segs.slice(0, -1).map((x) => firstPromptIn(x.messages)).find((x) => x !== undefined);
                 this.earlierBuilt = this.buildEarlier(segs);
             }
             // After the window is sent them, a slice at a time: put in the store before, they held its first open back
@@ -1720,6 +1733,8 @@ export class Runtime {
         } finally {
             this.earlierBuilt = undefined;
             this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
         }
     }
 
@@ -1757,6 +1772,8 @@ export class Runtime {
         } finally {
             this.earlierBuilt = undefined;
             this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
         }
     }
 

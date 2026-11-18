@@ -26,8 +26,12 @@ import { besideInFront, besideReads, closePane, usePane } from "../state/split";
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; kbd?: string; run: () => void };
 
 export function sessionTitle(h?: SessionHandle): string {
+    if (h?.view.state.title) return h.view.state.title;
+    // Untitled: as its row names it (after its first prompt), not after the first of the turns this window has.
+    const row = h && (app.sessions.find((s) => s.id === h.id) ?? app.archived.find((s) => s.id === h.id));
+    if (row && row.title !== "New session") return row.title;
     const first = h?.view.turns.find((t) => t.prompt)?.prompt?.text;
-    return h?.view.state.title ?? (first !== undefined ? promptPreview(first).slice(0, 80) : undefined) ?? "New session";
+    return (first !== undefined ? promptPreview(first).slice(0, 80) : undefined) ?? "New session";
 }
 
 /** Delete a session that's open, at once, with Undo (nothing to delete before its first prompt). */
