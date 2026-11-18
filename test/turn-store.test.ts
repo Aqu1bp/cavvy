@@ -462,6 +462,38 @@ test(`${what} opened the first time is built from its latest turns, and comes ou
     expect(canon(tail)).toEqual(canon(whole));
 }, 120_000);
 
+// Named, while its earlier turns are still being built, after the prompt it was built from: not the first of its latest
+// turns, which named it until they were all in (and the window's header, as more were shown, otherwise).
+for (const [kind, what] of [["native", "a compacted session"], ["cli", "a long Claude Code session"]] as const)
+test(`${what} opened the first time is named after its first prompt while its earlier turns are built`, async () => {
+    const cwd = join(tempDir("cavvy-turn-store-tail-name-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind, seed: 11 });
+    const prompts = turnBuilding.tailPrompts;
+    turnBuilding.tailPrompts = 10;
+    const file = findSessionAnywhere(t.id)!;
+    const rt = () => (srv as any).engine.runtimes.get(t.id);
+    try {
+        turnBuilding.tailFirst = false;
+        await open(t.id);
+        const whole = rt().firstPrompt();
+        expect(whole).toBeTruthy();
+        await close(t.id);
+        turnBuilding.tailFirst = true;
+        for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
+        await call("session.open", { id: t.id, last: 5 });
+        // Asked while they're still being built.
+        expect(rt().earlierBuilt).toBeDefined();
+        expect(rt().firstPrompt()).toBe(whole);
+        await rt().allTurns();
+        expect(rt().firstPrompt()).toBe(whole);
+        await close(t.id);
+    } finally {
+        turnBuilding.tailFirst = true;
+        turnBuilding.tailPrompts = prompts;
+    }
+}, 120_000);
+
 // A turn coming while the earlier turns are still being built (the notice a Claude Code session opens with here, where
 // it isn't installed; a prompt sent at once) started putting the latest ones in the store; the build, done, put them
 // there again from scratch, after the first had let go of them: those came out empty, there and in every open after.
