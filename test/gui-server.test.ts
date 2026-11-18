@@ -3425,7 +3425,7 @@ describe("reopening a Claude Code session", () => {
             await d.open("session.open", { id: working });
             expect(d.view(working).turns.map((t) => [t.prompt?.text, t.status])).toEqual([
                 ["hangforever please", "aborted"],
-                ["Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.", "done"],
+                ["Cavvy restarted while you were working, which cut your last turn off. A tool call that shows as declined at that moment was dropped by the restart, not refused by the user: make it again if you still need it. Continue where you left off.", "done"],
             ]);
             // Its turn ended: it's off the list, and a restart now starts nothing.
             expect(kept()).toEqual([]);
