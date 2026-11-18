@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -28,7 +28,12 @@ export type { Attachment } from "../lib/attachments";
  * default the session on screen's (a folder of another machine's names nothing on the window's own).
  */
 export function newSession(cwd?: string, on: { machine?: string } | undefined = machineFor(app.activeId)) {
-    if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    if (onAnother(on, machine)) {
+        // Home there, in this window, when one of its sessions is opened here (it's connected to); else the window goes there.
+        if (cwd && homeOnMachine(on!.machine ?? "", cwd)) return void requestComposerFocus();
+        return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    }
+    homeHere();
     // Another machine's session on screen but not opened here (connecting, or that machine unreachable): Home here, in
     // this computer's latest project, not in a folder of that machine's.
     if (!on && cwd === app.homeCwd && awayUnopened(app.activeId)) cwd = homeCwdAfter(app.activeId!);
@@ -39,6 +44,7 @@ export function newSession(cwd?: string, on: { machine?: string } | undefined = 
 
 /** The session on screen archived: Home, on the window's own machine. */
 function toHome(id: string) {
+    homeHere();
     batch(() => {
         setApp("homeCwd", homeCwdAfter(id));
         setApp("activeId", undefined);
@@ -274,7 +280,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             }
             // Check before creating a session, so a typo on Home doesn't start one.
             const command = opts.literal ? undefined : slashName(text);
-            if (command) await rpc.call("commands.list", { cwd, command });
+            if (command) await rpcFor(undefined).call("commands.list", { cwd, command });
             const h = await createIn(cwd);
             if (!h) return false;
             id = h.id;
@@ -318,7 +324,7 @@ function agentTrustReason(message: string): string {
 
 async function createIn(cwd: string) {
     try {
-        return await createSession(cwd, app.homeMode);
+        return await createSession(cwd, homeModeOf());
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
@@ -330,7 +336,8 @@ async function createIn(cwd: string) {
 }
 
 export async function trustAndContinue(path: string, trust: boolean) {
-    await rpc.call("projects.trust", { path, trust });
+    // Home's folder: on its machine.
+    await (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc).call("projects.trust", { path, trust });
     void refreshProjects();
 }
 
@@ -365,7 +372,7 @@ export async function setModel(ref: string) {
     }
     try {
         if (id) await rpc.call("session.setModel", { id, ref, persist: true });
-        else {
+        else if (!(await updateHomeSettings({ model: ref }))) {
             await rpc.call("settings.update", { patch: { model: ref } });
             setApp("settings", "model", ref);
         }
@@ -386,7 +393,7 @@ export async function setMode(mode: PermissionModeId) {
     const id = app.activeId;
     if (!id) {
         // For the sessions started from the home screen (the saved default is in Settings).
-        setApp("homeMode", mode);
+        if (!setHomeAwayMode(mode)) setApp("homeMode", mode);
         return;
     }
     // Shown at once, so pressing shift+tab twice quickly moves two steps; put back if the server refuses.
@@ -402,7 +409,7 @@ export async function setMode(mode: PermissionModeId) {
 export async function setFastMode(enabled: boolean) {
     try {
         if (app.activeId) await rpc.call("session.setFastMode", { id: app.activeId, enabled });
-        else {
+        else if (!(await updateHomeSettings({ fastMode: enabled }))) {
             const settings = await rpc.call("settings.update", { patch: { fastMode: enabled } });
             setApp("settings", settings);
         }
@@ -417,6 +424,8 @@ export async function setEffort(effort: EffortLevel): Promise<boolean> {
         return false;
     };
     if (id) return rpc.call("session.setEffort", { id, effort }).then(() => true, failed);
+    const there = updateHomeSettings({ effort });
+    if (there) return there.then(() => true, failed);
     const ok = await rpc.call("settings.update", { patch: { effort } }).then(() => true, failed);
     if (ok) setApp("settings", "effort", effort);
     return ok;
