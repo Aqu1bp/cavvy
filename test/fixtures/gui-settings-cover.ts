@@ -21,6 +21,7 @@ test("opening and leaving Settings keeps the session view, rail and inspector mo
         prefs: { sidebar: true, panel: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), document: { activeElement: composer }, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
         railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 740, h: 860 }, inspector: { open: true, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
         settingsTab, following: () => false, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, folderPickerOpen: () => undefined, viewedImage: () => undefined, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+        deletedOpen: () => false,
         ...Object.fromEntries(tags.map((tag) => [tag, () => { mounts[tag] = (mounts[tag] ?? 0) + 1; return node(tag); }])),
         ...noSplit, Panes: singlePane((tag) => { mounts[tag] = (mounts[tag] ?? 0) + 1; return node(tag); }),
     });
@@ -100,6 +101,7 @@ test("⌘F under Settings does nothing: neither the conversation's find nor the 
         actionOf: (e: any) => (e.key === "f" && e.metaKey ? "app:find" : undefined), openFind: () => { finds++; }, blocked: () => false, railOpen: () => false,
         railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 740, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
         settingsTab, following: () => false, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, folderPickerOpen: () => undefined, viewedImage: () => undefined, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+        deletedOpen: () => false,
         ...Object.fromEntries(tags.map((tag) => [tag, () => node(tag)])),
         ...noSplit, Panes: singlePane(),
     });
