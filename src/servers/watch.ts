@@ -47,6 +47,8 @@ const CHANGES_PER_SECOND = 20;
 /** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
 const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
+/** A server's record of the skills and commands it was given: a path and a hash for each of at most 3000 files. */
+const SYNC_ANSWER = 1024 * 1024;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
 const MAX_PER_MINUTE = 32 * 1024 * 1024;
@@ -126,6 +128,8 @@ export class MachineWatch {
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
+            /** Brings the server level with this machine's skills and commands, asking it over this connection (sync.ts). */
+            sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
             /** Runs a call of one of those, through this machine's own checks. */
             lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
@@ -231,6 +235,10 @@ export class MachineWatch {
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
     call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
+        return this.request(method, params, MAX_ANSWER);
+    }
+
+    private request(method: string, params: Record<string, unknown>, maxAnswer: number): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
         if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));
@@ -250,12 +258,35 @@ export class MachineWatch {
                     // and its kind when it names one (a window treats some apart).
                     if (error) return reject(Object.assign(new Error(cut(error.message, 300).replace(/\s+/g, " ").trim() || "It didn't work."), { theirs: true }, typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
                     const result = r.result ?? null;
-                    if (JSON.stringify(result).length > MAX_ANSWER) return reject(new Error(`${this.name} answered with more than was asked for.`));
+                    if (JSON.stringify(result).length > maxAnswer) return reject(new Error(`${this.name} answered with more than was asked for.`));
                     resolve(result);
                 },
             });
             ws.send(JSON.stringify({ id, method, params }));
         });
+    }
+
+    /** A sync under way, and whether another was asked for meanwhile (it runs once this one ends). */
+    private syncing?: Promise<void>;
+    private syncAgain = false;
+
+    /**
+     * Brings the server's skills and commands level with this machine's (src/servers/sync.ts): when the connection
+     * opens, and when they change here. One at a time; asked for meanwhile, it runs once more after.
+     */
+    resync() {
+        if (!this.o.sync || this.state !== "connected") return;
+        if (this.syncing) return void (this.syncAgain = true);
+        this.syncing = this.o
+            .sync((method, params) => this.request(method, params, SYNC_ANSWER))
+            .catch(() => undefined)
+            .finally(() => {
+                this.syncing = undefined;
+                if (this.syncAgain) {
+                    this.syncAgain = false;
+                    this.resync();
+                }
+            });
     }
 
     /** What this machine lends changed: said to the server on the connection there is, if any. */
@@ -384,6 +415,7 @@ export class MachineWatch {
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
                 if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                this.resync();
                 return;
             }
             if (msg.id === 2) {

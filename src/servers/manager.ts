@@ -8,7 +8,7 @@
 // window calls again with the answer.
 
 import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { join } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
@@ -21,6 +21,7 @@ import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { syncedFolders, syncTo } from "./sync";
 import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
 
 /** A server's sessions as last heard (MachineWatch kept): listed while it can't be reached, from the next launch too. */
@@ -126,6 +127,10 @@ export class ServerLinks {
             /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
             lends?: () => string[];
             lend?: (name: string, call: LentCall, signal: AbortSignal) => Promise<LentResult>;
+            /** This machine's skills and commands are kept on its servers (src/servers/sync.ts): the user's own machine. */
+            sync?: boolean;
+            /** How long a change to them settles before servers hear of it. */
+            syncSettleMs?: number;
             source?: BuildSource;
             renewAfterMs?: number;
             watchRetryMs?: number[];
@@ -155,12 +160,14 @@ export class ServerLinks {
                 notice: (n) => this.o.onNotice?.(name, n),
                 lends: this.o.lends,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
+                sync: this.o.sync ? syncTo : undefined,
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
             });
             this.watches.set(name, w);
             w.start();
         }
+        this.watchSynced();
         return [...this.watches.values()].map((w) => w.overview());
     }
 
@@ -607,11 +614,43 @@ export class ServerLinks {
     stopWatching() {
         this.stopped = true;
         for (const w of this.watches.values()) w.stop();
+        this.unwatchSynced();
+    }
+
+    /** What watches this machine's skills and commands for changes, while servers are watched (sync). */
+    private syncWatchers: FSWatcher[] = [];
+    private syncTimer?: ReturnType<typeof setTimeout>;
+
+    private watchSynced() {
+        if (!this.o.sync || this.syncWatchers.length || this.stopped) return;
+        const changed = () => {
+            clearTimeout(this.syncTimer);
+            this.syncTimer = setTimeout(() => {
+                for (const w of this.watches.values()) w.resync();
+            }, this.o.syncSettleMs ?? 1500);
+            (this.syncTimer as { unref?: () => void }).unref?.();
+        };
+        for (const dir of syncedFolders()) {
+            if (!existsSync(dir)) continue;
+            try {
+                const w = watch(dir, { recursive: true, persistent: false }, changed);
+                w.on("error", () => undefined);
+                this.syncWatchers.push(w);
+            } catch {
+                // Can't be watched here: it's brought level each time a server connects.
+            }
+        }
+    }
+
+    private unwatchSynced() {
+        clearTimeout(this.syncTimer);
+        for (const w of this.syncWatchers.splice(0)) w.close();
     }
 
     /** The engine is stopping: every connection is closed and signed out. */
     async stopAll() {
         this.stopped = true;
+        this.unwatchSynced();
         for (const w of this.watches.values()) w.stop();
         this.watches.clear();
         for (const t of this.told.values()) clearTimeout(t);

@@ -23,6 +23,8 @@ API keys for the server are added there too (`cavvy --server box auth add`, or S
 
 You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
 
+After that, while Cavvy runs here and is connected to the server, your skills and commands stay the same there as here: one you add, change or delete here is added, changed or deleted there within a few seconds. A skill or command that's the server's own (one an agent there made, or one you changed there) is left as it is. A file named like a key, or with a key of a known format in it, stays here, as in the copy.
+
 Never copied: keys and sign-ins, hooks and the status line (they're commands, and would run there), and the permission mode. Permission rules and MCP servers can have a key written into them anywhere (an address's path, an option's value), so they go only when every word in them reads as a name: a rule of plain words with no options in it (`Bash(npm run lint:*)`), and an MCP server that's just a package to run (`npx -y @scope/server`) or a public address with a plain path. A long run of letters and digits, or groups of them, reads as a key and stays. A password that's an ordinary word can't be told from a command's own words, so look through your rules for one before you copy. The rest stay, and Cavvy says how many; add those on the server yourself (`cavvy --server box mcp add …`). A memory, skill or command file is left out when it's named like a key file or has a key of a known format in it.
 
 What can go wrong, and what you see:

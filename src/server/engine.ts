@@ -3,6 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { applySync, readSynced } from "../servers/sync";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -2166,6 +2167,8 @@ export class Engine {
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
+                // The user's own machine keeps its skills and commands on its servers.
+                sync: !this.o.away,
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -3181,6 +3184,14 @@ export class Engine {
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
                 this.setLender(client, kinds);
                 return null;
+            }
+            case "sync.files": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                return readSynced();
+            }
+            case "sync.apply": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                return applySync(p.files, p.remove);
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.
