@@ -277,10 +277,14 @@ describe("paced pipes", () => {
             total += b.length;
         });
         p.stderr.resume();
+        // What the command left is read as it ends, not at the next poll: in a turn that has already read, that's a second chunk.
+        let ended = -1;
+        p.child.once("close", () => (ended = turn));
         await new Promise((r) => p.onClose(r));
         spinning = false;
         expect(total).toBe(5_000_000);
-        expect(Math.max(...perTurn.values())).toBeLessThanOrEqual(64 * 1024);
+        expect(Math.max(...[...perTurn].filter(([at]) => at !== ended).map(([, n]) => n))).toBeLessThanOrEqual(64 * 1024);
+        expect(perTurn.get(ended) ?? 0).toBeLessThanOrEqual(2 * 64 * 1024);
     }, 60_000);
 
     test("a background command printing now and then is looked at a few times a second, and none of it is lost", async () => {
