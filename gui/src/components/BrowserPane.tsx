@@ -16,6 +16,7 @@ import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
 import { pageTarget, type PageView } from "../lib/browser-view";
 import { paneTools, savedView } from "./BrowserTools";
+import { hostedTargets } from "../state/browser-host";
 
 /**
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
@@ -383,12 +384,20 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         address?.focus();
         void call("new_tab").then(() => requestAnimationFrame(() => address?.focus()));
     };
+    /** The desktop app's own view of the current tab's page (BrowserHostLayer). */
+    const pageView = () => {
+        const target = tab()?.targetId;
+        const key = target ? Object.entries(hostedTargets()).find(([, t]) => t === target)?.[0] : undefined;
+        return (key ? document.querySelector<HTMLElement>(`webview[data-key="${key}"]`) : null) ?? undefined;
+    };
     const go = (e: SubmitEvent) => {
         e.preventDefault();
         const url = draft();
         setDraft(undefined);
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
-        keyboard?.focus({ preventScroll: true });
+        // The keyboard to the page, as a browser's address bar gives it: in the desktop app that's the page's own view.
+        if (native) pageView()?.focus();
+        else keyboard?.focus({ preventScroll: true });
     };
     // `list`: the list the person picked in, as this pane had it (another may have been opened since, from elsewhere).
     const choose = (list: number, index?: number) => void stream.call("browser.choose", { id: id(), index, tab: tab()?.id, list }).catch(reportError);
