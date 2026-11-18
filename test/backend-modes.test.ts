@@ -62,11 +62,12 @@ describe("bypass: what an agent CLI still asks about runs, with no card", () => 
         });
     }
 
-    test("a dangerous command too: the CLI's own bypass would run it without asking", async () => {
-        const { ask, asked } = setup("bypassPermissions");
-        expect(await ask({ toolName: "Bash", input: { command: "rm -rf ~" }, ownMode: true })).toEqual({ allow: true });
-        expect(await ask({ toolName: "Bash", input: { command: "git reset --hard" }, hooksOnly: true, asksAlways: true })).toEqual({ allow: true });
-        expect(asked).toHaveLength(0);
+    test("a catastrophic command still asks, as for Cavvy's own tools in bypass, whichever backend sent it", async () => {
+        for (const extra of [{ ownMode: true }, { hooksOnly: true, asksAlways: true }, {}] as Partial<BackendPermission>[]) {
+            const { ask, asked } = setup("bypassPermissions");
+            await ask({ toolName: "Bash", input: { command: "rm -rf ~" }, ...extra });
+            expect(asked.map((r) => [r.input.command, r.decision.dangerous])).toEqual([["rm -rf ~", true]]);
+        }
     });
 
     test("extra sandbox access is granted, but not past a deny rule", async () => {

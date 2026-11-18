@@ -9,6 +9,7 @@ import { AlertTriangle } from "lucide-solid";
 import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
+import { modelName } from "../lib/model-name";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
 import { app, homeDraftKey, reportError, rpc, toast, trustRequest } from "../state/app";
 import { composerStorage } from "../lib/drafts";
@@ -185,7 +186,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                         <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? undefined : "Describe the task in the message box, or type a few words here"} onClick={() => void suggest()}>
                             {suggesting() ? "Suggesting…" : "Suggest a name"}
                         </button>
-                        <Show when={suggested()?.model}>{(m) => <> · Suggested by {m()}</>}</Show>
+                        <Show when={suggested()?.model}>{(m) => <> · Suggested by {modelName(m())}</>}</Show>
                     </span>
                     <Show when={suggested()?.error}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                     <Show when={errorFor("branch")}>{(m) => <span class="wt-error">{m()}</span>}</Show>

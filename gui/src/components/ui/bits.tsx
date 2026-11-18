@@ -64,9 +64,10 @@ export function Ring(p: { value: number; size?: number; stroke?: number; title?:
 }
 
 /** A switch. `tone="danger"`: on is a warning colour (a setting that lowers a safeguard). */
-export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; label?: string; tone?: "danger" }) {
+/** `disabled`: can't be changed here (the row says why); shown as it acts, which may not be the saved choice. */
+export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; label?: string; tone?: "danger"; disabled?: boolean }) {
     return (
-        <button class={`toggle ${p.checked ? "on" : ""} ${p.tone ?? ""}`} role="switch" aria-checked={p.checked} aria-label={p.label} onClick={() => p.onChange(!p.checked)}>
+        <button class={`toggle ${p.checked ? "on" : ""} ${p.tone ?? ""}`} role="switch" aria-checked={p.checked} aria-label={p.label} disabled={p.disabled} onClick={() => p.onChange(!p.checked)}>
             <span class="toggle-knob" />
         </button>
     );

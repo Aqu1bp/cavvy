@@ -68,7 +68,7 @@ export interface Decision {
     config?: boolean;
     /** The "allow this for the session" choice the popup offers. */
     grant?: SessionGrant;
-    /** Allowed because the user said yes to this exact action earlier in the session. */
+    /** Allowed because the user allowed this exact action for the session (a grant), earlier in it. */
     remembered?: boolean;
 }
 
@@ -152,8 +152,12 @@ export class PermissionChecker {
     grantedRules: string[] = [];
     grantedPaths: string[] = [];
     grantedHosts: string[] = [];
-    /** Actions the user said yes to: only those exact ones run unasked again. Sub-agents share it with their parent. */
-    private approved = new Set<string>();
+    /**
+     * Actions the user allowed for the session (with a grant): those exact ones run unasked again, as well as what the
+     * grant covers. A plain yes ("Allow once") isn't kept here. Sub-agents share it with their parent.
+     */
+    private grantedActions = new Set<string>();
+    /** What the user said yes to lately, for the auto-mode reviewer (context for its judgement, never an allow by itself). */
     private approvals: ApprovedAction[] = [];
 
     constructor(
@@ -234,7 +238,7 @@ export class PermissionChecker {
         this.grantedRules = [];
         this.grantedPaths = [];
         this.grantedHosts = [];
-        this.approved = new Set();
+        this.grantedActions = new Set();
         this.approvals = [];
     }
 
@@ -242,8 +246,8 @@ export class PermissionChecker {
     check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string, own?: { memoryDir?: string }): Decision {
         const d = this.decide(tool, input, mode, cwd, own?.memoryDir);
         if (d.behavior !== "ask") return d;
-        // Rules that ask every time keep asking; anything else the user already said yes to runs.
-        if (!d.rule && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
+        // Rules that ask every time keep asking; an action the user allowed for the session runs.
+        if (!d.rule && this.grantedActions.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "allowed for the session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
         return d;
     }
 
@@ -254,18 +258,20 @@ export class PermissionChecker {
     }
 
     /**
-     * The user said yes to this exact action, here: the same one in the same folder needs no
-     * asking again this session. What the reviewer hears is the action itself, never a summary.
+     * The user said yes to this action, here. A yes alone ("Allow once") covers the call it answered: the same
+     * action again asks again. With `grant` ("allow … for the session"), this exact action in the same folder
+     * needs no asking again this session either, besides what the grant covers (applyGrant). Either way the
+     * auto-mode reviewer hears of it, as the action itself, never a summary: context for its own decision.
      */
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
         // branch, commit or set of files; a browser action, on whatever page is open, so the same click or
         // script can do something else on the next one; a tap or a key on a simulator, on whatever screen is up,
-        // and ending an app or shutting the device down, on whatever runs there: a yes covers the call it
-        // answered. "Don't ask again" is the rule.
+        // and ending an app or shutting the device down, on whatever runs there: even with a session choice,
+        // this exact input isn't kept (the grant covers what it names). "Don't ask again" is the rule.
         // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
         if (oneCall(tool, input)) return;
-        this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
+        if (opts.grant) this.grantedActions.add(this.actionKey(tool, input, cwd, opts.sandbox));
         const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
         const key = stableStringify(a);
         this.approvals = [...this.approvals.filter((x) => stableStringify(x) !== key), a].slice(-10);
