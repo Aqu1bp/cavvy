@@ -1664,6 +1664,10 @@ export interface GuiSettings {
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
+    /** Keep the computer from idling to sleep while sessions work (default true). */
+    keepAwake?: boolean;
+    /** Set when keeping it awake can't work on this computer (nothing to run, not installed, or refused). */
+    keepAwakeUnavailable?: boolean;
 }
 
 /** An editor Cavvy knows, and whether it's on this machine (the server's). */

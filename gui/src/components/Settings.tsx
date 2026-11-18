@@ -311,6 +311,9 @@ function General() {
                 <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
                 </Row>
+                <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : "The display can still sleep."}>
+                    <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false} onChange={(v) => void update({ keepAwake: v })} />
+                </Row>
                 {/* On one of the user's servers Bypass can always be chosen: there's nothing to allow. */}
                 <Show when={!s().bypassAlways}>
                     <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
