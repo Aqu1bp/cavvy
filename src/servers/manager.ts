@@ -397,8 +397,9 @@ export class ServerLinks {
                     await this.drop(name, true);
                     return { status: "failed", problem: { message: `No server named ${name}.` } };
                 }
-                // The user's own doing (they opened it, started it, trusted its key): its sessions are listed at once.
-                if (!o.retry) this.watches.get(name)?.poke();
+                // Connected for anyone but the watch of its sessions (the user opened it, a window's connection came back
+                // by itself): those are listed at once, not when the watch's own wait is over (up to a minute).
+                if (!o.quiet) this.watches.get(name)?.poke();
                 return r;
             })
             .finally(() => {

@@ -267,6 +267,27 @@ describe("servers, from a window", () => {
         }
     });
 
+    // Out of reach from the start (an ssh name that doesn't resolve), then back: a window opening one of its sessions
+    // connects by itself (a retry). The list of its sessions wasn't told, and said it couldn't reach it for as long as
+    // its own wait was (5 s, then 15, 30, 60).
+    test("back, and connected to by a window's own retry: the list of its sessions is connected again at once, not after its own wait", async () => {
+        const { ServerLinks } = await import("../src/servers/manager");
+        const states: string[] = [];
+        const links = new ServerLinks({ source, onOverview: (m) => m.name === "box" && states.push(m.state) });
+        try {
+            fake.fail("dns");
+            links.watchAll();
+            await until("the list to say it can't reach it", () => states.at(-1) === "unreachable");
+            fake.fail();
+            expect((await links.connect("box", { retry: true })).status).toBe("connected");
+            const back = Date.now();
+            await until("the list to be connected again", () => states.at(-1) === "connected");
+            expect(Date.now() - back).toBeLessThan(2_000);
+        } finally {
+            await links.stopAll();
+        }
+    });
+
     test("stopped there, the windows are told; opening it starts it again, with a new sign-in", async () => {
         here.events.length = 0;
         await here.call("servers.stop", { name: "box" });
