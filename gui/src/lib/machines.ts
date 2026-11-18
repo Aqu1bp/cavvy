@@ -3,10 +3,11 @@
 // server's Cavvy directly, as it talks to this computer's when it's on none.
 
 import { createSignal } from "solid-js";
+import { reconcile } from "solid-js/store";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, pendingPicked, setConnNote } from "../state/app";
+import { app, pendingPicked, setApp, setConnNote } from "../state/app";
 import { PICKED_KEY } from "./picked";
 import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -42,6 +43,8 @@ if (home) {
     home.retriesCredentials = true;
     home.onEvent((e) => {
         if (e.type === "servers.progress" && e.name === machine && machineIssue()?.kind === "connecting") setMachineIssue({ kind: "connecting", text: e.text, percent: e.percent });
+        // The app is this computer's: its update is shown in a window on a server too.
+        if (e.type === "app.update") setApp("update", reconcile(e.info));
     });
     void home.connect();
 }

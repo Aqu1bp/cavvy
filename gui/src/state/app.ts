@@ -56,6 +56,8 @@ rpc.route = (method, params) => {
     // ids (an account's, a terminal's) aren't sessions', whatever they're called.
     // What this computer lends a server's session (offers.*) is this computer's own, whichever machine that session is on.
     if (method.startsWith("offers.")) return undefined;
+    // The app that updates is this computer's, whichever machine the window is on.
+    if (machine && method.startsWith("app.update.")) return import("../lib/machines").then((m) => m.home!.call(method as never, params as never));
     const p = params as { id?: unknown; sessionId?: unknown } | undefined;
     const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
     const link = id !== undefined ? away.get(id) : undefined;
@@ -1720,7 +1722,8 @@ function onEvent(ev: ServerEvent) {
             keybindingsChanged(ev.keybindings);
             return;
         case "app.update":
-            setApp("update", reconcile(ev.info));
+            // In a window on a server, this computer's Cavvy says (lib/machines.ts): the server's has no app to update.
+            if (!machine) setApp("update", reconcile(ev.info));
             return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
