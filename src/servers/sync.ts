@@ -13,7 +13,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
+import { CLI_SYNCED, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
 
 /** Where each kind is kept, here and (as a path under the home) on a server. */
 function syncedRoots(): { from: string; to: string }[] {
@@ -28,7 +28,8 @@ function syncedRoots(): { from: string; to: string }[] {
 /** A path a server takes: under one of the synced folders, in plain parts. */
 const SYNCED_PATH = /^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//;
 export function syncablePath(p: unknown): p is string {
-    if (typeof p !== "string" || p.length > 300 || !SYNCED_PATH.test(p) || /[\0-\x1f\\]/.test(p)) return false;
+    // Nor Claude Code's own folder there (one recorded as sent before it was left out isn't taken away from a server either).
+    if (typeof p !== "string" || p.length > 300 || !SYNCED_PATH.test(p) || /[\0-\x1f\\]/.test(p) || p.startsWith(`${CLI_SYNCED}/`)) return false;
     const parts = p.split("/");
     return parts.length <= 9 && parts.every((x) => x !== "" && x !== "." && x !== "..");
 }
@@ -55,9 +56,9 @@ export function localSyncFiles(): Map<string, SyncFile> {
             return;
         }
         for (const name of names) {
-            if (SKIP_DIR.has(name) || out.size >= MAX_FILES) continue;
-            const path = join(from, name);
             const dest = `${to}/${name}`;
+            if (SKIP_DIR.has(name) || dest === CLI_SYNCED || out.size >= MAX_FILES) continue;
+            const path = join(from, name);
             try {
                 const l = lstatSync(path);
                 // A link is followed only at the top (a skill kept elsewhere), as the copy does.

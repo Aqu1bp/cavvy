@@ -27,17 +27,22 @@ const ask = async (method: string, params: any) => {
 
 test("only the synced folders' plain paths are taken", () => {
     for (const ok of [".cavvy/skills/a/SKILL.md", ".claude/skills/a/refs/x.md", ".cavvy/commands/fix.md"]) expect(syncablePath(ok)).toBe(true);
-    for (const bad of [".cavvy/settings.json", ".claude/CLAUDE.md", ".cavvy/skills/../settings.json", "/etc/passwd", ".cavvy/skills//x", ".cavvy/skills/a\\b", ".ssh/authorized_keys", 7]) expect(syncablePath(bad)).toBe(false);
+    for (const bad of [".cavvy/settings.json", ".claude/CLAUDE.md", ".cavvy/skills/../settings.json", "/etc/passwd", ".cavvy/skills//x", ".cavvy/skills/a\\b", ".ssh/authorized_keys", ".claude/skills/synced/org_user/pdf/SKILL.md", 7]) expect(syncablePath(bad)).toBe(false);
+    expect(syncablePath(".claude/skills/synced-notes/SKILL.md")).toBe(true);
 });
 
 test("a server gets this machine's skills and commands, not a file that holds a key, and is brought level after", async () => {
     put(join(iso.home, "skills", "review", "SKILL.md"), "---\nname: review\n---\nReview it.");
     put(join(claude, "skills", "ship", "SKILL.md"), "---\nname: ship\n---\nShip it.");
     put(join(iso.home, "commands", "fix.md"), "Fix the bug.");
+    // Claude Code's own, from the account it's signed in to: it keeps those level itself on each machine. A skill
+    // of the user's that happens to hold a folder called that is theirs.
+    put(join(claude, "skills", "synced", "org_user", "pdf", "SKILL.md"), "From the account.");
+    put(join(claude, "skills", "ship", "synced", "notes.md"), "Mine.");
     put(join(iso.home, "skills", "deploy", "SKILL.md"), "Use the key AKIAIOSFODNN7EXAMPLE to deploy.");
     put(join(iso.home, "skills", "deploy", ".env"), "X=1");
     const mine = localSyncFiles();
-    expect([...mine.keys()].sort()).toEqual([".cavvy/commands/fix.md", ".cavvy/skills/review/SKILL.md", ".claude/skills/ship/SKILL.md"]);
+    expect([...mine.keys()].sort()).toEqual([".cavvy/commands/fix.md", ".cavvy/skills/review/SKILL.md", ".claude/skills/ship/SKILL.md", ".claude/skills/ship/synced/notes.md"]);
 
     await syncTo(ask);
     expect(readFileSync(join(server, ".cavvy/skills/review/SKILL.md"), "utf-8")).toContain("Review it.");

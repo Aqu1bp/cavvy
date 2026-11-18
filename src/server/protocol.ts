@@ -1438,6 +1438,12 @@ export interface UsageSummary {
     approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;
+    /** Who each CLI account is signed in as, where its CLI has said (`source:accountId` to an email): the same one on two machines is one account. */
+    who?: Record<string, string>;
+    /** What each CLI account is shown as, where it isn't one the window can name itself (`source:accountId` to a name): one the user added, or another machine's ("Work on box"). */
+    names?: Record<string, string>;
+    /** Servers whose usage isn't in this: not connected, or no answer. The rest of the user's machines are counted (usage-machines.ts). */
+    uncounted?: string[];
 }
 
 /** A commit on main the installed desktop app doesn't have yet. */
@@ -2405,7 +2411,8 @@ export interface Methods {
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
-    "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /** `brief`: without `buckets`, for another machine adding this one's to its own. */
+    "usage.summary": { params: { days: UsageDays; brief?: boolean }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
     /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */
