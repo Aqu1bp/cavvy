@@ -1386,7 +1386,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
         <div class="transcript-wrap">
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} classList={{ "jump-shown": !stick() && !scrolledDown() }} style={{ "--dock-h": dock() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
+            <div class="transcript" ref={scroller} style={{ "--dock-h": dock() }} classList={{ "jump-shown": !stick() && !scrolledDown() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>
