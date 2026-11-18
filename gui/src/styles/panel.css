@@ -98,6 +98,14 @@
     background: var(--warn);
 }
 
+.segmented .ct-dot.running {
+    background: var(--working);
+}
+
+.segmented .ct-dot.error {
+    background: var(--danger);
+}
+
 /* The view's name, and beside Changes what changed and the way into the diff reader. */
 .insp-t {
     display: flex;

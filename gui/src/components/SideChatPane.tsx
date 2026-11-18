@@ -1,234 +1,181 @@
 // The side panel's Side chat: questions about the session, answered without
-// adding to it (src/agent/side-chat.ts). With none open, a field to ask one;
-// open, its turns, what it asks for, and a field to go on. Its model and mode
-// are its own (read-only to start). Bring back quotes its last answer, or what's
-// selected in it, into the session's message box. Closing it discards it.
-// Loaded when the tab is first shown.
+// adding to it (src/agent/side-chat.ts). The conversation's own views in a
+// narrower column: its turns (Transcript, read-only: no rewind or fork) and
+// its composer, with the composer's model and mode menus for the side chat's
+// own model and mode (read-only to start). It takes no commands or shell
+// lines. With none open, the composer asks one. Bring back attaches its last
+// answer, or what's selected in it, to the session's message as a chip.
+// Closing it discards it. Loaded when the tab is first shown.
 
 import "../styles/side-chat.css";
-import { ArrowUp, CornerDownLeft, Square, X } from "lucide-solid";
-import { MODE_LABELS, type PermissionModeId, type SessionState, type Turn } from "@shared/protocol";
-import { lastAnswer, quoted } from "../lib/side-chat";
-import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { awayMachine, modelsFor, openSession, reportError, rpcFor, type SessionHandle } from "../state/app";
-import { PaneContext } from "../state/split";
-import { InteractionTab } from "./InteractionDock";
-import { Markdown } from "./blocks/Markdown";
-import { LiveLine } from "./LiveLine";
-import { liveLine } from "../lib/live-line";
-import { MODES } from "./ModePicker";
+import { CornerDownLeft, X } from "lucide-solid";
+import { createEffect, createResource, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { lastAnswer } from "../lib/side-chat";
+import { columnSteps, PANE_NARROW } from "../lib/layout";
+import { sideChatText, type Attachment } from "../lib/attachments";
+import { awayMachine, openSession, reportError, rpcFor, type SessionHandle } from "../state/app";
+import { send } from "../state/actions";
+import { setComposerAdd } from "../state/ui";
+import { asideFocused, PaneContext, setAsideFocused, showAside } from "../state/split";
+import type { Transcript } from "./Transcript";
+import type { Composer } from "./Composer";
 
 /**
- * A turn of the side chat, as it reads in a narrow column: the question, then what was said, each step of the work as
- * a line (its name and how it went), and while it runs what it's doing.
+ * The conversation's own views, handed in by the side panel (RightPanel.tsx) rather than imported here: imported by
+ * this chunk, loaded later, they and what they use were split out of the startup chunk into chunks of their own, which
+ * cost 2.4 KB more to load at startup.
  */
-function SideTurn(p: { turn: Turn; state: SessionState; last: boolean }) {
-    const live = () => p.last && p.state.busy && p.turn.status === "running";
-    return (
-        <div class="sc-turn">
-            <Show when={p.turn.prompt?.text}>
-                <div class="sc-q selectable">{p.turn.prompt!.text}</div>
-            </Show>
-            <div class="sc-a selectable">
-                <For each={p.turn.blocks}>
-                    {(b) =>
-                        b.t === "text" ? (
-                            <Markdown text={b.text} streaming={live()} sessionId={p.state.id} />
-                        ) : b.t === "tool" ? (
-                            <div class={`sc-step ${b.status === "error" ? "bad" : ""}`}>
-                                <span class="truncate">{b.title}</span>
-                                <Show when={b.summary}>
-                                    <span class="sc-sum truncate">{b.summary}</span>
-                                </Show>
-                            </div>
-                        ) : b.t === "notice" ? (
-                            <div class={`sc-step ${b.level === "error" ? "bad" : ""}`}>{b.text}</div>
-                        ) : null
-                    }
-                </For>
-                <Show when={live()}>
-                    <LiveLine state={liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: false })} />
-                </Show>
-            </div>
-        </div>
-    );
+export interface ChatViews {
+    Transcript: typeof Transcript;
+    Composer: typeof Composer;
 }
 
-/** A field that sends on Enter (Shift+Enter for a new line). */
-function Ask(p: { placeholder: string; busy?: boolean; onSend: (text: string) => Promise<boolean>; onStop?: () => void; autofocus?: boolean }) {
-    const [text, setText] = createSignal("");
-    const [sending, setSending] = createSignal(false);
-    let ta: HTMLTextAreaElement | undefined;
-    const send = async () => {
-        const t = text().trim();
-        if (!t || sending()) return;
-        setSending(true);
-        if (await p.onSend(t)) setText("");
-        setSending(false);
-        ta?.focus();
-    };
-    if (p.autofocus) requestAnimationFrame(() => ta?.focus());
-    return (
-        <div class="sc-ask">
-            <textarea
-                ref={ta}
-                rows={2}
-                value={text()}
-                placeholder={p.placeholder}
-                aria-label={p.placeholder}
-                onInput={(e) => setText(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                        e.preventDefault();
-                        void send();
-                    }
-                }}
-            />
-            <Show
-                when={p.busy && !text().trim()}
-                fallback={
-                    <button class="sc-send" title="Send" aria-label="Send" disabled={!text().trim() || sending()} onClick={() => void send()}>
-                        <ArrowUp size={15} />
-                    </button>
-                }
-            >
-                <button class="sc-send stop" title="Stop" aria-label="Stop" onClick={() => p.onStop?.()}>
-                    <Square size={11} fill="currentColor" />
-                </button>
-            </Show>
-        </div>
-    );
-}
+/** The keyboard and the composer's menus are the side chat's while a press or the focus is in it (state/split.ts asideFocused). */
+const pane = { aside: true, focused: asideFocused, parked: () => false, split: () => false, rightmost: () => false, share: () => 1, wasFocused: asideFocused };
 
-export default function SideChatPane(p: { handle: SessionHandle }) {
-    const parent = () => p.handle;
-    const rpc = () => rpcFor(parent().id);
-    /** Asked in the parent: it opens the side chat with the question. */
-    const start = async (text: string) => {
-        try {
-            await rpc().call("session.sideChat", { id: parent().id, text });
-            return true;
-        } catch (e) {
-            reportError(e);
-            return false;
-        }
-    };
-    return (
-        <div class="side-chat">
-            {/* Another machine's session: its side chat is there, as its browser is. */}
-            <Show when={awayMachine(parent().id) === undefined} fallback={<p class="sc-hint">This session runs on {awayMachine(parent().id) || "this computer"}. Its side chat is in a window there.</p>}>
-            <Show
-                when={parent().view.state.sideChat?.id}
-                keyed
-                fallback={
-                    <div class="sc-start">
-                        <div class="sc-head">
-                            <h2>Side chat</h2>
-                        </div>
-                        <p class="sc-hint">Ask about this session. Nothing here is added to it.</p>
-                        <Ask placeholder="Ask about this session" onSend={start} autofocus />
-                    </div>
-                }
-            >
-                {(id) => <Chat parent={parent()} id={id} />}
-            </Show>
-            </Show>
-        </div>
-    );
-}
-
-function Chat(p: { parent: SessionHandle; id: string }) {
-    const [h] = createResource(() => p.id, (id) => openSession(id).catch((e) => (reportError(e), undefined)));
-    const rpc = () => rpcFor(p.parent.id);
-    const st = () => h()?.view.state;
-    const turns = () => h()?.view.turns ?? [];
-    let scroller: HTMLDivElement | undefined;
-    let list: HTMLDivElement | undefined;
-    // Keyboard and cards: this pane's own while the focus is in it, not the conversation's beside it.
-    const [focused, setFocused] = createSignal(false);
+export default function SideChatPane(p: { handle: SessionHandle; views: ChatViews }) {
+    const { Composer } = p.views;
     let root: HTMLDivElement | undefined;
-    const pane = { focused, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: focused };
-
-    // Kept at its end while it was there: a new answer scrolls into view, unless the reader has scrolled up.
-    let atEnd = true;
-    const toEnd = () => scroller && (scroller.scrollTop = scroller.scrollHeight);
-    createEffect(on(h, (handle) => {
-        if (!handle || !list || typeof ResizeObserver === "undefined") return;
-        const ro = new ResizeObserver(() => atEnd && toEnd());
-        ro.observe(list);
-        onCleanup(() => ro.disconnect());
-        requestAnimationFrame(toEnd);
-    }));
-
-    const send = async (text: string) => {
+    // Its own widths' steps, as a split's pane has (shell.css data-narrow): request cards and the composer's bar give way.
+    const [narrow, setNarrow] = createSignal<string>();
+    onMount(() => {
+        if (!root) return;
+        const ro = new ResizeObserver(() => setNarrow(columnSteps(root!.clientWidth, PANE_NARROW)));
+        ro.observe(root);
+        // A press or the focus somewhere else (not a menu it opened, which is in a portal) gives them back to the session.
+        const where = (e: Event) => {
+            const t = e.target;
+            if (!(t instanceof Node)) return;
+            if (root!.contains(t)) setAsideFocused(true);
+            else if (!(t instanceof Element && t.closest(".popover"))) setAsideFocused(false);
+        };
+        document.addEventListener("pointerdown", where, true);
+        document.addEventListener("focusin", where, true);
+        onCleanup(() => {
+            ro.disconnect();
+            document.removeEventListener("pointerdown", where, true);
+            document.removeEventListener("focusin", where, true);
+            setAsideFocused(false);
+        });
+    });
+    /** With none open: the question opens one, and goes to it with what's attached. */
+    const open = async (text: string, attachments: Attachment[]) => {
         try {
-            await rpc().call("session.send", { id: p.id, text });
-            atEnd = true;
-            requestAnimationFrame(toEnd);
-            return true;
+            const { id } = await rpcFor(p.handle.id).call("session.sideChat", { id: p.handle.id });
+            return Boolean(await send(text, attachments, { to: { id }, literal: true }));
         } catch (e) {
             reportError(e);
             return false;
         }
     };
-    const close = () => void rpc().call("session.closeSideChat", { id: p.parent.id }).catch(reportError);
-    /** What's selected in the side chat's answers, else its last answer, quoted into the session's message box. */
-    const bringBack = () => {
-        const sel = window.getSelection();
-        const picked = sel && !sel.isCollapsed && list?.contains(sel.anchorNode) ? sel.toString() : "";
-        const text = picked.trim() || lastAnswer(turns());
-        if (!text) return;
-        p.parent.addDraft({ text: quoted(text), after: true });
-    };
-    const setMode = (mode: PermissionModeId) => void rpc().call("session.setMode", { id: p.id, mode }).catch(reportError);
-    const setModel = (ref: string) => void rpc().call("session.setModel", { id: p.id, ref, persist: false }).catch(reportError);
-
     return (
         <PaneContext.Provider value={pane}>
-            <div ref={root} class="sc-chat" onFocusIn={() => setFocused(true)} onFocusOut={(e) => !root?.contains(e.relatedTarget as Node | null) && setFocused(false)}>
-                <div class="sc-head">
-                    <h2>Side chat</h2>
-                    <span class="grow" />
-                    <button class="btn secondary sm" title="Quote the last answer, or what's selected, in your message" disabled={!lastAnswer(turns())} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
-                        <CornerDownLeft size={13} /> Bring back
-                    </button>
-                    <button class="hb" title="Close side chat" aria-label="Close side chat" onClick={close}>
-                        <X size={15} />
-                    </button>
-                </div>
-                <div class="sc-turns" ref={scroller} onScroll={(e) => (atEnd = e.currentTarget.scrollHeight - e.currentTarget.scrollTop - e.currentTarget.clientHeight < 24)}>
-                    <div ref={list} class="sc-list">
-                        <Show when={h()}>
-                            {(handle) => (
-                                <For each={handle().view.turns}>
-                                    {(t, i) => <SideTurn turn={t} state={handle().view.state} last={i() === handle().view.turns.length - 1} />}
-                                </For>
-                            )}
-                        </Show>
-                    </div>
-                </div>
-                <Show when={st()?.interactions.length}>
-                    <InteractionTab sessionId={p.id} items={st()!.interactions} />
+            <div ref={root} class="side-chat stage-pane" data-narrow={narrow()}>
+                {/* Another machine's session: its side chat is there, as its browser is. */}
+                <Show
+                    when={awayMachine(p.handle.id) === undefined}
+                    fallback={
+                        <>
+                            <Head />
+                            <div class="none sc-none">This session runs on {awayMachine(p.handle.id) || "this computer"}. Its side chat is in a window there.</div>
+                        </>
+                    }
+                >
+                    <Show
+                        when={p.handle.view.state.sideChat?.id}
+                        keyed
+                        fallback={
+                            <>
+                                <Head />
+                                <div class="none sc-none">Ask about this session. Nothing here is added to it.</div>
+                                <div class="sc-body">
+                                    <div class="stage">
+                                        <Dock>
+                                            <Composer aside={{ of: p.handle.id, open }} placeholder="Ask about this session" />
+                                        </Dock>
+                                    </div>
+                                </div>
+                            </>
+                        }
+                    >
+                        {(id) => <Chat parent={p.handle} id={id} views={p.views} />}
+                    </Show>
                 </Show>
-                <Ask placeholder="Ask a follow-up" busy={st()?.busy} onSend={send} onStop={() => void rpc().call("session.interrupt", { id: p.id }).catch(reportError)} autofocus />
-                <div class="sc-bar">
-                    <select class="sc-select" aria-label="Model" value={st()?.model?.ref ?? ""} disabled={st()?.busy} onChange={(e) => setModel(e.currentTarget.value)}>
-                        <Show when={st()?.model && !modelsFor(p.parent.id).some((g) => g.models.some((m) => m.ref === st()!.model!.ref))}>
-                            <option value={st()!.model!.ref}>{st()!.model!.name}</option>
-                        </Show>
-                        <For each={modelsFor(p.parent.id).filter((g) => g.models.length)}>
-                            {(g) => (
-                                <optgroup label={g.providerName}>
-                                    <For each={g.models}>{(m) => <option value={m.ref}>{m.name}</option>}</For>
-                                </optgroup>
-                            )}
-                        </For>
-                    </select>
-                    <select class="sc-select" aria-label="Permission mode" value={st()?.mode ?? "plan"} onChange={(e) => setMode(e.currentTarget.value as PermissionModeId)}>
-                        <For each={MODES.filter((m) => m !== "bypassPermissions" || st()?.bypassAllowed)}>{(m) => <option value={m}>{MODE_LABELS[m].label}</option>}</For>
-                    </select>
-                </div>
             </div>
         </PaneContext.Provider>
+    );
+}
+
+/** The pane's title line, as the panel's other views have, and what it can do. */
+function Head(p: { children?: JSX.Element }) {
+    return (
+        <div class="insp-t sc-head">
+            <h2>Side chat</h2>
+            <span class="grow" />
+            {p.children}
+        </div>
+    );
+}
+
+/** The composer at the foot of the column, as the conversation's (stage.css). */
+function Dock(p: { ref?: (el: HTMLDivElement) => void; children: JSX.Element }) {
+    return (
+        <div class="composer-dock" ref={p.ref}>
+            <div class="composer-col">{p.children}</div>
+        </div>
+    );
+}
+
+function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
+    const { Transcript, Composer } = p.views;
+    const [h] = createResource(() => p.id, (id) => openSession(id).catch((e) => (reportError(e), undefined)));
+    showAside(p.id);
+    onCleanup(() => showAside(undefined));
+    let stage: HTMLDivElement | undefined;
+    // The conversation scrolls under the composer and keeps that much room at its end (Panes.tsx SessionView).
+    const [dockH, setDockH] = createSignal<number>();
+    const observeDock = (el: HTMLDivElement) => {
+        const ro = new ResizeObserver(() => setDockH(el.offsetHeight));
+        ro.observe(el);
+        onCleanup(() => ro.disconnect());
+    };
+    // Opened (asked from the session's box with /btw, or here): the next question is written here.
+    createEffect(on(() => Boolean(h()), (shown) => shown && requestAnimationFrame(() => stage?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus())));
+
+    const close = () => void rpcFor(p.parent.id).call("session.closeSideChat", { id: p.parent.id }).catch(reportError);
+    const answer = () => lastAnswer(h()?.view.turns ?? []);
+    /** What's selected in its conversation, else its last answer, attached to the session's message. */
+    const bringBack = () => {
+        const sel = window.getSelection();
+        const picked = sel && !sel.isCollapsed && stage?.querySelector(".transcript")?.contains(sel.anchorNode) ? sel.toString() : "";
+        const text = picked.trim() || answer();
+        if (!text?.trim()) return;
+        setComposerAdd({ sessionId: p.parent.id, attach: (list) => sideChatText(text, list) });
+    };
+
+    return (
+        <>
+            <Head>
+                <button class="btn secondary sm sc-back" title="Attach the last answer, or what's selected, to your message" aria-label="Bring back" disabled={!answer()} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
+                    <CornerDownLeft size={13} />
+                    <span class="sc-back-l">Bring back</span>
+                </button>
+                <button class="hb" title="Close side chat" aria-label="Close side chat" onClick={close}>
+                    <X size={15} />
+                </button>
+            </Head>
+            <div class="sc-body">
+                <Show when={h()}>
+                    {(handle) => (
+                        <div class="stage" ref={stage}>
+                            <Transcript handle={handle()} dock={dockH()} aside />
+                            <Dock ref={observeDock}>
+                                <Composer sessionId={p.id} aside={{ of: p.parent.id }} placeholder="Ask a follow-up" />
+                            </Dock>
+                        </div>
+                    )}
+                </Show>
+            </div>
+        </>
     );
 }

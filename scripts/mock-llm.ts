@@ -57,6 +57,8 @@
 // Register it as a provider (no key needed) in ~/.cavvy/providers.json:
 //   { "custom": [{ "id": "mock", "name": "Mock", "baseUrl": "http://127.0.0.1:4010/v1", "requiresKey": false }] }
 
+import { appendFileSync } from "fs";
+
 type Json = Record<string, any>;
 
 interface Step {
@@ -77,6 +79,8 @@ export interface MockOptions {
     site?: string;
     /** Milliseconds between streamed chunks. */
     delayMs?: number;
+    /** A file each request's body is added to, a line each: what the model was sent, to read while trying the GUI. */
+    dumpTo?: string;
 }
 
 const MODELS = [
@@ -748,6 +752,14 @@ export function startMockLlm(o: MockOptions = {}) {
     let calls = 0;
     /** Each completion asked for, including the prompt/attachments and raw body sent. */
     const requests: { model: string; kind: "title" | "summary" | "turn"; body: string; prompt: string; images: number }[] = [];
+    if (o.dumpTo) {
+        const file = o.dumpTo;
+        const push = requests.push.bind(requests);
+        requests.push = (...rs) => {
+            for (const r of rs) appendFileSync(file, `${r.body}\n`);
+            return push(...rs);
+        };
+    }
     /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
     const bodies: Json[] = [];
     const server = Bun.serve({
