@@ -28,7 +28,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, loadScopeChecked, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -5622,13 +5622,9 @@ export class Runtime {
         this.lending++;
         this.lastLent = Date.now();
         try {
-            // This machine's rules as they are now: no turn of this session's own reads them again. Read once more
-            // after: a file that can't be read just now, is blank, or holds a deny that wasn't loaded is being
-            // written, and isn't one with fewer rules.
-            this.ws.reload();
-            const now = loadScopeChecked("user", this.ws.cwd);
-            const held = this.ws.settings.permissions?.deny ?? [];
-            if (now.unreadable || now.empty || (now.settings.permissions?.deny ?? []).some((r) => !held.includes(r))) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
+            // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't
+            // be read just now, or is blank, is being written: it isn't one with fewer rules, and nothing is taken from it.
+            if (!this.ws.reloadReadable()) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
             return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;

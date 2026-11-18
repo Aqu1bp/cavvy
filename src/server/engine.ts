@@ -27,7 +27,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
@@ -332,8 +332,19 @@ export class Workspace {
         return this.skills;
     }
 
-    reload() {
-        this.settings = loadSettings(this.cwd, { trusted: this.trusted });
+    /**
+     * Read again unless a settings file can't be read just now (false, and nothing changes): for what must not go on
+     * under fewer rules than the files hold.
+     */
+    reloadReadable(): boolean {
+        const settings = loadSettings(this.cwd, { trusted: this.trusted });
+        if (loadedUnreadable(settings)) return false;
+        this.reload(settings);
+        return true;
+    }
+
+    reload(settings = loadSettings(this.cwd, { trusted: this.trusted })) {
+        this.settings = settings;
         this.commands = loadCustomCommands(this.cwd, this.trusted);
         this.skills = loadSkills(this.cwd, this.trusted);
         this.engine.workspaceChanged(this);

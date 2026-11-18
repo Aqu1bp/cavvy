@@ -369,6 +369,9 @@ export function unreadableMcpApprovals(cwd: string, s?: Settings): string | unde
 
 const unreadableWhenLoaded = new WeakMap<Settings, string>();
 
+/** Whether these settings were loaded while the user's or the folder's local file was there but unreadable or blank (being written): they may lack rules it holds. */
+export const loadedUnreadable = (s: Settings): boolean => unreadableWhenLoaded.has(s);
+
 /** A copy of loaded settings (a run's own on top of them) was loaded as they were: what couldn't be read then counts for it too. */
 export function asLoaded(copy: Settings, loaded: Settings): Settings {
     const file = unreadableWhenLoaded.get(loaded);
@@ -456,9 +459,9 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
 }
 
 /** A scope's settings, and whether its file is there but couldn't be read or parsed (then they're empty). */
-export function loadScopeChecked(scope: SettingsScope, cwd: string): { settings: Settings; unreadable: boolean; /** There, with nothing in it. */ empty: boolean } {
+export function loadScopeChecked(scope: SettingsScope, cwd: string): { settings: Settings; unreadable: boolean } {
     const r = readSettingsFile(settingsPath(scope, cwd));
-    return { settings: r.settings, unreadable: r.unreadable, empty: r.empty };
+    return { settings: r.settings, unreadable: r.unreadable };
 }
 
 /**
