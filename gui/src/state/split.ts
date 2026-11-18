@@ -6,23 +6,26 @@
 
 import { batch, createContext, createRoot, createSignal, useContext } from "solid-js";
 import { createStore, unwrap } from "solid-js/store";
-import { activate, app, forgetSession, handleFor, onScreen, openSession, wasDeleted } from "./app";
+import { activate, app, forgetSession, handleFor, machineOf, onScreen, openBeside, restoredFrom, wasDeleted } from "./app";
 import { RpcError } from "../lib/rpc";
 import { safeRenderText } from "../lib/render-error";
 import { agentFocus, inspectorPane, review, setAgentFocus, setInspectorPane, setReview, splitActions } from "./ui";
 import type { InspectorPane } from "../lib/inspector";
-import { machine } from "../lib/platform";
 
 export type Side = "left" | "right";
-/** `added`: the one dropped last, on `side`; `anchor`, the other. */
-export interface Split { anchor: string; added: string; side: Side }
+/** `added`: the one dropped last, on `side`; `anchor`, the other. `on`, as saved: each one's machine ("" this computer). */
+export interface Split { anchor: string; added: string; side: Side; on?: Record<string, string> }
 
 const SPLIT_KEY = "cavvy.split";
 
 function load(): Split | undefined {
     try {
         const s = JSON.parse(sessionStorage.getItem(SPLIT_KEY) ?? "null");
-        if (typeof s?.anchor === "string" && typeof s.added === "string" && s.anchor !== s.added && (s.side === "left" || s.side === "right")) return s;
+        if (typeof s?.anchor === "string" && typeof s.added === "string" && s.anchor !== s.added && (s.side === "left" || s.side === "right")) {
+            // Opened from there again, their rows maybe not listed yet.
+            for (const id of [s.anchor, s.added]) if (typeof s.on?.[id] === "string") restoredFrom(id, s.on[id]);
+            return { anchor: s.anchor, added: s.added, side: s.side };
+        }
     } catch { /* storage off: none */ }
     return undefined;
 }
@@ -33,7 +36,8 @@ export { split };
 function setSplit(s: Split | undefined) {
     setSplitNow(s);
     try {
-        if (s) sessionStorage.setItem(SPLIT_KEY, JSON.stringify(s));
+        // Each one's machine, the window's own too: a window gone to another machine opens both from where they are.
+        if (s) sessionStorage.setItem(SPLIT_KEY, JSON.stringify({ ...s, on: Object.fromEntries([s.anchor, s.added].map((id) => [id, machineOf(id) ?? ""])) }));
         else sessionStorage.removeItem(SPLIT_KEY);
     } catch { /* in memory only */ }
 }
@@ -82,13 +86,11 @@ function closeBesideReader(): boolean {
     return true;
 }
 
-/** Whether `id` can be dragged in beside what's in view (or, in a split, in place of either). */
+/** Whether `id` can be dragged in beside what's in view (or, in a split, in place of either), on whichever machine. */
 export function canDrop(id: string): boolean {
     const shown = app.activeId;
     if (!shown || !handleFor(shown)) return false;
-    // One on another machine opens by moving the window there.
-    const at = [...app.sessions, ...app.archived].find((x) => x.id === id);
-    if (!at || at.machine !== machine) return false;
+    if (![...app.sessions, ...app.archived].some((x) => x.id === id)) return false;
     return id !== shown && !inSplit(id);
 }
 
@@ -208,7 +210,7 @@ export function openPane(id: string) {
     const shown = setTimeout(() => {
         if (current() && !paneOpening[id]?.error) setPaneOpening(id, "visible", true);
     }, 400);
-    openSession(id).then(
+    openBeside(id).then(
         () => {
             clearTimeout(shown);
             if (current()) endPaneOpen(id);

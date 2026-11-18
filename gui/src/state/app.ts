@@ -63,12 +63,12 @@ rpc.route = (method, params) => {
  * What machine `id` is on: its row's, or (its row not listed yet, after a reload) the one the window was showing it
  * from (cavvy.navigation's `on`); else the window's own.
  */
-function machineOf(id: string): string | undefined {
+export function machineOf(id: string): string | undefined {
     // Opened here from another machine (a fork made there may not be listed yet).
     if (awayOn.has(id)) return awayOn.get(id) || undefined;
     const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
     if (at) return at.machine;
-    if (restoredOn && restoredOn.id === id) return restoredOn.on || undefined;
+    if (restoredOn.has(id)) return restoredOn.get(id) || undefined;
     return machine;
 }
 /**
@@ -255,9 +255,12 @@ let shownNow: () => string | undefined = () => undefined;
  */
 function tellShown() {
     const id = shownNow();
-    const there = id !== undefined ? away.get(id) : undefined;
-    if (app.conn === "open") void rpc.call("session.shown", { id: there ? undefined : id }).catch(() => undefined);
-    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: there === link ? id : undefined }).catch(() => undefined);
+    // In a split, the other pane too, to its machine when the focused one isn't on it.
+    const shown = id === undefined ? [] : [id, ...onScreen.beside().filter((x) => x !== id)];
+    // One not linked yet is the window's only if it's on the window's machine.
+    const on = (link: Rpc) => shown.find((x) => (away.get(x) ?? ((machineOf(x) ?? "") === (machine ?? "") ? rpc : undefined)) === link);
+    if (app.conn === "open") void rpc.call("session.shown", { id: on(rpc) }).catch(() => undefined);
+    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: on(link) }).catch(() => undefined);
 }
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
@@ -518,12 +521,16 @@ const NAVIGATION_KEY = "cavvy.navigation";
  * The session the window was showing as it loaded, and the machine it's on ("" this computer), when that isn't the
  * window's: it's opened from there again (machineOf), its row maybe not listed yet.
  */
-let restoredOn: { id: string; on: string } | undefined;
+const restoredOn = new Map<string, string>();
+/** `id` was shown from machine `on` before the reload (a split's other pane, state/split.ts): opened from there again. */
+export function restoredFrom(id: string, on: string) {
+    restoredOn.set(id, on);
+}
 /** Per webview/tab, separate from device-wide preferences and auth links. */
 function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
     try {
         const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
-        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn = { id: saved.activeId, on: saved.on };
+        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn.set(saved.activeId, saved.on);
         return {
             activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
             homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
@@ -1195,9 +1202,17 @@ export async function importCliSession(cwd: string, source: string, id: string):
     return adopt(snap);
 }
 
-export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
+/** Where a session made from Home now would be made: its machine's connection and mode (`there` unset: this window's). */
+export type HomeAt = { there?: { on: string; link: Rpc }; mode?: PermissionModeId };
+export function homeAt(): HomeAt {
+    const h = homeOn() !== undefined ? homeAway() : undefined;
+    return { there: h && { on: h.on, link: h.link }, mode: homeModeOf() };
+}
+
+/** Make a session in `cwd`, on Home's machine as it was when `at` was taken (the user may have moved on since). */
+export async function createSession(cwd: string, at: HomeAt): Promise<SessionHandle> {
     // From Home on another machine: made there, and opened here as one of its sessions is.
-    const there = homeOn() !== undefined && app.homeCwd === cwd ? homeAway()! : undefined;
+    const { there, mode } = at;
     const snap = await (there ? there.link : rpc).call("session.create", { cwd, mode });
     if (there) {
         away.set(snap.state.id, there.link);
@@ -1266,6 +1281,27 @@ export function forkMakingOf(id: string): string | undefined {
     return forksMaking.get(id);
 }
 
+/** `id`, a session of machine `on`'s, is opened here over `link` from now on. */
+function linked(id: string, on: string | undefined, link: Rpc) {
+    away.set(id, link);
+    awayOn.set(id, on ?? "");
+    setAwayCount((n) => n + 1);
+    if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
+    // And its settings: Home on it (a new session from this one) starts with them.
+    if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
+    tellShown();
+}
+
+/**
+ * Opens a session without showing it in the main view (the one beside it in a split, Panes): one of another
+ * machine's over the connection to it, made first if it isn't.
+ */
+export async function openBeside(id: string): Promise<SessionHandle> {
+    const on = machineOf(id);
+    if (on !== machine && !away.has(id)) linked(id, on, await linkFor(on));
+    return openSession(id);
+}
+
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
     // One on another machine: opened here, over a connection to that machine's Cavvy (linkFor), as one of the window's
@@ -1308,13 +1344,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (elsewhere) {
             const link = await linkFor(on);
             if (!current()) return;
-            away.set(id, link);
-            awayOn.set(id, on ?? "");
-            setAwayCount((n) => n + 1);
-            if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
-            // And its settings: Home on it (a new session from this one) starts with them.
-            if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
-            tellShown();
+            linked(id, on, link);
         }
         const h = await openSession(id);
         if (!current()) return;
@@ -1348,7 +1378,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
         if (e instanceof RpcError && e.code === "needs_trust" && project) {
-            requestTrust(project, () => { if (current()) void activate(id, project); });
+            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id));
         }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     }
@@ -1372,9 +1402,10 @@ export async function restoreActiveSession() {
  * MCP approval upgrades existing session trust, and an agent CLI that runs the folder's own hooks (`reason` says so)
  * needs it: declining either must not change that session.
  */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string) {
-    setTrustRequest({ path, then, purpose, reason });
+/** `link`: the connection to the machine the folder is on (another machine's session, or Home on one: rpcFor). */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc) {
+    setTrustRequest({ path, then, purpose, reason, link });
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,7 +1807,11 @@ export function start() {
     shownNow = () => (hidden() ? undefined : app.activeId);
     createRoot(() => createEffect(() => {
         shownNow();
-        if (app.conn === "open") tellShown();
+        onScreen.beside();
+        // Each connection that's open hears it, the window's own or not (tellShown checks each). Only on these changes:
+        // not each time a row it looks a machine up in changes.
+        void app.conn;
+        untrack(tellShown);
     }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;

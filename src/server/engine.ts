@@ -3,6 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { applySync, readSynced } from "../servers/sync";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -2025,11 +2026,6 @@ export class Engine {
         const opening = this.guestFor(name, call.session);
         if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
         const rt = await opening;
-        // Under this machine's mode as it is now: the session here was made under the one it had then. Bypass only
-        // while it's still allowed here, as for a session that starts now.
-        const set = this.defaultMode(rt.ws);
-        const mode = set === "bypassPermissions" && !rt.bypassAllowed() ? "default" : set;
-        if (rt.mode !== mode) rt.setMode(mode, { fromAgent: true });
         // What the session there is called now, for what the user is told of it.
         const title = await lentTitle(call.session.title);
         if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
@@ -2055,7 +2051,9 @@ export class Engine {
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             const title = await lentTitle(session.title);
-            const rt = await this.createSession(folder, { unlisted: true });
+            // In Manual whatever this machine's default: its calls were asked about where they were made (runLent), and
+            // Plan would refuse them.
+            const rt = await this.createSession(folder, { unlisted: true, mode: "default" });
             rt.guestOf = name;
             rt.guestSession = { id: session.id, title };
             rt.lastLent = Date.now();
@@ -2166,6 +2164,8 @@ export class Engine {
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
+                // The user's own machine keeps its skills and commands on its servers.
+                sync: !this.o.away,
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -3181,6 +3181,20 @@ export class Engine {
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
                 this.setLender(client, kinds);
                 return null;
+            }
+            case "sync.files": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                return readSynced();
+            }
+            case "sync.apply": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                try {
+                    return applySync(p.files, p.remove);
+                } finally {
+                    // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
+                    // Skills are read again by themselves.
+                    for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
+                }
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.

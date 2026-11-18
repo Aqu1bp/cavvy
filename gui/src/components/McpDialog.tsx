@@ -7,7 +7,7 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
 import { AlertTriangle, ExternalLink, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
-import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
+import { app, handleFor, reportError, requestTrust, rpc, rpcFor, toast } from "../state/app";
 import { sessionReadReady } from "../state/changes";
 import { mcpOpen, setMcpOpen } from "../state/ui";
 import { tildify } from "../lib/format";
@@ -192,7 +192,7 @@ export function McpDialog() {
         if (cwd && request) {
             requestTrust(cwd, () => {
                 if (request.current()) void load();
-            }, "mcp-approval");
+            }, "mcp-approval", undefined, rpcFor(id()));
         }
     };
 
