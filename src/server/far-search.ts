@@ -1,7 +1,7 @@
 // A search on the user's own computer, for its windows, looks on the servers it's connected to as well: each is asked
 // the same search at the same time as this machine's own, and what it found is said to be its (machine).
 
-import type { SessionSearchHit, SessionSearchResult, TrashedSessionSummary } from "./protocol";
+import type { ServersTrash, SessionSearchHit, SessionSearchResult, TrashedSessionSummary } from "./protocol";
 
 /**
  * How long a search waits for a server's answer: its own search's time limit (search.ts, 2.5 s) and the way there and
@@ -56,11 +56,17 @@ export function withServers(here: SessionSearchResult, there: { hits: SessionSea
     return { partial: here.partial || there.some((t) => t.partial), hits: [...here.hits, ...there.flatMap((t) => t.hits)].sort((a, b) => b.at - a.at).slice(0, limit) };
 }
 
-/** What a server lists as deleted there (sessions.trash), by the server's name: only rows of the shape a window shows, newest first with this machine's. A server that doesn't answer in time lists none. */
-export async function trashOnServers(servers: Map<string, { ask(method: "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> }>, ms = FAR_SEARCH_MS): Promise<TrashedSessionSummary[]> {
+/**
+ * What a server lists as deleted there (sessions.trash), by the server's name: only rows of the shape a window shows,
+ * newest first with this machine's. `silent`: the servers that didn't answer in time, or with no list: theirs aren't
+ * known, which isn't none.
+ */
+export async function trashOnServers(servers: Map<string, { ask(method: "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> }>, ms = FAR_SEARCH_MS): Promise<ServersTrash> {
+    const silent: string[] = [];
     const lists = await Promise.all(
         [...servers].map(async ([machine, w]) => {
             const rows = await w.ask("sessions.trash", {}, ms).catch(() => undefined);
+            if (!Array.isArray(rows)) silent.push(machine);
             return (Array.isArray(rows) ? rows.slice(0, 500) : []).flatMap((r): TrashedSessionSummary[] => {
                 const x = r as Record<string, unknown> | null;
                 if (!x || typeof x !== "object" || typeof x.id !== "string" || !/^[\w.-]{1,120}$/.test(x.id) || typeof x.title !== "string" || typeof x.deletedAt !== "number" || !Number.isFinite(new Date(x.deletedAt).getTime())) return [];
@@ -68,5 +74,5 @@ export async function trashOnServers(servers: Map<string, { ask(method: "session
             });
         }),
     );
-    return lists.flat();
+    return { rows: lists.flat(), silent: silent.sort() };
 }

@@ -1403,7 +1403,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
         if (e instanceof RpcError && e.code === "needs_trust" && project) {
-            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id));
+            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id), awayMachine(id));
         }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     }
@@ -1428,9 +1428,10 @@ export async function restoreActiveSession() {
  * needs it: declining either must not change that session.
  */
 /** `link`: the connection to the machine the folder is on (another machine's session, or Home on one: rpcFor). */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc) {
-    setTrustRequest({ path, then, purpose, reason, link });
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc; on?: string } | undefined>();
+/** `link`, `on`: the machine the folder is on, when it isn't the window's own: its connection, and its name ("" this computer, in a window on a server). */
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc, on?: string) {
+    setTrustRequest({ path, then, purpose, reason, link, on });
 }
 
 // ---------------------------------------------------------------------------

@@ -73,6 +73,12 @@ export interface TrashedSessionSummary {
     machine?: string;
 }
 
+/** What's deleted on the user's servers, and the servers that didn't say (not answering, or too old to list). */
+export interface ServersTrash {
+    rows: TrashedSessionSummary[];
+    silent: string[];
+}
+
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {
     default: { label: "Manual", description: "Ask before edits and commands" },
     acceptEdits: { label: "Accept edits", description: "Edit workspace files without asking" },
@@ -2326,7 +2332,8 @@ export interface Methods {
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */
-    "sessions.trash": { params: { servers?: boolean }; result: TrashedSessionSummary[] };
+    /** `servers`: the servers' instead of this machine's own (ServersTrash; a Cavvy from before it said which didn't answer sends the rows alone). */
+    "sessions.trash": { params: { servers?: boolean }; result: TrashedSessionSummary[] | ServersTrash };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /**
      * Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. `left`: also

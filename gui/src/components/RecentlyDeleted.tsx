@@ -20,6 +20,8 @@ export function RecentlyDeleted() {
     /** Each opening asks for its own lists; the servers' are still on their way (nothing's said to be empty meanwhile). */
     let opened = 0;
     const [more, setMore] = createSignal(false);
+    /** The servers that didn't say what's deleted there. */
+    const [silent, setSilent] = createSignal<string[]>([]);
     createEffect(
         on(deletedOpen, (open) => {
             if (!open) return;
@@ -28,9 +30,16 @@ export function RecentlyDeleted() {
             const opening = ++opened;
             const mine = () => opening === opened && deletedOpen();
             setMore(true);
-            rpc.call("sessions.trash", {}).then((here) => mine() && setList((l) => [...here, ...(l ?? [])].sort((a, b) => b.deletedAt - a.deletedAt)), (e) => mine() && (setList((l) => l ?? []), reportError(e)));
+            setSilent([]);
+            rpc.call("sessions.trash", {}).then((r) => (Array.isArray(r) ? r : r.rows)).then((here) => mine() && setList((l) => [...here, ...(l ?? [])].sort((a, b) => b.deletedAt - a.deletedAt)), (e) => mine() && (setList((l) => l ?? []), reportError(e)));
             // The servers' follow this machine's own: one that's slow doesn't hold the list.
-            rpc.call("sessions.trash", { servers: true }).then((there) => mine() && (setMore(false), there.length && setList((l) => [...(l ?? []), ...there].sort((a, b) => b.deletedAt - a.deletedAt))), () => mine() && setMore(false));
+            rpc.call("sessions.trash", { servers: true }).then((r) => {
+                if (!mine()) return;
+                const there = Array.isArray(r) ? { rows: r, silent: [] } : r;
+                setMore(false);
+                setSilent(there.silent);
+                if (there.rows.length) setList((l) => [...(l ?? []), ...there.rows].sort((a, b) => b.deletedAt - a.deletedAt));
+            }, () => mine() && setMore(false));
         }),
     );
     const restore = async (id: string, on?: string) => {
@@ -49,7 +58,7 @@ export function RecentlyDeleted() {
         <Dialog open={deletedOpen()} onClose={close} title="Recently deleted" subtitle="Deleted sessions are kept for 7 days." width={480} class="deleted-dialog">
             <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="deleted-empty"><Spinner /></div>}>
                 {(items) => (
-                    <Show when={items().length} fallback={<div class="deleted-empty">Nothing deleted in the past week.</div>}>
+                    <Show when={items().length} fallback={<div class="deleted-empty">{silent().length ? `Not shown: ${silent().join(", ")}.` : "Nothing deleted in the past week."}</div>}>
                         <ul class="deleted-list">
                             <For each={items()}>
                                 {(s) => {
@@ -82,6 +91,7 @@ export function RecentlyDeleted() {
                                     );
                                 }}
                             </For>
+                            <Show when={silent().length}><li class="deleted-row" role="status"><span class="deleted-meta">Not shown: {silent().join(", ")}.</span></li></Show>
                         </ul>
                     </Show>
                 )}

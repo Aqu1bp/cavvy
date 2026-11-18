@@ -2898,7 +2898,7 @@ export class Engine {
             case "sessions.trash": {
                 // `servers`: what was deleted on the servers this machine is connected to instead (the user's own
                 // computer, for its windows). Asked apart, so a slow server doesn't hold this machine's own list.
-                if (p.servers === true) return this.o.away || client.machine ? [] : await trashOnServers(this.serverLinks?.connectedServers() ?? new Map());
+                if (p.servers === true) return this.o.away || client.machine ? { rows: [], silent: [] } : await trashOnServers(this.serverLinks?.connectedServers() ?? new Map());
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
             }
             case "sessions.searchWarm":

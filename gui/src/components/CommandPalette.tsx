@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
+import { machine as windowMachine, os } from "../lib/platform";
 import { activate, app, handleFor, reportError, restoredFrom, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs } from "../state/prefs";
@@ -16,6 +17,8 @@ import { entryScore, groupSections, keepSelection, messagesShown } from "../lib/
 
 /** "box · " before a server's session's project; nothing for this computer's. */
 const atMachine = (machine?: string) => (machine ? `${machine} · ` : "");
+/** A message hit's machine, as it's named in a window on a server: its own server's by name, this computer's ("") too. */
+const hitMachine = (machine?: string) => (!windowMachine ? machine : machine === undefined ? windowMachine : machine || (os === "macos" ? "This Mac" : "This computer"));
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -205,7 +208,7 @@ export function CommandPalette() {
                 id: `${at}-${nth}`,
                 section: "Messages",
                 label: sn.text,
-                desc: `${h.title} · ${atMachine(h.machine)}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
+                desc: `${h.title} · ${atMachine(hitMachine(h.machine))}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
                 icon: h.role === "user" ? <User size={15} /> : <Bot size={15} />,
                 snippet: sn,
                 run: () => openHit(h, said.query),

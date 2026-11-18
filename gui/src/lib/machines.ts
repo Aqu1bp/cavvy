@@ -38,6 +38,9 @@ export function setMachineIssue(i: MachineIssue | undefined) {
 }
 
 /** This computer's own Cavvy, for a window that's on a server; undefined for one that isn't (it's the window's own). */
+/** How long a search in a window on a server waits for this computer's Cavvy. */
+export const HOME_SEARCH_MS = 3_000;
+
 export const home: Rpc | undefined = machine ? new Rpc(credentials, windowKey) : undefined;
 if (home) {
     home.retriesCredentials = true;
@@ -64,7 +67,8 @@ if (home) {
         own = true;
         const here = rpc.call("sessions.search", params as never);
         own = false;
-        const there = (ask("sessions.search", { ...(params as object), others: machine }) as Promise<SessionSearchResult>).catch(() => undefined);
+        // Not waited on past a server's own time to answer (far-search.ts FAR_SEARCH_MS): one that's stuck doesn't hold the window's own hits.
+        const there = Promise.race([(ask("sessions.search", { ...(params as object), others: machine }) as Promise<SessionSearchResult>).catch(() => undefined), new Promise<undefined>((done) => setTimeout(done, HOME_SEARCH_MS))]);
         return Promise.all([here, there]).then(([a, b]) => {
             if (a.stale || !b || b.stale || !Array.isArray(b.hits)) return a;
             // As many as were asked for, as the Cavvys count them (engine.ts searchSessions).

@@ -107,11 +107,11 @@ test("a message hit keeps its name when later hits move it, so the selection sta
     expect([keepSelection(before, after, 0, false), keepSelection(before, after, 1, false)]).toEqual([1, 3]);
 });
 
-test("what was deleted on each server is listed as its, and only rows a window can show", async () => {
+test("what was deleted on each server is listed as its, and only rows a window can show; one that didn't say is named", async () => {
     const { trashOnServers } = await import("../src/server/far-search");
     const box = { ask: async () => [{ id: "b1", title: "On box", projectName: "app", cwd: "/srv/app", deletedAt: 20 }, { id: "../x", title: "t", deletedAt: 1 }, { id: "b2", title: 7, deletedAt: 1 }, { id: "b3", title: "t", deletedAt: "soon" }, null] };
     const down = { ask: () => Promise.reject(new Error("went away")) };
-    expect(await trashOnServers(new Map([["box", box], ["lab", down], ["odd", { ask: async () => ({ not: "a list" }) }]]))).toEqual([{ id: "b1", title: "On box", projectName: "app", deletedAt: 20, machine: "box" }]);
+    expect(await trashOnServers(new Map([["box", box], ["lab", down], ["odd", { ask: async () => ({ not: "a list" }) }]]))).toEqual({ rows: [{ id: "b1", title: "On box", projectName: "app", deletedAt: 20, machine: "box" }], silent: ["lab", "odd"] });
 });
 
 test("a window on the user's computer lists and restores what was deleted on its servers; plugins don't take another machine's folder for a project here", async () => {
