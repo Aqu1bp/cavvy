@@ -232,11 +232,13 @@ export class ServerLinks {
         const s = this.links.get(name)?.link.state;
         const mine = this.build();
         if (s?.state !== "connected" || mine === UNKNOWN_BUILD || s.pairing.build === mine) return false;
-        let behind = this.relations.get(s.pairing.build);
+        // By its time too: the same build said with one, later, can be placed where it couldn't before.
+        const key = `${s.pairing.build}@${s.pairing.builtAt ?? ""}`;
+        let behind = this.relations.get(key);
         if (behind === undefined) {
             // With its build's time, as the update itself compares them: an app with no checkout tells a newer one by it.
             const relation = this.o.source ? this.o.source.compare(s.pairing.build, s.pairing.builtAt) : compareBuilds(s.pairing.build, mine, undefined, { theirs: s.pairing.builtAt, mine: thisBuildTime() });
-            this.relations.set(s.pairing.build, (behind = relation === "older" || relation === "different"));
+            this.relations.set(key, (behind = relation === "older" || relation === "different"));
         }
         return behind;
     }
