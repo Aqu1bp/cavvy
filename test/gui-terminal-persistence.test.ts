@@ -191,17 +191,18 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         // Whose the keyboard is (lib/terminal-keys.ts, tested in gui-terminal-keys.test.ts): here the terminal always takes it.
         terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
     };
-    const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
+    const component = new Function(...Object.keys(deps), `${js}; return Object.assign(${name}, { early: terminalOpenedEarly });`)(...Object.values(deps));
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
         dispose = d;
-        component(name === "TerminalPanel" ? { cwd: opts.cwd ?? "/p", ...opts.props } : {
+        // Props as given, getters too (a prop that changes).
+        component(name === "TerminalPanel" ? Object.defineProperties({ cwd: opts.cwd ?? "/p" }, Object.getOwnPropertyDescriptors(opts.props ?? {})) : {
             tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: !!opts.visible,
             onClose: (id: string) => closed.push(id),
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
     });
-    return { calls, terminals, nodes, closed, saved, savedAt, dispose, setPanelOpen, fitted,
+    return { calls, terminals, nodes, closed, saved, savedAt, dispose, setPanelOpen, fitted, early: component.early as () => void,
         /** The screen's container changing size, and the next frame. */
         resized() { for (const fn of resizes) fn(); },
         frame() { for (const fn of frameQueue.splice(0)) fn(); },
@@ -291,6 +292,21 @@ test("another machine's panel opens its shells over that machine's connection an
         late.setPanelOpen(false); late.setPanelOpen(true); await tick(); await tick();
         expect(there.map((c) => c.method)).toEqual(["terminal.list", "terminal.open"]);
     } finally { late.dispose(); }
+});
+
+test("opened while the session in view is still connecting: its machine's panel starts a shell once it's that one", async () => {
+    const there: string[] = [];
+    const link = { state: "open", call(method: string) { there.push(method); return Promise.resolve(method === "terminal.list" ? [] : null); }, onEvent: () => () => {}, onState: () => () => {} };
+    const [current, setCurrent] = solid.createSignal(false);
+    const m = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, get current() { return current(); } } });
+    try {
+        await tick(); await tick();
+        // As App.tsx does when the terminal opens with no panel current yet.
+        m.setPanelOpen(true); m.early(); await tick();
+        expect(there).toEqual(["terminal.list"]);
+        setCurrent(true); await tick(); await tick();
+        expect(there).toEqual(["terminal.list", "terminal.open"]);
+    } finally { m.dispose(); }
 });
 
 test("the screen tells its shell a new size only when fitting changes it, not on every resize while a panel slides", async () => {

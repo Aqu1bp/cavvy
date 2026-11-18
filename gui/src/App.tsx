@@ -24,7 +24,7 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
+import { preloadTerminal, TerminalPanel, terminalOpenedEarly } from "./components/TerminalPanel";
 import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
@@ -336,6 +336,8 @@ export function App() {
     };
     /** The machine whose panel shows: the current one, or the window's own while an account's sign-in shows (Settings). */
     const terminalShowing = () => (terminalLogin() ? undefined : terminalOn());
+    // Opened while the session in view is still connecting: its machine's panel starts a shell once it's there.
+    createEffect(on(terminalOpen, (open) => { if (open && untrack(terminalOn) === null) terminalOpenedEarly(); }, { defer: true }));
     // None shows (another machine's session still opening): the sheet keeps no terminal row for it.
     createEffect(() => { if (terminalShowing() === null) setTerminalShown(false); });
     const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);

@@ -28,6 +28,9 @@ export const preloadTerminal = () => TerminalScreen.preload();
 const MAX_TABS = 12;
 /** The terminal is being shown again as the page loads, with the tabs it had: no panel opens a shell for it. */
 let reopening = false;
+/** Opened by the user while the session in view was still connecting to its machine: its panel starts a shell once it can. */
+let openedEarly = false;
+export const terminalOpenedEarly = () => void (openedEarly = true);
 
 /**
  * Mounted while hidden: each tab keeps its emulator and shell across chat navigation. The tabs are kept
@@ -167,13 +170,19 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
     createEffect(on(terminalOpen, (open) => {
-        if (!open) asked = false;
+        if (!open) asked = openedEarly = false;
         if (!open || reopening || !current() || !showing()) return;
         if (!restored()) asked = true;
         // Opened by the user: its terminal takes the keyboard, even from a card that waits (lib/terminal-keys.ts).
         terminalAsked();
         if (!p.hidden && !currentTabs().length) add();
     }, { defer: true }));
+    // Opened before the session in view could say whose panel it was: this one's, once it's that one and ready.
+    createEffect(() => {
+        if (!restored() || !current() || !showing() || !openedEarly) return;
+        openedEarly = false;
+        if (terminalOpen() && !p.hidden && !currentTabs().length) add();
+    });
     const close = (tab: Tab) => {
         tab.closing = true;
         // Not shown yet (its screen still coming): what it would have taken goes with it.
