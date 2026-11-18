@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, lazy, Show } from "solid-js";
 import { Check, ChevronDown, FolderGit2, GitBranch, Plus, Trash2 } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
-import { app, rpc } from "../state/app";
+import { app, homeOn, rpcFor } from "../state/app";
 import { openProject } from "../state/actions";
 import { requestComposerFocus } from "../state/ui";
 import { tildify } from "../lib/format";
@@ -21,9 +21,10 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     let anchor: HTMLButtonElement | undefined;
     // Listed before it opens: the control shows whether this folder is the main checkout or a worktree of it.
     const [listing, { refetch }] = createResource(
-        () => app.conn === "open" && p.cwd,
-        async (path): Promise<{ path: string; worktrees: WorktreeInfo[]; error?: string }> => {
-            try { return { path, worktrees: await rpc.call("projects.worktrees", { path }) }; }
+        // Home's machine's (rpcFor): the same path on another machine is another folder.
+        () => app.conn === "open" && ([p.cwd, homeOn()] as const),
+        async ([path]): Promise<{ path: string; worktrees: WorktreeInfo[]; error?: string }> => {
+            try { return { path, worktrees: await rpcFor(undefined).call("projects.worktrees", { path }) }; }
             catch (e) { return { path, worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
         },
     );
@@ -60,7 +61,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                         {(w) => <div class="wt-row">
                             <button class={`menu-item ${w.current ? "current" : ""}`} disabled={!w.exists || w.prunable !== undefined} title={w.path} onClick={async () => {
                                 setOpen(false);
-                                await openProject(w.path);
+                                await openProject(w.path, true);
                                 requestComposerFocus();
                             }}>
                                 <Show when={w.main} fallback={<FolderGit2 size={15} />}>

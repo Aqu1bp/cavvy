@@ -10,9 +10,9 @@ import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/prot
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
-import { app, reportError, rpc, toast, trustRequest } from "../state/app";
+import { app, homeOn, reportError, rpcFor, toast, trustRequest } from "../state/app";
 import { chooseFolder, openProject } from "../state/actions";
-import { requestComposerFocus, setupObscured, terminalActions } from "../state/ui";
+import { requestComposerFocus, setFolderPickerOpen, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -48,6 +48,9 @@ export interface NewWorktreeRequest {
 
 export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () => void }) {
     const r = p.request;
+    // Home's machine, as it was when the dialog opened: the repository is there.
+    const rpc = rpcFor(undefined);
+    const away = homeOn() !== undefined;
     const [branch, setBranch] = createSignal("");
     const [base, setBase] = createSignal(r.base);
     /** Follows the branch name until edited. */
@@ -111,7 +114,9 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     };
 
     const choose = async () => {
-        const chosen = await chooseFolder({ title: "Choose where to create the worktree", action: "Create it here", start: r.main });
+        const o = { title: "Choose where to create the worktree", action: "Create it here", start: r.main };
+        // Another machine's folders are chosen from its own, not this computer's picker.
+        const chosen = await (away ? new Promise<string | undefined>((then) => setFolderPickerOpen({ then, link: rpc, ...o })) : chooseFolder(o));
         if (chosen) setParent(chosen);
     };
 
@@ -137,7 +142,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             p.onClose();
             if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} Run it from the project scripts menu.`, "warn");
             else toast(`Created worktree ${made.branch}`, "success");
-            await openProject(made.path);
+            await openProject(made.path, true);
             requestComposerFocus();
             if (made.setup) startSetup(made, made.setup);
         } catch (e) {
@@ -295,6 +300,7 @@ export interface RemoveWorktreeRequest {
 
 export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClose: () => void }) {
     const w = p.request.worktree;
+    const rpc = rpcFor(undefined);
     const [busy, setBusy] = createSignal(false);
     const [error, setError] = createSignal<FormError>();
     /** Ignored files Git would delete with it: removal waits for the user to agree to exactly these. */
@@ -321,7 +327,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             toast(`Removed worktree ${tildify(w.path, app.hello?.homeDir)}`, "success");
             // Asked rather than compared: the new chat may have reached it through a symlink.
             const here = app.homeCwd;
-            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(p.request.main);
+            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(p.request.main, true);
         } catch (e) {
             setError(errorOf(e));
         } finally {
