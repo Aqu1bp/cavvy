@@ -124,7 +124,7 @@ export function CommandPalette() {
         setAgentFocus(undefined);
         setJumpTarget({ sessionId: h.id, seg: h.seg, index: h.index, role: h.role, query });
         // One on a server, maybe not in the list: opened from there.
-        if (h.machine) restoredFrom(h.id, h.machine);
+        if (h.machine !== undefined) restoredFrom(h.id, h.machine);
         void activate(h.id, h.cwd);
     };
 
