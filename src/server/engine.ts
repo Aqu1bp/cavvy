@@ -11,6 +11,7 @@ import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
 import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo, worktreeTop } from "./git-sync";
+import { gitPrWorktree, gitPullRequests } from "./git-pr";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
@@ -3377,6 +3378,12 @@ export class Engine {
             case "git.createBranch": {
                 const name = text(p.name, "name", 200);
                 return await this.gitAction(p.cwd, true, (cwd) => gitCreateBranch(cwd, name));
+            }
+            case "git.pullRequests":
+                return await gitPullRequests(this.gitFolder(p.cwd));
+            case "git.prWorktree": {
+                const pr = text(p.pr, "pr", 400);
+                return await this.gitAction(p.cwd, false, (cwd) => gitPrWorktree(cwd, pr, this.o.log));
             }
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
