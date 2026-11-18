@@ -1316,7 +1316,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
         if (e instanceof RpcError && e.code === "needs_trust" && project) {
-            requestTrust(project, () => { if (current()) void activate(id, project); });
+            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id));
         }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     }
@@ -1340,9 +1340,10 @@ export async function restoreActiveSession() {
  * MCP approval upgrades existing session trust, and an agent CLI that runs the folder's own hooks (`reason` says so)
  * needs it: declining either must not change that session.
  */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string) {
-    setTrustRequest({ path, then, purpose, reason });
+/** `link`: the connection to the machine the folder is on (another machine's session, or Home on one: rpcFor). */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc) {
+    setTrustRequest({ path, then, purpose, reason, link });
 }
 
 // ---------------------------------------------------------------------------

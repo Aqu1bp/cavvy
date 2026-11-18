@@ -6,10 +6,11 @@ import { Dialog } from "./ui/Dialog";
 
 /** Opening a folder, or explicitly trusting an already open folder for MCP approval. */
 export function TrustDialog() {
+    // Asked of the folder's machine (the request's link), else the window's.
     const [info] = createResource(
-        () => app.conn === "open" && trustRequest()?.path,
-        (path) =>
-            rpc.call("projects.inspect", { path }).catch((e) => {
+        () => app.conn === "open" && trustRequest(),
+        (req) =>
+            (req.link ?? rpc).call("projects.inspect", { path: req.path }).catch((e) => {
                 if (app.conn === "open") reportError(e);
                 return undefined;
             }),
@@ -23,7 +24,7 @@ export function TrustDialog() {
         const req = trustRequest();
         if (!req) return;
         try {
-            await trustAndContinue(req.path, trust);
+            await trustAndContinue(req.path, trust, req.link);
             setTrustRequest(undefined);
             req.then();
         } catch (e) {

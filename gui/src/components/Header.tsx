@@ -12,7 +12,7 @@ import { archive, deleteSession, editorName, exportSession, newSession, openInEd
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
-import { copyText, isDesktop, os } from "../lib/platform";
+import { copyText, isDesktop, machine, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
@@ -147,6 +147,13 @@ export const CrumbSep = () => (
 );
 
 /** Where the agent works, for the branch's hover. */
+/** The terminal command that resumes session `id`: on its server, when it runs on one (`cavvy --server`). */
+function resumeCommand(id: string): string {
+    const away = machineFor(id);
+    const on = away ? away.machine : machine;
+    return on ? `cavvy --server ${on} --resume ${id}` : `cavvy --resume ${id}`;
+}
+
 function workingTitle(w: WorkingIn, s: SessionState): string {
     const where = tildify(w.path, app.hello?.homeDir);
     const own = s.branch ? ` The session's folder is on ${s.branch}.` : "";
@@ -247,7 +254,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                         <Show when={st()?.cwd}>
                             {(cwd) => (
                                 <>
-                                    <ProjectScripts cwd={cwd()} />
+                                    <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
                                     <span class="sep scripts-sep" />
                                 </>
                             )}
@@ -353,7 +360,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
                                 <Share size={14} /> Copy as Markdown
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(`cavvy --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id), "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
                             <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>

@@ -282,7 +282,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     createEffect(
         on(
             // MCP prompts are commands too: the list is read again when a server's prompts come or go.
-            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
+            // Its machine's: a session of another machine's (or Home on one) reads that machine's commands and skills.
+            [() => (connFor(p.sessionId) === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
             ([cwd, provider]) => {
                 let current = true;
                 onCleanup(() => { current = false; });
@@ -291,7 +292,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
                 const fetch = () => {
-                    if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
+                    if (cwd) void rpcFor(p.sessionId).call("commands.list", { cwd, provider }).then((c) => {
                         if (!current) return;
                         commands = c;
                         setKnown(c);

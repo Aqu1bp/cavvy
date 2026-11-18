@@ -81,7 +81,7 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            requestTrust(cwd, () => void continueCliSession(cwd, s));
+            requestTrust(cwd, () => void continueCliSession(cwd, s), undefined, undefined, rpcFor(undefined));
             return false;
         }
         reportError(e);
@@ -311,7 +311,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
         // Its model (Antigravity) would run the folder's own hooks: the message stays in the box until it's trusted.
         if (e instanceof RpcError && e.code === "needs_trust" && e.folder) {
-            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message));
+            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message), rpcFor(id));
             return false;
         }
         if (opts.throwErrors) throw e;
@@ -331,16 +331,16 @@ async function createIn(cwd: string) {
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
-            requestTrust(cwd, requestComposerFocus);
+            requestTrust(cwd, requestComposerFocus, undefined, undefined, rpcFor(undefined));
             return undefined;
         }
         throw e;
     }
 }
 
-export async function trustAndContinue(path: string, trust: boolean) {
-    // Home's folder: on its machine.
-    await (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc).call("projects.trust", { path, trust });
+/** `link`: the folder's machine, when the request said (requestTrust); else Home's folder on its machine, or the window's. */
+export async function trustAndContinue(path: string, trust: boolean, link?: Rpc) {
+    await (link ?? (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc)).call("projects.trust", { path, trust });
     void refreshProjects();
 }
 
