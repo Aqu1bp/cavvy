@@ -12,7 +12,7 @@ import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, typ
 import { dirname, join, relative, sep } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
-import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
+import { compareBuilds, thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck } from "./host";
@@ -173,7 +173,7 @@ export class ServerLinks {
             w.start();
         }
         this.watchSynced();
-        return [...this.watches.values()].map((w) => w.overview());
+        return [...this.watches.values()].map((w) => this.shown(w));
     }
 
     /**
@@ -211,7 +211,7 @@ export class ServerLinks {
         const t = setTimeout(() => {
             this.told.delete(name);
             const w = this.watches.get(name);
-            if (w) this.o.onOverview?.(w.overview());
+            if (w) this.o.onOverview?.(this.shown(w));
         }, 150);
         (t as { unref?: () => void }).unref?.();
         this.told.set(name, t);
@@ -222,11 +222,36 @@ export class ServerLinks {
         return this.o.source?.id ?? thisBuild();
     }
 
+    /** How each build met on a server stands to this one: asked of the checkout once. */
+    private relations = new Map<string, boolean>();
+    /**
+     * The Cavvy connected to on `name` isn't this machine's build, nor a newer one: updating it is offered. Not said
+     * of one this Cavvy can't compare (it doesn't know its own build).
+     */
+    private behind(name: string): boolean {
+        const s = this.links.get(name)?.link.state;
+        const mine = this.build();
+        if (s?.state !== "connected" || mine === UNKNOWN_BUILD || s.pairing.build === mine) return false;
+        let behind = this.relations.get(s.pairing.build);
+        if (behind === undefined) {
+            const relation = this.o.source ? this.o.source.compare(s.pairing.build) : compareBuilds(s.pairing.build, mine);
+            this.relations.set(s.pairing.build, (behind = relation === "older" || relation === "different"));
+        }
+        return behind;
+    }
+
+    /** A watched machine as a window shows it. */
+    private shown(w: MachineWatch): MachineOverview {
+        const o = w.overview();
+        return o.state === "connected" && this.behind(o.name) ? { ...o, behind: true } : o;
+    }
+
     list(): ServerSummary[] {
         return listServers().map((s) => ({
             name: s.name,
             destination: s.destination,
             connected: this.links.get(s.name)?.link.state.state === "connected",
+            ...(this.behind(s.name) ? { behind: true } : {}),
             ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
             // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
             ...(s.cloud?.teardown?.length ? { rented: true } : {}),

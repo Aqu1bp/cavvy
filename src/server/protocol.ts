@@ -1863,6 +1863,8 @@ export interface ServerSummary {
     destination: string;
     /** Connected to from this Cavvy right now. */
     connected: boolean;
+    /** The Cavvy there is another build than this one, and not a newer one: updating it is offered. */
+    behind?: boolean;
     /** A rented machine's cost, as its user agreed to it ("$12/month"). */
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
@@ -1880,6 +1882,8 @@ export interface MachineOverview {
     state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
     /** Its sessions as last heard, the archived among them. While it isn't heard from, none of them is shown at work. */
     sessions: SessionSummary[];
+    /** Connected, to a Cavvy that's another build than this one and not a newer one: updating it is offered. */
+    behind?: boolean;
 }
 
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */

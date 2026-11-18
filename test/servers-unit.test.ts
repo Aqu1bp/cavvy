@@ -751,3 +751,24 @@ describe("what the terminal says", () => {
         expect(parseServerSpec("box:")).toEqual({ name: "box", folder: "~" });
     });
 });
+
+test("a connected server on another build that isn't newer is said to be behind; the same, a newer one, or an unknown own build isn't", async () => {
+    const { ServerLinks } = await import("../src/servers/manager");
+    const asked: string[] = [];
+    const relation: Record<string, string> = { old: "older", fork: "different", next: "newer" };
+    const source = { id: "mine", gui: true, build: async () => { throw new Error("not built"); }, compare: (theirs: string) => (asked.push(theirs), relation[theirs] ?? "same") };
+    const links = new ServerLinks({ source } as never) as unknown as { links: Map<string, unknown>; behind(name: string): boolean };
+    const on = (name: string, build: string, state = "connected") => links.links.set(name, { link: { state: { state, pairing: { build } } } });
+    on("a", "old");
+    on("b", "fork");
+    on("c", "next");
+    on("d", "mine");
+    on("e", "old", "connecting");
+    expect(["a", "b", "c", "d", "e", "none"].map((n) => links.behind(n))).toEqual([true, true, false, false, false, false]);
+    // The checkout is asked once for a build, however often a list is.
+    links.behind("a");
+    expect(asked).toEqual(["old", "fork", "next"]);
+    const unknown = new ServerLinks({ source: { ...source, id: "unknown-build" } } as never) as unknown as typeof links;
+    unknown.links.set("a", { link: { state: { state: "connected", pairing: { build: "old" } } } });
+    expect(unknown.behind("a")).toBe(false);
+});
