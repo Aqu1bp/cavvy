@@ -5,7 +5,7 @@
 
 import { applySync, readSynced } from "../servers/sync";
 import { searchServers, withServers } from "./far-search";
-import { answerPeers, homeFarPeers, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
+import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -27,7 +27,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
@@ -37,7 +37,7 @@ import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../com
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
-import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
@@ -333,8 +333,19 @@ export class Workspace {
         return this.skills;
     }
 
-    reload() {
-        this.settings = loadSettings(this.cwd, { trusted: this.trusted });
+    /**
+     * Read again unless a settings file can't be read just now (false, and nothing changes): for what must not go on
+     * under fewer rules than the files hold.
+     */
+    reloadReadable(): boolean {
+        const settings = loadSettings(this.cwd, { trusted: this.trusted });
+        if (loadedUnreadable(settings)) return false;
+        this.reload(settings);
+        return true;
+    }
+
+    reload(settings = loadSettings(this.cwd, { trusted: this.trusted })) {
+        this.settings = settings;
         this.commands = loadCustomCommands(this.cwd, this.trusted);
         this.skills = loadSkills(this.cwd, this.trusted);
         this.engine.workspaceChanged(this);
@@ -1973,9 +1984,11 @@ export class Engine {
      * which runs it through its own checks. Answers when it does, when the call is given up here, or when that
      * machine goes away.
      */
-    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
+    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal, decided?: PermissionMode): Promise<ToolResult> {
         const [client, lender] = [...this.lenders].at(-1) ?? [];
         if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        // Decided while nothing was lent (the Mac's Cavvy away for a moment, back since): not under its mode, so not sent.
+        if (!decided) return Promise.resolve({ content: "Your Mac's Cavvy connected to this machine only just now. Call it again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
             const done = (r: ToolResult) => {
@@ -1990,7 +2003,7 @@ export class Engine {
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
             // With the mode it was decided under: the lender turns it away if its own has changed since.
-            client.send({ type: "offers.call", callId, tool, input, mode: lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            client.send({ type: "offers.call", callId, tool, input, mode: decided, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 
@@ -2221,7 +2234,7 @@ export class Engine {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
-                lendMode: () => defaultMode(loadSettings(homedir(), { trusted: false }), homedir()).mode,
+                lendMode: () => lendingMode(loadSettings(homedir(), { trusted: false }), homedir(), this.bypassAllowed(homedir())),
                 lend: (name, call, signal) => this.lend(name, call, signal),
                 // The user's own machine keeps its skills and commands on its servers.
                 sync: !this.o.away,
@@ -2231,7 +2244,7 @@ export class Engine {
                         // This computer's own rules for the session tools hold for what a server asks of its sessions.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
                         if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about its sessions.";
-                        return findMatch(settings.permissions?.deny ?? [], { toolName: tool }, homedir(), "deny") ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
+                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.

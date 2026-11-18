@@ -406,7 +406,11 @@ function lendable(tool: Tool<any>): Tool<any> {
     return {
         ...tool,
         ...(validate ? { validate: (input: any, ctx: ToolContext) => (far(ctx) ? undefined : validate.call(tool, input, ctx)) } : {}),
-        run: (input, ctx) => far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal).then(keptHere) ?? run.call(tool, input, ctx),
+        run: (input, ctx) => {
+            const there = far(ctx);
+            if (!there) return run.call(tool, input, ctx);
+            return there.call(tool.name, input as Record<string, unknown>, ctx.signal, ctx.lentAs).then(keptHere);
+        },
     };
 }
 

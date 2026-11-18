@@ -230,6 +230,26 @@ test("a session there in Bypass is asked about a call that runs here when this m
     expect(told(id)!.asks).toEqual([]);
 });
 
+test("this machine's mode changed while a call was being asked about there: the yes was to the old one, and the call is turned away", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    const seen = new Set<string>();
+    let asked: any;
+    await until("it to ask", async () => Boolean((asked = ((await remote.call("session.open", { id })) as SessionSnapshot).state.interactions[0])));
+    const before = ran.length;
+    await here.call("settings.update", { patch: { defaultMode: "acceptEdits" } });
+    try {
+        await remote.call("session.respond", { id, interactionId: asked.id, response: { kind: "permission", choice: "yes" } });
+        seen.add(asked.id);
+        await until("the call to be answered", async () => JSON.stringify(await lastTurn(remote, id)).includes("permission mode just changed"));
+        expect(ran.length).toBe(before);
+    } finally {
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
+        await remote.call("session.interrupt", { id }).catch(() => undefined);
+    }
+});
+
 test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {
@@ -464,13 +484,16 @@ test("two of the user's machines can lend to one server: one leaving doesn't tak
         await engine.handle(b as never, "offers.set", { kinds: ["simulator", "something-else"] });
         expect(lent("simulator")).toBe(true);
         // A call goes to the one that said so last, and ends when that one leaves.
-        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect([a.events.length, b.events.map((e) => e.type)]).toEqual([0, ["offers.call"]]);
+        // One decided while nothing was lent isn't sent: it wasn't decided under the lender's mode.
+        expect((await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal)).content).toContain("only just now");
+        expect(b.events.length).toBe(1);
         engine.dropClient(b as never);
         expect(await answer).toEqual({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
         // The other still lends: sessions keep the tools, and the next call goes to it.
         expect(lent("simulator")).toBe(true);
-        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(a.events.map((e) => e.type)).toEqual(["offers.call"]);
         engine.dropClient(a as never);
         expect(lent("simulator")).toBe(false);
@@ -525,7 +548,7 @@ test("the Simulator turned off on the Mac while it's connected: the session ther
     try {
         await until("the Mac to be lending", () => lent("simulator"));
         kinds = [];
-        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(told).toEqual({ content: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
         // And the server's sessions stop being offered what can't run.
         await until("the tools to be taken away", () => !lent("simulator"));
@@ -580,16 +603,34 @@ test("a call is never asked about here, whatever this machine's mode; its deny r
     // A rule of this machine's that denies it is still this machine's to keep.
     const file = join(iso.home, "settings.json");
     const was = readFileSync(file, "utf8");
+    // Written by hand, with nothing telling Cavvy: it holds from the next call, for a session already lent through too.
     writeFileSync(file, JSON.stringify({ ...JSON.parse(was), permissions: { deny: ["SimulatorControl(boot)"] } }));
-    (mine.engine as any).reloadSettings();
     try {
-        const after = ran.length;
-        const denied = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, "20261113-000000-eeeeee");
-        expect([denied.isError, ran.slice(after).some((a) => a[2] === "bootstatus")]).toEqual([true, false]);
+        for (const s of [session, "20261113-000000-eeeeee"]) {
+            const after = ran.length;
+            const denied = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, s);
+            expect([denied.isError, ran.slice(after).some((a) => a[2] === "bootstatus")]).toEqual([true, false]);
+        }
     } finally {
         writeFileSync(file, was);
-        (mine.engine as any).reloadSettings();
     }
+    // Half-written (or blank) just as a call comes: not a file with no rules. The call is turned away, and the
+    // session it's lent through isn't left counted as busy.
+    for (const broken of ['{ "permissions": { "deny": [', ""]) {
+        writeFileSync(file, broken);
+        try {
+            const after = ran.length;
+            const refused = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+            expect([refused.isError, refused.text.includes("Call it again"), ran.length]).toEqual([true, true, after]);
+        } finally {
+            writeFileSync(file, was);
+        }
+    }
+    expect((await Promise.all([...(mine.engine as any).guests.values()])).map((rt: any) => rt.lending)).not.toContain(1);
+    // And taken out again, it's gone.
+    const again = ran.length;
+    await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+    expect(ran.slice(again).some((a) => a[2] === "bootstatus")).toBe(true);
 });
 
 test("this machine's Cavvy quitting while a call runs here: the session there is told it went away, not that the user said no", async () => {
