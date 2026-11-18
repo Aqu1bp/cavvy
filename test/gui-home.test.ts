@@ -418,7 +418,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
-        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: Date.now() + 106 * 60_000 }]) }),
+        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         now: () => noon, limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
