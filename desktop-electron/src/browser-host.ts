@@ -45,6 +45,8 @@ const CANVAS_JS = `(() => {
 const CANVAS_WORLD = 1001;
 /** The most `painted` waits for a page to draw at a new size. */
 const PAINT_WAIT_MS = 2000;
+/** The most a screenshot waits for the GUI to draw a page drawn small at its own scale (sharpFor): then it's taken as it is. */
+const SHARP_WAIT_MS = 5000;
 
 interface Tab {
     targetId: string;
@@ -93,6 +95,11 @@ interface Tab {
     hidden: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
+    /**
+     * Its pane draws it smaller than its size (a device's size scaled to fit, or the floating view): Chromium then draws
+     * it only that finely, so a screenshot taken as it is would be that picture enlarged (sharpFor).
+     */
+    small?: boolean;
 }
 
 interface Channel {
@@ -484,6 +491,39 @@ export class BrowserHost {
         }
     }
 
+    /** The GUI draws a tab's page smaller than its size, or no longer does (Tab.small). */
+    drawnSmall(key: string, small: boolean) {
+        const tab = this.tabsByKey.get(key);
+        if (tab) tab.small = small;
+    }
+
+    private sharpSeq = 0;
+    private sharpWaiters = new Map<number, () => void>();
+
+    /**
+     * Has the GUI draw `tab`'s page at its own scale, under a still of how it looks, so Chromium draws it finely
+     * enough for a screenshot as sharp as the page (the pane looks the same meanwhile); waited for up to SHARP_WAIT_MS.
+     * Returns what puts it back.
+     */
+    private async sharpFor(tab: Tab): Promise<(() => void) | undefined> {
+        // A window out of sight draws nothing, so its page can't be drawn otherwise: taken as it is.
+        const win = this.window();
+        if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return undefined;
+        const id = ++this.sharpSeq;
+        const ready = new Promise<void>((r) => this.sharpWaiters.set(id, r));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        this.toGui({ type: "sharp", key: tab.key, id, on: true });
+        await Promise.race([ready, new Promise((r) => (timer = setTimeout(r, SHARP_WAIT_MS)))]);
+        clearTimeout(timer);
+        this.sharpWaiters.delete(id);
+        return () => this.toGui({ type: "sharp", key: tab.key, id, on: false });
+    }
+
+    /** The GUI draws the page at its own scale for screenshot `id` (sharpFor). */
+    sharpened(id: number) {
+        this.sharpWaiters.get(id)?.();
+    }
+
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
     sized(key: string, size: { width: number; height: number; scale: number }) {
         const tab = this.tabsByKey.get(key);
@@ -708,6 +748,8 @@ export class BrowserHost {
                 for (const t of this.tabsByKey.values()) if (t !== tab && t.theirs) this.frameNow(t);
                 this.left(tab);
             }
+            // A page drawn smaller than its size is drawn at its own scale for its screenshot, so it's as sharp as the page.
+            const sharp = cmd.method === "Page.captureScreenshot" && tab.small ? await this.sharpFor(tab) : undefined;
             try {
                 // Never through the window's focus into the UI (guest-input.ts).
                 const sent = sendToTab(tab.wc, cmd.method, p);
@@ -715,6 +757,7 @@ export class BrowserHost {
                 const result = await sent;
                 return this.answer(channel, cmd.id, result ?? {});
             } finally {
+                sharp?.();
                 if (input) tab.agentInputs--;
                 if (keys) tab.agentKeys = (tab.agentKeys ?? 1) - 1;
                 if (acting) this.watchHeld(tab);

@@ -555,6 +555,27 @@ function bridge() {
         if (!fromGui(e) || typeof key !== "string" || !size || ![size.width, size.height].every((n) => Number.isFinite(n) && n > 0)) return false;
         return host.painted(key, size);
     });
+    ipcMain.on("browser_small", (e, key: unknown, small: unknown) => {
+        if (fromGui(e) && typeof key === "string") host.drawnSmall(key, small === true);
+    });
+    ipcMain.on("browser_sharp", (e, id: unknown) => {
+        if (fromGui(e) && typeof id === "number") host.sharpened(id);
+    });
+    // A still of part of the window (in its CSS pixels), as it looks now: the GUI shows it over a page while it's
+    // drawn at its own scale for a screenshot (browser-host.ts sharpFor).
+    ipcMain.handle("browser_still", async (e, rect: unknown) => {
+        const r = rect as Partial<Record<"x" | "y" | "width" | "height", unknown>> | undefined;
+        if (!fromGui(e) || !win || win.isDestroyed() || !r || ![r.x, r.y, r.width, r.height].every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+        const zoom = win.webContents.getZoomFactor();
+        const box = { x: Math.round((r.x as number) * zoom), y: Math.round((r.y as number) * zoom), width: Math.round((r.width as number) * zoom), height: Math.round((r.height as number) * zoom) };
+        if (box.width <= 0 || box.height <= 0) return undefined;
+        try {
+            const still = await win.webContents.capturePage(box);
+            return still.isEmpty() ? undefined : still.toDataURL();
+        } catch {
+            return undefined;
+        }
+    });
     ipcMain.on("browser_sized", (e, key: string, size: { width: number; height: number; scale: number }) => {
         if (fromGui(e) && typeof key === "string" && size && [size.width, size.height, size.scale].every((n) => Number.isFinite(n) && n > 0)) host.sized(key, size);
     });
