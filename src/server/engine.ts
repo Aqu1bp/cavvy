@@ -1043,6 +1043,8 @@ export class Engine {
             updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
             messages: rt.session.messageCount,
             status: rt.status,
+            // Stopped, or cut off and closed when it was opened again (the history says so: runtime.ts).
+            ...(rt.status === "idle" && rt.session.messageCount > 0 && rt.lastTurnStatus === "aborted" ? { stopped: true as const } : {}),
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
             pinned: lists.pinned.has(rt.id),
@@ -1062,7 +1064,7 @@ export class Engine {
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", ...(s.stopped ? { stopped: true as const } : {}), pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
             if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
