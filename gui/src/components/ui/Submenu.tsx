@@ -2,7 +2,7 @@ import { createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from
 import { Portal } from "solid-js/web";
 import { ChevronRight } from "lucide-solid";
 import { ownSubmenu } from "../../lib/menu";
-import { placeSubmenu } from "../../lib/submenu";
+import { escapeToItem, placeSubmenu } from "../../lib/submenu";
 import { sp } from "../../state/prefs";
 
 /** How long the pointer rests on its item before it opens, and how long it may be away (on its way in) before it closes. */
@@ -14,8 +14,8 @@ const shown = new WeakMap<Element, () => void>();
 
 /**
  * An item of a menu (Menu.tsx) that opens more items beside it: on Right, Enter or a click, or once the pointer rests
- * on it. Left or Esc goes back to it (lib/menu.ts has the keys); picking an item closes the whole menu, as the item's
- * own action does. `icon` and `label` are the item's.
+ * on it. Left or Esc goes back to it (lib/menu.ts has the keys; lib/submenu.ts escapeToItem, Esc when the pointer
+ * opened it); picking an item closes the whole menu, as the item's own action does. `icon` and `label` are the item's.
  */
 export function Submenu(p: { icon?: JSX.Element; label: string; width?: number; children: JSX.Element }) {
     const id = createUniqueId();
@@ -104,6 +104,7 @@ export function Submenu(p: { icon?: JSX.Element; label: string; width?: number; 
                         ref={(el) => {
                             panel = el;
                             onCleanup(ownSubmenu(el, item));
+                            onCleanup(escapeToItem(window, item, () => panel, hide));
                         }}
                         id={id}
                         role="menu"
