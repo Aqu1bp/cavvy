@@ -653,6 +653,12 @@ export class ServerLinks {
             // Gone (the folder removed): watched again the next time servers are.
             w.on("error", () => this.unwatchSyncedFolder(dir, w));
             this.syncWatchers.set(dir, w);
+            // Made while the watch was being set up: down a level now.
+            if (!there && existsSync(join(at, next))) {
+                this.unwatchSyncedFolder(dir, w);
+                this.watchSyncedFolder(dir);
+                this.syncChanged();
+            }
         } catch {
             // Can't be watched here: it's brought level each time a server connects.
         }
