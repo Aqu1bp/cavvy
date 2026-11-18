@@ -3,7 +3,8 @@ import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, awayMachine, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, awayUnopened, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { tabMachines } from "./lib/terminal";
 import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
@@ -24,7 +25,7 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
+import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
@@ -319,16 +320,34 @@ const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => 
 export function App() {
     // A terminal panel for each machine whose sessions the window has shown, each with its own shells there: a session
     // of another machine's opens its terminal on that machine, over the connection its session is shown over.
-    const terminalOn = () => awayMachine(app.activeId);
+    /** The machine of what's in view and the connection to it; "pending" while another machine's session is opening. */
+    const terminalAt = (): { on: string | undefined; link?: Rpc } | "pending" => {
+        const id = app.activeId;
+        if (id === undefined) {
+            const on = homeOn();
+            return on === undefined ? { on } : { on, link: rpcFor(undefined) };
+        }
+        return linkedMachine(id) ?? (awayUnopened(id) ? "pending" : { on: undefined });
+    };
+    const terminalOn = () => {
+        if (terminalLogin()) return undefined;
+        const at = terminalAt();
+        return at === "pending" ? null : at.on;
+    };
     const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);
+    const addTerminalMachine = (on: string, link: Rpc) => {
+        if (!untrack(terminalMachines).some((m) => m.on === on)) setTerminalMachines((all) => [...all, { on, link }]);
+    };
     createEffect(() => {
-        const on = terminalOn();
-        if (on === undefined) return;
-        const link = rpcFor(app.activeId);
-        // A new connection to it (the last one was given up): its panel is made again on it, its tabs from where they're kept.
-        untrack(() => {
-            if (!terminalMachines().some((m) => m.on === on && m.link === link)) setTerminalMachines((all) => [...all.filter((m) => m.on !== on), { on, link }]);
-        });
+        const at = terminalAt();
+        if (at !== "pending" && at.on !== undefined && at.link) addTerminalMachine(at.on, at.link);
+    });
+    // Another session or Home in view: an account's sign-in tab no longer holds the window's own terminal there.
+    createEffect(on(() => app.activeId, () => setTerminalLogin(false), { defer: true }));
+    // Shells kept on other machines for this window's tabs (a reload): their panels come back now, not when one of
+    // their sessions is next shown, so their shells are attached to again before they're let go (src/server/terminals.ts).
+    onMount(() => {
+        for (const on of tabMachines()) if (on !== (machine ?? "")) void machineLink(on).then((link) => addTerminalMachine(on, link), () => undefined);
     });
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
@@ -676,7 +695,7 @@ export function App() {
                             </Show>
                         </div>
                         <For each={terminalMachines()}>{(m) => (
-                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} cwd={terminalOn() === m.on ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
+                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} cwd={terminalOn() === m.on && !terminalLogin() ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
                         )}</For>
                     </div>
                 </div>

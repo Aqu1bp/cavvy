@@ -177,7 +177,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const noop = () => ({});
     const deps = {
-        renderer, ...solid, rpc, app: { get conn() { return conn(); } }, connOn: () => conn(), machine: undefined, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
+        renderer, ...solid, rpc, app: { get conn() { return conn(); } }, connOn: () => conn(), machine: undefined, setTerminalLogin() {}, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs, at?: string) => (saved.push(value), savedAt.push(at)),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
@@ -462,4 +462,20 @@ test("a window keeps each machine's terminal tabs apart: back from a server, thi
     expect(tabsKey(undefined)).toBe("cavvy.terminals");
     expect(tabsKey("box")).toBe("cavvy.terminals.box");
     expect(tabsKey("box")).not.toBe(tabsKey("lab"));
+    // In a window on a server, this computer's tabs ("" there, awayMachine's name for it) are kept under its own name,
+    // not the server's.
+    expect(tabsKey("")).toBe("cavvy.terminals");
+});
+
+test("the machines a window keeps terminal tabs for are read back from where they're kept", async () => {
+    const { tabMachines } = await import("../gui/src/lib/terminal");
+    const store = new Map<string, string>([["cavvy.terminals", "{}"], ["cavvy.terminals.box", "{}"], ["cavvy.other", "{}"]]);
+    const old = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { get length() { return store.size; }, key: (i: number) => [...store.keys()][i] ?? null } });
+    try {
+        expect(tabMachines().sort()).toEqual(["", "box"]);
+    } finally {
+        if (old) Object.defineProperty(globalThis, "sessionStorage", old);
+        else Reflect.deleteProperty(globalThis, "sessionStorage");
+    }
 });

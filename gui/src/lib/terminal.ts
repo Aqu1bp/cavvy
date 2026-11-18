@@ -70,6 +70,18 @@ const TABS_KEY = "cavvy.terminals";
  * the tabs it had on each (kept under one name, the other machine's list would drop them as unknown).
  */
 export const tabsKey = (at: string | undefined = machine) => (at ? `${TABS_KEY}.${at}` : TABS_KEY);
+/** The machines whose tabs this window keeps, by tabsKey's names ("" this computer). */
+export function tabMachines(): string[] {
+    const out: string[] = [];
+    try {
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i) ?? "";
+            if (key === TABS_KEY) out.push("");
+            else if (key.startsWith(`${TABS_KEY}.`)) out.push(key.slice(TABS_KEY.length + 1));
+        }
+    } catch {}
+    return out;
+}
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
 /**

@@ -5,7 +5,7 @@ import { app, connOn, reportError, rpc, toast } from "../state/app";
 import { RpcError, type Rpc } from "../lib/rpc";
 import { machine } from "../lib/platform";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
+import { setTerminalLogin, terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { loadTabs, restoreTabs, saveTabs, TerminalClosures } from "../lib/terminal";
@@ -39,8 +39,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     const link = p.link ?? rpc;
     const conn = () => connOn(p.on);
     const current = () => p.current !== false;
-    // Where its tabs are kept: under the machine the shells are on (lib/terminal.ts tabsKey).
-    const at = p.on === undefined ? machine : p.on || undefined;
+    // Where its tabs are kept: under the machine the shells are on (lib/terminal.ts tabsKey; "" this computer).
+    const at = p.on ?? machine;
     const saved = loadTabs(at);
     const [tabs, setTabs] = createSignal<Tab[]>([]);
     const [selected, setSelected] = createSignal<string | undefined>(saved.selected);
@@ -73,7 +73,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
             const back = restoreTabs({ ...saved, closed: closes.ids }, listed);
             next = Math.max(next, back.next);
             setTabs(back.tabs.map((t) => ({ ...t, attach: true })));
-            if (back.open && back.tabs.length && current()) {
+            // Whether the panel shows is the window's: only its own machine's tabs, restored as the page loads, say.
+            if (back.open && back.tabs.length && p.on === undefined) {
                 reopening = true;
                 setTerminalOpen(true);
                 reopening = false;
@@ -121,6 +122,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         const id = crypto.randomUUID();
         const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
         terminalAsked();
+        // Shown though a session of another machine is in view: the sign-in is this one's (App.tsx).
+        setTerminalLogin(true);
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setSettingsTab(undefined);
