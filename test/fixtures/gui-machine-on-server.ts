@@ -28,6 +28,8 @@ Object.assign(globalThis, {
 
 const summary = (id: string, o: object = {}) => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
 const opened: { url: string; id: string }[] = [];
+/** Where each question about the app's update went. */
+const updates: string[] = [];
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -57,6 +59,8 @@ class ServerSocket extends Socket {
         } else if (method === "settings.get") reply({});
         else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
         else if (method === "session.close" || method === "session.shown") reply(null);
+        // The window's own Cavvy is box's here (no app to update); this computer's has one.
+        else if (method.startsWith("app.update.")) updates.push(this.url), reply(!this.url.includes("mac.test") ? { unavailable: "not here" } : { current: "abc", checkedAt: 1, asked: method });
         else reply([]);
     }
 }
@@ -89,4 +93,25 @@ assert.notEqual(app.homeCwd, "/Users/me/macproj", "not in a folder of this compu
 assert.equal(app.homeCwd, "/home/me/web", "in the window's latest project");
 assert.deepEqual(switched, [], "and the window stays where it is");
 assert.equal(app.activeId, undefined);
+// The app's update is this computer's, asked over the connection to its Cavvy, not of box's (which has no app).
+const { home } = await import("../../gui/src/lib/machines");
+Object.assign(home!, { credentials: async () => ({ url: "ws://mac.test/ws", token: "mac-token" }) });
+void home!.connect();
+await settle();
+// Asked as that connection opens (and each time it's back), with nothing else asking.
+assert.equal((app.update as any)?.unavailable, undefined, "not box's answer");
+assert.equal((app.update as any)?.asked, "app.update.get", "this computer's");
+// And what the window asks of it (About's Check, the Update button) goes there too, none of it to box.
+const { refreshUpdate } = await import("../../gui/src/state/app");
+const asked = updates.length;
+await refreshUpdate();
+assert.equal(updates.length, asked + 1);
+// (Before the servers code was loaded, this script's stand-in for it let the first one through to box: in the app
+// that code is loaded to connect the window at all.)
+assert.ok(updates.slice(asked).every((u) => u.includes("mac.test")), "nothing about the update is asked of box");
+// What this computer's Cavvy says of it later is shown; what box's says isn't.
+home!.hear({ type: "app.update", info: { current: "def" } } as never);
+assert.equal((app.update as any)?.current, "def");
+rpc.hear({ type: "app.update", info: { unavailable: "box's" } } as never);
+assert.equal((app.update as any)?.current, "def", "box's word on updates isn't the window's");
 process.exit(0);

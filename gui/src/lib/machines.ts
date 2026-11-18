@@ -3,10 +3,11 @@
 // server's Cavvy directly, as it talks to this computer's when it's on none.
 
 import { createSignal } from "solid-js";
+import { reconcile } from "solid-js/store";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, pendingPicked, setConnNote } from "../state/app";
+import { app, pendingPicked, rpc, setApp, setConnNote } from "../state/app";
 import { PICKED_KEY } from "./picked";
 import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -42,8 +43,16 @@ if (home) {
     home.retriesCredentials = true;
     home.onEvent((e) => {
         if (e.type === "servers.progress" && e.name === machine && machineIssue()?.kind === "connecting") setMachineIssue({ kind: "connecting", text: e.text, percent: e.percent });
+        // The app is this computer's: its update is shown in a window on a server too.
+        if (e.type === "app.update") setApp("update", reconcile(e.info));
     });
+    // Asked for again whenever this computer's Cavvy is reached: what it said while it wasn't didn't arrive.
+    home.onState((s) => s === "open" && void home.call("app.update.get", {}).then((u) => setApp("update", reconcile(u)), () => undefined));
     void home.connect();
+    // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
+    // Cavvy. Set here, loaded before the window's own connection is made (its credentials come through this file).
+    const route = rpc.route;
+    rpc.route = (method, params) => (method.startsWith("app.update.") ? (home.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : route?.(method, params));
 }
 
 function homeOpen(): Promise<void> {

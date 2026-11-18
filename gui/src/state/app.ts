@@ -1720,7 +1720,8 @@ function onEvent(ev: ServerEvent) {
             keybindingsChanged(ev.keybindings);
             return;
         case "app.update":
-            setApp("update", reconcile(ev.info));
+            // In a window on a server, this computer's Cavvy says (lib/machines.ts): the server's has no app to update.
+            if (!machine) setApp("update", reconcile(ev.info));
             return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
