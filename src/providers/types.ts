@@ -25,7 +25,8 @@ export type ImagePart = { type: "image"; mediaType: string; data: string /* base
  * model is told where, to open it with its own tools.
  */
 export type FilePart =
-    | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean }
+    /** `from`: text brought back from a side chat (src/agent/side-chat.ts), not a file. */
+    | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean; from?: "side-chat" }
     | { type: "file"; kind: "pdf"; name: string; size: number; mediaType: "application/pdf"; data: string /* base64 */ }
     | { type: "file"; kind: "saved"; name: string; size: number; path: string };
 

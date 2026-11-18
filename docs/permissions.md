@@ -18,7 +18,22 @@ Whatever the mode:
 - Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too). On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
 - Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask.
 
-When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.cavvy/settings.local.json`), or decline and say what to do instead.
+### What each choice in a prompt does
+
+Each prompt offers the choices that fit what it asks about. The desktop app's labels come first, then the terminal's.
+
+- **Allow once** (**Yes**): runs this one call. The same command, edit, page or tool call asks again the next time, in every mode, unless a choice below already covers it. Going back with Rewind doesn't change that.
+- **Allow `<command>` for the session** / **Allow `<host>`, `<file>` or `<tool>` this session** (**Yes, and allow … for the session**): runs it and, until the session ends, runs what the label names without asking: commands starting the same way, that host, that file, that tool. Nothing is saved; a new or resumed session asks again.
+- **Allow edits in `<folder>` this session**, **Allow reading `<folder>` this session**: the same, for edits or reads in that folder.
+- **Allow all edits this session** (**Yes, allow all edits during this session**): switches the session to Accept edits.
+- **Always allow …** (**Yes, and don't ask again for …**): saves an allow rule in `.cavvy/settings.local.json` for this project, so it isn't asked about again here, in this session or later. Remove it with `/permissions` or by editing the file.
+- **Deny** (**No, and tell Cavvy what to do differently**): it doesn't run; you can say what to do instead.
+
+Some prompts offer only **Allow once** and **Deny** (a dangerous command, a change to Cavvy's own configuration). To be asked less elsewhere, choose **Always allow …** or a session choice where it's offered, or add a rule ([Rules](#rules)).
+
+The same choices answer what an agent CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) asks about, and what sub-agents and delegated tasks ask about: Cavvy always answers the CLI with "once", and keeps any session or always choice itself.
+
+In Auto mode the reviewer is told what you said yes to earlier in the session, as context for its own decision, not as permission to repeat it: a yes to something it would otherwise block (deleting work, a push) covers that one run, and running it again needs your request again. Dangerous commands never go to the reviewer; they ask you each time.
 
 ## Auto mode
 

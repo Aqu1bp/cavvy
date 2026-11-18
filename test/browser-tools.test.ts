@@ -229,9 +229,12 @@ describe("what asks", () => {
             expect(c.check(tool as never, input, "default", root), tool.name).toMatchObject({ behavior: "ask" });
             expect(c.recentApprovals(), tool.name).toEqual([]);
         }
-        // Opening the same address is the same thing every time: a yes to it is remembered.
-        c.approve(BrowserNavigateTool as never, { url: "https://example.com/" }, root);
-        expect(c.check(BrowserNavigateTool as never, { url: "https://example.com/" }, "default", root)).toMatchObject({ behavior: "allow", remembered: true });
+        // Opening an address: a yes covers that visit; allowed for the session, the same address isn't asked about again.
+        const nav = { url: "https://example.com/" };
+        c.approve(BrowserNavigateTool as never, nav, root);
+        expect(c.check(BrowserNavigateTool as never, nav, "default", root)).toMatchObject({ behavior: "ask" });
+        c.approve(BrowserNavigateTool as never, nav, root, { grant: c.withGrant(BrowserNavigateTool as never, nav, c.check(BrowserNavigateTool as never, nav, "default", root), root).grant });
+        expect(c.check(BrowserNavigateTool as never, nav, "default", root)).toMatchObject({ behavior: "allow" });
     });
 
     test("hovering, scrolling and waiting go unasked", () => {

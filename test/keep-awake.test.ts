@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { inhibitorCommand, KeepAwake, type InhibitorSpawn } from "../src/agent/keep-awake";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { findBin, inhibitorCommand, KeepAwake, type InhibitorSpawn } from "../src/agent/keep-awake";
 
 /** A spawner that records what it started, each started one ending when told to (or by itself, via end()). */
 function fakeSpawner(o: { missing?: boolean } = {}) {
@@ -22,11 +25,13 @@ function fakeSpawner(o: { missing?: boolean } = {}) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Every command is found, where it's named. */
+const anywhere = (bin: string) => bin;
 
 describe("keep awake", () => {
     test("starts one inhibitor while anything works, and stops it when nothing does", () => {
         const f = fakeSpawner();
-        const k = new KeepAwake({ platform: "darwin", pid: 4242, spawn: f.spawn, enabled: () => true });
+        const k = new KeepAwake({ platform: "darwin", pid: 4242, spawn: f.spawn, enabled: () => true, find: anywhere });
         const a = {};
         const b = {};
         k.set(a, true);
@@ -49,7 +54,7 @@ describe("keep awake", () => {
 
     test("a session going idle that wasn't working changes nothing", () => {
         const f = fakeSpawner();
-        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true });
+        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true, find: anywhere });
         k.set("x", false);
         expect(f.started).toHaveLength(0);
     });
@@ -62,7 +67,7 @@ describe("keep awake", () => {
     test("off in settings: nothing starts; turned on while working, it starts; off again, it stops", () => {
         const f = fakeSpawner();
         let on = false;
-        const k = new KeepAwake({ platform: "darwin", pid: 1, spawn: f.spawn, enabled: () => on });
+        const k = new KeepAwake({ platform: "darwin", pid: 1, spawn: f.spawn, enabled: () => on, find: anywhere });
         k.set("s", true);
         expect(f.started).toHaveLength(0);
         on = true;
@@ -77,7 +82,7 @@ describe("keep awake", () => {
         const f = fakeSpawner({ missing: true });
         let on = true;
         let spawns = 0;
-        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: (argv) => (spawns++, f.spawn(argv)), enabled: () => on, installed: () => true });
+        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: (argv) => (spawns++, f.spawn(argv)), enabled: () => on, find: anywhere });
         k.set("s", true);
         expect(k.available()).toBe(false);
         k.set("s", false);
@@ -92,7 +97,7 @@ describe("keep awake", () => {
 
     test("refused (it ends by itself): unavailable, and not started again", async () => {
         const f = fakeSpawner();
-        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true, installed: () => true });
+        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true, find: anywhere });
         k.set("s", true);
         expect(k.available()).toBe(true);
         f.started[0]!.end();
@@ -106,7 +111,7 @@ describe("keep awake", () => {
 
     test("stopped on purpose isn't taken for refused", async () => {
         const f = fakeSpawner();
-        const k = new KeepAwake({ platform: "darwin", pid: 1, spawn: f.spawn, enabled: () => true, installed: () => true });
+        const k = new KeepAwake({ platform: "darwin", pid: 1, spawn: f.spawn, enabled: () => true, find: anywhere });
         k.set("s", true);
         k.set("s", false);
         await tick();
@@ -117,9 +122,80 @@ describe("keep awake", () => {
 
     test("no command on this platform: unavailable, nothing started", () => {
         const f = fakeSpawner();
-        const k = new KeepAwake({ platform: "win32", pid: 1, spawn: f.spawn, enabled: () => true, installed: () => true });
+        const k = new KeepAwake({ platform: "win32", pid: 1, spawn: f.spawn, enabled: () => true, find: anywhere });
         k.set("s", true);
         expect(f.started).toHaveLength(0);
         expect(k.available()).toBe(false);
+    });
+
+    test("not found: unavailable, nothing started, and it says so", () => {
+        const f = fakeSpawner();
+        const logs: string[] = [];
+        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true, find: () => undefined, log: (m) => logs.push(m) });
+        expect(k.available()).toBe(false);
+        k.set("s", true);
+        expect(f.started).toHaveLength(0);
+        expect(logs).toEqual(["Keeping the computer awake: systemd-inhibit isn't installed."]);
+    });
+
+    test("what's checked is what's run: the found paths", () => {
+        const f = fakeSpawner();
+        const found: string[] = [];
+        const k = new KeepAwake({ platform: "linux", pid: 1, spawn: f.spawn, enabled: () => true, find: (b) => (found.push(b), `/found/${b}`) });
+        expect(k.available()).toBe(true);
+        k.set("s", true);
+        expect(f.started[0]!.argv).toEqual(["/found/systemd-inhibit", "--what=idle:sleep", "--who=Cavvy", "--why=Agents are working", "--mode=block", "/found/cat"]);
+        // Looked up once.
+        expect(found).toEqual(["systemd-inhibit", "cat"]);
+    });
+});
+
+describe("finding the inhibitor", () => {
+    const tool = (dir: string, name: string, body = "#!/bin/sh\nexit 0\n", mode = 0o755) => {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, name), body);
+        chmodSync(join(dir, name), mode);
+        return join(dir, name);
+    };
+
+    test("the system's own copy first, else the first on PATH; a path as it is", () => {
+        const root = mkdtempSync(join(tmpdir(), "cavvy-findbin-"));
+        try {
+            const system = join(root, "usr-bin");
+            const login = join(root, "login-bin");
+            const inLogin = tool(login, "systemd-inhibit");
+            expect(findBin("systemd-inhibit", { dirs: [system], PATH: login })).toBe(inLogin);
+            const inSystem = tool(system, "systemd-inhibit");
+            expect(findBin("systemd-inhibit", { dirs: [system], PATH: login })).toBe(inSystem);
+            // Not executable: not it.
+            tool(join(root, "other"), "plain", "x", 0o644);
+            expect(findBin("plain", { dirs: [join(root, "other")], PATH: "" })).toBeUndefined();
+            expect(findBin(inLogin)).toBe(inLogin);
+            expect(findBin(join(root, "nope"))).toBeUndefined();
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    test("only on the PATH adopted after start (the login shell's): found, and that one runs", async () => {
+        const root = mkdtempSync(join(tmpdir(), "cavvy-findbin-"));
+        const PATH = process.env.PATH;
+        try {
+            const marker = join(root, "ran");
+            // Stands in for systemd-inhibit: notes it ran, then holds like it does until its stdin closes.
+            tool(join(root, "login-bin"), "systemd-inhibit", `#!/bin/sh\necho "$@" > "${marker}"\nexec cat\n`);
+            process.env.PATH = `${join(root, "login-bin")}:${PATH}`;
+            const k = new KeepAwake({ platform: "linux", pid: 1, enabled: () => true, find: (b) => findBin(b, { dirs: b === "cat" ? undefined : [] }) });
+            expect(k.available()).toBe(true);
+            k.set("s", true);
+            expect(k.holding).toBe(true);
+            for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(20);
+            expect(existsSync(marker)).toBe(true);
+            k.set("s", false);
+            expect(k.holding).toBe(false);
+        } finally {
+            process.env.PATH = PATH;
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 });

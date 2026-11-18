@@ -45,8 +45,11 @@ test("zoom steps, sides typed in, and the label", () => {
     expect(zoomStep(0.5, -1)).toBe(0.5);
     expect(zoomStep(1.2, 1)).toBe(1.25);
     expect(side(" 390 ")).toBe(390);
-    expect(side("50")).toBe(200);
-    expect(side("99999")).toBe(4000);
+    expect(side("200")).toBe(200);
+    expect(side("4000")).toBe(4000);
+    // out of range is refused, not changed: the strip says what it takes
+    expect(side("50")).toBeUndefined();
+    expect(side("99999")).toBeUndefined();
     expect(side("wide")).toBeUndefined();
     expect(side("")).toBeUndefined();
     expect(viewLabel()).toBe("Fill pane");

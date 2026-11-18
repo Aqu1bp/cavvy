@@ -88,6 +88,15 @@ describe("fs.files (Go to file)", () => {
         expect(all.paths).not.toContain("logs/run.log");
     });
 
+    test("a link out of the session's folders isn't listed (the viewer would refuse it); one inside is", async () => {
+        for (const id of [repoId, plainId]) {
+            const all = await call<{ paths: string[] }>("fs.files", { sessionId: id, query: "", limit: 200 });
+            expect(all.paths).not.toContain("leak.txt");
+            expect(all.paths).not.toContain("out-dir");
+            expect(all.paths).toContain("readme-link.md");
+        }
+    });
+
     test("fuzzy: the letters in order", async () => {
         const r = await call<{ paths: string[] }>("fs.files", { sessionId: repoId, query: "slut" });
         expect(r.paths).toContain("src/lib/util.ts");

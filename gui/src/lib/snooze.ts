@@ -1,12 +1,14 @@
 // The times a session can be snoozed until, worked out in the window's own time zone (a server may be in another):
 // the server is sent the moment. Used by the row menu's Snooze (components/RowExtras.tsx), loaded with it.
 
+import { clock, wakeTime } from "./format";
+
 const HOUR = 3_600_000;
 
 export interface SnoozeChoice {
     label: string;
     at: number;
-    /** When, beside it: the time, and the day where the label doesn't say it. */
+    /** When, beside it, as its row will say it (wakeTime): the day too where the label doesn't say it. */
     hint: string;
 }
 
@@ -18,29 +20,17 @@ function dayAt(now: number, days: number, hour: number): number {
     return d.getTime();
 }
 
-const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
 /** 1 hour; tonight at 6 pm (3 hours on when that's past); tomorrow at 9 am; next Monday at 9 am. */
 export function snoozeChoices(now: number): SnoozeChoice[] {
     const today = new Date(now);
-    const choice = (label: string, at: number, day = false) => ({ label, at, hint: day ? `${new Date(at).toLocaleDateString([], { weekday: "short" })} ${time(at)}` : time(at) });
+    const choice = (label: string, at: number, dayNamed = false) => ({ label, at, hint: dayNamed ? clock(at) : wakeTime(at, now) });
     return [
         choice("1 hour", now + HOUR),
         choice("Tonight", today.getHours() < 18 ? dayAt(now, 0, 18) : now + 3 * HOUR),
-        choice("Tomorrow morning", dayAt(now, 1, 9)),
+        choice("Tomorrow morning", dayAt(now, 1, 9), true),
         // Monday is day 1: from a Monday, the next one.
-        choice("Next week", dayAt(now, (8 - today.getDay()) % 7 || 7, 9), true),
+        choice("Next week", dayAt(now, (8 - today.getDay()) % 7 || 7, 9)),
     ];
-}
-
-/** When it wakes, in words: "6:00 PM", "Tomorrow 9:00 AM", "Mon 9:00 AM", or "Nov 25, 9:00 AM". */
-export function wakesText(at: number, now: number): string {
-    const t = time(at);
-    const days = Math.round((dayAt(at, 0, 0) - dayAt(now, 0, 0)) / (24 * HOUR));
-    if (days === 0) return t;
-    if (days === 1) return `Tomorrow ${t}`;
-    const day = new Date(at).toLocaleDateString([], days > 0 && days < 7 ? { weekday: "short" } : { month: "short", day: "numeric" });
-    return `${day}${days > 0 && days < 7 ? "" : ","} ${t}`;
 }
 
 /** A datetime-local field's value for a moment (its own format: local time, to the minute). */

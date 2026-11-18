@@ -180,6 +180,17 @@
     background-color: transparent !important;
 }
 
+/* The selection as the rest of the app shows it (base.css ::selection). xterm makes its colour opaque against its
+   ground, black with none, and paints it under the selected letters and again over them: a dark block that hid the
+   text. Over them it's this tint; under them, nothing (the app adds no decorations, the only other cells marked so). */
+.terminal-emulator .xterm .xterm-selection div {
+    background-color: color-mix(in srgb, var(--accent) 26%, transparent) !important;
+}
+
+.terminal-emulator .xterm .xterm-rows .xterm-decoration-top {
+    background-color: transparent !important;
+}
+
 .terminal-message {
     display: flex;
     align-items: center;

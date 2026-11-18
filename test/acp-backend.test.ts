@@ -158,7 +158,7 @@ describe("OpenCode's asks, by Cavvy's mode", () => {
         expect(answers()).toEqual([once, reject]);
     });
 
-    test("a yes to a change covers that change only: not the file's delete or move, nor other content for it", () => {
+    test("a yes to a change covers that change only: not the same change again, the file's delete or move, nor other content for it", () => {
         const checker = new PermissionChecker(() => ({}), cwd);
         const file = join(cwd, "a.txt");
         const ask = (toolCall: any) => {
@@ -173,15 +173,15 @@ describe("OpenCode's asks, by Cavvy's mode", () => {
         const bare = ask({ kind: "edit", rawInput: { file_path: file, old_string: "a", new_string: "b" } });
         expect(bare.r).toMatchObject({ toolName: "Edit", input: { file_path: file } });
         bare.approve();
-        expect(bare.decision()).toBe("allow");
+        expect(bare.decision()).toBe("ask");
         expect(ask(deleted).decision()).toBe("ask");
         expect(ask(moved).decision()).toBe("ask");
-        // One that does: the same content again is remembered; other content asks again.
+        // One that does: the same content again asks again, as does other content.
         const one = ask(diff("one"));
         expect(one.r).toMatchObject({ toolName: "Write", input: { file_path: file, content: "one" } });
         expect(one.decision()).toBe("ask");
         one.approve();
-        expect(ask(diff("one")).decision()).toBe("allow");
+        expect(ask(diff("one")).decision()).toBe("ask");
         expect(ask(diff("two")).decision()).toBe("ask");
         expect(ask({ kind: "edit", rawInput: { file_path: file, content: "two" } }).decision()).toBe("ask");
         expect(ask(deleted).decision()).toBe("ask");

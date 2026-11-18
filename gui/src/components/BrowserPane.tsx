@@ -66,6 +66,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // The page's picture
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
+    /** The box's size as last seen, for what the strip says of it (BrowserTools.tsx). */
+    const [paneBox, setPaneBox] = createSignal<Size>({ width: 0, height: 0 });
     /** Where a frame is drawn: a device's page no larger than it is (at its zoom). */
     const placed = (f: Size) => placeFrame(boxSize(), f, view()?.device ? view()!.zoom : undefined);
 
@@ -149,6 +151,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void loadBrowserState(id()).catch(() => undefined);
         const observer = new ResizeObserver(() => {
             fit();
+            setPaneBox(boxSize());
             if (!watching()) return;
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => resized(sized, paneSize(boxSize())) && watch(), RESIZE_MS);
@@ -244,7 +247,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }));
     };
 
-    const tools = paneTools({ id, native, tab, view, setView, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status });
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status });
 
     // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
     // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's

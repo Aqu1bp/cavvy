@@ -203,7 +203,7 @@ const scope = {
     },
     observeWorkRendering: () => () => {},
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => paneFocused, parked: () => !paneFocused, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, keysHere: (pane: { focused: () => boolean }) => pane.focused(), usePane: () => ({ focused: () => paneFocused, parked: () => !paneFocused, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
     takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
