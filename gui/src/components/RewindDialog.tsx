@@ -1,10 +1,11 @@
-import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { promptPreview } from "../lib/review-comments";
 import { AlertTriangle, FileMinus2, FilePen, FilePlus2, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
-import { plural, promptTime } from "../lib/format";
+import { plural } from "../lib/format";
+import { rewindTimes } from "../lib/rewind-times";
 import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
@@ -61,6 +62,8 @@ export function RewindDialog() {
                 return [];
             }),
     );
+    /** When each was sent; to the second where the next one up or down would read the same. */
+    const times = createMemo(() => rewindTimes(targets()?.map((t) => t.at) ?? []));
     createEffect(
         on(rewindOpen, (open) => {
             if (!open) return;
@@ -150,12 +153,12 @@ export function RewindDialog() {
                     <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
                         <div class="rw-list">
                             <For each={targets()}>
-                                {(t) => (
+                                {(t, i) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
                                         <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
                                         <span class="muted small">{changedLabel(t)}</span>
-                                        <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{promptTime(at())}</time>}</Show>
+                                        <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{times()[i()]}</time>}</Show>
                                     </button>
                                 )}
                             </For>

@@ -1777,10 +1777,13 @@ describe("sessions", () => {
         const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
         await c.call("session.send", { id, text: "first prompt" });
         await c.until(id, done);
+        const contextThen = c.view(id).state.contextTokens;
+        expect(contextThen).toBeGreaterThan(0);
         await c.call("session.send", { id, text: "demo" });
         await c.answer(id, { kind: "permission", choice: "yes" }); // the shell command
         await c.until(id, done, 15_000);
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        expect(c.view(id).state.contextTokens).toBeGreaterThan(contextThen);
 
         const targets = await c.call("session.rewindTargets", { id });
         expect(targets.map((t: { text: string }) => t.text)).toEqual(["demo", "first prompt"]);
@@ -1794,6 +1797,8 @@ describe("sessions", () => {
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
         expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
         await c.until(id, (v) => v.turns.filter((t) => t.prompt).length === 1);
+        // The context as it was after the first prompt's reply, not 0 until the next reply.
+        await c.until(id, (v) => v.state.contextTokens === contextThen);
         c.close();
     }, 30_000);
 

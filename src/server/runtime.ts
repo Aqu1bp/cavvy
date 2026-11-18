@@ -1496,6 +1496,24 @@ export class Runtime {
         return getProvider(this.model?.provider ?? "")?.kind === "agent";
     }
 
+    /**
+     * How full the context was, by how many messages the session had when it was measured (each reply's usage). A
+     * compaction makes those counts mean other messages: they're forgotten then.
+     */
+    private contextAt = new Map<number, number>();
+
+    /**
+     * How full the context is after a rewind to the messages there are now: as measured when the session last had
+     * that many (the reply before the prompt rewound to), else as the agent estimates its next request. Not 0, which
+     * read as an empty context with turns still showing until the next reply.
+     */
+    private contextRewound(): number {
+        const count = this.session.messageCount;
+        for (const at of [...this.contextAt.keys()]) if (at > count) this.contextAt.delete(at);
+        const s = this.ui.state;
+        return this.contextAt.get(count) ?? (s.messages === count && s.contextTokens ? s.contextTokens : undefined) ?? this.agent?.estimatedContext() ?? 0;
+    }
+
     /** How full the context was when the session was left, if nothing has happened to it since (in a terminal, say). */
     private lastContext(): number {
         const s = this.ui.state;
@@ -3080,6 +3098,7 @@ export class Runtime {
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
+                if (e.contextTokens) this.contextAt.set(this.session.messageCount, e.contextTokens);
                 break;
             }
             case "compact_start":
@@ -3253,6 +3272,7 @@ export class Runtime {
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
+        this.contextAt.clear();
         this.recordState();
     }
 
@@ -5212,7 +5232,7 @@ export class Runtime {
             this.rebuild();
         }
         // Only a conversation rewound has less in it: files restored alone leave the context as it was.
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), ...(rewindConversation ? { contextTokens: 0 } : {}) });
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), ...(rewindConversation ? { contextTokens: this.contextRewound() } : {}) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
