@@ -72,7 +72,7 @@ import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
 import { agentNeedsTrust, trustedByUser } from "../config/trust";
-import { attachedLabel, attachedPrompt, toWire } from "./attachments";
+import { answerAttachments, attachedLabel, attachedPrompt, fileSaver, toWire, type AnswerAttach } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
@@ -363,7 +363,9 @@ const LIVE_STEP_MS = 2000;
 
 interface Pending {
     interaction: Interaction;
-    resolve: (r: InteractionResponse | undefined) => void;
+    resolve: (r: InteractionResponse | undefined, attached?: AttachedPart[]) => void;
+    /** A question whose answer can carry attachments, and how they reach the agent. */
+    attach?: AnswerAttach;
 }
 
 interface Queued {
@@ -2689,6 +2691,7 @@ export class Runtime {
                 ui: {
                     onScreen: () => this.engine.sessionShown(this.id),
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
+                    askQuestionAttaching: (q, options, multi, as) => this.askQuestionAttaching(q, options, multi, as),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
@@ -3544,10 +3547,17 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Interactions
 
-    private interact(interaction: Interaction): Promise<InteractionResponse | undefined> {
+    private interact(interaction: Interaction, attach?: AnswerAttach, attached?: (parts: AttachedPart[]) => void): Promise<InteractionResponse | undefined> {
         interaction.since ??= Date.now();
         return new Promise((resolve) => {
-            this.pending.set(interaction.id, { interaction, resolve });
+            this.pending.set(interaction.id, {
+                interaction,
+                resolve: (r, parts) => {
+                    if (parts?.length) attached?.(parts);
+                    resolve(r);
+                },
+                ...(attach ? { attach } : {}),
+            });
             this.setState({ interactions: [...this.pendingList()] });
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
@@ -3592,19 +3602,25 @@ export class Runtime {
             if (bad) throw new RpcError(bad, "bad_secret");
             r = { kind: "secret", value: r.value };
         }
+        // What's attached to an answer is checked (and what's saved, saved) before the card goes: a refusal stays in it.
+        if (r.kind === "question" && (r.images !== undefined || r.files !== undefined)) {
+            if (!p.attach) throw new RpcError("Nothing can be attached to this answer.");
+            const parts = answerAttachments(r, fileSaver(this.ws.cwd, this.id), p.attach);
+            return this.settle(interactionId, { kind: "question", answers: Array.isArray(r.answers) ? r.answers : undefined }, parts);
+        }
         // Only what was offered: "always" isn't, for a dangerous command.
         if (p.interaction.kind === "permission" && r.kind === "permission" && !p.interaction.options.some((o) => o.id === r.choice)) throw new RpcError("That isn't one of the choices offered.");
         this.settle(interactionId, r);
     }
 
-    private settle(id: string, r: InteractionResponse | undefined) {
+    private settle(id: string, r: InteractionResponse | undefined, attached?: AttachedPart[]) {
         const p = this.pending.get(id);
         if (!p) return;
         this.pending.delete(id);
         this.setState({ interactions: this.pendingList() });
         if (!this.pending.size) this.setStatus(this.busy ? "running" : "idle");
         else this.engine.sessionChanged(this);
-        p.resolve(r);
+        p.resolve(r, attached);
         // A question answered between turns (a plan handed off, say) may leave it idle.
         if (!this.pending.size) queueMicrotask(() => this.schedules.poke());
     }
@@ -3786,11 +3802,23 @@ export class Runtime {
     }
 
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
+        const r = await this.askQuestionAttaching(question, options, multi);
+        return r?.answers.length ? r.answers : undefined;
+    }
+
+    /** `as`: what's attached to the answer comes with it, so; without it, nothing can be. */
+    private async askQuestionAttaching(question: string, options: { label: string; description?: string }[], multi: boolean, as?: AnswerAttach): Promise<{ answers: string[]; attached: AttachedPart[] } | undefined> {
         const toolId = this.runningTool("AskUserQuestion");
         if (toolId) this.patchBlock(toolId, { status: "awaiting" });
-        const r = await this.interact({ kind: "question", id: this.newId(), toolId, question: redact(question), options: options.map((o) => ({ label: redact(o.label), description: o.description && redact(o.description) })), multi });
+        let attached: AttachedPart[] = [];
+        const r = await this.interact(
+            { kind: "question", id: this.newId(), toolId, question: redact(question), options: options.map((o) => ({ label: redact(o.label), description: o.description && redact(o.description) })), multi, ...(as ? { attach: true } : {}) },
+            as,
+            (parts) => (attached = parts),
+        );
         if (toolId) this.patchBlock(toolId, { status: "running" });
-        return r?.kind === "question" && r.answers?.length ? r.answers : undefined;
+        const answers = r?.kind === "question" && Array.isArray(r.answers) ? r.answers.filter((a): a is string => typeof a === "string") : [];
+        return answers.length || attached.length ? { answers, attached } : undefined;
     }
 
     /** The value goes straight back to the tool, which keeps it in the session's store: nothing here holds on to it. */
@@ -5322,6 +5350,25 @@ export class Runtime {
         if (!this.ws.trusted) throw new RpcError(action === "committing" ? "Trust this folder before committing: Git commits run the repository's hooks." : "Trust this folder before publishing: Git transports can run configured programs.", "needs_trust", this.ws.cwd);
         if (this.closed) throw new RpcError("This session was closed.", "busy");
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
+    }
+
+    /** Still at work (a turn, a question, a shell, a task): its folder's branch and files mustn't change under it. */
+    async workingForGit(): Promise<boolean> {
+        await this.yieldIdleCompaction();
+        return !this.closed && !this.settled(false);
+    }
+
+    /** Holds the session (no turn starts) while `work` changes its folder's branch or files; the header's branch after. */
+    async holdForGit<T>(work: Promise<T>): Promise<T> {
+        this.committing = true;
+        this.commitDone = work;
+        try {
+            return await work;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            if (!this.closed) this.showWorkingIn(this.workingIn);
+        }
     }
 
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {

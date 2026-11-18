@@ -10,6 +10,7 @@ import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharin
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
+import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo, worktreeTop } from "./git-sync";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
@@ -120,7 +121,7 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
@@ -1829,6 +1830,45 @@ export class Engine {
     }
 
     // -----------------------------------------------------------------------
+    // A folder's branch: fetch, pull, switch, create (git-sync.ts)
+
+    /** Folders with a fetch, pull or switch under way (their work tree's top). */
+    private gitBusy = new Set<string>();
+
+    private gitFolder(v: unknown): string {
+        const cwd = resolve(expandHome(text(v, "cwd", 4096)));
+        if (!isDir(cwd)) throw new RpcError(`${cwd} isn't a folder.`, "not_found");
+        return cwd;
+    }
+
+    /**
+     * One at a time per work tree, in a folder the user trusts (git runs the repository's configured programs).
+     * `changes`: it moves HEAD or the files, so it's refused while a session there works, and holds those sessions
+     * (no turn starts) until it's done.
+     */
+    private async gitAction<T>(v: unknown, changes: boolean, work: (cwd: string) => Promise<T>): Promise<T> {
+        const cwd = this.gitFolder(v);
+        if (!isTrusted(cwd)) throw new RpcError("Trust this folder first: Git runs the repository's configured programs.", "needs_trust", cwd);
+        const top = await worktreeTop(cwd);
+        if (this.gitBusy.has(top)) throw new RpcError("Another Git action is running in this folder.", "busy");
+        // Worktrees Cavvy keeps inside this one are folders of their own.
+        const nested = within(join(top, ".claude", "worktrees"));
+        const here = [...this.runtimes.values()].filter((rt) => rt.folders.some((f) => within(top)(f) && !nested(f)));
+        this.gitBusy.add(top);
+        try {
+            if (changes) {
+                for (const rt of here) if (await rt.workingForGit()) throw new RpcError("A session is working in this folder. Wait for it to finish, or stop it.", "busy");
+                const done = work(cwd);
+                await Promise.all(here.map((rt) => rt.holdForGit(done).catch(() => undefined)));
+                return await done;
+            }
+            return await work(cwd);
+        } finally {
+            this.gitBusy.delete(top);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Archiving a session in a managed worktree, and removing the worktree with it
 
     /** A session's folder, live or from its file, and the file (for whether another process has it open). */
@@ -2822,6 +2862,8 @@ export class Engine {
             case "browser.choose":
                 await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined, typeof p.list === "number" ? p.list : undefined));
                 return null;
+            case "browser.find":
+                return await browserCall(() => this.runtime(p.id).browser.find(str(p.query, "query"), typeof p.step === "number" ? p.step : 0, typeof p.tab === "number" ? p.tab : undefined));
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
                 await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
@@ -3547,6 +3589,22 @@ export class Engine {
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
+            case "git.sync":
+                return await gitSyncInfo(this.gitFolder(p.cwd));
+            case "git.branches":
+                return await gitBranches(this.gitFolder(p.cwd));
+            case "git.fetch":
+                return await this.gitAction(p.cwd, false, (cwd) => gitFetch(cwd));
+            case "git.pull":
+                return await this.gitAction(p.cwd, true, (cwd) => gitPull(cwd));
+            case "git.switch": {
+                const branch = text(p.branch, "branch", 400);
+                return await this.gitAction(p.cwd, true, (cwd) => gitSwitch(cwd, { branch, remote: p.remote === true }));
+            }
+            case "git.createBranch": {
+                const name = text(p.name, "name", 200);
+                return await this.gitAction(p.cwd, true, (cwd) => gitCreateBranch(cwd, name));
+            }
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
             case "projects.createWorktree": {
@@ -3770,10 +3828,6 @@ async function launchEditor(argv: string[]): Promise<void> {
     const code = await Promise.race([proc.exited, Bun.sleep(1500).then(() => undefined)]);
     proc.unref();
     if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
-}
-
-function validImage(i: { mediaType: unknown; data: unknown }): boolean {
-    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
 }
 
 /** The fingerprints a window sends back as the user's yes to an unknown host's key. */

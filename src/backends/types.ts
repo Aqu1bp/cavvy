@@ -106,6 +106,8 @@ export interface BackendQuestion {
     header?: string;
     options: { label: string; description?: string }[];
     multiSelect?: boolean;
+    /** Its answer can carry what the user attached (the agent's own question, not an MCP server's form): named in it as text. */
+    attach?: boolean;
 }
 
 /** A queued message as a prompt of its own: its text (attached text files framed in), its images, and PDFs for a backend that reads them. */

@@ -33,6 +33,7 @@ async function panel() {
         options = {};
         loadAddon() {}
         open() {}
+        registerLinkProvider() { return { dispose() {} }; }
         attachCustomKeyEventHandler() {}
         onData(callback: (data: string) => void) { onInput = callback; return { dispose() {} }; }
         write(_text: string, done?: () => void) { done?.(); }
@@ -46,7 +47,7 @@ async function panel() {
             return result;
         },
         React: { Fragment: "Fragment" },
-        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", TerminalIcon: "TerminalIcon", X: "X", ChevronDown: "ChevronDown", Maximize2: "Maximize2", Minimize2: "Minimize2",
+        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", TerminalIcon: "TerminalIcon", X: "X", ChevronDown: "ChevronDown", Maximize2: "Maximize2", Minimize2: "Minimize2", MessageSquarePlus: "MessageSquarePlus", Copy: "Copy", ClipboardPaste: "ClipboardPaste", TextSelect: "TextSelect", Eraser: "Eraser",
         terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: () => undefined,
         createSignal: (initial: unknown) => {
             let value = initial;
@@ -68,6 +69,8 @@ async function panel() {
         getComputedStyle: () => ({ getPropertyValue: () => "" }), MutationObserver: Observer, ResizeObserver: Observer,
         document: { documentElement: {} }, cancelAnimationFrame() {}, requestAnimationFrame() {},
         terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
+        // Links and the context menu (gui-terminal-links.test.ts).
+        Menu: () => ({}), linkProvider: () => ({}), isLocalUrl: () => false, awayMachine: () => undefined, handleFor: () => undefined, browserState: () => undefined, setComposerAdd() {}, mod: "Ctrl",
     };
     // The panel, its screen (a chunk of its own, lazy there: here as it is) and what they share, as one source.
     const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");

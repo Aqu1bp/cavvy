@@ -45,6 +45,23 @@ Hooks receive the private index, including `post-commit`; staging done by `post-
 
 With authenticated GitHub CLI (`gh auth status`) and a github.com destination, the dialog offers **Open pull request**, with editable commit-derived title, description, base branch and Draft. The confirmation names the destination and base. It pushes missing commits first, reuses an existing open PR, and redacts outgoing text. If `gh` is missing or unauthenticated, **Compare on GitHub** opens a link for github.com remotes; push first to publish new commits. A PR row in Changes shows its number, title, state, check count and link. Focus and a 60-second visible-pane timer refresh it; publishing refreshes immediately. Network reads happen only when opening/using the dialog or refreshing PR state in the visible pane. Only confirmation clicks publish—there is no agent publishing tool. Busy or untrusted sessions cannot publish; repository-owned transport/helper configuration (including worktree configuration and includes) additionally requires explicit user trust. Applicable Git URL rewrites are refused, even in trusted folders: configure a literal remote URL so discovery and push agree. Changed branches or destinations require reopening the dialog, and only the confirmed commit SHA is pushed. PR lookup matches the exact head branch and repository, including numeric branch names. Git and `gh` handle credentials themselves.
 
+## Branches: fetch, pull and switch
+
+A session's title bar shows its folder's branch, with how many commits it is ahead of (↑) and behind (↓) its upstream. The counts come from the remote-tracking branch as it was last fetched, so reading them never touches the network: they're read again when a turn starts or ends, as files change, when you come back to the window, and after a Git action from the app. Nothing fetches in the background; fetching is yours to ask for.
+
+Click the branch (or press Ctrl+Shift+B, ⌘⇧B on a Mac, or **Switch branch…** in the command palette; on Home it acts on Home's folder) to open the branch dialog:
+
+- **Fetch** fetches the branch's upstream remote (or `origin`, or the only remote) and updates the counts.
+- **Pull** fetches, then fast-forwards the branch to its upstream, and only that. Up to date, it says so. If both sides have commits it says `Diverged: 2 ahead, 3 behind` and changes nothing: merge or rebase in a terminal (or ask the agent). There's no pull with rebase or merge here, since either can stop half way on a conflict. If uncommitted or untracked files would be overwritten, Git refuses and the dialog names them.
+- The list holds local branches, then remote ones not already tracked by a local branch, most recently committed first; typing filters it. Picking a local branch switches to it (`git switch`); picking a remote one switches to its local branch, or makes one tracking it. Git refuses when uncommitted changes would be overwritten, or when the branch is checked out in another worktree, and the dialog says why.
+- Typing a name no local branch has offers **Create branch** at the current commit; your uncommitted changes stay as they are.
+
+Switching, pulling and creating are refused while a session works in the folder (a turn, a question, a shell or a task), and hold its sessions while they run. All of it needs a folder you trust: Git runs the repository's configured programs (filters on checkout, for one). Git hooks don't run (`core.hooksPath=/dev/null`), as with worktrees, so a `post-checkout` or `post-merge` hook won't either.
+
+Fetching follows the same rules as publishing: the repository's own transport configuration needs explicit trust, Git runs away from the work tree, a URL rewrite (`insteadOf`) that applies to the remote is refused, it fetches the remote's one URL with the remote's own fetch refspecs (no submodules), and Git and its credential helpers handle credentials. Messages are redacted.
+
+The terminal app has no command for these; use `git` there.
+
 ## Worktrees
 
 Under the new-chat composer, click the branch to select a Git worktree. The menu refreshes each time it opens and shows branches and full paths, including detached worktrees. Selection changes the new chat's folder; existing chats keep their own folders.

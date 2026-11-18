@@ -3,7 +3,7 @@
 // the right one glass capsule of tools: the changes, the project's scripts,
 // the terminal, the side panel and the session's menu.
 
-import { createEffect, createMemo, createResource, createSignal, For, on, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, lazy, on, Show, Suspense, type JSX } from "solid-js";
 import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, Sparkles, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -11,7 +11,7 @@ import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, gitModule, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
@@ -22,6 +22,9 @@ import { keyText, shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
 import { workingBranch } from "../lib/worktree-work";
 import { besideInFront, besideReads, closePane, usePane } from "../state/split";
+
+/** The branch with its upstream counts, opening the branch dialog: a chunk of its own (GitBranches.tsx). */
+const BranchChip = lazy(() => gitModule().then((m) => ({ default: m.BranchChip })));
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; kbd?: string; run: () => void };
 
@@ -308,10 +311,15 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             when={s().workingIn}
                             fallback={
                                 <Show when={s().branch}>
-                                    <span class="br" title="Git branch">
-                                        <GitBranch size={13} />
-                                        <span class="truncate">{s().branch}</span>
-                                    </span>
+                                    {(b) => {
+                                        const plain = (
+                                            <span class="br" title="Git branch">
+                                                <GitBranch size={13} />
+                                                <span class="truncate">{b()}</span>
+                                            </span>
+                                        );
+                                        return <Suspense fallback={plain}><BranchChip handle={p.handle!} branch={b()} /></Suspense>;
+                                    }}
                                 </Show>
                             }
                         >

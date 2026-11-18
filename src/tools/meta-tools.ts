@@ -1,6 +1,7 @@
 import type { TodoItem, Tool } from "./types";
 import { MODE_INFO } from "../permissions/modes";
 import { redact } from "../util/redact";
+import { answerWithAttachments } from "../providers/files";
 import { cleanPurpose, requestSecret, secretNameError, SECRET_NAME_RULE } from "../agent/secrets";
 
 export const TodoWriteTool: Tool<{ todos: TodoItem[] }> = {
@@ -123,6 +124,13 @@ export const AskUserQuestionTool: Tool<{ question: string; options: { label: str
     title: (i) => `AskUserQuestion(${(i.question ?? "").slice(0, 60)})`,
     async run(input, ctx) {
         if (!ctx.ui.askQuestion) return { content: "The user is not available to answer questions (non-interactive session). Make a reasonable assumption and state it.", isError: true };
+        if (ctx.ui.askQuestionAttaching) {
+            const r = await ctx.ui.askQuestionAttaching(input.question, input.options ?? [], Boolean(input.multi_select), "content");
+            if (!r || (!r.answers.length && !r.attached.length)) return { content: "The user dismissed the question without answering. Proceed with your best judgment and state your assumption.", display: { summary: "Dismissed" } };
+            const { text, images } = answerWithAttachments(r.answers, r.attached);
+            const names = r.attached.map((p) => (p.type === "file" ? p.name : "image"));
+            return { content: text, ...(images.length ? { images } : {}), display: { summary: [...r.answers, ...(names.length ? [`attached ${names.join(", ")}`] : [])].join(", ") } };
+        }
         const answer = await ctx.ui.askQuestion(input.question, input.options ?? [], Boolean(input.multi_select));
         if (!answer) return { content: "The user dismissed the question without answering. Proceed with your best judgment and state your assumption.", display: { summary: "Dismissed" } };
         return { content: `The user answered: ${answer.join(", ")}`, display: { summary: answer.join(", ") } };
