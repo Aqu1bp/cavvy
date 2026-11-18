@@ -64,7 +64,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -123,6 +123,17 @@ try {
     await settle();
     assert.deepEqual(switched, [["box", undefined, "/srv/app"]], "a new session from box's goes to box");
     assert.equal(app.activeId, "b1", "the window stays on box's session until it's there");
+    // One of box's on screen but not opened here (its connection still being made, or box unreachable): Home here, in
+    // this computer's latest project, not in a folder of box's (nor the window sent to a box it may not reach).
+    upsertSession(summary("b8", { machine: "box", cwd: "/srv/other" }) as never);
+    setApp({ activeId: "b8", homeCwd: "/srv/other" });
+    newSession(app.homeCwd);
+    await settle();
+    assert.equal(switched.length, 1, "the window stays here");
+    assert.equal(app.activeId, undefined);
+    assert.equal(app.homeCwd, "/home/me/web", "in this computer's latest project");
+    await activate("b1");
+    await settle();
     // Archived while on screen: Home here, in this computer's latest project (box's folder names nothing here).
     assert.ok(await setArchived("b1", true));
     assert.equal(app.activeId, undefined);

@@ -127,7 +127,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
         noModel: () => false,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
         agentReady: async () => {},
-        ...names(["activate", "connFor", "createSession", "homeCwdAfter", "machineFor", "dropHandle", "forkMakingOf", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
+        ...names(["activate", "awayUnopened", "connFor", "createSession", "homeCwdAfter", "machineFor", "dropHandle", "forkMakingOf", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground", "serversUi"]),
     }));
     // No servers here: the window is on this computer.
     mock.module("../../gui/src/lib/platform", () => ({ ...names(["copyText", "pickFolder"]), machine: undefined }));

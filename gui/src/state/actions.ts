@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -29,6 +29,9 @@ export type { Attachment } from "../lib/attachments";
  */
 export function newSession(cwd?: string, on: { machine?: string } | undefined = machineFor(app.activeId)) {
     if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    // Another machine's session on screen but not opened here (connecting, or that machine unreachable): Home here, in
+    // this computer's latest project, not in a folder of that machine's.
+    if (!on && cwd === app.homeCwd && awayUnopened(app.activeId)) cwd = homeCwdAfter(app.activeId!);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();

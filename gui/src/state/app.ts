@@ -72,9 +72,13 @@ export function machineFor(sessionId: string | undefined): { machine?: string } 
     const on = awayMachine(sessionId);
     return on === undefined ? undefined : { machine: on || undefined };
 }
+/** Another machine's session, by its row, not opened here (its connection still being made, or that machine unreachable). */
+export function awayUnopened(id: string | undefined): boolean {
+    return id !== undefined && !awayOn.has(id) && [...app.sessions, ...app.archived].find((s) => s.id === id)?.machine !== undefined;
+}
 /** The folder Home shows once `id`, on screen, is gone: its own, unless it's another machine's (it names nothing on the window's); then the window's latest project. */
 export function homeCwdAfter(id: string): string | undefined {
-    return awayOn.has(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
+    return awayOn.has(id) || awayUnopened(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
 }
 /** A session made on another machine from one of its sessions opened here (a fork, a plan carried out): on there too. */
 export function sameMachine(from: string, made: string) {
