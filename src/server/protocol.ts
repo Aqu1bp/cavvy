@@ -972,6 +972,8 @@ export interface SessionSummary {
     settled: boolean;
     /** Snoozed: out of the list until then (or until it needs you), under Snoozed. */
     snoozedUntil?: number;
+    /** Its last turn didn't finish: stopped, or cut off when Cavvy quit or stopped while it worked. */
+    stopped?: true;
     /** It woke from a snooze and hasn't been opened since. */
     woke?: true;
     /** Never settled by itself (Settings → General, "Settle idle sessions after"). */

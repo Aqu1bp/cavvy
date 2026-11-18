@@ -163,7 +163,7 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = s.making ? "forking" : sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? (s.stopped ? "stopped, unread" : "unread") : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
@@ -184,14 +184,15 @@ function RowLead(p: { s: SessionSummary; picked?: boolean }) {
 
 /**
  * The end of a row, one thing: how it's doing when that's news ("Working 8m", "Done" when it finished and you haven't
- * looked, "Stopped" on an error), otherwise when it last moved ("2m", "1h", "3d"), amber while it waits on you.
+ * looked, "Stopped" on an error or when its turn didn't finish: stopped, or cut off by quitting), otherwise when it last
+ * moved ("2m", "1h", "3d"), amber while it waits on you.
  */
 function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     // Set again only when it changes, not at each tick of the clock it's worked out from.
     const word = createMemo(() =>
-        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : p.s.woke ? "Woke" : undefined,
+        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? (p.s.stopped ? "Stopped" : "Done") : p.s.woke ? "Woke" : undefined,
     );
-    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
+    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" || word() === "Stopped" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
     // Snoozed: when it wakes.
     return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
