@@ -5,6 +5,7 @@ import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
+import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -26,6 +27,7 @@ function changedLabel(t: RewindTargetInfo): string {
 async function undoRestore(sid: string, undo: string): Promise<boolean> {
     try {
         const r = await rpc.call("session.rewindUndo", { id: sid, undo });
+        refreshGitChanges();
         for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
         if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
         return true;
@@ -125,6 +127,8 @@ export function RewindDialog() {
         setBusy(true);
         try {
             const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
+            // The files moved under every view of them: the changes chip and pane read them again.
+            if (code) refreshGitChanges();
             if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text, images: r.images, files: r.files });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
             const message = code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation && !r.failed.length ? " and the conversation" : ""}` : "Rewound the conversation";
