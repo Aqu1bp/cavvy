@@ -508,7 +508,7 @@ export class MachineWatch {
                 }
                 // A server older than the mode it decides lent calls under: it may have let one through that this
                 // machine's own mode would ask about.
-                if (typeof ev.mode !== "string") return answer({ text: `Cavvy on ${this.name} is too old to run this on the user's Mac. Ask the user to update it from the Cavvy app on their Mac: its list of machines (This Mac ▾ on a new session) has an update button for ${this.name}.`, isError: true });
+                if (typeof ev.mode !== "string") return answer({ text: `Cavvy on ${this.name} is too old to run this on the user's Mac. Ask the user to update it from the Cavvy app on their Mac: on a new session, the list of machines has an update button next to ${this.name}.`, isError: true });
                 // Decided there under another default mode than this machine's now (changed in the terminal's /config, or
                 // the call was on its way when it changed): decided again there, under this one.
                 const mode = (this.o.lendMode?.() ?? "default");
