@@ -100,12 +100,15 @@ export function CommandPalette() {
                         (rest) => rpc.call("sessions.search", { query, limit: MAX_HITS, ...(rest ? { rest } : {}) }),
                         () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
+                            // A message is selected: every message stays in sight, so later hits that join them
+                            // (a slow server's) can't push it out from under the selection.
+                            if (results()[sel()]?.section === "Messages") setAllMessages(true);
                             setHits({ query, hits: r.hits });
                             setOlder(r.servers ? "servers" : r.more ? "more" : r.incomplete ? "incomplete" : undefined);
                         },
                     );
                 } catch {
-                    if (mine === asked) setHits({ query: "", hits: [] });
+                    if (mine === asked) (setHits({ query: "", hits: [] }), setOlder(undefined));
                 } finally {
                     if (mine === asked) setSearching(false);
                 }
@@ -195,7 +198,7 @@ export function CommandPalette() {
         const seen = new Map<string, number>();
         const messages: Entry[] = said.hits.map((h) => {
             const sn = plainSnippet(h.snippet, h.match);
-            const at = `m-${h.machine ?? ""}-${h.id}-${h.seg}-${h.index}`;
+            const at = `m-${JSON.stringify([h.machine ?? "", h.id, h.seg, h.index])}`;
             const nth = seen.get(at) ?? 0;
             seen.set(at, nth + 1);
             return {

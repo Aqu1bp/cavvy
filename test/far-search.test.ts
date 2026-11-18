@@ -96,7 +96,9 @@ test("the palette shows this machine's hits while the servers answer, then asks 
 test("a message hit keeps its name when later hits move it, so the selection stays on it", async () => {
     const src = await Bun.file(new URL("../gui/src/components/CommandPalette.tsx", import.meta.url)).text();
     // By its machine, session and place in it; several in one message by their order there. Not by its row.
-    expect(src).toContain("const at = `m-${h.machine ?? \"\"}-${h.id}-${h.seg}-${h.index}`;");
+    expect(src).toContain("const at = `m-${JSON.stringify([h.machine ?? \"\", h.id, h.seg, h.index])}`;");
+    // And a selected message isn't folded away by hits that join it.
+    expect(src).toContain('if (results()[sel()]?.section === "Messages") setAllMessages(true);');
     expect(src).toContain("id: `${at}-${nth}`,");
     expect(src).not.toContain("-${h.index}-${i}`");
     const { keepSelection } = await import("../gui/src/lib/palette-order");
