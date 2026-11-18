@@ -17,14 +17,20 @@ export function RecentlyDeleted() {
     const [busy, setBusy] = createSignal<string>();
     const [restored, setRestored] = createSignal<ReadonlySet<string>>(new Set());
     const close = () => setDeletedOpen(false);
+    /** Each opening asks for its own lists; the servers' are still on their way (nothing's said to be empty meanwhile). */
+    let opened = 0;
+    const [more, setMore] = createSignal(false);
     createEffect(
         on(deletedOpen, (open) => {
             if (!open) return;
             setList(undefined);
             setRestored(new Set<string>());
-            rpc.call("sessions.trash", {}).then(setList, (e) => (setList([]), reportError(e)));
+            const opening = ++opened;
+            const mine = () => opening === opened && deletedOpen();
+            setMore(true);
+            rpc.call("sessions.trash", {}).then((here) => mine() && setList((l) => [...here, ...(l ?? [])].sort((a, b) => b.deletedAt - a.deletedAt)), (e) => mine() && (setList((l) => l ?? []), reportError(e)));
             // The servers' follow this machine's own: one that's slow doesn't hold the list.
-            rpc.call("sessions.trash", { servers: true }).then((there) => there.length && deletedOpen() && setList((l) => [...(l ?? []), ...there].sort((a, b) => b.deletedAt - a.deletedAt)), () => undefined);
+            rpc.call("sessions.trash", { servers: true }).then((there) => mine() && (setMore(false), there.length && setList((l) => [...(l ?? []), ...there].sort((a, b) => b.deletedAt - a.deletedAt))), () => mine() && setMore(false));
         }),
     );
     const restore = async (id: string, on?: string) => {
@@ -41,7 +47,7 @@ export function RecentlyDeleted() {
     };
     return (
         <Dialog open={deletedOpen()} onClose={close} title="Recently deleted" subtitle="Deleted sessions are kept for 7 days." width={480} class="deleted-dialog">
-            <Show when={list()} fallback={<div class="deleted-empty"><Spinner /></div>}>
+            <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="deleted-empty"><Spinner /></div>}>
                 {(items) => (
                     <Show when={items().length} fallback={<div class="deleted-empty">Nothing deleted in the past week.</div>}>
                         <ul class="deleted-list">

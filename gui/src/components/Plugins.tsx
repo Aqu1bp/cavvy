@@ -4,7 +4,7 @@
 // Marketplaces is where catalogs are added. Every change goes through the server, which reloads each open
 // folder's settings, commands and MCP servers.
 
-import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on as when, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
 import { app, awayMachine, awayUnopened, reportError, rpc as own, rpcFor, toast } from "../state/app";
@@ -99,14 +99,29 @@ export function Plugins() {
         if (app.activeId && awayUnopened(app.activeId)) throw new Error("Still connecting to that session's machine. Try again in a moment.");
         return rpcFor(app.activeId);
     };
-    const on = () => awayMachine(app.activeId);
+    /** Where the rows shown came from (the connection, the folder, the machine's name): what's done to one is done there. */
+    let shown: { link: ReturnType<typeof rpcFor>; cwd?: string } | undefined;
+    const [on, setOn] = createSignal<string>();
+    let asked = 0;
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
+        const mine = ++asked;
         try {
-            setInfo(await link().call("plugins.list", { cwd: cwd() }));
+            const from = { link: link(), cwd: cwd() };
+            const at = awayMachine(app.activeId);
+            const got = await from.link.call("plugins.list", { cwd: from.cwd });
+            // Another folder or machine came into view meanwhile: its own list is on its way.
+            if (mine !== asked) return;
+            shown = from;
+            setOn(at);
+            setInfo(got);
         } catch (e) {
+            if (mine !== asked) return;
+            // Nothing shown is another machine's: the rows of the one before go.
+            shown = undefined;
+            setInfo(undefined);
             reportError(e);
         } finally {
             setLoading(false);
@@ -120,12 +135,17 @@ export function Plugins() {
         });
     });
 
+    // The session in view changes under Settings (its shortcuts work here): the list is that folder's, on its machine.
+    createEffect(when(() => [app.activeId, app.homeCwd], () => void load(), { defer: true }));
+
     const act: Act = async (key, params, done) => {
-        if (busy()) return;
+        const from = shown;
+        if (busy() || !from) return;
         setBusy(key);
         try {
-            const r = await link().call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
-            setInfo(r);
+            const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);
+            // Still the list it was done from.
+            if (shown === from) setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
         } catch (e) {
