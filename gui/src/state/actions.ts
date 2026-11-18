@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -81,7 +81,8 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            requestTrust(cwd, () => void continueCliSession(cwd, s), undefined, undefined, rpcFor(undefined));
+            // Imported over the window's own connection (importCliSession): trusted there.
+            requestTrust(cwd, () => void continueCliSession(cwd, s), undefined, undefined, rpc);
             return false;
         }
         reportError(e);
@@ -326,12 +327,14 @@ function agentTrustReason(message: string): string {
 }
 
 async function createIn(cwd: string) {
+    // The machine it's made on, as it is now: the user may go elsewhere before it answers.
+    const link = rpcFor(undefined);
     try {
         return await createSession(cwd, homeModeOf());
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
-            requestTrust(cwd, requestComposerFocus, undefined, undefined, rpcFor(undefined));
+            requestTrust(cwd, requestComposerFocus, undefined, undefined, link);
             return undefined;
         }
         throw e;
@@ -672,7 +675,8 @@ export async function archive(id: string, archived: boolean) {
             const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
             // On another machine: removing a worktree asks about folders there, which a window on that machine does.
             // From here it's kept, and said to be.
-            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this computer"}.`);
+            const away = awayMachine(id);
+            if ((row && row.machine !== machine) || away !== undefined) return setArchived(id, archived, `Archived. Its worktree stays on ${(row ? row.machine : away) || "this computer"}.`);
             const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;

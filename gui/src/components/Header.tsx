@@ -147,11 +147,16 @@ export const CrumbSep = () => (
 );
 
 /** Where the agent works, for the branch's hover. */
-/** The terminal command that resumes session `id`: on its server, when it runs on one (`cavvy --server`). */
-function resumeCommand(id: string): string {
+/**
+ * The terminal command that resumes session `id`: on its server, in its folder there, when it runs on one (`cavvy
+ * --server <name>:<folder>`; a session is found by its folder's project).
+ */
+function resumeCommand(id: string, cwd: string | undefined): string {
     const away = machineFor(id);
     const on = away ? away.machine : machine;
-    return on ? `cavvy --server ${on} --resume ${id}` : `cavvy --resume ${id}`;
+    if (!on) return `cavvy --resume ${id}`;
+    const quoted = `'${`${on}${cwd ? `:${cwd}` : ""}`.replace(/'/g, `'\\''`)}'`;
+    return `cavvy --server ${quoted} --resume ${id}`;
 }
 
 function workingTitle(w: WorkingIn, s: SessionState): string {
@@ -360,7 +365,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
                                 <Share size={14} /> Copy as Markdown
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id), "Copied a command that resumes this session in the terminal")}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
                             <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>
