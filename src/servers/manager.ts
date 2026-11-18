@@ -9,7 +9,7 @@
 
 import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
-import { basename, dirname, join } from "path";
+import { dirname, join, relative, sep } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
@@ -634,15 +634,18 @@ export class ServerLinks {
         for (const dir of syncedFolders()) this.watchSyncedFolder(dir);
     }
 
-    /** `dir` and what's in it; not there yet, the folder it would be made in, till it is. */
+    /** `dir` and what's in it; not there yet, the nearest folder above it that is, till the next one down is made. */
     private watchSyncedFolder(dir: string) {
         if (this.syncWatchers.has(dir) || this.stopped) return;
-        const there = existsSync(dir);
-        if (!there && !existsSync(dirname(dir))) return;
+        let at = dir;
+        while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+        const there = at === dir;
+        // The name made in `at` that leads to `dir`.
+        const next = there ? "" : relative(at, dir).split(sep)[0]!;
         try {
-            const w = watch(there ? dir : dirname(dir), { recursive: there, persistent: false }, (_e, name) => {
+            const w = watch(at, { recursive: there, persistent: false }, (_e, name) => {
                 if (there) return this.syncChanged();
-                if (String(name) !== basename(dir) || !existsSync(dir)) return;
+                if (String(name) !== next || !existsSync(join(at, next))) return;
                 this.unwatchSyncedFolder(dir, w);
                 this.watchSyncedFolder(dir);
                 this.syncChanged();

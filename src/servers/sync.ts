@@ -8,7 +8,7 @@
 // here as the copy leaves here: one named like a key, or with a key of a known format in it.
 
 import { createHash, randomUUID } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
@@ -87,9 +87,22 @@ function localPath(path: string): string | undefined {
     return r && join(r.from, path.slice(r.to.length + 1));
 }
 
+/** Not there: looked for and missing, not just out of reach. */
+function gone(path: string | undefined): boolean {
+    if (!path) return false;
+    try {
+        lstatSync(path);
+        return false;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        return code === "ENOENT" || code === "ENOTDIR";
+    }
+}
+
 /** Written in full under a name no one else uses, then put in place: never through what's at `dest` meanwhile. */
 function writeNew(dest: string, body: Buffer | string, mode: number) {
-    const tmp = `${dest}.${randomUUID()}.tmp`;
+    // Short, beside it: a long name plus a suffix could pass what the file system takes.
+    const tmp = join(dirname(dest), `.${randomUUID()}.tmp`);
     writeFileSync(tmp, body, { mode, flag: "wx" });
     try {
         renameSync(tmp, dest);
@@ -226,7 +239,7 @@ export async function syncTo(ask: (method: string, params: Record<string, unknow
     const given = theirs && typeof theirs === "object" ? (theirs as Record<string, unknown>) : {};
     const send = [...mine.values()].filter((f) => given[f.path] !== f.sha);
     // Gone here, not just left out of this scan (too many or too big, unreadable a moment): gone there.
-    const remove = Object.keys(given).filter((p) => syncablePath(p) && !mine.has(p) && !existsSync(localPath(p) ?? ""));
+    const remove = Object.keys(given).filter((p) => syncablePath(p) && !mine.has(p) && gone(localPath(p)));
     if (!send.length && !remove.length) return;
     let batch: SyncFile[] = [];
     let size = 0;

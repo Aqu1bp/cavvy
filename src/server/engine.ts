@@ -3191,10 +3191,13 @@ export class Engine {
             }
             case "sync.apply": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
-                const r = applySync(p.files, p.remove);
-                // A command added or changed is one the / menu and a sent /name know at once (skills are read again by themselves).
-                if (r.written || r.removed) for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
-                return r;
+                try {
+                    return applySync(p.files, p.remove);
+                } finally {
+                    // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
+                    // Skills are read again by themselves.
+                    for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
+                }
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.
