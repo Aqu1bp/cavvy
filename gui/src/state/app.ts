@@ -295,7 +295,7 @@ export function machineLink(on: string): Promise<Rpc> {
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
 async function linkFor(name: string | undefined): Promise<Rpc> {
     const link = await linkMade(name);
-    await opened(link);
+    await opened(link, name);
     return link;
 }
 
