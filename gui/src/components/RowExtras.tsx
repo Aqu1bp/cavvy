@@ -80,13 +80,16 @@ export async function regenerateTitle(id: string) {
     if (naming.has(id)) return;
     naming.add(id);
     const before = summary(id)?.title ?? handleFor(id)?.view.state.title;
+    let title: string;
     try {
-        await rpc.call("session.regenerateTitle", { id });
+        ({ title } = await rpc.call("session.regenerateTitle", { id }));
     } catch {
         return void toast("Couldn't regenerate the title", "warn");
     } finally {
         naming.delete(id);
     }
+    // The model came back with the title it has: nothing to undo.
+    if (title === before) return void toast("Title unchanged", "info");
     toast("Title regenerated", "info", before ? { label: "Undo", run: () => rename(id, before) } : undefined);
 }
 
