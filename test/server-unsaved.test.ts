@@ -23,7 +23,7 @@ test("server.unsaved lists the sessions whose latest work a full disk kept from 
         const rt = engine.openSession(made.meta.id);
         await rt.ready;
         const client: EngineClient = { subs: new Set(), send: () => {} };
-        expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [] });
+        expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [], working: 0 });
         const real = fs.appendFileSync;
         const spy = spyOn(fs, "appendFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, opts?: fs.WriteFileOptions) => {
             if (String(file) === rt.session.path) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
@@ -31,13 +31,38 @@ test("server.unsaved lists the sessions whose latest work a full disk kept from 
         }) as typeof fs.appendFileSync);
         try {
             rt.session.push(prompt("while full"));
-            expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [{ id: rt.id, title: "Saved so far" }] });
+            expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [{ id: rt.id, title: "Saved so far" }], working: 0 });
         } finally {
             spy.mockRestore();
         }
         // Room again: saved with the next write, and nothing's left to lose.
         rt.session.push(prompt("after"));
-        expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [] });
+        expect(await engine.handle(client, "server.unsaved", {})).toEqual({ sessions: [], working: 0 });
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("server.unsaved counts this computer's sessions that are working, for the desktop app's quit question", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    try {
+        const made = Session.create(realpathSync(tempDir("working-")));
+        made.push(prompt("first"));
+        made.release();
+        const rt = engine.openSession(made.meta.id);
+        await rt.ready;
+        const client: EngineClient = { subs: new Set(), send: () => {} };
+        expect((await engine.handle(client, "server.unsaved", {})).working).toBe(0);
+        rt.busy = true;
+        try {
+            expect((await engine.handle(client, "server.unsaved", {})).working).toBe(1);
+            // An update restarting the app asked before it began: quitting for it doesn't ask again.
+            (engine as unknown as { updates: { patch(p: object): void } }).updates.patch({ updating: { startedAt: 0, line: "", restarting: true } });
+            expect((await engine.handle(client, "server.unsaved", {})).working).toBe(0);
+        } finally {
+            rt.busy = false;
+        }
+        expect((await engine.handle(client, "server.unsaved", {})).working).toBe(0);
     } finally {
         await engine.stop();
     }
