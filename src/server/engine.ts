@@ -10,6 +10,8 @@ import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharin
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
+import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo, worktreeTop } from "./git-sync";
+import { gitPrWorktree, gitPullRequests } from "./git-pr";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
@@ -19,7 +21,7 @@ import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
@@ -112,6 +114,7 @@ import type {
     WorktreeInfo,
     PluginActionParams,
     PluginsInfo,
+    ProjectSearchResult,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listPlugins } from "../plugins/install";
@@ -121,13 +124,18 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
+import { attachmentsDir, checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
+import { sideChatCut, sideChatDir, sideChatsDir } from "../agent/side-chat";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
+import { autoSettleDays, AUTO_SETTLE_DAYS, forgetPlay, notePlay, settleable, settleDue, type SettleStore } from "./auto-settle";
+import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
 import { keepAwake } from "../agent/keep-awake";
+import { searchProject } from "./project-search";
+import { readProjectFile } from "./file-view";
 
 export interface EngineOptions {
     /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
@@ -161,6 +169,8 @@ export interface EngineOptions {
      * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
      */
     working?: string;
+    /** The clock snoozes wake by (tests). */
+    now?: () => number;
 }
 
 /**
@@ -223,7 +233,7 @@ export interface EngineClient {
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
 
-interface GuiStore {
+interface GuiStore extends SnoozeStore, SettleStore {
     recent?: { path: string; at: number }[];
     pinned?: string[];
     archived?: string[];
@@ -248,11 +258,11 @@ function runOutcome(rt: Runtime): RunOutcome {
 }
 
 /** The store's lists as sets, for asking about many sessions at once. */
-type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember> };
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember>; woke: Set<string>; snoozed: Record<string, SnoozeEntry>; neverSettle: Set<string> };
 let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
 function storeLists(store: GuiStore): StoreLists {
     // The store read is frozen and kept until the file changes: so are these.
-    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store) } };
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store), woke: new Set(store.woke ?? []), snoozed: store.snoozed ?? {}, neverSettle: new Set(store.neverSettle ?? []) } };
     return listsOf.lists;
 }
 
@@ -276,6 +286,17 @@ function updateStore(fn: (s: GuiStore) => void): boolean {
         return false;
     }
 }
+
+/** A row's snooze (snooze.ts): when it wakes, or that it woke and hasn't been opened since. */
+function snoozeOf(id: string, lists: StoreLists): Pick<SessionSummary, "snoozedUntil" | "woke" | "neverSettle"> {
+    const until = lists.snoozed[id]?.until;
+    return { ...(until !== undefined ? { snoozedUntil: until } : {}), ...(lists.woke.has(id) ? { woke: true as const } : {}), ...(lists.neverSettle.has(id) ? { neverSettle: true as const } : {}) };
+}
+
+/** How often a far-off wake is checked again: a laptop's sleep holds timers back (snooze.ts Alarm). */
+const ALARM_MAX_MS = 10 * 60_000;
+/** The same with nothing snoozed, only sessions to settle (by the day). */
+const SETTLE_CHECK_MS = 6 * 3600_000;
 
 // ---------------------------------------------------------------------------
 
@@ -430,12 +451,19 @@ export class Engine {
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
     private homeFiles = new Map<string, FileIndex>();
+    /** Each window's Search in project under way: a newer one (or the window going) stops it. */
+    private fileSearches = new Map<EngineClient, AbortController>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
     private implementing = new Set<string>();
     private archiving = new Set<string>();
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** Wakes snoozed sessions: the one timer, set for the next one due (snooze.ts). */
+    private readonly alarm = new Alarm({ now: () => this.now(), fire: () => this.sweep(), maxDelayMs: ALARM_MAX_MS });
+    private now(): number {
+        return this.o.now?.() ?? Date.now();
+    }
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
@@ -468,7 +496,11 @@ export class Engine {
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
+        // Side chats left by a server that stopped: discarded with it.
+        rmSync(sideChatsDir(), { recursive: true, force: true });
         purgeTrash();
+        // Snoozes that ran out while Cavvy was closed wake now.
+        this.sweep();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
     }
@@ -522,8 +554,12 @@ export class Engine {
             this.turnsRunning.add(rt.id);
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;
-        } else this.idleNow(rt.id);
-        if (!this.working || this.stopping) return;
+        } else {
+            this.idleNow(rt.id);
+            this.wakeEarly(rt.id, "turn");
+        }
+        // A side chat isn't carried on after a restart: it's gone with the server.
+        if (!this.working || this.stopping || rt.side) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
     }
@@ -569,6 +605,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.alarm.stop();
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
         this.updates.stop();
@@ -661,6 +698,11 @@ export class Engine {
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
+        // A side chat is shown in its parent's panel: its tab says it's waiting, not a notification.
+        if (rt.side) return this.sessionChanged(rt);
+        // Asking, or stopped by a failure: a snoozed session wakes for it. Finishing wakes only the turn it was
+        // snoozed in (turnRunning).
+        if (kind !== "done") this.wakeEarly(rt.id, "asks");
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
@@ -676,6 +718,8 @@ export class Engine {
         keepAwake.set(rt, rt.status === "running");
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
+        // A side chat isn't listed: its parent's tab shows how it is.
+        if (rt.side) return this.runtimes.get(rt.side.of)?.sideChatChanged(rt.id, rt.status);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
         if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
@@ -1002,6 +1046,7 @@ export class Engine {
             model: rt.session.model,
             live: true,
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
+            ...snoozeOf(rt.id, lists),
         };
     }
 
@@ -1012,10 +1057,10 @@ export class Engine {
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1096,8 +1141,9 @@ export class Engine {
     /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
     peerHost(): PeerHost {
         return {
-            live: () => this.runtimes.values(),
-            get: (id) => this.runtimes.get(id),
+            // Side chats aren't sessions other agents reach.
+            live: () => [...this.runtimes.values()].filter((rt) => !rt.side),
+            get: (id) => (this.runtimes.get(id)?.side ? undefined : this.runtimes.get(id)),
             open: async (id) => {
                 if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
                 while (this.closing.has(id)) await this.afterClosing(id);
@@ -1207,6 +1253,63 @@ export class Engine {
         rt.forkedFrom(notes);
         this.sessionChanged(rt);
         return rt;
+    }
+
+    /**
+     * The session's side chat (src/agent/side-chat.ts), opened now if it has none, with `text` sent to it. It's given
+     * the session's conversation as it is now (a turn under way, up to its last step), works in its folder with its
+     * model, accounts and speed, read-only (plan mode), and isn't listed.
+     */
+    async openSideChat(parent: Runtime, text?: string): Promise<Runtime> {
+        if (parent.side) throw new RpcError("A side chat can't have a side chat of its own.", "invalid");
+        if (parent.guest) throw new RpcError("This session can't have a side chat.", "invalid");
+        let rt = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (!rt) {
+            // Read for it if the parent doesn't hold them (a long agent CLI session), and let go of again there: the side
+            // chat holds the one copy. Otherwise the parent's own, shared.
+            const held = !parent.session.historyDigest;
+            const all = parent.session.messages;
+            const context = all.slice(0, sideChatCut(all));
+            // Once what reading them left for this task is gone (Session.readMessages), and not while it works (as Runtime).
+            if (!held) queueMicrotask(() => !parent.busy && parent.session.letGoOfMessages());
+            const id = newSessionId();
+            const dir = sideChatDir(id);
+            mkdirSync(dir, { recursive: true, mode: 0o700 });
+            const session = new Session({ id, cwd: parent.session.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: parent.session.meta.system }, { file: join(dir, `${id}.jsonl`) });
+            for (const provider of ["claude-code", "codex"]) session.setAccount(provider, parent.session.accountId(provider));
+            if (parent.model) session.setModel(modelRef(parent.model));
+            if (parent.session.fastMode !== undefined) session.setFastMode(parent.session.fastMode);
+            if (parent.session.workdir) session.setWorkdir(parent.session.workdir);
+            session.setTitle("Side chat");
+            try {
+                rt = new Runtime(this, parent.ws, session, { mode: "plan", resumed: false, side: { of: parent.id, context } });
+            } catch (e) {
+                session.release();
+                rmSync(dir, { recursive: true, force: true });
+                throw e;
+            }
+            this.runtimes.set(id, rt);
+            await rt.ready.catch(() => undefined);
+            if (parent.effort) rt.setEffort(parent.effort);
+            parent.sideChatChanged(id, rt.status);
+        }
+        if (text?.trim()) await rt.send(text.trim());
+        return rt;
+    }
+
+    /** A side chat closed: its turn stopped, its runtime let go of, its files removed. Its parent's tab goes. */
+    async discardSideChat(rt: Runtime): Promise<void> {
+        if (!rt.side) return;
+        const parent = this.runtimes.get(rt.side.of);
+        if (parent?.sideChat === rt.id) parent.sideChatChanged(undefined);
+        for (const c of this.clients) if (c.subs.delete(rt.id)) c.send({ type: "sessions.remove", id: rt.id });
+        if (this.runtimes.get(rt.id) === rt) {
+            rt.interrupt();
+            await this.unload(rt);
+        }
+        rmSync(sideChatDir(rt.id), { recursive: true, force: true });
+        // What was attached to its messages, saved in the project.
+        rmSync(join(attachmentsDir(rt.ws.cwd), rt.id), { recursive: true, force: true });
     }
 
     /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Cavvy. */
@@ -1349,6 +1452,9 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // A side chat stays as long as its parent is open (its panel shows it again), and goes with it.
+        if (rt.side && this.runtimes.has(rt.side.of)) return;
+        if (rt.side) return void this.discardSideChat(rt);
         // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
         // while a window shows its simulator.
         if (rt.guest && rt.simulator.watched) return this.guestLater(rt);
@@ -1362,6 +1468,9 @@ export class Engine {
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
         if (rt.guest) this.guestGone(rt);
+        // Its side chat goes with it.
+        const side = rt.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
+        if (side) void this.discardSideChat(side);
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -1409,6 +1518,8 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        this.fileSearches.get(client)?.abort();
+        this.fileSearches.delete(client);
         for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
@@ -1507,6 +1618,8 @@ export class Engine {
         for (const c of this.clients) c.subs.delete(id);
         updateStore((s) => {
             for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
+            forget(s, id);
+            forgetPlay(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
     }
@@ -1525,11 +1638,156 @@ export class Engine {
             if (on) list.add(id);
             else list.delete(id);
             s[key] = [...list];
+            // Archived, it's out of the list: a snooze has nothing left to bring back.
+            if (key === "archived" && on) forget(s, id);
+            // Brought back by hand: it isn't settled again by itself until it's been idle the setting's days from now.
+            if ((key === "settled" || key === "archived") && !on) notePlay(s, id, this.now());
         });
+        // Archived, its side chat goes.
+        const parent = key === "archived" && on ? this.runtimes.get(id) : undefined;
+        const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (side) void this.discardSideChat(side);
+        this.upsertRow(id, { [key]: on });
+    }
+
+    /** Every window hears how a session's row is now. */
+    private upsertRow(id: string, over?: Partial<SessionSummary>, known?: SessionSummary) {
         const rt = this.runtimes.get(id);
+        // A side chat has no row.
+        if (rt?.side) return;
         // One that isn't open is read from its file, in whichever list its flags now put it.
-        const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
-        if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+        const summary = rt ? this.summaryOf(rt) : (known ?? this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
+        if (!summary) return;
+        const session = { ...summary, ...over };
+        // What sessionChanged next compares with: it's what the windows have now.
+        if (rt) this.summarySent.set(id, JSON.stringify(session));
+        this.broadcast({ type: "sessions.upsert", session });
+    }
+
+    // -----------------------------------------------------------------------
+    // Snoozing (snooze.ts)
+
+    /** Snoozed until `until`, or (null) woken now by the user's hand. */
+    private snooze(id: string, until: unknown) {
+        if (until === null) {
+            if (!readStore().snoozed?.[id]) return;
+            this.wake(id, false);
+            return;
+        }
+        const at = checkSnoozeUntil(until, this.now());
+        if (at === undefined) throw new RpcError("Choose a time in the next year.", "invalid");
+        const rt = this.runtimes.get(id);
+        if (rt?.status === "waiting") throw new RpcError("This session is waiting for you. Answer it first.", "busy");
+        if (!rt && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            woken(s, id, false);
+            s.snoozed = { ...s.snoozed, [id]: { until: at, ...(rt?.busy ? { turn: true as const } : {}) } };
+        });
+        this.upsertRow(id);
+        this.alarm.arm(nextWake(readStore()));
+    }
+
+    /**
+     * Back in the list: by itself (its time, or it needs you: its row says it woke until it's opened, unless a window
+     * shows it now), or by the user's hand. Waking by itself, a settled one is back in play: it's come back to be looked at.
+     */
+    private wake(id: string, self: boolean) {
+        const mark = self && ![...this.clients].some((c) => c.shown === id);
+        updateStore((s) => {
+            woken(s, id, mark);
+            if (self && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
+            notePlay(s, id, this.now());
+        });
+        this.upsertRow(id);
+        this.alarm.arm(nextWake(readStore()));
+    }
+
+    /** It needs you (`why`), or the turn it was snoozed in ended: a snoozed session wakes early. */
+    private wakeEarly(id: string, why: "asks" | "turn") {
+        const e = readStore().snoozed?.[id];
+        if (e && (why === "asks" || e.turn)) this.wake(id, true);
+    }
+
+    /** Wakes what's due, and sets the timer for the next. */
+    private sweep() {
+        if (this.stopping) return;
+        for (const id of dueWakes(readStore(), this.now())) this.wake(id, true);
+        const settle = this.autoSettle();
+        const wake = nextWake(readStore());
+        const next = wake === undefined ? settle : settle === undefined ? wake : Math.min(wake, settle);
+        // Settling is by the day: with nothing snoozed, the timer can wait hours.
+        this.alarm.arm(next, wake === undefined ? SETTLE_CHECK_MS : undefined);
+    }
+
+    /** The setting's days (0: off), from the user's settings on this machine. */
+    private autoSettleDays(): number {
+        return autoSettleDays(loadScope("user", this.o.startCwd ?? homedir()).autoSettleDays);
+    }
+
+    /** Settles the sessions idle the setting's days, at once and in one write; when the next will be due. */
+    private autoSettle(): number | undefined {
+        const days = this.autoSettleDays();
+        if (!days) return undefined;
+        const store = readStore();
+        const shown = new Set([...this.clients].map((c) => c.shown));
+        const list = this.listSessions(1000);
+        const { due, next } = settleDue(
+            list.map((s) => {
+                const rt = this.runtimes.get(s.id);
+                return { ...s, busy: rt ? !rt.idle : false, shown: shown.has(s.id) };
+            }),
+            store,
+            days,
+            this.now(),
+        );
+        if (!due.length) return next;
+        const settled = new Set(due);
+        if (!updateStore((s) => (s.settled = [...new Set([...(s.settled ?? []), ...due])]))) return next;
+        this.log(`Settled ${due.length} session${due.length === 1 ? "" : "s"} idle ${days} days or more`);
+        for (const s of list) if (settled.has(s.id)) this.upsertRow(s.id, { settled: true }, s);
+        return next;
+    }
+
+    /**
+     * Its pull request is known merged or closed (its PR row, read as it's shown): with auto-settle on, it's settled,
+     * once. Not one working or waiting, pinned, snoozed or kept in play.
+     */
+    prEnded(rt: Runtime) {
+        const store = readStore();
+        if (!this.autoSettleDays() || store.prSettled?.includes(rt.id)) return;
+        const s = this.summaryOf(rt);
+        if (!settleable({ ...s, busy: !rt.idle }, store)) return;
+        updateStore((x) => {
+            x.settled = [...new Set([...(x.settled ?? []), rt.id])];
+            x.prSettled = [...(x.prSettled ?? []), rt.id].slice(-500);
+        });
+        this.upsertRow(rt.id, { settled: true });
+    }
+
+    /** A new title from the conversation so far. One that isn't open is opened for it, and closed again after. */
+    private async regenerateTitle(id: string): Promise<string> {
+        while (this.closing.has(id)) await this.afterClosing(id);
+        const opened = !this.runtimes.has(id);
+        const rt = this.openSession(id);
+        try {
+            return await rt.regenerateTitle();
+        } finally {
+            if (opened) this.unloadLater(id);
+        }
+    }
+
+    /** Never settled by itself (`on`), or as any other again. */
+    private neverSettle(id: string, on: boolean) {
+        if (!this.runtimes.has(id) && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            const list = new Set(s.neverSettle ?? []);
+            if (on) list.add(id);
+            else list.delete(id);
+            s.neverSettle = [...list];
+            if (!on) notePlay(s, id, this.now());
+        });
+        this.upsertRow(id);
+        if (!on) this.sweep();
     }
 
     // -----------------------------------------------------------------------
@@ -1655,6 +1913,45 @@ export class Engine {
             return { path: made.path, branch: made.branch, sessionId: next.id };
         } finally {
             this.implementing.delete(rt.id);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // A folder's branch: fetch, pull, switch, create (git-sync.ts)
+
+    /** Folders with a fetch, pull or switch under way (their work tree's top). */
+    private gitBusy = new Set<string>();
+
+    private gitFolder(v: unknown): string {
+        const cwd = resolve(expandHome(text(v, "cwd", 4096)));
+        if (!isDir(cwd)) throw new RpcError(`${cwd} isn't a folder.`, "not_found");
+        return cwd;
+    }
+
+    /**
+     * One at a time per work tree, in a folder the user trusts (git runs the repository's configured programs).
+     * `changes`: it moves HEAD or the files, so it's refused while a session there works, and holds those sessions
+     * (no turn starts) until it's done.
+     */
+    private async gitAction<T>(v: unknown, changes: boolean, work: (cwd: string) => Promise<T>): Promise<T> {
+        const cwd = this.gitFolder(v);
+        if (!isTrusted(cwd)) throw new RpcError("Trust this folder first: Git runs the repository's configured programs.", "needs_trust", cwd);
+        const top = await worktreeTop(cwd);
+        if (this.gitBusy.has(top)) throw new RpcError("Another Git action is running in this folder.", "busy");
+        // Worktrees Cavvy keeps inside this one are folders of their own.
+        const nested = within(join(top, ".claude", "worktrees"));
+        const here = [...this.runtimes.values()].filter((rt) => rt.folders.some((f) => within(top)(f) && !nested(f)));
+        this.gitBusy.add(top);
+        try {
+            if (changes) {
+                for (const rt of here) if (await rt.workingForGit()) throw new RpcError("A session is working in this folder. Wait for it to finish, or stop it.", "busy");
+                const done = work(cwd);
+                await Promise.all(here.map((rt) => rt.holdForGit(done).catch(() => undefined)));
+                return await done;
+            }
+            return await work(cwd);
+        } finally {
+            this.gitBusy.delete(top);
         }
     }
 
@@ -2288,6 +2585,7 @@ export class Engine {
             bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
+            autoSettleDays: autoSettleDays(s.autoSettleDays),
             keepAwake: s.keepAwake !== false,
             ...(keepAwake.available() ? {} : { keepAwakeUnavailable: true }),
         };
@@ -2329,10 +2627,16 @@ export class Engine {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
                 s.editor = patch.editor || undefined;
             }
+            if ("autoSettleDays" in patch) {
+                if (!AUTO_SETTLE_DAYS.includes(patch.autoSettleDays as (typeof AUTO_SETTLE_DAYS)[number])) throw new RpcError(`autoSettleDays must be one of ${AUTO_SETTLE_DAYS.join(", ")}`, "invalid");
+                s.autoSettleDays = patch.autoSettleDays;
+            }
             // On is the default: stored only when off.
             if ("keepAwake" in patch) s.keepAwake = patch.keepAwake === false ? false : undefined;
         });
         if ("keepAwake" in patch) keepAwake.refresh();
+        // Shorter, or on: what's idle that long settles now.
+        if ("autoSettleDays" in patch) this.sweep();
         this.reloadSettings();
         // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
         if ("simulator" in patch) this.serverLinks?.relend();
@@ -2459,6 +2763,43 @@ export class Engine {
         return { mediaType, data: bytes.toString("base64") };
     }
 
+    /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
+    private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
+        const { cwd } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query.slice(0, 256) : "";
+        const limit = Math.max(1, Math.min(200, Number.isInteger(p.limit) ? p.limit : 50));
+        const files = p.sessionId !== undefined ? this.runtime(p.sessionId).ws.files : this.workspaces.get(cwd)?.files;
+        if (!files) throw new RpcError("That folder isn't open in Cavvy", "not_open");
+        // Folders are in the listing too ("src/"): asked for more, so as many files are left.
+        const found = await files.searchSoon(query.trim(), limit * 2);
+        return { paths: found.filter((f) => !f.endsWith("/")).slice(0, limit) };
+    }
+
+    /** Search in project: in the session's folder, the window's last search stopped first. */
+    private async searchFiles(client: EngineClient, p: Record<string, any>): Promise<ProjectSearchResult> {
+        const { cwd } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query : "";
+        if (!query || query.length > 1000 || query.includes("\0") || query.includes("\n")) throw new RpcError("Search for 1 to 1,000 characters on one line", "invalid");
+        this.fileSearches.get(client)?.abort();
+        const ctl = new AbortController();
+        this.fileSearches.set(client, ctl);
+        let root: string;
+        try {
+            root = realpathSync(cwd);
+        } catch {
+            throw new RpcError("The session's folder is gone", "not_found");
+        }
+        try {
+            const r = await searchProject(root, { query, caseSensitive: p.caseSensitive === true, wholeWord: p.wholeWord === true, regex: p.regex === true }, ctl.signal);
+            return ctl.signal.aborted ? { ...r, cancelled: true } : r;
+        } catch (e) {
+            if (ctl.signal.aborted) return { files: [], matches: 0, truncated: false, via: "js", cancelled: true };
+            throw new RpcError(e instanceof Error ? e.message : String(e), "invalid");
+        } finally {
+            if (this.fileSearches.get(client) === ctl) this.fileSearches.delete(client);
+        }
+    }
+
     private async commandProvider(cwd: string): Promise<string | undefined> {
         const usable = async (ref: string | undefined) => {
             const model = ref && resolveModelInfo(ref);
@@ -2501,6 +2842,7 @@ export class Engine {
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
+            { name: "btw", description: "Ask about this session in a side chat, without adding to it", args: "<question>", noAttachments: true },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all> | restart]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
@@ -2646,6 +2988,8 @@ export class Engine {
             case "browser.choose":
                 await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined, typeof p.list === "number" ? p.list : undefined));
                 return null;
+            case "browser.find":
+                return await browserCall(() => this.runtime(p.id).browser.find(str(p.query, "query"), typeof p.step === "number" ? p.step : 0, typeof p.tab === "number" ? p.tab : undefined));
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
                 await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
@@ -2740,6 +3084,8 @@ export class Engine {
                 return { created: ensureKeybindingsFile(path), path };
             }
             case "sessions.list":
+                // The timer held back by a laptop's sleep: what's due wakes before it's listed.
+                if (this.alarm.due()) this.sweep();
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash":
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
@@ -2769,8 +3115,8 @@ export class Engine {
                     await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
                     clearTimeout(timer);
                 }
-                // Search can open a session beyond the sidebar list window.
-                client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
+                // Search can open a session beyond the sidebar list window. A side chat isn't listed.
+                if (!rt.side) client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
                 // Open in this window before its connection dropped: only what it missed, when that's all still here.
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
@@ -2845,8 +3191,24 @@ export class Engine {
                 this.unloadIfUnused(id);
                 return null;
             }
+            case "session.sideChat": {
+                const rt = await this.openSideChat(this.runtime(p.id), typeof p.text === "string" ? p.text : undefined);
+                return { id: rt.id };
+            }
+            case "session.closeSideChat": {
+                const parent = this.runtimes.get(str(p.id, "id"));
+                const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+                if (side) await this.discardSideChat(side);
+                return null;
+            }
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
+                // Opened: it no longer says it woke.
+                if (client.shown && readStore().woke?.includes(client.shown)) {
+                    const id = client.shown;
+                    updateStore((s) => forget(s, id));
+                    this.upsertRow(id);
+                }
                 const rt = client.shown ? this.runtimes.get(client.shown) : undefined;
                 rt?.flush();
                 // On screen, it's likely to be sent to: its folder's first snapshot taken now, not as the prompt waits.
@@ -2863,10 +3225,14 @@ export class Engine {
                 checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
-                if ((readStore().settled ?? []).includes(rt.id)) {
+                // Snoozed, the same: it's being worked with now.
+                const store = readStore();
+                if ((store.settled ?? []).includes(rt.id) || store.snoozed?.[rt.id] || store.woke?.includes(rt.id)) {
                     updateStore((s) => {
                         s.settled = (s.settled ?? []).filter((x) => x !== rt.id);
+                        forget(s, rt.id);
                     });
+                    if (store.snoozed?.[rt.id]) this.alarm.arm(nextWake(readStore()));
                     this.sessionChanged(rt);
                 }
                 if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
@@ -3083,6 +3449,14 @@ export class Engine {
                 this.setFlag(id, key, on);
                 return null;
             }
+            case "session.snooze":
+                this.snooze(checkId(p.id), p.until);
+                return null;
+            case "session.regenerateTitle":
+                return { title: await this.regenerateTitle(checkId(p.id)) };
+            case "session.neverSettle":
+                this.neverSettle(checkId(p.id), p.on === true);
+                return null;
             case "session.archiveOffer":
                 return await this.archiveOffer(client, text(p.id, "id", 200));
             case "session.planInfo":
@@ -3106,6 +3480,8 @@ export class Engine {
                 } : undefined);
                 const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
+                    // Brought back: not settled by itself straight away for having been idle.
+                    notePlay(s, id, this.now());
                 });
                 // In whichever list it's in: without its flags saved, it's back as an active one.
                 const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
@@ -3362,6 +3738,28 @@ export class Engine {
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
+            case "git.sync":
+                return await gitSyncInfo(this.gitFolder(p.cwd));
+            case "git.branches":
+                return await gitBranches(this.gitFolder(p.cwd));
+            case "git.fetch":
+                return await this.gitAction(p.cwd, false, (cwd) => gitFetch(cwd));
+            case "git.pull":
+                return await this.gitAction(p.cwd, true, (cwd) => gitPull(cwd));
+            case "git.switch": {
+                const branch = text(p.branch, "branch", 400);
+                return await this.gitAction(p.cwd, true, (cwd) => gitSwitch(cwd, { branch, remote: p.remote === true }));
+            }
+            case "git.createBranch": {
+                const name = text(p.name, "name", 200);
+                return await this.gitAction(p.cwd, true, (cwd) => gitCreateBranch(cwd, name));
+            }
+            case "git.pullRequests":
+                return await gitPullRequests(this.gitFolder(p.cwd));
+            case "git.prWorktree": {
+                const pr = text(p.pr, "pr", 400);
+                return await this.gitAction(p.cwd, false, (cwd) => gitPrWorktree(cwd, pr, this.o.log));
+            }
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
             case "projects.createWorktree": {
@@ -3428,6 +3826,18 @@ export class Engine {
                 return this.pathsExist(p);
             case "fs.image":
                 return this.readImage(p);
+            case "fs.files":
+                return this.findFiles(p);
+            case "fs.search":
+                return this.searchFiles(client, p);
+            case "fs.searchCancel":
+                this.fileSearches.get(client)?.abort();
+                this.fileSearches.delete(client);
+                return null;
+            case "fs.read": {
+                const { cwd, roots } = this.openScope(p);
+                return readProjectFile(checkPathInput(p.path), cwd, roots);
+            }
             case "commands.list": {
                 const cwd = resolve(expandHome(str(p.cwd, "cwd")));
                 const provider = optStr(p.provider) ?? await this.commandProvider(cwd);

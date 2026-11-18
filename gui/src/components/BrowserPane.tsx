@@ -14,6 +14,8 @@ import type { Follow } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
+import { pageTarget, type PageView } from "../lib/browser-view";
+import { paneTools, savedView } from "./BrowserTools";
 
 /**
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
@@ -56,11 +58,16 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const [hasPicture, setHasPicture] = createSignal(false);
     const [dialogText, setDialogText] = createSignal("");
     const [visible, setVisible] = createSignal(document.visibilityState === "visible");
+    /** A device size or zoom picked in the pane's menu (BrowserTools.tsx); none: the page fills the pane. */
+    const [view, setView] = createSignal<PageView | undefined>(savedView(id()));
+    let root: HTMLDivElement | undefined;
 
     // -----------------------------------------------------------------------
     // The page's picture
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
+    /** Where a frame is drawn: a device's page no larger than it is (at its zoom). */
+    const placed = (f: Size) => placeFrame(boxSize(), f, view()?.device ? view()!.zoom : undefined);
 
     const draw = () => {
         const ctx = canvas?.getContext("2d");
@@ -69,7 +76,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (!bitmap || !frame) return;
-        const at = placeFrame(boxSize(), frame);
+        const at = placed(frame);
         ctx.drawImage(bitmap, at.x, at.y, at.width, at.height);
     };
 
@@ -127,7 +134,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const size = paneSize(boxSize());
         if (size.width < 1 || size.height < 1) return;
         sized = size;
-        void stream.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1 }).then((s) => adoptBrowserState(id(), s), reportError);
+        void stream.call("browser.watch", { id: id(), ...pageTarget(size, window.devicePixelRatio || 1, view()) }).then((s) => adoptBrowserState(id(), s), reportError);
     };
 
     onMount(() => {
@@ -191,6 +198,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }),
     );
 
+    // Another size or zoom from the menu: the page is asked for it, and what's drawn is placed for it.
+    createEffect(on(view, () => {
+        draw();
+        if (!native && watching()) watch();
+    }, { defer: true }));
+    const tools = paneTools({ id, native, tab, view, setView, root: () => root, address: () => address, keyboard: () => keyboard, status });
+
     // The tab's own page (BrowserHostLayer) is kept over the page box (lib/page-follow.ts, loaded here: only the
     // desktop app has such a page). What moves or hides it besides the box itself: a panel's slide beginning or
     // ending, another tab, the pane covered or uncovered.
@@ -198,9 +212,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         onMount(() => {
             let follow: Follow | undefined;
             void import("../lib/page-follow").then((m) => {
-                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide);
+                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide, () => view()?.device);
             }, reportError);
-            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching], () => follow?.kick()));
+            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching, view], () => follow?.kick()));
             onCleanup(() => follow?.stop());
         });
     }
@@ -246,7 +260,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
     const pointOf = (e: MouseEvent): Point | undefined => {
         const rect = canvas!.getBoundingClientRect();
-        return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placeFrame(boxSize(), frame), frame) : undefined;
+        return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placed(frame), frame) : undefined;
     };
 
     // Pointer moves come faster than frames: the latest goes once a frame.
@@ -347,7 +361,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
 
     return (
-        <div class="browser-pane">
+        <div class="browser-pane" ref={root}>
             <div class="br-bar">
                 <button class="hb sm" aria-label="Back" title="Back" disabled={!tab()?.canGoBack} onClick={() => command("back", { tab: tab()?.id })}>
                     <ArrowLeft size={14} />
@@ -383,6 +397,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         }}
                     />
                 </form>
+                {tools.menu()}
             </div>
             <div class="br-tabs" role="tablist" aria-label="Browser tabs">
                 <For each={state()?.tabs}>
@@ -408,6 +423,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     </span>
                 </Show>
             </div>
+            {tools.bars()}
             <div class="br-view" ref={box}>
                 <Show when={!native}>
                     <canvas

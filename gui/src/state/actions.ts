@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
+import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setInspectorPane, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -102,6 +102,16 @@ export async function openProject(path: string, home?: boolean) {
     }
 }
 
+/** The session's side chat, in the side panel (/btw); `text` asked there (it opens with it if there's none). */
+export async function openSideChat(id: string, text?: string) {
+    batch(() => {
+        setReview(undefined);
+        setInspectorPane("sidechat");
+        setPrefs("panel", true);
+    });
+    if (text?.trim()) await rpcFor(id).call("session.sideChat", { id, text }).catch(reportError);
+}
+
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
     const c = clientAction(text);
@@ -122,6 +132,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
             return true;
         case "fork":
             if (id) void fork(id);
+            return true;
+        case "sidechat":
+            if (id) void openSideChat(id, args);
             return true;
         case "mcp":
             if (id) setMcpOpen({ focus: args.trim() || undefined });
@@ -806,11 +819,12 @@ export function editorName(): string | undefined {
  * only what's inside its folders.
  */
 /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken): the server opens it, `path` unused. `editor`: "finder" reveals it. */
-export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; gitToken?: string; editor?: string } = {}) {
+/** `cwd`: a folder open in Cavvy (a terminal's) the path is in, instead of a session's. */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; cwd?: string; gitToken?: string; editor?: string } = {}) {
     const sessionId = o.sessionId ?? app.activeId;
-    if (!sessionId) return;
+    if (!sessionId && !o.cwd) return;
     try {
-        await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
+        await rpc.call("fs.open", { ...(o.cwd ? { cwd: o.cwd } : { sessionId }), ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")
