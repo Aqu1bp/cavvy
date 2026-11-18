@@ -4,10 +4,11 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, Plus, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
+import { updateServer } from "../lib/server-update";
 import { app, homeOn, reportError, rpc, setApp, toast } from "../state/app";
 import { newSession } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
@@ -206,6 +207,11 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                                 <Check size={14} />
                             </Show>
                         </button>
+                        <Show when={s.behind}>
+                            <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
+                                <CircleArrowUp size={13} />
+                            </button>
+                        </Show>
                         {/* Not the one this window is on: it's removed from another. */}
                         <Show when={machine !== s.name}>
                             <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>

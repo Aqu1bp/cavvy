@@ -456,6 +456,12 @@ function capErrors(added: number) {
     }
 }
 
+/** A note that no longer holds (what it offered is done): taken away, shown or still waiting its turn. */
+export function withdrawToast(message: string) {
+    for (let i = toastQueue.length - 1; i >= 0; i--) if (toastQueue[i]!.message === message) toastQueue.splice(i, 1);
+    for (const t of toasts.filter((t) => t.message === message && !isError(t))) dismissToast(t.id);
+}
+
 export function dismissToast(id: number) {
     clearTimeout(toastTimers.get(id)?.timer);
     toastTimers.delete(id);
