@@ -3,8 +3,11 @@
 
 import type { SessionSearchHit, SessionSearchResult } from "./protocol";
 
-/** How long a search waits for a server's answer: one slower than this is left out (the window's search asks again). */
-export const FAR_SEARCH_MS = 1_000;
+/**
+ * How long a search waits for a server's answer: its own search's time limit (search.ts, 2.5 s) and the way there and
+ * back. A server slower than that is stuck: it's left out.
+ */
+export const FAR_SEARCH_MS = 3_000;
 
 /** What a search can ask a server (servers/watch.ts MachineWatch.ask): `ms`, how long it waits. */
 export interface SearchAsk {
@@ -29,16 +32,14 @@ function isHit(h: unknown): h is SessionSearchHit {
 }
 
 /**
- * What each server found, by its name. One that answers in another shape found nothing. One that doesn't answer in
- * time found nothing yet: the search is partial, as when a server's own search ran out of time, and the window asks
- * again (a cold first search there can take longer than this waits; opening the search warms it: engine.ts).
+ * What each server found, by its name. One that doesn't answer in time, or answers in another shape, found nothing;
+ * the search is partial only when a server's own search ran out of time (asked again, it goes on from there).
  */
 export function searchServers(servers: Map<string, SearchAsk>, params: { query: string; limit: number; archived?: boolean }, ms = FAR_SEARCH_MS): Promise<{ hits: SessionSearchHit[]; partial: boolean }[]> {
     return Promise.all(
         [...servers].map(async ([name, w]) => {
-            let late = false;
-            const r = (await w.ask("sessions.search", { query: params.query, limit: params.limit, ...(params.archived === undefined ? {} : { archived: params.archived }) }, ms).catch((e) => void (late = /didn't answer/.test(String((e as Error)?.message))))) as Partial<SessionSearchResult> | undefined;
-            if (!r || typeof r !== "object" || r.stale === true || !Array.isArray(r.hits)) return { hits: [], partial: late };
+            const r = (await w.ask("sessions.search", { query: params.query, limit: params.limit, ...(params.archived === undefined ? {} : { archived: params.archived }) }, ms).catch(() => undefined)) as Partial<SessionSearchResult> | undefined;
+            if (!r || typeof r !== "object" || r.stale === true || !Array.isArray(r.hits)) return { hits: [], partial: false };
             return { hits: r.hits.filter(isHit).map((h) => ({ ...h, machine: name })), partial: r.partial === true };
         }),
     );
