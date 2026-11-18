@@ -226,8 +226,9 @@ export function isLongPaste(text: string): boolean {
     return text.length > LONG_PASTE.chars || lineCount(text) > LONG_PASTE.lines;
 }
 
-export function pastedText(text: string, list: readonly Attachment[]): Attachment {
-    const a = fromBytes("Pasted text", new TextEncoder().encode(text), true);
+/** `name`: text from elsewhere in the app (a terminal's output), attached as a file of that name rather than as the user's own words. */
+export function pastedText(text: string, list: readonly Attachment[], name?: string): Attachment {
+    const a = fromBytes(name ?? "Pasted text", new TextEncoder().encode(text), !name);
     const over = overLimits(a, list);
     return over ? { kind: "refused", name: a.name, size: a.size, reason: over } : a;
 }

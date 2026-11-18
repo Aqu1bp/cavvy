@@ -68,13 +68,16 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
             solid.createRenderEffect(() => { slot.content = node.content = resolve(value); });
         },
     };
-    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
+    // The lazy menu items (RowExtras.tsx): a stand-in that records what each menu hands it.
+    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/^const RowExtras = lazy\(.*\);\r?\n/m, "");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
+    const extras: { ids: readonly string[]; plan?: railSelect.BulkPlan; clear?: () => void }[] = [];
+    const RowExtras = Object.assign((p: (typeof extras)[number]) => (extras.push(p), null), { preload() {} });
+    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
@@ -100,7 +103,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { extras, railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -631,11 +634,11 @@ test("the selection bar and a selected row's menu act on the whole selection", (
         f.contextMenu(rowOf(f, order[1]!));
         const menu = f.menus.findLast((p) => p.open);
         expect(menu.label).toBe("Selected sessions actions");
-        const items = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
-        const labels = items.map((n) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join(""));
-        expect(labels.some((l) => l.includes("Delete") && l.includes("3 sessions"))).toBe(true);
-        items.find((n) => n.props.onClick?.toString().includes("settleSessions")).props.onClick();
-        expect(f.bulk.settle).toHaveBeenLastCalledWith(picked, true);
+        // Its items (RowExtras.tsx BulkItems) are handed the whole selection.
+        f.descendants({ content: menu.children });
+        const given = f.extras.findLast((p) => p.plan)!;
+        expect([...given.ids]).toEqual(picked);
+        expect(given.plan).toMatchObject({ settle: picked, archive: picked, delete: picked });
         // An unselected row keeps its own menu.
         f.contextMenu(rowOf(f, order[4]!));
         expect(f.menus.findLast((p) => p.open).label).toBe("Session actions");

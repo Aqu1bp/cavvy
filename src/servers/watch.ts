@@ -90,6 +90,9 @@ export function heardSession(v: unknown): SessionSummary | undefined {
         archived: s.archived === true,
         settled: s.settled === true,
         live: s.live === true,
+        ...(typeof s.snoozedUntil === "number" && Number.isFinite(s.snoozedUntil) ? { snoozedUntil: s.snoozedUntil } : {}),
+        ...(s.woke === true ? { woke: true as const } : {}),
+        ...(s.neverSettle === true ? { neverSettle: true as const } : {}),
         ...(typeof s.model === "string" && s.model ? { model: cut(s.model, 100) } : {}),
         ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret" || s.waitingKind === "signin" || s.waitingKind === "confirm") ? { waitingKind: s.waitingKind } : {}),
         ...(typeof s.turnStartedAt === "number" && Number.isFinite(s.turnStartedAt) ? { turnStartedAt: s.turnStartedAt } : {}),
@@ -239,7 +242,8 @@ export class MachineWatch {
             const timer = setTimeout(() => {
                 this.calls.delete(id);
                 reject(new Error(`${this.name} didn't answer.`));
-            }, REPLY_MS);
+                // A title is a model's answer there: it can take a CLI's start and a reply.
+            }, method === "session.regenerateTitle" ? 75_000 : REPLY_MS);
             (timer as { unref?: () => void }).unref?.();
             this.calls.set(id, {
                 timer,

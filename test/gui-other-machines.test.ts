@@ -41,7 +41,7 @@ test("what a row offers is sent to the machine its session is on; anything else 
     const to = (method: string, params: unknown) => routeOf(method, params, far, (id) => rows[id], "den");
     expect(to("session.archive", { id: "b1", archived: true })).toEqual({ relay: "box" });
     expect(to("session.rename", { id: "m1", title: "x" })).toBe("mac");
-    for (const method of ["session.pin", "session.settle", "session.delete", "session.restore"]) expect(to(method, { id: "b1" })).toEqual({ relay: "box" });
+    for (const method of ["session.pin", "session.settle", "session.snooze", "session.delete", "session.restore"]) expect(to(method, { id: "b1" })).toEqual({ relay: "box" });
     // Sending a message, opening, stopping: done in a window that's on that machine. So is asking what archiving
     // would remove there (a worktree): from here it's archived with everything kept.
     // Whether it works in a worktree is asked there too, before it's archived from here (a yes or no: manager.ts).

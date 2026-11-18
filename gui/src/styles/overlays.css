@@ -2263,3 +2263,44 @@
     min-height: calc(96 * var(--sp));
     color: var(--fg-3);
 }
+
+/* The branch dialog's line under its search: the branch, its upstream counts, Fetch and Pull. */
+.br-sync {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-2);
+}
+
+.br-sync-t {
+    flex: 1;
+    min-width: 0;
+}
+
+.br-note {
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.893rem;
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--line);
+}
+
+.br-note.warn {
+    color: var(--warn);
+}
+
+.br-note.error {
+    color: var(--danger);
+}
+
+.br-fail {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+}
+
+.br-fail > span {
+    flex: 1;
+}
