@@ -1,6 +1,7 @@
 // @-mentions: file path completion and expansion of "@path" in prompts.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { readdir } from "fs/promises";
 import { join, relative, resolve } from "path";
 import { spawnSync } from "bun";
 import type { TextPart, UserContent } from "../providers/types";
@@ -102,18 +103,41 @@ export class FileIndex {
                     return;
                 }
                 this.listedHash = hash;
-                await this.take(code === 0 ? this.listed(out) : this.walk(this.root, 0, []), () => new Promise((r) => setImmediate(r)));
+                await this.take(code === 0 ? this.listed(out) : await this.walkSoon(), () => new Promise((r) => setImmediate(r)));
                 if (had && this.shards === had) {
                     had.stop();
                     this.shards = undefined;
                 }
             } catch {
-                await this.take(this.walk(this.root, 0, []), () => new Promise((r) => setImmediate(r)));
+                await this.take(await this.walkSoon(), () => new Promise((r) => setImmediate(r)));
             } finally {
                 this.building = undefined;
             }
         })();
         return this.building;
+    }
+
+    /** walk, for the server: a folder at a time, read without holding its thread (a big folder outside git). */
+    private async walkSoon(): Promise<string[]> {
+        const out: string[] = [];
+        const todo: [string, number][] = [[this.root, 0]];
+        while (todo.length && out.length <= 20_000 && !this.disposed) {
+            const [dir, depth] = todo.shift()!;
+            let entries;
+            try {
+                entries = await readdir(dir, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+            for (const e of entries) {
+                if (IGNORE.has(e.name)) continue;
+                const p = join(dir, e.name);
+                if (e.isDirectory()) {
+                    if (depth < 12) todo.push([p, depth + 1]);
+                } else out.push(relative(this.root, p));
+            }
+        }
+        return out;
     }
 
     private walk(dir: string, depth: number, out: string[]): string[] {

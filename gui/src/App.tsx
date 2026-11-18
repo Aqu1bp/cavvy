@@ -304,8 +304,6 @@ const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.Setti
 /** The diff reader: shown when a diff is opened, not with the window. */
 const reviewModule = () => import("./components/ReviewPane");
 const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
-/** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
-const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
 /** Dialogs opened now and then (MCP servers, a plan): chunks of their own, fetched at idle like Settings. */
 const mcpModule = () => import("./components/McpDialog");
 const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
@@ -318,6 +316,8 @@ const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => 
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
+    /** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
+    const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {

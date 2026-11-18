@@ -36,6 +36,12 @@ import { followAgent, keepWorktree, ownOnScreen, pickScope, pickWorktree, reques
 import { Spinner } from "./ui/bits";
 import { Menu } from "./ui/Menu";
 
+/** Go to file and Search in project come with the reader (App.tsx loads this chunk at idle). */
+export { openFinder } from "./FileFinder";
+
+/** The file viewer (Go to file, Search in project): in the diff reader's place, its own chunk. */
+const FileViewer = lazy(() => import("./FileViewer").then((m) => ({ default: m.FileViewer })));
+
 type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter" | "pathToken">>;
 /** A file here: by its handle when its name was shown redacted (two can show the same name), else by name. */
 const key = (f: Row) => f.pathToken ?? f.path;
@@ -606,12 +612,6 @@ function FileCard(p: {
         </section>
     );
 }
-
-/** Go to file and Search in project come with the reader (App.tsx loads this chunk at idle). */
-export { openFinder } from "./FileFinder";
-
-/** The file viewer (Go to file, Search in project): in the diff reader's place, its own chunk. */
-const FileViewer = lazy(() => import("./FileViewer").then((m) => ({ default: m.FileViewer })));
 
 /** The diff reader, or the file viewer when a file is open in its place (review().file). */
 export function ReviewPane(p: { handle: SessionHandle }) {

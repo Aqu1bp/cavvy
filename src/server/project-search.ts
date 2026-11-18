@@ -35,6 +35,8 @@ export interface SearchLimits {
 export const SEARCH_LIMITS: SearchLimits = { matches: 1000, perFile: 100, timeMs: 10_000, scanFiles: 20_000, scanBytes: 1024 * 1024 };
 /** The most of a line sent: the part around its first match. */
 export const PREVIEW_CHARS = 240;
+/** How long reading a search's output works before the server's other work gets a turn. */
+const YIELD_MS = 8;
 /** Files over this aren't searched by ripgrep (a minified bundle's one line would be all of it). */
 const RG_MAX_FILESIZE = "4M";
 /** Folders the scan never goes into (as @-mentions' listing skips them outside a repository). */
@@ -123,6 +125,9 @@ class Hits {
 
 class SearchError extends Error {}
 
+/** What's said of a regular expression the search can't read, and why when known ("unclosed group"). */
+const invalidRegex = (why?: string) => `Not a valid regular expression${why ? `: ${why.trim()}` : ""}`;
+
 /**
  * Lines of a child's stdout as they come, each handed to `line` (false stops it: the child is killed). Killed too
  * when `signal` aborts or the deadline passes. Resolves with its exit code and stderr (null code: killed).
@@ -145,11 +150,14 @@ async function readLines(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, signal:
         const decoder = new TextDecoder();
         let rest = "";
         const reader = proc.stdout.getReader();
+        // Where a line break may still be in `rest`: a long line comes in many reads, and isn't looked through again for each.
+        let scanFrom = 0;
+        let worked = performance.now();
         outer: for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
             rest += decoder.decode(value, { stream: true });
-            let nl = rest.indexOf("\n");
+            let nl = rest.indexOf("\n", scanFrom);
             let at = 0;
             while (nl >= 0) {
                 if (line(rest.slice(at, nl)) === false) {
@@ -157,9 +165,17 @@ async function readLines(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, signal:
                     break outer;
                 }
                 at = nl + 1;
+                // A lot read at once: the server's other work gets a turn now and then.
+                if (performance.now() - worked > YIELD_MS) {
+                    await new Promise((r) => setImmediate(r));
+                    worked = performance.now();
+                    if (killed) break outer;
+                }
                 nl = rest.indexOf("\n", at);
             }
             rest = rest.slice(at);
+            scanFrom = rest.length;
+            worked = performance.now();
         }
         if (!killed && rest) line(rest);
         reader.releaseLock();
@@ -203,7 +219,11 @@ async function withRipgrep(rg: string, root: string, o: SearchOptions, limits: S
         return hits.add(path, m.data.line_number, text, ranges);
     });
     // 1: nothing found. 2: an error, with or without matches (a file it couldn't read): only an error when nothing came.
-    if (r.code === 2 && !hits.count) throw new SearchError(r.stderr.split("\n").find((s) => s.trim())?.replace(/^rg: /, "") ?? "The search failed");
+    if (r.code === 2 && !hits.count) {
+        // "regex parse error:", the pattern, a caret, then "error: unclosed group".
+        if (/regex parse error/.test(r.stderr)) throw new SearchError(invalidRegex(r.stderr.match(/^error: (.+)$/m)?.[1]));
+        throw new SearchError(r.stderr.split("\n").find((s) => s.trim())?.replace(/^rg: /, "") ?? "The search failed");
+    }
     return hits.result("rg", r.timedOut ? { timedOut: true } : {});
 }
 
@@ -242,14 +262,17 @@ async function withGit(root: string, o: SearchOptions, limits: SearchLimits, sig
         if (/not a git repository/i.test(r.stderr)) throw new NotRepo();
         // A git built without PCRE: its own extended expressions instead.
         if (pcre && /USE_LIBPCRE/.test(r.stderr)) return withGit(root, o, limits, signal, false);
-        throw new SearchError(r.stderr.split("\n").find((s) => s.trim())?.replace(/^(fatal|error): /, "") ?? "The search failed");
+        const said = r.stderr.split("\n").find((s) => s.trim())?.replace(/^(fatal|error): /, "");
+        // "-e option, '(': missing closing parenthesis"
+        if (o.regex && said?.startsWith("-e option")) throw new SearchError(invalidRegex(said.replace(/^-e option, '.*': /, "")));
+        throw new SearchError(said ?? "The search failed");
     }
     return hits.result("git", r.timedOut ? { timedOut: true } : {});
 }
 
 async function withScan(root: string, o: SearchOptions, limits: SearchLimits, signal: AbortSignal): Promise<ProjectSearchResult> {
     const re = queryRegExp(o);
-    if (!re) throw new SearchError("That isn't a valid regular expression");
+    if (!re) throw new SearchError(invalidRegex());
     const hits = new Hits(limits);
     const deadline = Date.now() + limits.timeMs;
     let files = 0;

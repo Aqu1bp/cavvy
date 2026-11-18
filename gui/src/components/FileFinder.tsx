@@ -222,9 +222,10 @@ function FileFinder() {
     const summary = () => {
         const r = found();
         if (!r) return undefined;
-        if (!r.matches) return r.timedOut ? "Nothing found before the search timed out" : "No results";
+        const skipped = r.skippedLarge ? `. ${r.skippedLarge.toLocaleString()} big ${r.skippedLarge === 1 ? "file wasn't" : "files weren't"} searched` : "";
+        if (!r.matches) return (r.timedOut ? "Nothing found before the search timed out" : r.truncated ? "Nothing found. Not every file was searched" : "No results") + skipped;
         const n = `${r.matches.toLocaleString()}${r.truncated ? "+" : ""} ${r.matches === 1 ? "result" : "results"} in ${r.files.length.toLocaleString()} ${r.files.length === 1 ? "file" : "files"}`;
-        return r.timedOut ? `${n}. Timed out: narrow the search` : r.truncated ? `${n}. Narrow the search to see the rest` : n;
+        return (r.timedOut ? `${n}. Timed out: narrow the search` : r.truncated ? `${n}. Narrow the search to see the rest` : n) + skipped;
     };
     const Toggle = (p: { on: boolean; set: (v: boolean) => void; name: string; key: string; icon: typeof Regex }) => (
         <button class="ff-tog" aria-pressed={p.on} aria-label={p.name} title={`${p.name} (${altKey}${p.key})`} onClick={() => (p.set(!p.on), input?.focus())}>

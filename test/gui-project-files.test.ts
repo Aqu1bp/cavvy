@@ -12,6 +12,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { searchProject, ripgrepPath, preview, queryRegExp, PREVIEW_CHARS } = await import("../src/server/project-search");
 const { MAX_VIEW_TEXT } = await import("../src/server/file-view");
+const { FileIndex } = await import("../src/ui/mentions");
 import type { FileContent, ProjectSearchResult, SessionSnapshot } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
@@ -92,6 +93,11 @@ describe("fs.files (Go to file)", () => {
         expect(r.paths).toContain("src/lib/util.ts");
     });
 
+    test("outside a repository too (the folder read a level at a time)", async () => {
+        const r = await call<{ paths: string[] }>("fs.files", { sessionId: plainId, query: "util" });
+        expect(r.paths[0]).toBe("src/lib/util.ts");
+    });
+
     test("caps what it sends", async () => {
         const r = await call<{ paths: string[] }>("fs.files", { sessionId: repoId, query: "", limit: 2 });
         expect(r.paths.length).toBe(2);
@@ -99,6 +105,20 @@ describe("fs.files (Go to file)", () => {
 
     test("a folder that isn't open is refused", async () => {
         await rejects(call("fs.files", { cwd: outside, query: "" }), "not_open");
+    });
+});
+
+describe("the listing's lifetime", () => {
+    test("let go of when unused, listed again when next asked", async () => {
+        const dir = project(true);
+        const index = new FileIndex(dir);
+        expect(await index.searchSoon("later", 5)).toEqual([]);
+        writeFileSync(join(dir, "later.ts"), "");
+        // Still the listing it made (fresh for a while).
+        expect(await index.searchSoon("later", 5)).toEqual([]);
+        index.release();
+        expect(await index.searchSoon("later", 5)).toEqual(["later.ts"]);
+        index.dispose();
     });
 });
 
@@ -181,7 +201,7 @@ describe.each(backends)("searchProject with %s", (backend, root) => {
     });
 
     test.skipIf(skip)("an invalid regular expression is an error to show", async () => {
-        expect(await run("(", { regex: true }).then(() => "ok", (e: Error) => e.message)).not.toBe("ok");
+        expect(await run("(", { regex: true }).then(() => "ok", (e: Error) => e.message)).toMatch(/^Not a valid regular expression/);
     });
 
     test.skipIf(skip)("stops at its cap and says so", async () => {
