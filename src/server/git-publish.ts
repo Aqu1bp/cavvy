@@ -127,7 +127,7 @@ async function local(cwd: string, signal?: AbortSignal) {
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),
         git(cwd, ["remote"], signal),
     ]);
-    if (!branch) throw fail("Cannot push a detached HEAD. Check out a branch first.", "invalid");
+    if (!branch) throw fail("No branch is checked out (detached HEAD). Check out a branch first.", "invalid");
     const [, upstreamRemote, merge] = await Promise.all([
         branchName(cwd, branch, signal),
         git(cwd, ["config", "--get", `branch.${branch}.remote`], signal, false, true),
@@ -136,7 +136,10 @@ async function local(cwd: string, signal?: AbortSignal) {
     const remotes = remoteNames.split("\n").filter(Boolean);
     const hasUpstream = Boolean(upstreamRemote && merge);
     const remote = hasUpstream ? upstreamRemote : remotes.length === 1 && remotes[0] === "origin" ? "origin" : "";
-    if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("No unambiguous push remote. Configure an upstream, or a single origin remote, in a terminal.", "invalid");
+    // Said as fetching says it (git-sync.ts fetchRemote): the GUI puts "Can't push:" before it.
+    if (!remote) throw fail(remotes.length ? "Set an upstream for this branch to choose which remote to push to." : "This repository has no remote.", "no_remote");
+    if (!remotes.includes(remote)) throw fail(`This branch's upstream remote ${remote} doesn't exist.`, "no_remote");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("Use a remote with a plain name.", "invalid");
     if (hasUpstream && !merge.startsWith("refs/heads/")) throw fail("The upstream is not a branch.", "invalid");
     const [target, url, tracking] = await Promise.all([
         branchName(cwd, hasUpstream ? merge.slice(11) : branch, signal),
@@ -200,6 +203,16 @@ function localPath(url: string): boolean {
 export async function gitPushTarget(cwd: string, signal?: AbortSignal) {
     const t = await local(cwd, signal);
     return { branch: clean(t.branch), sha: t.sha, remote: clean(t.remote), target: clean(t.target), url: clean(t.url), fingerprint: t.fingerprint };
+}
+
+/**
+ * A push that needs the user's explicit go-ahead: to the remote's default branch, or to main or master, from a local
+ * branch of one of those names or not. A remote that doesn't say which is its default (no HEAD, or one on a branch
+ * not made yet) leaves main and master: a new feature branch isn't held up by it.
+ */
+export function guarded(info: { branch: string; target: string }, base: string | undefined): boolean {
+    const names = ["main", "master", ...(base ? [base] : [])];
+    return names.includes(info.branch) || names.includes(info.target);
 }
 
 async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
@@ -279,8 +292,7 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
     return {
         fingerprint: info.fingerprint, branch: clean(info.branch), remote: clean(info.remote), target: clean(info.target), destination: clean(info.url),
         ahead: info.ahead, behind: info.behind, hasUpstream: info.hasUpstream, base: base && clean(base),
-        protected: ["main", "master", base].includes(info.branch) || ["main", "master", base].includes(info.target),
-        // If a remote has no symbolic HEAD, require acknowledgement for every branch.
+        protected: guarded(info, base),
         defaultUnknown: !base, gh, ...(state === "signed-out" ? { ghSignedOut: true } : {}), pr, prError, title: text.split("\n")[0]?.slice(0, 250) || clean(info.branch), body: text,
         compareUrl: repo && redact(info.target) === info.target && (!base || redact(base) === base) ? `https://github.com/${repo}/compare/${base ? `${encodeURIComponent(base)}...` : ""}${encodeURIComponent(info.target)}?expand=1` : undefined,
     };
@@ -346,7 +358,7 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     const info = await local(cwd, signal);
     if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog before publishing.", "stale");
     const base = await defaultBranch(cwd, info.url, signal);
-    if ((!base || ["main", "master", base].includes(info.branch) || ["main", "master", base].includes(info.target)) && request.confirmProtected !== true) throw fail("Explicit confirmation is required to push a protected branch (or a remote with unknown default branch).", "protected_branch");
+    if (guarded(info, base) && request.confirmProtected !== true) throw fail("Explicit confirmation is required to push a protected branch.", "protected_branch");
     const repo = githubRepo(info.url);
     let existing: GitPrInfo | undefined;
     if (request.action === "pr") {

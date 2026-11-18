@@ -92,7 +92,8 @@ export function GitDialogs() {
     );
 }
 
-type Row = { key: string; label: string; desc?: string; end?: string; icon: "local" | "remote" | "current" | "create" | "worktree" | "pr"; run: () => void; disabled?: boolean };
+/** `label`: a branch's name (in the code font); `verb`, before it in the text's own: "Create branch". */
+type Row = { key: string; label: string; verb?: string; desc?: string; end?: string; icon: "local" | "remote" | "current" | "create" | "worktree" | "pr"; run: () => void; disabled?: boolean };
 
 /** The number of the pull request `s` names (#123, 123, or its github.com URL); git-pr.ts checks it again. */
 function prRef(s: string): number | undefined {
@@ -185,7 +186,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const tracked = new Set(l.local.map((b) => b.upstream).filter(Boolean));
         for (const b of l.remote.filter((b) => match(b) && !tracked.has(b.name))) out.push({ key: `r:${b.name}`, label: b.name, end: when(b), icon: "remote", run: () => void switchTo(b.name, true) });
         const name = q().trim();
-        if (name && !pr && !l.local.some((b) => b.name === name)) out.push({ key: "create", label: `Create branch “${name}”`, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
+        if (name && !pr && !l.local.some((b) => b.name === name)) out.push({ key: "create", verb: "Create branch", label: name, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
         return out;
     });
     // On the first row that can be picked (not the current branch), for each new query and new list.
@@ -257,7 +258,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                                     <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
                                         <span class="pal-ic">{icon(r)}</span>
                                         <span class="pal-text">
-                                            <span class="pal-l mono">{r.label}</span>
+                                            <Show when={r.verb} fallback={<span class="pal-l mono">{r.label}</span>}>
+                                                <span class="pal-l">{r.verb} “<span class="mono">{r.label}</span>”</span>
+                                            </Show>
                                             <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
                                         </span>
                                         <Show when={r.end}><span class="pal-end">{r.end}</span></Show>
