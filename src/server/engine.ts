@@ -2318,8 +2318,9 @@ export class Engine {
             }
         });
         this.reloadSettings();
-        // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
-        if ("simulator" in patch) this.serverLinks?.relend();
+        // The Simulator turned off or on, or the mode its calls are held to changed: the servers this machine lends it to
+        // hear now, and what waits here for it ends.
+        if ("simulator" in patch || "defaultMode" in patch || "allowBypass" in patch) this.serverLinks?.relend();
         return this.guiSettings(cwd);
     }
 
