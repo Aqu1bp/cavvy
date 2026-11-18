@@ -11,7 +11,7 @@ import { createEffect, createSignal, For, on, onCleanup, onMount, Show, type Acc
 import { Check, ChevronDown, ChevronUp, Ellipsis, Laptop, Maximize, RotateCwSquare, Ruler, Scan, Search, Smartphone, SquareTerminal, Tablet, X, ZoomIn, ZoomOut } from "lucide-solid";
 import type { BrowserTabInfo } from "@shared/protocol";
 import { reportError, rpc } from "../state/app";
-import { hostedTargets } from "../state/browser-host";
+import { hostedTargets, shownBrowser } from "../state/browser-host";
 import { electron, isMod, mod } from "../lib/platform";
 import { DEVICES, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
 import type { PaneStatus, Size } from "../lib/browser";
@@ -229,7 +229,10 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     /** How much smaller than its size a device's page is drawn, as a percentage; undefined when it's drawn at its size. */
     const shownAt = () => {
         const d = o.view()?.device;
-        const pct = d ? Math.round(fitScale(o.box(), d) * 100) : 100;
+        // The desktop app's page is placed clear of the panel's edge handle (lib/page-follow.ts): its scale as placed.
+        const s = o.native ? shownBrowser() : undefined;
+        const placed = s?.by === "pane" && s.fit && s.page ? Math.min(s.box.width / s.page.width, s.box.height / s.page.height) : undefined;
+        const pct = d ? Math.round((placed ?? fitScale(o.box(), d)) * 100) : 100;
         return pct > 0 && pct < 100 ? pct : undefined;
     };
     // The desktop app's page zooms itself (as its browser would); the headless one is asked for a zoomed size. Set on
