@@ -2057,6 +2057,7 @@ class ClaudeTurn {
                 header: typeof q?.header === "string" ? q.header : undefined,
                 options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })),
                 multiSelect: Boolean(q?.multiSelect),
+                attach: true,
             }));
             const answers = await this.cliSession.askQuestions(questions);
             if (!answers) return { behavior: "deny", message: "The user dismissed the question without answering.", interrupt: true };

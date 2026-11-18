@@ -5,7 +5,7 @@ import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } fro
 import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
+import { comparePicks, setComparePicks, composerAdd, setComposerAdd, focusComposer,modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -661,6 +661,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta?.focus();
         });
     };
+    // Sent here from elsewhere (the terminal's Add to chat).
+    createEffect(on(composerAdd, (a) => {
+        if (!a || a.sessionId !== p.sessionId) return;
+        setComposerAdd(undefined);
+        if (a.attach) setAttachments((list) => [...list, a.attach!(list)]);
+        else setText((t) => (t.trim() ? `${t.trimEnd()}\n\n` : "") + a.text);
+        requestAnimationFrame(() => (resize(), ta?.focus()));
+    }, { defer: true }));
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
     const model = () => st()?.model ?? modelsFor(p.sessionId).flatMap((g) => g.models).find((m) => m.ref === settings().model);
     /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */

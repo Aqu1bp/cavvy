@@ -142,7 +142,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         writes: { data: string; done?: () => void }[] = [];
         constructor() { terminals.push(this); }
         keyHandler?: (e: KeyboardEvent) => boolean;
-        loadAddon() {} open() {} focus() {} dispose() {} attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) { this.keyHandler = fn; }
+        loadAddon() {} open() {} focus() {} dispose() {} registerLinkProvider() { return { dispose() {} }; } hasSelection() { return false; } attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) { this.keyHandler = fn; }
         onData(fn: (data: string) => void) { this.input = fn; return { dispose() {} }; }
         write(data: string, done?: () => void) { this.writes.push({ data, done }); }
         drain() { for (const w of this.writes.splice(0)) { if (w.data.includes("QUERY")) this.input("\x1b[?1;2c"); w.done?.(); } }
@@ -188,6 +188,10 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         requestAnimationFrame: (fn: () => void) => frameQueue.push(fn), cancelAnimationFrame() {}, isMod: () => false, copyText() {},
         // Whose the keyboard is (lib/terminal-keys.ts, tested in gui-terminal-keys.test.ts): here the terminal always takes it.
         terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
+        // Links and the context menu (tested in gui-terminal-links.test.ts): not what's tested here.
+        Menu: noop, MessageSquarePlus: noop, Copy: noop, ClipboardPaste: noop, TextSelect: noop, Eraser: noop, linkProvider: () => ({}), isLocalUrl: () => false,
+        awayMachine: () => undefined, handleFor: () => undefined, openInEditor() {}, adoptBrowserState() {}, browserState: () => undefined, loadBrowserState: async () => {}, showBrowser() {},
+        setComposerAdd() {}, mod: "Ctrl", openExternal() {}, isLongPaste: () => false, pastedText() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;

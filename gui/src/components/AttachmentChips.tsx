@@ -22,7 +22,7 @@ function Preview(p: { image: ImageAttachment }) {
  * file (its kind on a tinted tile, its name, a few words on it). A refused one says why; a PDF the model can't
  * read says so. An image opens full size, text to read, and a paste can go back into the box as text.
  */
-export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blocked?: string; onRemove: (i: number) => void; onToText: (i: number) => void }) {
+export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blocked?: string; onRemove: (i: number) => void; onToText?: (i: number) => void }) {
     const [open, setOpen] = createSignal<Attachment>();
     /** The viewer on this image, the whole of it (not the thumbnail), stepping through the others attached. */
     const view = (img: ImageAttachment, from: Element) => {
@@ -97,8 +97,8 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                                     <Body />
                                                 </button>
                                             </Show>
-                                            <Show when={pasted()}>
-                                                <button class="att-act" title="Put it back in the box as text" aria-label="Put the pasted text back in the box" onClick={() => p.onToText(i())}>
+                                            <Show when={pasted() && p.onToText}>
+                                                <button class="att-act" title="Put it back in the box as text" aria-label="Put the pasted text back in the box" onClick={() => p.onToText?.(i())}>
                                                     <TextCursorInput size={14} />
                                                 </button>
                                             </Show>
