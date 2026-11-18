@@ -5215,6 +5215,25 @@ export class Runtime {
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
+    /** Still at work (a turn, a question, a shell, a task): its folder's branch and files mustn't change under it. */
+    async workingForGit(): Promise<boolean> {
+        await this.yieldIdleCompaction();
+        return !this.closed && !this.settled(false);
+    }
+
+    /** Holds the session (no turn starts) while `work` changes its folder's branch or files; the header's branch after. */
+    async holdForGit<T>(work: Promise<T>): Promise<T> {
+        this.committing = true;
+        this.commitDone = work;
+        try {
+            return await work;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            if (!this.closed) this.showWorkingIn(this.workingIn);
+        }
+    }
+
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();

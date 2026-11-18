@@ -1,0 +1,172 @@
+// Fetch, pull, ahead/behind and branch switching, on scratch repositories: a bare remote and two clones of it.
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
+import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { join } from "path";
+import { isolate } from "./helpers/isolate";
+setDefaultTimeout(60_000);
+
+const iso = isolate();
+const saved = { ...process.env };
+for (const key of Object.keys(process.env)) if (key.startsWith("GIT_")) delete process.env[key];
+Object.assign(process.env, { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" });
+afterAll(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    iso.cleanup();
+});
+
+const { gitBranches, gitCreateBranch, gitFetch, gitPull, gitReason, gitSwitch, gitSyncInfo } = await import("../src/server/git-sync");
+
+const realGit = Bun.which("git")!;
+function git(cwd: string, ...args: string[]) {
+    const r = Bun.spawnSync([realGit, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+}
+let n = 0;
+/** A bare remote with main, and two clones of it: `mine` (the one Cavvy works in) and `theirs` (someone else pushing). */
+function setup() {
+    const root = join(realpathSync(iso.home), `sync-${n++}`);
+    mkdirSync(root);
+    const remote = join(root, "remote.git");
+    git(root, "init", "-q", "--bare", "-b", "main", remote);
+    const seed = join(root, "seed");
+    git(root, "init", "-q", "-b", "main", seed);
+    writeFileSync(join(seed, "a.txt"), "one\n");
+    git(seed, "add", "a.txt");
+    git(seed, "commit", "-qm", "first");
+    git(seed, "remote", "add", "origin", remote);
+    git(seed, "push", "-q", "-u", "origin", "main");
+    const mine = join(root, "mine");
+    const theirs = join(root, "theirs");
+    git(root, "clone", "-q", remote, mine);
+    git(root, "clone", "-q", remote, theirs);
+    return { remote, mine, theirs };
+}
+function commitFile(cwd: string, file: string, text: string, push = false) {
+    writeFileSync(join(cwd, file), text);
+    git(cwd, "add", file);
+    git(cwd, "commit", "-qm", `change ${file}`);
+    if (push) git(cwd, "push", "-q");
+}
+
+test("ahead/behind come from local refs, and move after a fetch", async () => {
+    const { mine, theirs } = setup();
+    expect(await gitSyncInfo(mine)).toEqual({ detached: false, branch: "main", upstream: "origin/main", ahead: 0, behind: 0 });
+    commitFile(theirs, "b.txt", "b\n", true);
+    commitFile(theirs, "c.txt", "c\n", true);
+    commitFile(mine, "d.txt", "d\n");
+    // Nothing fetched yet: it doesn't know about theirs.
+    expect(await gitSyncInfo(mine)).toMatchObject({ ahead: 1, behind: 0 });
+    expect(await gitFetch(mine)).toMatchObject({ remote: "origin", ahead: 1, behind: 2 });
+    git(mine, "checkout", "-q", "--detach");
+    expect(await gitSyncInfo(mine)).toEqual({ detached: true });
+});
+
+test("a branch without an upstream has no counts; one whose upstream is gone says so", async () => {
+    const { mine } = setup();
+    git(mine, "switch", "-q", "-c", "loose");
+    expect(await gitSyncInfo(mine)).toEqual({ detached: false, branch: "loose" });
+    git(mine, "push", "-q", "-u", "origin", "loose");
+    git(mine, "push", "-q", "origin", "--delete", "loose");
+    expect(await gitSyncInfo(mine)).toMatchObject({ upstream: "origin/loose", gone: true });
+});
+
+test("pull fast-forwards, and says when there's nothing to pull", async () => {
+    const { mine, theirs } = setup();
+    commitFile(theirs, "b.txt", "b\n", true);
+    const r = await gitPull(mine);
+    expect(r).toMatchObject({ result: "pulled", pulled: 1, ahead: 0, behind: 0, branch: "main", upstream: "origin/main" });
+    expect(git(mine, "rev-parse", "HEAD")).toBe(git(theirs, "rev-parse", "HEAD"));
+    expect(await gitPull(mine)).toMatchObject({ result: "current" });
+});
+
+test("diverged: says how far on each side, and changes nothing", async () => {
+    const { mine, theirs } = setup();
+    commitFile(theirs, "b.txt", "b\n", true);
+    commitFile(theirs, "c.txt", "c\n", true);
+    commitFile(theirs, "e.txt", "e\n", true);
+    commitFile(mine, "d.txt", "d\n");
+    commitFile(mine, "f.txt", "f\n");
+    const head = git(mine, "rev-parse", "HEAD");
+    expect(await gitPull(mine)).toMatchObject({ result: "diverged", ahead: 2, behind: 3 });
+    expect(git(mine, "rev-parse", "HEAD")).toBe(head);
+});
+
+test("uncommitted changes that would be overwritten block a pull with git's reason, briefly", async () => {
+    const { mine, theirs } = setup();
+    commitFile(theirs, "a.txt", "theirs\n", true);
+    writeFileSync(join(mine, "a.txt"), "mine, uncommitted\n");
+    const head = git(mine, "rev-parse", "HEAD");
+    await expect(gitPull(mine)).rejects.toMatchObject({ code: "blocked", message: "Uncommitted changes to a.txt would be overwritten. Commit or stash them first." });
+    expect(git(mine, "rev-parse", "HEAD")).toBe(head);
+});
+
+test("a branch with no upstream can't be pulled", async () => {
+    const { mine } = setup();
+    git(mine, "switch", "-q", "-c", "loose");
+    await expect(gitPull(mine)).rejects.toMatchObject({ code: "no_upstream" });
+});
+
+test("branches: local and remote, current marked, the remote's HEAD left out", async () => {
+    const { mine, theirs } = setup();
+    git(theirs, "switch", "-q", "-c", "feature");
+    commitFile(theirs, "f.txt", "f\n");
+    git(theirs, "push", "-q", "-u", "origin", "feature");
+    await gitFetch(mine);
+    git(mine, "branch", "-q", "local-only");
+    const list = await gitBranches(mine);
+    expect(list.current).toBe("main");
+    expect(list.local.map((b) => b.name).sort()).toEqual(["local-only", "main"]);
+    expect(list.local.find((b) => b.name === "main")?.upstream).toBe("origin/main");
+    expect(list.remote.map((b) => b.name).sort()).toEqual(["origin/feature", "origin/main"]);
+});
+
+test("switch to a remote branch makes a local one tracking it; back to a local one", async () => {
+    const { mine, theirs } = setup();
+    git(theirs, "switch", "-q", "-c", "feature");
+    commitFile(theirs, "f.txt", "f\n");
+    git(theirs, "push", "-q", "-u", "origin", "feature");
+    await gitFetch(mine);
+    expect(await gitSwitch(mine, { branch: "origin/feature", remote: true })).toEqual({ branch: "feature", created: true });
+    expect(git(mine, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feature");
+    expect(await gitSwitch(mine, { branch: "main" })).toEqual({ branch: "main" });
+    // Its local branch is there now: switched to, not made again.
+    expect(await gitSwitch(mine, { branch: "origin/feature", remote: true })).toEqual({ branch: "feature" });
+});
+
+test("a switch blocked by local changes says git's reason, and stays put", async () => {
+    const { mine } = setup();
+    git(mine, "switch", "-q", "-c", "other");
+    commitFile(mine, "a.txt", "other\n");
+    git(mine, "switch", "-q", "main");
+    writeFileSync(join(mine, "a.txt"), "uncommitted\n");
+    await expect(gitSwitch(mine, { branch: "other" })).rejects.toMatchObject({ code: "blocked", message: "Uncommitted changes to a.txt would be overwritten. Commit or stash them first." });
+    expect(git(mine, "branch", "--show-current")).toBe("main");
+    await expect(gitSwitch(mine, { branch: "nope" })).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("create a branch at HEAD, keeping uncommitted changes; refuse a taken or invalid name", async () => {
+    const { mine } = setup();
+    writeFileSync(join(mine, "a.txt"), "uncommitted\n");
+    const head = git(mine, "rev-parse", "HEAD");
+    expect(await gitCreateBranch(mine, "feature/new")).toEqual({ branch: "feature/new" });
+    expect(git(mine, "branch", "--show-current")).toBe("feature/new");
+    expect(git(mine, "rev-parse", "HEAD")).toBe(head);
+    expect(git(mine, "status", "--porcelain")).toBe("M a.txt");
+    await expect(gitCreateBranch(mine, "main")).rejects.toMatchObject({ code: "branch_exists" });
+    await expect(gitCreateBranch(mine, "bad..name")).rejects.toMatchObject({ code: "invalid" });
+    await expect(gitCreateBranch(mine, "-x")).rejects.toMatchObject({ code: "invalid" });
+});
+
+test("a URL rewrite on the remote is refused, as for publishing", async () => {
+    const { mine, remote } = setup();
+    git(mine, "config", `url.${remote}.insteadOf`, "elsewhere:");
+    git(mine, "remote", "set-url", "origin", "elsewhere:repo");
+    await expect(gitFetch(mine)).rejects.toThrow("URL rewrite");
+});
+
+test("git's reasons, briefly", () => {
+    expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("Untracked x, y, z and 1 more would be overwritten. Move or remove them first.");
+    expect(gitReason("fatal: 'feature' is already used by worktree at '/tmp/wt'\n")).toBe("'feature' is already used by worktree at '/tmp/wt'");
+});
