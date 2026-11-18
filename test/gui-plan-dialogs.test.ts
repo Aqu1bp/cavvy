@@ -101,14 +101,16 @@ test("a rejected planInfo resource renders its inline error without throwing to 
 test("Trust and continue preserves the selected base when resuming the created worktree", async () => {
     const calls: any[] = [];
     const path = "/repo/.claude/worktrees/implementation";
+    const rpc = { call: async (method: string, params: any) => {
+        calls.push({ method, params });
+        if (method === "projects.trust") return null;
+        return calls.length === 1
+            ? { path, branch: "implementation", failed: { code: "needs_trust", folder: path, message: "Trust this folder" } }
+            : { path, branch: "implementation", sessionId: "destination" };
+    } };
     const c = component(planSource.slice(planSource.indexOf("function ImplementPlan(")), "ImplementPlan", {
-        rpc: { call: async (method: string, params: any) => {
-            calls.push({ method, params });
-            if (method === "projects.trust") return null;
-            return calls.length === 1
-                ? { path, branch: "implementation", failed: { code: "needs_trust", folder: path, message: "Trust this folder" } }
-                : { path, branch: "implementation", sessionId: "destination" };
-        } },
+        // The session's machine is the window's here: trusted over the same connection.
+        rpc, rpcFor: () => rpc,
         IMPLEMENT_MODES: ["default"], MODE_CHOICES: { default: { label: "Ask for edits", hint: "Ask" } },
         home: (path: string) => path, errorOf: (error: Error) => ({ field: "general", message: error.message }),
         Dialog: (p: any) => p.children, Spinner() {}, AlertTriangle() {}, toast() {}, activate() {},
