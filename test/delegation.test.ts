@@ -2087,7 +2087,7 @@ describe("the app", () => {
         (app as any).switching = false;
         await until(() => turns.length === 1 && !app.busy, 5000);
         expect(turns[0].adopt).toBe("turn-3");
-        expect(agent.session.messages.find((m) => m.role === "user")?.meta).toMatchObject({ kind: "wake", display: "Background task finished: Map auth" });
+        expect(agent.session.messages.find((m) => m.role === "user")?.meta).toMatchObject({ kind: "wake", display: "Background task finished: Map auth", background: true });
     });
 
     test("/tasks lists the session's background work beside its delegated tasks, and /tasks stop <id|all> stops it", async () => {

@@ -296,4 +296,18 @@ describe("reopening a session", () => {
         expect(turns[1]!.prompt).toEqual({ text: "PR #4: checks failed", wake: true });
         expect(turns[0]!.prompt?.index).toBe(0);
     });
+
+    test("a turn the CLI started for its background work comes back marked as one", () => {
+        const messages = [
+            { role: "user", content: [{ type: "text", text: "run the suite" }], meta: { kind: "prompt" } },
+            { role: "assistant", provider: "test", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Running." }] },
+            { role: "user", content: [{ type: "text", text: "Background command finished: Run the suite" }], meta: { kind: "wake", display: "Background command finished: Run the suite", background: true } },
+            { role: "assistant", provider: "test", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "All pass." }] },
+        ] as Message[];
+        const dir = tempDir("cavvy-wakes-ui-");
+        dirs.push(dir);
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui: new UiLog(`${dir}/b.jsonl`, "b"), meta: (c) => ({ title: c.name }), newId: () => `t${++n}` });
+        expect(turns[1]!.prompt).toEqual({ text: "Background command finished: Run the suite", wake: true, background: true });
+    });
 });

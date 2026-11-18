@@ -20,7 +20,8 @@ const cliName = (id: string) => CLI_NAMES[id] ?? app.providers.find((p) => p.id 
 
 /** Text with `code` in it, as code. */
 function Runs(p: { text: string }) {
-    return <Index each={codeRuns(p.text)}>{(run, i) => (i % 2 ? <code>{run()}</code> : run())}</Index>;
+    // Read in the markup, not in the callback: a title that changes (a limit's, once the line under it says when) is drawn again.
+    return <Index each={codeRuns(p.text)}>{(run, i) => (i % 2 ? <code>{run()}</code> : <>{run()}</>)}</Index>;
 }
 
 /** Whether an element's text is cut short (an ellipsis): checked as it's laid out, and whenever its size changes. */
@@ -47,7 +48,7 @@ function onFound(id: () => string, open: () => void) {
 const GOAL_MARK = /^([◎✓✗]) /;
 
 /** Info: one quiet line, the CLI's logo its icon. Cut short, it opens on click (or when find lands in it). */
-function InfoLine(p: { block: NoticeBlock; leaving?: boolean }) {
+function InfoLine(p: { block: NoticeBlock; leaving?: boolean; row?: boolean }) {
     let tx: HTMLSpanElement | undefined;
     const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
     // Without a closing list of terminal commands ("(/tasks shows them, …)"): here the side panel has them.
@@ -59,7 +60,7 @@ function InfoLine(p: { block: NoticeBlock; leaving?: boolean }) {
     const toggle = () => long() && setOpen(!open());
     return (
         <div
-            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.leaving ? "leaving" : ""}`}
+            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.row && p.block.wake ? "row" : ""} ${p.leaving ? "leaving" : ""}`}
             data-find={p.block.id}
             role={long() ? "button" : "note"}
             tabIndex={long() ? 0 : undefined}
@@ -195,11 +196,12 @@ function WarnPill(p: { block: NoticeBlock }) {
  * has an hourglass; while the session waits to pick up again by itself, it says when, and can call that off.
  */
 function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
-    const parts = createMemo(() => errorParts(p.block, now()));
     const limit = () => p.block.limit;
     const lastTurn = () => (p.state ? handleFor(p.state.id)?.view.turns.at(-1)?.blocks : undefined);
     const latest = createMemo(() => isLatestLimitCard(p.block, lastTurn()));
     const resume = createMemo(() => (latest() && p.state?.schedules?.length ? waitingResume(p.block, lastTurn(), p.state.schedules) : undefined));
+    // The time is said once: by the line under the title while the session waits to continue, else by the title.
+    const parts = createMemo(() => errorParts(p.block, now(), Boolean(resume())));
     const [copied, setCopied] = createSignal(false);
     return (
         <div class="ne" data-find={p.block.id}>
@@ -213,8 +215,8 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
             </div>
             <Show when={resume()}>
                 {(r) => (
-                    <div class="ne-resume" data-find-skip title={`At ${untilLabel(r().nextAt, now())}`}>
-                        Continues after the limit resets
+                    <div class="ne-resume" data-find-skip>
+                        Continues at {untilLabel(r().nextAt, now())}
                         <Show when={r().nextAt - now() >= 60_000}> · in {until(r().nextAt, now())}</Show>
                     </div>
                 )}
@@ -314,7 +316,7 @@ function LimitActions(p: { provider: string; accountId: string; resetsAt?: numbe
                 <For each={others()}>
                     {(a) => (
                         <button class="cbtn" disabled={(p.state?.busy && !p.state.activity?.idle) || switching()} title="Starts a new CLI thread with this conversation; send your message again" onClick={() => void switchTo(a.id)}>
-                            Switch to {a.name}
+                            Use {a.name} account
                         </button>
                     )}
                 </For>
@@ -401,11 +403,14 @@ function CompactedLine(p: { block: NoticeBlock; leaving?: boolean }) {
 }
 
 /** A notice block, drawn as what it is (lib/notices.ts noticeKind). */
-/** `leaving`: a compaction or a wake, fading out with the work it folds away with (TurnView). */
-export function Notice(p: { block: NoticeBlock; state?: SessionState; leaving?: boolean }) {
+/**
+ * `leaving`: a compaction or a wake, fading out with the work it folds away with (TurnView). `row`: it folds with
+ * the work, so a wake is a line among its steps: their edge, their size, no icon.
+ */
+export function Notice(p: { block: NoticeBlock; state?: SessionState; leaving?: boolean; row?: boolean }) {
     const kind = () => noticeKind(p.block);
     return (
-        <Switch fallback={<InfoLine block={p.block} leaving={p.leaving} />}>
+        <Switch fallback={<InfoLine block={p.block} leaving={p.leaving} row={p.row} />}>
             <Match when={kind() === "switch"}>
                 <SwitchLine block={p.block} />
             </Match>

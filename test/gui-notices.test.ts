@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import type { Block, NoticeBlock, ScheduleInfo } from "../src/server/protocol";
 
-const { codeRuns, errorParts, hasErrorCard, leadingNotices, limitTitle, listedSchedules, noticeKind, noticeReads, plainOf, shownBlocks, switchLine, waitingResume, warnParts } = await import("../gui/src/lib/notices");
+const { codeRuns, errorParts, hasErrorCard, isWorkRow, leadingNotices, limitTitle, listedSchedules, noticeKind, noticeReads, plainOf, quietBlocks, quietWake, shownBlocks, switchLine, waitingResume, warnParts } = await import("../gui/src/lib/notices");
 
 const at = (h: number, m = 0) => new Date(2026, 9, 23, h, m).getTime();
 const NOW = at(13, 35);
@@ -71,6 +71,38 @@ test("a limit's card takes the place of the turn's earlier warning; one on credi
     expect(ids(shownBlocks([reached, credits, other, card]))).toEqual(["c", "o", "e"]);
     expect(hasErrorCard([card])).toBe(true);
     expect(hasErrorCard([reached])).toBe(false);
+});
+
+test("a turn the CLI started for its background work has no row; a watched event's and another session's keep theirs", () => {
+    expect(quietWake({ wake: true, background: true })).toBe(true);
+    expect(quietWake({ wake: true })).toBe(false);
+    expect(quietWake({ wake: true, background: true, from: { id: "s", title: "Other" } })).toBe(false);
+    expect(quietWake({})).toBe(false);
+    expect(quietWake(undefined)).toBe(false);
+});
+
+test("a quiet turn's limit reached goes once something comes after it; the last turn's, and one on credits, stay", () => {
+    const reached = n({ id: "w", level: "warn", text: "reached", limit });
+    const credits = n({ id: "c", level: "warn", text: "credits", limit: { ...limit, credits: true } });
+    const card = n({ id: "e", level: "error", text: "stopped", limit });
+    const ids = (bs: Block[]) => bs.map((b) => b.id);
+    expect(ids(quietBlocks([reached, credits, card], true, false))).toEqual(["c", "e"]);
+    expect(ids(quietBlocks([reached, credits], true, true))).toEqual(["w", "c"]);
+    expect(ids(quietBlocks([reached, credits], false, false))).toEqual(["w", "c"]);
+});
+
+test("a limit's card says when it resets once: its title leaves the time to the line under it", () => {
+    const card = n({ level: "error", text: "stopped", limit });
+    expect(errorParts(card, NOW, true).title).toBe("Second is out of its 5-hour limit");
+    expect(errorParts(card, NOW).title).toStartWith("Second is out of its 5-hour limit until ");
+});
+
+test("steps and thoughts are work; what's said, a notice and a plan's card aren't", () => {
+    expect(isWorkRow({ kind: "activity" })).toBe(true);
+    expect(isWorkRow({ kind: "activity", card: "plan" })).toBe(false);
+    expect(isWorkRow({ kind: "block", block: { t: "thinking" } })).toBe(true);
+    expect(isWorkRow({ kind: "block", block: { t: "text" } })).toBe(false);
+    expect(isWorkRow({ kind: "block", block: { t: "notice" } })).toBe(false);
 });
 
 test("notices from before the first step sit above Worked for; later ones stay where they are", () => {

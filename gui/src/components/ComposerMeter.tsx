@@ -183,7 +183,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Send your message again after switching">Switch to {a.name}</button>}</For>
+                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Send your message again after switching">Use {a.name} account</button>}</For>
                                     </div>
                                 </Show>
                             </div>

@@ -147,9 +147,9 @@ for (const current of ["default", "work"]) test(`${current}: refresh only altern
         await Bun.sleep(0);
         const alternative = current === "default" ? "Work" : "Default";
         m.setState({ ...m.state(), busy: true });
-        expect(m.button(`Switch to ${alternative}`).props.disabled).toBe(true);
+        expect(m.button(`Use ${alternative} account`).props.disabled).toBe(true);
         m.setState({ ...m.state(), busy: false });
-        m.button(`Switch to ${alternative}`).props.onClick();
+        m.button(`Use ${alternative} account`).props.onClick();
         await Bun.sleep(0);
         expect(m.calls.at(-1)).toEqual(["session.setAccount", { id: "session", provider: "cli", accountId: alternative.toLowerCase() }]);
         expect(m.open()).toBe(false);
@@ -168,7 +168,7 @@ test("reached on credits (#434): says so, and switching away doesn't claim the t
         m.pending.resolve(accounts);
         await Bun.sleep(0);
         // Another account is still offered: it stops the spending.
-        m.button("Switch to Work").props.onClick();
+        m.button("Use Work account").props.onClick();
         await Bun.sleep(0);
         expect(m.notices).toEqual(["Account switched. Your next message uses it."]);
     } finally { m.dispose(); }
