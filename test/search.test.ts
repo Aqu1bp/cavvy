@@ -683,6 +683,44 @@ describe("searching session files", () => {
         expect((await searchSessions("lima later words")).hits[0]).toMatchObject({ id: s.id, index: 2 });
     });
 
+    test("the cache is let go of once nothing has searched for a while, not while a search runs", async () => {
+        const limits = { ...SEARCH_LIMITS };
+        try {
+            SEARCH_LIMITS.idleMs = 150;
+            clearSearchCache();
+            const s = write([prompt("quokka kept while searched"), reply("ok")]);
+            const only = { include: (id: string) => id === s.id };
+            await warmSearch();
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+            // Searched again before it's due: kept from then on.
+            await Bun.sleep(100);
+            expect((await searchSessions("quokka", only)).hits).toHaveLength(1);
+            await Bun.sleep(100);
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+            await Bun.sleep(150);
+            expect(searchCacheSize()).toEqual({ docs: 0, bytes: 0, turnTimes: 0, records: 0 });
+            // Read again when next asked.
+            expect((await searchSessions("quokka", only)).hits).toHaveLength(1);
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+        } finally {
+            Object.assign(SEARCH_LIMITS, limits);
+            clearSearchCache();
+        }
+    });
+
+    test("text with a character past Latin-1 counts two bytes a character, as the runtime keeps it", async () => {
+        const narrow = write([reply("x".repeat(10_000))]);
+        const wide = write([reply("x".repeat(9_999) + "→")]);
+        const size = async (id: string) => {
+            clearSearchCache();
+            await searchSessions("xxxx", { include: (x) => x === id });
+            return searchCacheSize().bytes;
+        };
+        // Its text and its folded copy, each twice as big.
+        expect((await size(wide.id)) - (await size(narrow.id))).toBe(2 * 10_000);
+        clearSearchCache();
+    });
+
     test("the cache counts all it keeps: folded text, turn starts, turn times by record", async () => {
         const limits = { ...SEARCH_LIMITS };
         try {
@@ -699,13 +737,13 @@ describe("searching session files", () => {
             expect((await searchSessions("sierra", { include: only })).hits).toHaveLength(1);
             const kept = searchCacheSize();
             expect(kept).toMatchObject({ docs: 1, turnTimes: 1, records: 51 });
-            expect(kept.chars).toBeGreaterThan(3000 * 32 + 2 * 1007);
+            expect(kept.bytes).toBeGreaterThan(3000 * 32 + 2 * 1007);
             // Over the limits: given back, not kept.
-            SEARCH_LIMITS.cacheChars = 50_000;
+            SEARCH_LIMITS.cacheBytes = 50_000;
             SEARCH_LIMITS.cacheTurnTimes = 10;
             clearSearchCache();
             expect((await searchSessions("sierra", { include: only })).hits).toHaveLength(1);
-            expect(searchCacheSize()).toEqual({ docs: 0, chars: 0, turnTimes: 0, records: 0 });
+            expect(searchCacheSize()).toEqual({ docs: 0, bytes: 0, turnTimes: 0, records: 0 });
         } finally {
             Object.assign(SEARCH_LIMITS, limits);
             clearSearchCache();

@@ -35,8 +35,14 @@ export const SEARCH_LIMITS = {
     /** Per query: reading stops after this long or this many bytes, and what was found so far is returned. */
     budgetMs: 2500,
     budgetBytes: 768 * 1024 * 1024,
-    /** What's kept across queries, in characters (each piece of text, its folded copy, and a cost per entry, turn start and session). */
-    cacheChars: 64 * 1024 * 1024,
+    /**
+     * What's kept across queries, in bytes: each piece of text and its folded copy (a byte a character, two in text with
+     * any character past Latin-1, as the runtime keeps them), and a cost per entry, turn start and session. Counted in
+     * characters, 64M of them held 57 MB of heap at 35M (1,808 sessions), so a full cache would have been about 105 MB.
+     */
+    cacheBytes: 32 * 1024 * 1024,
+    /** Nothing searched for this long (the palette closed): the cache is let go of, read again on the next open. */
+    idleMs: 5 * 60_000,
     /** Turn times kept across queries, in records (and one for each log). */
     cacheTurnTimes: 200_000,
 };
@@ -106,7 +112,7 @@ function mayHave(doc: Doc, wanted: { grams: readonly number[]; pair?: number }):
     return true;
 }
 
-/** Rough cost, in characters, of what's kept besides the text itself. */
+/** Rough cost, in bytes, of what's kept besides the text itself. */
 const ENTRY_COST = 64;
 const START_COST = 32;
 const DOC_COST = 256;
@@ -130,8 +136,8 @@ interface Doc {
     entries: Entry[];
     /** Where each turn starts (a prompt, a command, a steering message), as replay starts them. */
     starts: { seg: number; index: number }[];
-    /** All it keeps, in characters (see SEARCH_LIMITS.cacheChars). */
-    chars: number;
+    /** All it keeps, in bytes (see SEARCH_LIMITS.cacheBytes). */
+    bytes: number;
     /** Which runs of three characters its messages have (gramsOf): a search for something it can't have skips it. */
     grams?: Uint32Array;
     /** Which pairs of characters its messages have (gramsOf). */
@@ -153,7 +159,7 @@ interface TurnTimes {
 
 const docs = new Map<string, Doc>();
 const times = new Map<string, TurnTimes>();
-let cachedChars = 0;
+let cachedBytes = 0;
 let cachedTimes = 0;
 
 export function clearSearchCache() {
@@ -161,14 +167,35 @@ export function clearSearchCache() {
     lastScan = undefined;
     docs.clear();
     times.clear();
-    cachedChars = 0;
+    cachedBytes = 0;
     cachedTimes = 0;
 }
 
 /** What the cache holds now (for tests). */
-export function searchCacheSize(): { docs: number; chars: number; turnTimes: number; records: number } {
-    return { docs: docs.size, chars: cachedChars, turnTimes: times.size, records: cachedTimes };
+export function searchCacheSize(): { docs: number; bytes: number; turnTimes: number; records: number } {
+    return { docs: docs.size, bytes: cachedBytes, turnTimes: times.size, records: cachedTimes };
 }
+
+/** Searches and warm-ups under way, and the drop armed once the last one ended (SEARCH_LIMITS.idleMs). */
+let using = 0;
+let idleDrop: ReturnType<typeof setTimeout> | undefined;
+async function inUse<T>(f: () => Promise<T>): Promise<T> {
+    using++;
+    clearTimeout(idleDrop);
+    idleDrop = undefined;
+    try {
+        return await f();
+    } finally {
+        if (--using === 0) {
+            idleDrop = setTimeout(() => (idleDrop = undefined, using || clearSearchCache()), SEARCH_LIMITS.idleMs);
+            idleDrop.unref?.();
+        }
+    }
+}
+
+/** What a string costs kept: a byte a character, two when any is past Latin-1. */
+const WIDE = /[^\x00-\xff]/;
+const bytesOf = (s: string) => (WIDE.test(s) ? 2 : 1) * s.length;
 
 /** Not followed: a symlinked folder or file isn't part of the Cavvy home. */
 function plainStat(path: string) {
@@ -368,8 +395,8 @@ function messageText(m: Message, clean = (text: string) => text): { role: "user"
 async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control, ino = 0, had?: Doc): Promise<Doc | undefined> {
     const from = had && had.redaction === redactionVersion() && had.resume && had.resume.ino === ino && size >= had.resume.at && tailAt(file, had.resume.at) === had.resume.tail ? had.resume : undefined;
     const doc: Doc = from && had
-        ? { size, mtimeMs, redaction: had.redaction, cwd: had.cwd, title: from.titleLine, entries: [...had.entries], starts: [...had.starts], chars: 0 }
-        : { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
+        ? { size, mtimeMs, redaction: had.redaction, cwd: had.cwd, title: from.titleLine, entries: [...had.entries], starts: [...had.starts], bytes: 0 }
+        : { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], bytes: 0 };
     let seg = from?.seg ?? 0;
     let count = from?.count ?? 0;
     let first: string | undefined = from?.first;
@@ -444,7 +471,7 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
     const found = gramsOf(doc.entries, from && had?.grams ? { grams: had.grams, pairs: had.pairs, added } : undefined);
     doc.grams = found.grams;
     doc.pairs = found.pairs;
-    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0) + (doc.grams.length + doc.pairs.length) * 2;
+    doc.bytes = DOC_COST + bytesOf(doc.cwd ?? "") + bytesOf(doc.title ?? "") + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + bytesOf(e.text) + bytesOf(e.folded) + ENTRY_COST, 0) + (doc.grams.length + doc.pairs.length) * 4;
     return doc;
 }
 
@@ -463,15 +490,15 @@ function tailAt(file: string, at: number): string {
 
 function remember(file: string, doc: Doc) {
     const old = docs.get(file);
-    if (old) cachedChars -= old.chars;
+    if (old) cachedBytes -= old.bytes;
     docs.delete(file);
     docs.set(file, doc);
-    cachedChars += doc.chars;
+    cachedBytes += doc.bytes;
     // Oldest first out.
     for (const [f, d] of docs) {
-        if (cachedChars <= SEARCH_LIMITS.cacheChars) break;
+        if (cachedBytes <= SEARCH_LIMITS.cacheBytes) break;
         docs.delete(f);
-        cachedChars -= d.chars;
+        cachedBytes -= d.bytes;
     }
 }
 
@@ -737,12 +764,16 @@ async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
  * search would read anyway, before it's asked): it yields as a search does. The number read; it stops when the
  * secrets used to redact change, or `stale` says so.
  */
-export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<number> {
+export function warmSearch(o: { stale?: () => boolean } = {}): Promise<number> {
+    return inUse(() => warmNow(o));
+}
+
+async function warmNow(o: { stale?: () => boolean }): Promise<number> {
     const redaction = redactionVersion();
     const ctl = new Control(() => redaction !== redactionVersion() || Boolean(o.stale?.()), Number.POSITIVE_INFINITY, SEARCH_LIMITS.budgetBytes);
     let read = 0;
     for (const f of (await sessionFiles(ctl)) ?? []) {
-        if (cachedChars >= SEARCH_LIMITS.cacheChars * 0.9 || !(await ctl.tick())) break;
+        if (cachedBytes >= SEARCH_LIMITS.cacheBytes * 0.9 || !(await ctl.tick())) break;
         const had = docs.get(f.file);
         if (had && had.size === f.size && had.mtimeMs === f.mtimeMs && had.redaction === redaction) continue;
         let doc: Doc | undefined;
@@ -770,13 +801,15 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
  */
 let lastScan: { fq: string; files: Listed[]; redaction: number; found: Set<string> } | undefined;
 
-export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
-    searching++;
-    try {
-        return await searchNow(query, o);
-    } finally {
-        if (--searching === 0 && relistWanted) relistSoon();
-    }
+export function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
+    return inUse(async () => {
+        searching++;
+        try {
+            return await searchNow(query, o);
+        } finally {
+            if (--searching === 0 && relistWanted) relistSoon();
+        }
+    });
 }
 
 async function searchNow(query: string, o: SearchOptions): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
