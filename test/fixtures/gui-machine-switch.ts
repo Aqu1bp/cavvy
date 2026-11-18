@@ -156,20 +156,20 @@ try {
     assert.equal(homeOn(), "box");
     // Each machine's Home keeps what's picked on it, for the window's life: the permission mode (box's isn't put back
     // to its default by going Home on it again, nor this computer's by box's), and its own draft.
-    const { setMode, chooseHomeProject, openHomeProject } = await import("../../gui/src/state/actions");
+    const { setMode, chooseProject, openProject } = await import("../../gui/src/state/actions");
     await setMode("default");
     assert.equal(homeModeOf(), "default", "Manual picked on box's Home");
     assert.equal(homeDraftKey(), "home@box", "box's Home has its own draft");
     await settle();
     // Box's projects, not this computer's; and its folders to choose from, not this computer's picker.
     assert.deepEqual(homeProjects().map((p) => p.path), ["/srv/app", "/srv/api"], "box's projects");
-    void chooseHomeProject();
+    void chooseProject(true);
     const looking2 = looked.length;
     await folderPickerOpen()!.link!.call("fs.dirs", { path: "~" });
     assert.deepEqual(looked.slice(looking2).map((l) => l.url.includes("box")), [true], "box's folders");
     folderPickerOpen()!.then(undefined);
     // A project picked there: Home stays on box, in that folder.
-    await openHomeProject("/srv/api");
+    await openProject("/srv/api", true);
     assert.equal(homeOn(), "box", "Home stays on box");
     assert.equal(app.homeCwd, "/srv/api");
     assert.deepEqual(switched, [], "and the window stays here");

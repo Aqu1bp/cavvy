@@ -6,8 +6,8 @@
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
-import { app, homeOn, homeProjects, noModel, refreshHomeProjects, reportError, rpcFor, serversUi } from "../state/app";
-import { chooseHomeProject, connectCli, openHomeProject, trustAndContinue } from "../state/actions";
+import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
+import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
@@ -89,7 +89,7 @@ export function Home() {
     const trust = async (yes: boolean) => {
         await trustAndContinue(app.homeCwd!, yes);
         void refetch();
-        if (yes) void refreshHomeProjects();
+        if (yes) void refreshProjects();
     };
 
     // The terminal rows shown under the composer: home.css places the group by them. When they arrive
@@ -115,8 +115,8 @@ export function Home() {
     };
     const pick = async () => {
         setPickerOpen(false);
-        const path = await chooseHomeProject();
-        if (path) await openHomeProject(path);
+        const path = await chooseProject(true);
+        if (path) await openProject(path, true);
     };
     let composer: HTMLDivElement | undefined;
     // / and ! start a message (a command, a shell command), so they only type into an empty composer; @ goes anywhere.
@@ -207,7 +207,7 @@ export function Home() {
                                 class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
                                 onClick={() => {
                                     setPickerOpen(false);
-                                    void openHomeProject(pr.path);
+                                    void openProject(pr.path, true);
                                     requestComposerFocus();
                                 }}
                             >
@@ -244,7 +244,7 @@ export function Home() {
                                 ) that can run commands on this computer.
                             </p>
                             <div class="ask-row">
-                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshHomeProjects(); }}>
+                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
                                 </button>
                                 <span class="grow" />

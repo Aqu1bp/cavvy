@@ -131,17 +131,8 @@ export function homeProjects(): ProjectInfo[] {
     return on !== undefined ? (machineProjects[on] ?? []) : app.projects;
 }
 /** Home's draft: one for each machine, so what's typed for one isn't sent on another. */
-export function homeDraftKey(): string {
-    const on = homeOn();
-    return on !== undefined ? `home@${on}` : "home";
-}
-/** The projects of the machine Home is on again (one opened there goes first). */
-export function refreshHomeProjects(): Promise<void> {
-    const h = homeOn() !== undefined ? homeAway() : undefined;
-    if (!h) return refreshProjects();
-    machineProjectsAgain(h.on, h.link);
-    return Promise.resolve();
-}
+export const homeDraftKey = () => (homeOn() === undefined ? "home" : `home@${homeOn()}`);
+
 /** A setting picked on Home on another machine: saved there. Undefined on the window's own. */
 export function updateHomeSettings(patch: Partial<GuiSettings>): Promise<GuiSettings> | undefined {
     const on = homeOn();

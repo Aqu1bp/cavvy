@@ -61,28 +61,9 @@ export async function chooseFolder(o: { title?: string; action?: string; start?:
 }
 
 /** Choose a project folder. */
-export function chooseProject(): Promise<string | undefined> {
-    return chooseFolder();
-}
-
-/** A folder for Home, on the machine it's on: another machine's from its own folders, not this computer's picker. */
-export function chooseHomeProject(): Promise<string | undefined> {
-    if (homeOn() === undefined) return chooseProject();
-    const link = rpcFor(undefined);
-    return new Promise((resolve) => setFolderPickerOpen({ then: resolve, link }));
-}
-
-/** Home in `path`, on the machine Home is on. */
-export async function openHomeProject(path: string) {
-    const on = homeOn();
-    if (on === undefined) return openProject(path);
-    try {
-        const info = await rpcFor(undefined).call("projects.inspect", { path });
-        if (!info.exists) return toast(`${path} isn't a folder`, "error");
-        newSession(info.path, { machine: on || undefined });
-    } catch (e) {
-        reportError(e);
-    }
+/** `home`: for Home, on the machine it's on: another machine's from its own folders, not this computer's picker. */
+export function chooseProject(home?: boolean): Promise<string | undefined> {
+    return home && homeOn() !== undefined ? new Promise((then) => setFolderPickerOpen({ then, link: rpcFor(undefined) })) : chooseFolder();
 }
 
 /** Carry on with a Claude Code or Codex session in Cavvy: import it, or open the session that already holds it. */
@@ -108,12 +89,14 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
     }
 }
 
-export async function openProject(path: string) {
+/** `home`: from Home, on the machine it's on (another machine's, while it's there). */
+export async function openProject(path: string, home?: boolean) {
+    const on = home ? homeOn() : undefined;
     try {
-        const info = await rpc.call("projects.inspect", { path });
+        const info = await (on === undefined ? rpc : rpcFor(undefined)).call("projects.inspect", { path });
         if (!info.exists) return toast(`${path} isn't a folder`, "error");
-        newSession(info.path, { machine });
-        void refreshProjects();
+        newSession(info.path, { machine: on === undefined ? machine : on || undefined });
+        if (on === undefined) void refreshProjects();
     } catch (e) {
         reportError(e);
     }
