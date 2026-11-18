@@ -737,11 +737,7 @@ export class BrowserHost {
             if (this.strayKey(tab, input)) return e.preventDefault();
             // Ctrl+F (⌘F) of the person's in the page opens the pane's find bar, as a browser's own find does, rather
             // than reaching the page.
-            if (findKey(input) && !tab.agentKeys) {
-                e.preventDefault();
-                this.toGui({ type: "find", key });
-                return;
-            }
+            if (findKey(input) && !tab.agentKeys) return void (e.preventDefault(), this.toGui({ type: "find", key }));
             person(input.type);
             if (tab.agentInputs === 0) this.tabKey(input);
         });
