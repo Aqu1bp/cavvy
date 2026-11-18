@@ -156,6 +156,23 @@ export function fileAsText(p: FilePart): string {
 }
 
 /**
+ * An answer to a question with what the user attached to it: the answer's text (its picks and what they typed),
+ * each file framed in or where it's saved, and how many images come with it (as images, in `images`).
+ */
+export function answerWithAttachments(answers: readonly string[], attached: readonly (ImagePart | FilePart)[]): { text: string; images: ImagePart[] } {
+    const images = attached.filter((p): p is ImagePart => p.type === "image");
+    const files = attached.filter((p): p is FilePart => p.type === "file");
+    const said = answers.length ? `The user answered: ${answers.join(", ")}` : "The user answered with attachments only.";
+    const shown = images.length ? [`${images.length === 1 ? "An image" : `${images.length} images`} the user attached ${images.length === 1 ? "is" : "are"} included below.`] : [];
+    return { text: [said, ...files.map(fileAsText), ...shown].join("\n\n"), images };
+}
+
+/** What a user attached to an answer that's text only (an agent CLI's): each a text file framed in, or a saved one's place. */
+export function attachedAsText(attached: readonly (ImagePart | FilePart)[]): string[] {
+    return attached.flatMap((p) => (p.type === "file" ? [fileAsText(p)] : []));
+}
+
+/**
  * A prompt for an agent CLI (Claude Code, Codex): its text parts and text
  * files as one prompt, images and (where it reads them) PDFs alongside.
  */
