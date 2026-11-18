@@ -17,7 +17,7 @@ import { anthropicPricing, anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./a
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { backendModel, isAgentBackend } from "../backends/types";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
@@ -75,6 +75,7 @@ function providerConfiguration(def: ProviderDef): string {
 /** A client for a provider, with its stored key. Throws if a key is required but missing. */
 export async function clientFor(providerId: string): Promise<ProviderClient> {
     const def = getProvider(providerId);
+    if (!def && baseCli(providerId) !== providerId && agentCli(providerId)) throw new ProviderError(`The ${agentCli(providerId)!.name} setup "${providerId.slice(providerId.indexOf("@") + 1)}" was removed. Pick another model.`, 404);
     if (!def) throw new ProviderError(`Unknown provider "${providerId}". Run /providers to see the list.`);
     const cred = await credentialFingerprint(def);
     // A secret variable saved by another Cavvy since this one read them.
@@ -184,6 +185,8 @@ export interface ProviderListing {
 
 export interface ListOptions {
     refresh?: boolean;
+    /** Ask these providers again even when their lists are fresh (the others as `refresh` says). */
+    refreshIds?: string[];
     signal?: AbortSignal;
     /** Include providers without a key (as "no-key" rows) for onboarding UIs. */
     includeUnconfigured?: boolean;
@@ -195,9 +198,12 @@ export interface ListOptions {
 export async function listAllModels(opts: ListOptions = {}): Promise<ProviderListing[]> {
     const cache = readCache();
     let dirty = false;
+    /** Named instances not listed yet: they show their CLI's list until they are. */
+    const derived = new Set<ProviderListing>();
     const results = await Promise.all(
         allProviders().map(async (def): Promise<ProviderListing | undefined> => {
             const cached = cache.providers[def.id];
+            const refresh = opts.refresh || Boolean(opts.refreshIds?.includes(def.id));
             let fp: string | undefined;
             try {
                 const cred = await credentialFingerprint(def);
@@ -205,8 +211,19 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                     return opts.includeUnconfigured ? { provider: def, models: [], status: "no-key" } : undefined;
                 }
                 fp = cred.fp;
+                // A named instance is listed only when asked to (instances.ts): its list as last listed, of any age, or its CLI's.
+                if (def.instanceOf && !refresh) {
+                    if (cached && cached.fp === fp) {
+                        const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
+                        if (!opts.cachedOnly) opts.onProvider?.(l);
+                        return l;
+                    }
+                    const l: ProviderListing = { provider: def, models: [], status: "cached" };
+                    derived.add(l);
+                    return l;
+                }
                 if (opts.cachedOnly) return cached && cached.fp === fp && !def.local ? { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt } : undefined;
-                if (!def.local && !opts.refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
+                if (!def.local && !refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
                     const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
                     opts.onProvider?.(l);
                     return l;
@@ -238,10 +255,26 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
             }
         }),
     );
-    const listings = results.filter((x): x is ProviderListing => Boolean(x));
+    for (const l of derived) {
+        const base = results.find((x) => x?.provider.id === l.provider.instanceOf);
+        l.models = (base?.models ?? []).map((m) => ({ ...m, provider: l.provider.id }));
+        if (base?.status === "error" || base?.status === "no-key") Object.assign(l, { status: base.status, error: base.error });
+        else l.fetchedAt = base?.fetchedAt;
+        opts.onProvider?.(l);
+    }
+    const listings = results.filter((x): x is ProviderListing => Boolean(x)).map(withOwnModels);
     enrichPricing(listings);
     if (dirty) writeCache(cache);
     return listings;
+}
+
+/** An agent CLI's own model ids (AgentCliConfig.models) after those it lists: not cached, so a change shows at once. */
+function withOwnModels(l: ProviderListing): ProviderListing {
+    const own = l.provider.kind === "agent" ? readAgentConfig(l.provider.id)?.models : undefined;
+    if (!own?.length) return l;
+    const have = new Set(l.models.map((m) => m.id));
+    const added = own.filter((id) => !have.has(id)).map((id) => backendModel(l.provider.id, id, id));
+    return added.length ? { ...l, models: [...l.models, ...added], ...(l.status === "error" && !l.models.length ? { status: "cached" as const } : {}) } : l;
 }
 
 /**
@@ -319,8 +352,12 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
     if (!parsed) return undefined;
     const def = getProvider(parsed.provider);
     if (!def) return undefined;
-    const cached = readCache().providers[parsed.provider]?.models.find((m) => m.id === parsed.id);
+    const cache = readCache();
+    const cached = cache.providers[parsed.provider]?.models.find((m) => m.id === parsed.id);
     if (cached) return cached;
+    // A named instance not listed yet: its CLI's model.
+    const fromBase = def.instanceOf ? cache.providers[def.instanceOf]?.models.find((m) => m.id === parsed.id) : undefined;
+    if (fromBase) return { ...fromBase, provider: def.id };
     if (def.kind === "agent") return backendModel(def.id, parsed.id);
     if (def.kind === "responses") return responsesModelInfo(def.id, parsed.id, resolveBaseUrl(def));
     if (def.kind === "anthropic") {
@@ -447,7 +484,7 @@ export function smallModelFor(provider: string, listings?: ProviderListing[]): M
         return (cached && pick(cached, SMALL.anthropic)) ?? resolveModelInfo("anthropic:claude-haiku-5-5");
     }
     const models = listings?.find((l) => l.provider.id === provider)?.models ?? readCache().providers[provider]?.models ?? [];
-    const prefs = SMALL[provider];
+    const prefs = SMALL[provider] ?? SMALL[baseCli(provider)];
     if (!prefs) return undefined;
     for (const re of prefs) {
         const m = models.find((x) => re.test(x.id));

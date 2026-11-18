@@ -13,7 +13,7 @@ import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
 import { formatPrice } from "../providers/pricing";
 import { readsPdf } from "../providers/files";
-import { getProvider, type ProviderDef } from "../providers/registry";
+import { getProvider, readAgentConfig, type ProviderDef } from "../providers/registry";
 import { modelRef, parseModelRef, type AttachedPart, type FilePart, type ImagePart, type ModelInfo } from "../providers/types";
 import { redact } from "../util/redact";
 import { isInside } from "../util/files";
@@ -129,7 +129,11 @@ function lexists(path: string): boolean {
 
 /** Claude Code and Codex run on the user's plan, Ollama and LM Studio on this machine; anything else is billed per token (when in doubt, too). */
 export async function billingOf(def: ProviderDef | undefined): Promise<Billing> {
-    if (def?.auth === "cli") return "plan";
+    // One started with variables of its own may be sent to a paid API (a router): counted as one, to ask first.
+    if (def?.auth === "cli") {
+        const cfg = readAgentConfig(def.id);
+        return cfg?.env || cfg?.secretEnv ? "api" : "plan";
+    }
     // A keyed loopback proxy can forward to paid APIs. Only unkeyed custom
     // providers qualify as local, even when their key is optional.
     if (def?.local && !(def.custom && await getKey(def.id))) return "local";

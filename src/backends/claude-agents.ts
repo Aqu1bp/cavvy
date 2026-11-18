@@ -17,6 +17,7 @@ import { MCP_SERVER_NAME } from "../agent/delegation";
 import { matcherOr } from "../agent/hooks";
 import { APP_NAME } from "../config/name";
 import { legacyMcpMatcher } from "../config/legacy";
+import { baseCli } from "./defs";
 
 /** One entry of --agents: the fields Claude Code reads from a sub-agent file, plus its prompt. */
 export interface ClaudeAgentDefinition {
@@ -55,7 +56,7 @@ export function claudeModel(model: string | undefined): string | undefined {
     if (!model) return "inherit";
     const ref = parseModelRef(model);
     if (!ref) return "inherit";
-    if (ref.provider === "claude-code" || ref.provider === "anthropic") return ref.id === "default" ? "inherit" : ref.id;
+    if (baseCli(ref.provider) === "claude-code" || ref.provider === "anthropic") return ref.id === "default" ? "inherit" : ref.id;
     if (ref.provider === "openrouter" && ref.id.startsWith("anthropic/")) return ref.id.slice("anthropic/".length);
     return undefined;
 }

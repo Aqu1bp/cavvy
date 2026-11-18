@@ -46,7 +46,7 @@ Vertex's model catalog has no context sizes or prices. They're filled in from th
 
 ## Models
 
-`/model` shows one combined, searchable list of every model from every provider you have a key for, with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
+`/model` shows one combined, searchable list of every model from every provider you have a key for (and each [other setup of an agent CLI](subscriptions.md#other-setups-of-the-same-cli), like "Claude Code · OpenRouter"), with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
 
 Shortcuts: `/model gpt-6.1-sol` (unique match), `--model anthropic:claude-opus-5-5`, `cavvy models` for the same list in the shell (`--json` for scripts).
 

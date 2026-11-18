@@ -1297,7 +1297,31 @@ export interface ProviderInfo {
         autoAsks?: boolean;
         /** The environment variables it's started with. A secret's value is never sent: only that it's set. */
         env?: AgentEnvVar[];
+        /** Its named instances (src/providers/instances.ts), each a provider of its own in the model picker. */
+        instances?: AgentInstanceInfo[];
     };
+}
+
+/** A named instance of an agent CLI: "Claude Code · OpenRouter". */
+export interface AgentInstanceInfo {
+    /** Its provider id (claude-code@openrouter). */
+    id: string;
+    /** Its own name ("OpenRouter"). */
+    name: string;
+    path?: string;
+    args?: string[];
+    env: AgentEnvVar[];
+    /** Model ids offered besides the ones the CLI lists. */
+    models?: string[];
+}
+
+/** What a named instance is set up with, as Settings sends it. */
+export interface AgentInstanceInput {
+    name: string;
+    path?: string;
+    args?: string[];
+    env?: AgentEnvVar[];
+    models?: string[];
 }
 
 /** An environment variable an agent CLI is started with (src/providers/agent-env.ts). */
@@ -2373,6 +2397,11 @@ export interface Methods {
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
     /** Set all of an agent CLI's environment variables (those left out are removed). It has to be turned on. */
     "providers.setEnv": { params: { provider: string; vars: AgentEnvVar[] }; result: null };
+    /** Add a named instance of an agent CLI (`base`: claude-code, codex, …); its models are listed with its setup. */
+    "providers.addInstance": { params: AgentInstanceInput & { base: string }; result: { id: string } };
+    "providers.updateInstance": { params: AgentInstanceInput & { id: string }; result: null };
+    /** Its running turns go on; a session on it then asks for another model. */
+    "providers.removeInstance": { params: { id: string }; result: null };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
     /** Import one into a Cavvy session (or open the one that already holds it). */

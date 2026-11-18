@@ -12,6 +12,7 @@ import { getProvider, type ProviderDef } from "./registry";
 import type { FilePart, ImagePart, Message, ModelInfo, PdfPart, UserContent } from "./types";
 import { MEDIA_BUDGET, base64Size } from "../util/media";
 import { formatBytes } from "../util/files";
+import { baseCli } from "../backends/defs";
 
 /**
  * Whether a provider's wire takes a PDF as a document (from their docs, 2026-10):
@@ -24,7 +25,7 @@ import { formatBytes } from "../util/files";
  * document item.
  */
 export function providerReadsPdf(def: Pick<ProviderDef, "id" | "kind">): boolean {
-    if (def.kind === "agent") return def.id === "claude-code" || def.id === "antigravity";
+    if (def.kind === "agent") return baseCli(def.id) === "claude-code" || def.id === "antigravity";
     return def.kind === "anthropic" || def.kind === "responses" || def.id === "openrouter";
 }
 

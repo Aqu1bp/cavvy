@@ -38,13 +38,16 @@ const MARKS: Record<string, Mark> = {
 
 /** Providers that resell another's models still get their own mark; unknown ones get a monogram. */
 export function hasProviderIcon(id: string): boolean {
-    return id in MARKS;
+    return markId(id) in MARKS;
 }
+
+/** A named instance of an agent CLI (claude-code@openrouter) has its CLI's mark. */
+const markId = (id: string) => id.split("@")[0]!;
 
 /** `label`: what a screen reader says it is (the provider's name); without one it's decoration. */
 export function ProviderIcon(p: { id: string; name?: string; size?: number; class?: string; label?: string }) {
     const size = () => p.size ?? 16;
-    const mark = () => MARKS[p.id];
+    const mark = () => MARKS[markId(p.id)];
     const uid = createUniqueId();
     return (
         <Show

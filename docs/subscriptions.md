@@ -88,6 +88,24 @@ Each CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) can be started 
 - A change applies from each session's next message: a CLI already running is restarted then (after its background work, if it has any). The CLI's model list is listed again with the new variables.
 - Turning a CLI off removes its variables, secrets included.
 
+### Other setups of the same CLI
+
+**Settings → Providers → ••• → Add another Claude Code…** (or Codex, OpenCode, …) keeps a separate setup of the same CLI beside it: a name, environment variables, more model ids and, under **Program and arguments**, another path and arguments. It shows in the model picker and `/model` as a provider of its own, "Claude Code · OpenRouter", with the models the CLI lists when started with that setup, plus the model ids you added (a router's own names for its models, say: they're passed to the CLI as they are, `--model anthropic/claude-sonnet-4.5`). In `providers.json` it's an entry of `agents` named `<cli>@<name>`:
+
+```jsonc
+{ "agents": {
+    "claude-code": {},
+    "claude-code@openrouter": { "name": "OpenRouter", "env": { "ANTHROPIC_BASE_URL": "https://openrouter.ai/api", "ANTHROPIC_API_KEY": "" }, "secretEnv": ["ANTHROPIC_AUTH_TOKEN"], "models": ["anthropic/claude-sonnet-4.5"] }
+} }
+```
+
+- Its own `env`, `args` and `models`; its `path` if set, else its CLI's. Nothing else of its CLI's setup (its variables, its arguments) applies to it.
+- Accounts stay the CLI's: a setup runs on the account its session chose for that CLI (or the CLI's starting account), with that account's folder, settings and history. Most setups that need one carry their own credential in a variable, so a second set of accounts per setup would only be more to keep apart.
+- Its model list costs nothing at startup or when the picker opens: until it's listed, it shows its CLI's list. It's listed with its own setup when you add or change it, and when you refresh the lists (`ctrl+r` in `/model`, or the refresh button in the picker); that list is then kept, whatever its age, until the next of those.
+- Switching a session between a CLI and one of its setups is a switch of provider: the other one gets the conversation so far, as a switch to another model does.
+- **Remove** asks first, then deletes it and its secrets. A turn running on it goes on to its end. After that, a session on it can't send until you pick another model: its next message says so (it's never sent to the CLI's own setup in its place). A session reopened later on a removed setup opens on your default model.
+- Its use counts as paid (an API, not a plan) where Cavvy asks before running several paid models at once, and so does a CLI with variables of its own.
+
 ## Why it's built this way
 
 Anthropic's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) says subscription sign-in is for Claude Code and Anthropic's own apps. Third-party developers may not offer Claude.ai login, route requests through Free, Pro or Max plan credentials, or "collect, store, or intermediate Claude.ai credentials or session tokens". The same page says this doesn't prevent "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription". Tools that took Claude Code's sign-in and called the API with it were cut off in early 2026. Running the user's own unmodified Claude Code, signed in by the user, is the pattern the terms leave open. That pattern is meant for your own use. If you build a product or service on it for other people, Anthropic directs you to API keys (including for the Agent SDK). Their plan limits also assume ordinary, individual use. For Codex, `codex app-server` is the interface OpenAI ships for driving Codex from other programs (its editor extensions use it), and Cavvy runs your own Codex through it, signed in with `codex login`.

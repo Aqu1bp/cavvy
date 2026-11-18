@@ -56,7 +56,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { WholeTurnsOnly } from "../backends/one-off";
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
+import { agentCli, baseCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { IMAGE_KEY, imageKey, keepImages, readKept, toolImagesDir } from "./tool-images";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
@@ -2008,9 +2008,9 @@ export class Runtime {
         const window = m.contextWindow;
         // An agent that can't compact (an ACP agent's): never, here.
         if (agentCli(m.provider)?.caps.compact === "none") return undefined;
-        if (m.provider === "claude-code" || m.provider === "codex") {
+        if (baseCli(m.provider) === "claude-code" || baseCli(m.provider) === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
-            if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
+            if (baseCli(m.provider) === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
             return setting && window ? Math.min(setting, window) : setting;
         }
         const s = this.settings();
@@ -2498,7 +2498,7 @@ export class Runtime {
     private nativeGoalCommand(text: string, args: string): boolean {
         const c = parseGoalCommand(args);
         if (c.kind === "invalid") throw new RpcError(c.message, "invalid");
-        const claude = this.nativeGoal?.provider === "claude-code" || (this.agent?.model.provider ?? this.model?.provider) === "claude-code";
+        const claude = baseCli(this.nativeGoal?.provider) === "claude-code" || baseCli(this.agent?.model.provider ?? this.model?.provider) === "claude-code";
         if (claude && (c.kind === "pause" || c.kind === "resume")) {
             this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
             return true;
@@ -2614,7 +2614,7 @@ export class Runtime {
      * other agent works in the folder Cavvy gives it: the worktree.
      */
     private placeAgent(provider: string | undefined) {
-        if (this.workingIn) this.toolState.cwd = provider === "claude-code" ? this.ws.cwd : this.workingIn.path;
+        if (this.workingIn) this.toolState.cwd = baseCli(provider) === "claude-code" ? this.ws.cwd : this.workingIn.path;
     }
 
     private makeAgent() {
@@ -4248,7 +4248,7 @@ export class Runtime {
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
         // Until this workspace has reported its skills, let Claude Code resolve them.
-        if ((provider === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
+        if ((baseCli(provider) === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
         return c.name;
     }
 
