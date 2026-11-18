@@ -1165,9 +1165,17 @@ export async function importCliSession(cwd: string, source: string, id: string):
     return adopt(snap);
 }
 
-export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
+/** Where a session made from Home now would be made: its machine's connection and mode (`there` unset: this window's). */
+export type HomeAt = { there?: { on: string; link: Rpc }; mode?: PermissionModeId };
+export function homeAt(): HomeAt {
+    const h = homeOn() !== undefined ? homeAway() : undefined;
+    return { there: h && { on: h.on, link: h.link }, mode: homeModeOf() };
+}
+
+/** Make a session in `cwd`, on Home's machine as it was when `at` was taken (the user may have moved on since). */
+export async function createSession(cwd: string, at: HomeAt): Promise<SessionHandle> {
     // From Home on another machine: made there, and opened here as one of its sessions is.
-    const there = homeOn() !== undefined && app.homeCwd === cwd ? homeAway()! : undefined;
+    const { there, mode } = at;
     const snap = await (there ? there.link : rpc).call("session.create", { cwd, mode });
     if (there) {
         away.set(snap.state.id, there.link);

@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -259,14 +259,16 @@ export async function exportSession(id: string) {
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  * `accepted` identifies the receiving session, including one just created from Home.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string; at?: HomeAt }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    // Home's machine as it is now: checked, made and trusted there, wherever the user goes meanwhile.
+    const at = opts.to ? opts.to.at : id ? undefined : homeAt();
     let created = false;
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
-        const to = { id, cwd };
+        const to = { id, cwd, at };
         // The toast stays, with its action, until the send succeeds.
         toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
             // A failure is shown once, in this toast, with its retry.
@@ -284,8 +286,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             }
             // Check before creating a session, so a typo on Home doesn't start one.
             const command = opts.literal ? undefined : slashName(text);
-            if (command) await rpcFor(undefined).call("commands.list", { cwd, command });
-            const h = await createIn(cwd);
+            const home = at ?? {};
+            if (command) await (home.there?.link ?? rpc).call("commands.list", { cwd, command });
+            const h = await createIn(cwd, home);
             if (!h) return false;
             id = h.id;
             created = true;
@@ -326,11 +329,10 @@ function agentTrustReason(message: string): string {
     return message.replace(/\s*\(\/trust\)/, "");
 }
 
-async function createIn(cwd: string) {
-    // The machine it's made on, as it is now: the user may go elsewhere before it answers.
-    const link = rpcFor(undefined);
+async function createIn(cwd: string, at: HomeAt) {
+    const link = at.there?.link ?? rpc;
     try {
-        return await createSession(cwd, homeModeOf());
+        return await createSession(cwd, at);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
