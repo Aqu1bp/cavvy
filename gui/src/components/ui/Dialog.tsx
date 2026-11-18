@@ -31,8 +31,7 @@ export function Dialog(p: DialogProps) {
 /** Open dialogs' boxes, the topmost last: only it takes keys. */
 const stack: HTMLElement[] = [];
 /** Whether a dialog is open: it covers what's behind it, the errors shown there too (ErrorCards). */
-const [dialogOpen, setDialogOpen] = createSignal(false);
-export { dialogOpen };
+export const [dialogOpen, setDialogOpen] = createSignal(false);
 
 /** Whether `el` is in the dialog on top (keys a dialog handles itself go to it alone). */
 export function inTopDialog(el: Element): boolean {
