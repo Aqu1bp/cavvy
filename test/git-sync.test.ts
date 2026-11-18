@@ -1,6 +1,6 @@
 // Fetch, pull, ahead/behind and branch switching, on scratch repositories: a bare remote and two clones of it.
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 setDefaultTimeout(60_000);
@@ -61,6 +61,24 @@ test("ahead/behind come from local refs, and move after a fetch", async () => {
     expect(await gitFetch(mine)).toMatchObject({ remote: "origin", ahead: 1, behind: 2 });
     git(mine, "checkout", "-q", "--detach");
     expect(await gitSyncInfo(mine)).toEqual({ detached: true });
+});
+
+test("reading the counts is one git process: the title bar asks as each turn ends", async () => {
+    const { mine } = setup();
+    const shim = join(realpathSync(iso.home), `shim-${n++}`);
+    mkdirSync(shim);
+    const log = join(shim, "log");
+    writeFileSync(join(shim, "git"), `#!/bin/sh\necho "$*" >> "${log}"\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${shim}:${path}`;
+    try {
+        expect(await gitSyncInfo(mine)).toEqual({ detached: false, branch: "main", upstream: "origin/main", ahead: 0, behind: 0 });
+        const ran = readFileSync(log, "utf8").split("\n").filter(Boolean);
+        expect(ran).toHaveLength(1);
+        expect(ran[0]).toContain("for-each-ref");
+    } finally {
+        process.env.PATH = path;
+    }
 });
 
 test("a branch without an upstream has no counts; one whose upstream is gone says so", async () => {

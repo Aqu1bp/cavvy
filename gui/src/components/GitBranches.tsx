@@ -3,6 +3,7 @@
 // branch, or create one at HEAD. A chunk of its own: the title bar shows the plain branch until it's loaded.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
+import { syncReadSkipped } from "../lib/branch-sync";
 import { ArrowDown, ArrowUp, Check, CloudDownload, FolderGit2, GitBranch, GitPullRequest, Globe, Plus, Search } from "lucide-solid";
 import type { GitBranchEntry, GitBranchList, GitPrListInfo, GitPrWorktree, GitSyncInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
@@ -42,14 +43,17 @@ function Counts(p: { sync?: GitSyncInfo }) {
 /** The title bar's branch: a button that opens the branch dialog, with the upstream counts beside the name. */
 export function BranchChip(p: { handle: SessionHandle; branch: string }) {
     const st = () => p.handle.view.state;
-    // Read when a turn starts or ends, as edits land, on coming back to the window, and after a Git action here.
+    // Read when a turn ends (it may have committed), on coming back to the window, and after a Git action here: what
+    // moves the counts. Not as a turn starts or as its edits land: uncommitted changes don't move them, and each read
+    // is a git process on the server.
     // A signal, not a resource: the title bar's Suspense (for this chunk) would show the plain branch at each read.
     const [sync, setSync] = createSignal<GitSyncInfo>();
     let asked = 0;
     createEffect(on(
-        () => sessionReadReady(p.handle) && { cwd: st().cwd, id: p.handle.id, branch: p.branch, n: st().filesChanged, busy: st().busy, outside: changedOutside(), moved: moved() },
-        (k) => {
+        () => sessionReadReady(p.handle) && { cwd: st().cwd, id: p.handle.id, branch: p.branch, busy: st().busy, outside: changedOutside(), moved: moved() },
+        (k, was) => {
             if (!k) return;
+            if (syncReadSkipped(k, was || undefined)) return;
             const mine = ++asked;
             void rpc.call("git.sync", { cwd: k.cwd, sessionId: k.id }).then((r) => mine === asked && setSync(r), () => mine === asked && setSync(undefined));
         },

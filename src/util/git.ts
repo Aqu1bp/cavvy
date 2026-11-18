@@ -199,7 +199,7 @@ function readSmall(path: string): string | undefined {
  * every session until it returned. "" when HEAD is detached; undefined whenever it takes git to say, as anything not plain
  * does: a reftable repository (its HEAD names nothing), a bare one, a stop to the search, a mount on the way up.
  */
-function headBranch(cwd: string): string | undefined {
+export function headBranch(cwd: string): string | undefined {
     if (process.env.GIT_CEILING_DIRECTORIES !== undefined || process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM !== undefined) return undefined;
     try {
         let dir = realpathSync(cwd);
