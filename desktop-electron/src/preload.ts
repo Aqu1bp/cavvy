@@ -185,11 +185,17 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         ipcRenderer.on("quit_ask", listener);
         return () => void ipcRenderer.removeListener("quit_ask", listener);
     },
-    /** The question is up ("shown"), then its answer. */
-    quitReply: (id: number, answer: "shown" | "quit" | "cancel") => ipcRenderer.send("quit_reply", id, answer),
+    /** The page has the question ("asked", at once), then its answer, or "unable": it couldn't put it up. */
+    quitReply: (id: number, answer: "asked" | "quit" | "cancel" | "unable") => ipcRenderer.send("quit_reply", id, answer),
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
     browserBack: (seen: number) => ipcRenderer.send("browser_back", seen),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
     browserDevTools: (key: string, pane?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send("browser_devtools", key, pane),
     browserPainted: (key: string, size: { width: number; height: number }): Promise<boolean> => ipcRenderer.invoke("browser_painted", key, size),
+    /** The tab's page is drawn smaller than its size, or no longer is. */
+    browserSmall: (key: string, small: boolean) => ipcRenderer.send("browser_small", key, small),
+    /** A still of part of the window, as it looks now (a data URL). */
+    browserStill: (rect: { x: number; y: number; width: number; height: number }): Promise<string | undefined> => ipcRenderer.invoke("browser_still", rect),
+    /** The page is drawn at its own scale for screenshot `id`. */
+    browserSharp: (id: number) => ipcRenderer.send("browser_sharp", id),
 });

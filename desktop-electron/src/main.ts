@@ -169,8 +169,12 @@ function quitCost(): Promise<{ unsaved: number; working: number }> {
 // ---------------------------------------------------------------------------
 // Asking before quitting
 
-/** How long the page has to put the question up before the system's own box asks instead (a page stuck, or still loading). */
-const PAGE_ASK_MS = 1000;
+/**
+ * How long the page has to say it has the question before the system's own box asks instead (a page stuck in a loop:
+ * one that's crashed or still loading isn't asked at all). It says so before loading or drawing anything, so a busy
+ * computer only delays it by the page's current task; after that, drawing the dialog has no deadline.
+ */
+const PAGE_ACK_MS = 3000;
 let quitAsks = 0;
 /** The question up in the window, while it is: asked to quit again, it's checked the page still answers. */
 let pageAsking: PageAsk | undefined;
@@ -178,7 +182,7 @@ let pageAsking: PageAsk | undefined;
 /** Whether to quit: asked in the window, in Cavvy's own dialog (quit-ask.ts), or in the system's box where the page can't ask. */
 async function askToQuit(q: QuitQuestion): Promise<boolean> {
     if (win && !win.isDestroyed()) {
-        pageAsking = askInPage(win, q, { ipc: ipcMain, fromPage: fromGui, waitMs: PAGE_ASK_MS, id: ++quitAsks });
+        pageAsking = askInPage(win, q, { ipc: ipcMain, fromPage: fromGui, ackMs: PAGE_ACK_MS, id: ++quitAsks });
         const inPage = await pageAsking.answer;
         pageAsking = undefined;
         if (inPage !== undefined) return inPage;
@@ -555,6 +559,27 @@ function bridge() {
         if (!fromGui(e) || typeof key !== "string" || !size || ![size.width, size.height].every((n) => Number.isFinite(n) && n > 0)) return false;
         return host.painted(key, size);
     });
+    ipcMain.on("browser_small", (e, key: unknown, small: unknown) => {
+        if (fromGui(e) && typeof key === "string") host.drawnSmall(key, small === true);
+    });
+    ipcMain.on("browser_sharp", (e, id: unknown) => {
+        if (fromGui(e) && typeof id === "number") host.sharpened(id);
+    });
+    // A still of part of the window (in its CSS pixels), as it looks now: the GUI shows it over a page while it's
+    // drawn at its own scale for a screenshot (browser-host.ts sharpFor).
+    ipcMain.handle("browser_still", async (e, rect: unknown) => {
+        const r = rect as Partial<Record<"x" | "y" | "width" | "height", unknown>> | undefined;
+        if (!fromGui(e) || !win || win.isDestroyed() || !r || ![r.x, r.y, r.width, r.height].every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+        const zoom = win.webContents.getZoomFactor();
+        const box = { x: Math.round((r.x as number) * zoom), y: Math.round((r.y as number) * zoom), width: Math.round((r.width as number) * zoom), height: Math.round((r.height as number) * zoom) };
+        if (box.width <= 0 || box.height <= 0) return undefined;
+        try {
+            const still = await win.webContents.capturePage(box);
+            return still.isEmpty() ? undefined : still.toDataURL();
+        } catch {
+            return undefined;
+        }
+    });
     ipcMain.on("browser_sized", (e, key: string, size: { width: number; height: number; scale: number }) => {
         if (fromGui(e) && typeof key === "string" && size && [size.width, size.height, size.scale].every((n) => Number.isFinite(n) && n > 0)) host.sized(key, size);
     });
@@ -610,8 +635,12 @@ else {
                       : undefined;
             if (question && !(await askToQuit(question))) {
                 asking = false;
-                // Its last window closed to quit: it comes back, so the work can still be saved, or watched.
-                if (!win || win.isDestroyed()) createWindow();
+                // Its last window closed to quit: it comes back, so the work can still be saved, or watched (shown once
+                // its page is ready, as at launch).
+                if (!win || win.isDestroyed()) {
+                    shown = false;
+                    createWindow();
+                }
                 return;
             }
             quitting = true;
