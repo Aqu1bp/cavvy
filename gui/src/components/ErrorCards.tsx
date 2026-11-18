@@ -14,6 +14,7 @@ import { settingsTab, shellLayout } from "../state/ui";
 import { copyText } from "../lib/platform";
 import { errorPlace, messageParts, splitError, type ErrorPlace } from "../lib/error-text";
 import { coversComposer } from "../lib/layout";
+import { dialogOpen } from "./ui/Dialog";
 import { ToastItem } from "./Toasts";
 
 /** Cards shown at once; the rest are counted under them. */
@@ -101,7 +102,8 @@ export function ErrorCards(p: { place: ErrorPlace }) {
     // back and forth as adding/removing them makes the inspector short/tall.
     const windowHost = () => {
         const layout = shellLayout();
-        return coversComposer(layout) || (layout.inspector.open && layout.inspector.mode !== "dock");
+        // Under an open dialog they'd be behind its scrim: the window's are over it.
+        return dialogOpen() || coversComposer(layout) || (layout.inspector.open && layout.inspector.mode !== "dock");
     };
     const here = () => errorPlace(mounted(), !!settingsTab(), windowHost()) === place;
     // Newest first, as the mockup stacks them.

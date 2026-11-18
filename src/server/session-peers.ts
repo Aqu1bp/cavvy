@@ -4,7 +4,7 @@
 // the session first when it isn't open (and letting it go again once it's
 // done, as one no window shows is).
 
-import { diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
+import { deliveryText, diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PEER_LIMITS, PeerError, peerWake, readFromDisk, readText, type Delivery, type FarPeers, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
 import { findSessionAnywhere, sessionHolder } from "../agent/session";
 import type { Effort } from "../config/settings";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
@@ -48,35 +48,90 @@ export function runtimeSummary(rt: Runtime): PeerSummary {
     return { id: rt.id, title: titleOf(rt), cwd: rt.ws.cwd, status: statusOf(rt), model: rt.session.model, updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity) };
 }
 
-export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
+const modeName = (m: PermissionMode) => MODE_INFO[m].label;
+
+/** The session to send to, open here. */
+async function reach(host: PeerHost, id: string): Promise<Runtime> {
+    const live = host.get(id);
+    if (live) return live;
+    const file = findSessionAnywhere(id);
+    if (!file) throw new PeerError(`No session ${id}. ListSessions shows the ones there are (all: true for other projects').`);
+    if (sessionHolder(file) !== undefined) throw new PeerError(`Session ${id} is open in another Cavvy process (a terminal, say), so it can't be sent to from here. Ask the user to tell it there.`);
+    try {
+        return await host.open(id);
+    } catch (e) {
+        throw new PeerError(`Session ${id} couldn't be opened: ${redact((e as Error).message)}`);
+    }
+}
+
+/** `text` given to `rt` as a message from `from`: how it will be taken. */
+function deliverTo(host: PeerHost, rt: Runtime, from: { id: string; title: string }, text: string): Delivery {
+    const wakes = rt.toolState.wakes;
+    if (!wakes) throw new PeerError(`Session ${rt.id} can't take messages.`);
+    const waits = rt.wakeWaitsFor;
+    // As it will be taken: into the running turn (or the one coming: a goal's next, the user's queued message), a turn of
+    // its own when idle; held by Esc, the hourly limit, the user's answer or a missing account.
+    const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "turn" ? "joined" : "started";
+    wakes.push(peerWake(from, text));
+    host.release(rt.id);
+    return delivery;
+}
+
+/** This machine's sessions, newest first: on disk, and those open here as they are now. */
+function listHere(host: PeerHost, disk: ReturnType<typeof diskPeers>, o: { limit: number; match?: (s: PeerSummary) => boolean }) {
+    const out = new Map<string, PeerSummary>();
+    const listed = disk.list(o);
+    for (const s of listed.rows) out.set(s.id, s);
+    // Open here: as they are now (a session with nothing said yet isn't listed).
+    for (const rt of host.live()) {
+        if (!rt.session.messageCount && !rt.busy) continue;
+        const s = runtimeSummary(rt);
+        if (!o.match || o.match(s)) out.set(rt.id, s);
+        // On disk it matched, as it is now it doesn't (renamed since): not listed.
+        else out.delete(rt.id);
+    }
+    return { rows: [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt), capped: listed.capped };
+}
+
+/**
+ * What a session on another of the user's machines asks of this one's (src/server/far-peers.ts): list, read and send
+ * to its sessions, by their ids here. `server`: this Cavvy is a server, which a session's mode can't be freer than
+ * a sender's on (servers run freely by design: what they do stays on them).
+ */
+export function peerOps(host: PeerHost, server: boolean) {
+    const disk = diskPeers(() => "", () => "/");
+    return {
+        list: (o: { query?: string; limit: number }): PeerSummary[] => {
+            const q = o.query?.trim().toLowerCase();
+            const limit = Math.max(1, Math.min(Math.floor(o.limit), PEER_LIMITS.maxList));
+            return listHere(host, disk, { limit, match: (s) => !q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) }).rows.slice(0, limit);
+        },
+        read: (id: string, turns?: number): { text: string; title: string; turns: number } | undefined => {
+            const rt = host.get(id);
+            const found = rt ? { summary: runtimeSummary(rt), messages: rt.session.messages } : readFromDisk(id);
+            if (!found) return undefined;
+            const r = readText(found, { turns });
+            return { text: r.text, title: found.summary.title, turns: r.turns };
+        },
+        send: async (id: string, text: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }> => {
+            const rt = await reach(host, id);
+            if (!server && freerMode(rt.mode, from.mode)) throw new PeerError(
+                    // From another machine (`<machine>/<id>`): it counts as Auto at most here, whatever it runs in there.
+                    from.id.includes("/")
+                        ? `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than a session on another machine counts for here (${modeName(from.mode)} mode at most), so it can't be sent work from there. Ask the user to send it themselves.`
+                        : `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than the sending session's ${modeName(from.mode)} mode, so it can't be sent work from there. Ask the user to send it themselves.`,
+                );
+            const delivery = deliverTo(host, rt, { id: from.id, title: from.title }, text);
+            return { text: deliveryText(runtimeSummary(rt), delivery), delivery, title: runtimeSummary(rt).title };
+        },
+    };
+}
+
+/** `far`: the user's other machines' sessions, as they can be reached when asked (none: not from here). */
+export function appPeers(host: PeerHost, self: Runtime, far?: () => FarPeers | undefined): SessionPeers {
     const disk = diskPeers(() => self.id, () => self.ws.cwd);
-    const mode = (m: PermissionMode) => MODE_INFO[m].label;
-
-    /** The session to send to, open here. */
-    const reach = async (id: string): Promise<Runtime> => {
-        const live = host.get(id);
-        if (live) return live;
-        const file = findSessionAnywhere(id);
-        if (!file) throw new PeerError(`No session ${id}. ListSessions shows the ones there are (all: true for other projects').`);
-        if (sessionHolder(file) !== undefined) throw new PeerError(`Session ${id} is open in another Cavvy process (a terminal, say), so it can't be sent to from here. Ask the user to tell it there.`);
-        try {
-            return await host.open(id);
-        } catch (e) {
-            throw new PeerError(`Session ${id} couldn't be opened: ${redact((e as Error).message)}`);
-        }
-    };
-
-    const deliver = (rt: Runtime, text: string): Delivery => {
-        const wakes = rt.toolState.wakes;
-        if (!wakes) throw new PeerError(`Session ${rt.id} can't take messages.`);
-        const waits = rt.wakeWaitsFor;
-        // As it will be taken: into the running turn (or the one coming: a goal's next, the user's queued message), a turn of
-        // its own when idle; held by Esc, the hourly limit, the user's answer or a missing account.
-        const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "turn" ? "joined" : "started";
-        wakes.push(peerWake({ id: self.id, title: titleOf(self) }, text));
-        host.release(rt.id);
-        return delivery;
-    };
+    const mode = modeName;
+    const deliver = (rt: Runtime, text: string): Delivery => deliverTo(host, rt, { id: self.id, title: titleOf(self) }, text);
 
     /**
      * The model and effort to start a session on: as asked (a model a provider set up here has, an effort it takes), else
@@ -117,26 +172,18 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         get cwd() {
             return self.ws.cwd;
         },
-        list: ({ limit, match }) => {
-            const out = new Map<string, PeerSummary>();
-            const listed = disk.list({ limit, match });
-            for (const s of listed.rows) out.set(s.id, s);
-            // Open here: as they are now (a session with nothing said yet isn't listed).
-            for (const rt of host.live()) {
-                if (!rt.session.messageCount && !rt.busy) continue;
-                const s = runtimeSummary(rt);
-                if (!match || match(s)) out.set(rt.id, s);
-                // On disk it matched, as it is now it doesn't (renamed since): not listed.
-                else out.delete(rt.id);
-            }
-            return { rows: [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt), capped: listed.capped };
-        },
+        list: (o) => listHere(host, disk, o),
         read: (id) => {
             const rt = host.get(id);
             return rt ? { summary: runtimeSummary(rt), messages: rt.session.messages } : readFromDisk(id);
         },
+        // The user's other machines' sessions, sent to as this one: looked for each time (a server added since counts).
+        get far() {
+            const f = far?.();
+            return f && { list: f.list, read: f.read, send: (id: string, text: string) => f.send(id, text, { id: self.id, title: titleOf(self), mode: self.mode }) };
+        },
         send: async (id, text) => {
-            const rt = await reach(id);
+            const rt = await reach(host, id);
             // Work handed to a session that asks the user less would be done with less asking than here.
             if (freerMode(rt.mode, self.mode)) throw new PeerError(`Session ${id} runs in ${mode(rt.mode)} mode, which asks the user less than this session's ${mode(self.mode)} mode, so it can't be sent work from here. Ask the user to send it themselves.`);
             return { summary: runtimeSummary(rt), delivery: deliver(rt, text) };

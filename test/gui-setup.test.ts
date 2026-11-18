@@ -55,7 +55,7 @@ async function panel() {
             return [read, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
         createEffect: (callback: () => void) => effects.push(callback), on: () => () => {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
-        app, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
+        app, connOn: () => app.conn, machine: undefined, setTerminalLogin() {}, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260, fontSize: 14 }, terminalFontSize, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
         withShortcut: (label: string) => label, terminalKey: () => "shell", toast: (text: string, kind: string) => notices.push({ text, kind }),
         rpc: {
@@ -262,6 +262,8 @@ function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; open
             return [() => value, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
         onCleanup() {}, app, asksForSetup, setupNote, setupTabLabel, setupObscured, trustRequest: () => undefined,
+        // Home on the window's own machine: its connection is the window's.
+        homeOn: () => undefined, rpcFor: (): unknown => dependencies.rpc, setFolderPickerOpen() {},
         rpc: {
             onEvent: (callback: typeof event) => { event = callback; return () => {}; },
             call: async (method: string, params: any) => {

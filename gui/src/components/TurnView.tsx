@@ -18,7 +18,8 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app, handleFor, loadTurn } from "../state/app";
+import { activate, app, awayMachine, handleFor, loadTurn, restoredFrom } from "../state/app";
+import { machine, os } from "../lib/platform";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, isWorkRow, leadingNotices, quietBlocks, quietWake, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -82,13 +83,26 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
  * A message from the agent in another session, started a turn or joined one: quoted in the reply's column, not the
  * user's bubble. Which session is on hover (and read out); a click opens it. A long one opens and closes.
  */
-function PeerQuote(p: { from: { id: string; title: string }; text: string; find?: string; reveal?: boolean }) {
+function PeerQuote(p: { from: { id: string; title: string }; /** The session it came to. */ in?: string; text: string; find?: string; reveal?: boolean }) {
     const [open, setOpen] = createSignal(false);
     const long = () => p.text.split("\n").length > 14 || p.text.length > 1400;
     createEffect(() => p.reveal && setOpen(true));
+    // One on another machine than the session it came to is named `<machine>/<id>`; one on the same, by its id alone.
+    const at = () => /^([^/]+)\/(.+)$/.exec(p.from.id);
+    const from = () => `“${p.from.title}”${at() ? ` on ${at()![1]}` : ""}`;
+    const show = () => {
+        const m = at();
+        // The machine this session is on, as this window names it: a server's name, "" this computer, none the window's own.
+        const here = p.in === undefined ? undefined : awayMachine(p.in);
+        // To a session on a server, this computer goes by a name of its own (far-peers.ts HOME_NAME).
+        const home = os === "macos" ? "mac" : "desktop";
+        const on = !m ? here : m[1] === home && (here ?? machine) ? "" : m[1]!;
+        if (on !== undefined) restoredFrom(m ? m[2]! : p.from.id, on);
+        void activate(m ? m[2]! : p.from.id);
+    };
     return (
         <div class="peer-card">
-            <button class="peer-head" title={`From “${p.from.title}”`} aria-label={`Message from “${p.from.title}”`} onClick={() => activate(p.from.id)}>
+            <button class="peer-head" title={`From ${from()}`} aria-label={`Message from ${from()}`} onClick={show}>
                 <MessageSquareText size={14} aria-hidden="true" />
                 Message from another session
             </button>
@@ -124,7 +138,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     );
     // A message from the agent in another session that started this turn.
     const from = p.turn.prompt?.from;
-    if (from) return <PeerQuote from={from} text={text()} find="prompt" reveal={expanded()} />;
+    if (from) return <PeerQuote from={from} in={p.sessionId} text={text()} find="prompt" reveal={expanded()} />;
     // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
     if (p.turn.prompt?.wake) {
         return (
@@ -741,7 +755,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} leaving={leaving?.()} row={folds?.()} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} leaving={leaving?.()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
-                        <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} text={m().text} find={m().id} reveal={findReveal()?.part === m().id} />}</Match>
+                        <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} in={p.state.id} text={m().text} find={m().id} reveal={findReveal()?.part === m().id} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
                     </Switch>
                 )}

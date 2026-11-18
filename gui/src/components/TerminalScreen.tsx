@@ -7,7 +7,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
-import { RpcError } from "../lib/rpc";
+import { RpcError, type ConnectionState, type Rpc } from "../lib/rpc";
 import { prefs } from "../state/prefs";
 import { terminalFontSize } from "../lib/text-size";
 import { setupObscured } from "../state/ui";
@@ -18,7 +18,10 @@ import { terminalKey } from "../state/keybindings";
 import { terminalTakesKeys, terminalUsed } from "../lib/terminal-keys";
 import { setupTickets, signInTabs, type Tab } from "../lib/terminal-tabs";
 
-export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: string) => void; onRestart: (terminal: string, previous?: string) => Promise<void> }) {
+/** `link`: the connection to the machine its shell runs on, and `conn` its state (the window's own, unless given). */
+export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: string) => void; onRestart: (terminal: string, previous?: string) => Promise<void>; link?: Rpc; conn?: () => ConnectionState }) {
+    const link = p.link ?? rpc;
+    const conn = () => (p.conn ? p.conn() : app.conn);
     let container!: HTMLDivElement;
     let term: Terminal;
     let fit: FitAddon;
@@ -48,7 +51,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     const send = (data: string) => {
         // A pasted command may exceed one RPC's input limit. Preserve order.
         // Typed as the shell exits: it's gone, which the exit message says.
-        for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
+        for (const chunk of terminalInputChunks(data)) void link.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
     };
     let fitting = 0;
     // Flow control: the server holds output back until what it sent has been drawn.
@@ -60,7 +63,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         const chars = drawn;
         drawn = 0;
         // The server knows the shell before it sends any output, and ignores acks for one that has gone.
-        if (chars && app.conn === "open") void rpc.call("terminal.ack", { id, chars }).catch(() => {});
+        if (chars && conn() === "open") void link.call("terminal.ack", { id, chars }).catch(() => {});
     };
     const forgetDrawn = () => {
         clearTimeout(acking);
@@ -73,7 +76,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         opened = false;
         attach = true;
         setEnded(`${p.tab.login ? "Login" : "Shell"} exited (${code})`);
-        if (p.tab.login) void rpc.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
+        if (p.tab.login) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
     };
     /** Disconnected from a shell that's still running: it comes back with the connection. */
     const [away, setAway] = createSignal(false);
@@ -113,15 +116,15 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         fit.fit();
         const size = `${term.cols}x${term.rows}`;
         if (changed && size === sent) return;
-        if (opened && !ended() && app.conn === "open") {
+        if (opened && !ended() && conn() === "open") {
             sent = size;
-            void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
+            void link.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
         }
     };
     const lost = (e: unknown) => e instanceof RpcError && e.code === "disconnected";
     /** Back to the shell the server kept: what it printed meanwhile comes first (as terminal.data, ahead of the reply). */
     const reattach = async () => {
-        if (app.conn !== "open") return void setAway(true);
+        if (conn() !== "open") return void setAway(true);
         setAway(false);
         setEnded(undefined);
         if (p.tab.login) setLoginOutputLost(true);
@@ -131,7 +134,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         const attempt = ++attachment;
         const at = epoch;
         try {
-            const info = await rpc.call("terminal.attach", { id, ...(pos === undefined ? {} : { have: pos }) });
+            const info = await link.call("terminal.attach", { id, ...(pos === undefined ? {} : { have: pos }) });
             if (disposed || at !== epoch || attempt !== attachment) return;
             const typed = early.take();
             if (info.exitCode !== undefined) {
@@ -147,7 +150,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             early.take();
             if (lost(e)) {
                 setAway(true);
-                if (app.conn === "open") void reattach();
+                if (conn() === "open") void reattach();
                 return;
             }
             attach = false;
@@ -166,7 +169,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             setEnded(failed("this setup run is no longer available."));
             return;
         }
-        if (app.conn !== "open") {
+        if (conn() !== "open") {
             if (run) setEnded(failed("not connected to Cavvy server."));
             return;
         }
@@ -175,11 +178,11 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         early.begin();
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
-            if (run) await rpc.call("scripts.run", { ...shell, script: run.id, ...(ticket ? { setup: ticket } : {}) });
+            if (run) await link.call("scripts.run", { ...shell, script: run.id, ...(ticket ? { setup: ticket } : {}) });
             // A sign-in card's command, for this tab's first shell only.
             const signIn = run ? undefined : signInTabs.get(p.tab.id);
             signInTabs.delete(p.tab.id);
-            if (!run) await rpc.call("terminal.open", { ...shell, login: p.tab.login, ...(signIn ? { signIn } : {}) });
+            if (!run) await link.call("terminal.open", { ...shell, login: p.tab.login, ...(signIn ? { signIn } : {}) });
             opened = true;
             attach = true;
             const typed = early.take();
@@ -192,12 +195,12 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
                 const message = failed("the setup terminal is no longer visible");
                 setEnded(message);
                 toast(message, "warn");
-                if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {});
+                if (conn() === "open") void link.call("terminal.close", { id }).catch(() => {});
                 return;
             }
-            if (typed && app.conn === "open") send(typed);
+            if (typed && conn() === "open") send(typed);
             // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
-            if ((run || signIn) && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
+            if ((run || signIn) && conn() === "open") void link.call("terminal.arm", { id }).catch(() => {});
             fitNow();
             takeKeys();
         } catch (e) {
@@ -208,7 +211,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             if (lost(e)) {
                 attach = true;
                 setAway(true);
-                if (app.conn === "open") void reattach();
+                if (conn() === "open") void reattach();
                 return;
             }
             setEnded(run ? failed((e as Error).message) : (e as Error).message);
@@ -240,10 +243,10 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             // Replaying a recorded query must not send a fresh reply into the shell.
             if (replayWrites && isTerminalReply(data)) return;
             if (early.hold(data)) return;
-            if (!opened || ended() || app.conn !== "open") return;
+            if (!opened || ended() || conn() !== "open") return;
             send(data);
         });
-        const off = rpc.onEvent((e) => {
+        const off = link.onEvent((e) => {
             if (e.type === "terminal.data" && e.id === id) {
                 const at = epoch;
                 const replay = attaching || !!e.reset;
@@ -271,7 +274,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
                 setEnded("This terminal moved to another window. Restart to start a new one here.");
             }
         });
-        const stateOff = rpc.onState((state) => {
+        const stateOff = link.onState((state) => {
             if (state !== "open") {
                 forgetDrawn();
                 // The server keeps the shell for this window; output meanwhile comes back with the connection.
@@ -304,11 +307,11 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} />
         <Show when={loginOutputLost()}><div class="terminal-message">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
-            <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
+            <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
         </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">
             <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
-            <Show when={!away()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
+            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }

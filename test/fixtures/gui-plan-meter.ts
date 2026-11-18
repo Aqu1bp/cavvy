@@ -10,7 +10,7 @@ import { cost, tokens } from "../../gui/src/lib/format";
 const source = (path: string) => readFileSync(new URL(`../../gui/src/${path}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 const accounts: AccountInfo[] = ["default", "work"].map((id) => ({ id, name: id === "default" ? "Default" : "Work", folder: `/fake/${id}`, managed: id !== "default", signedIn: true }));
 const timestamp = Date.now();
-function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean; credits?: boolean; away?: string } = {}) {
+function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean; credits?: boolean; away?: string; machineProviders?: any[]; machineLimits?: Record<string, any> } = {}) {
     const root = node("root");
     const calls: any[] = [];
     const errors: unknown[] = [];
@@ -39,6 +39,10 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
+        // Another machine's session has that machine's providers and limits, asked over the connection to it.
+        providersFor: () => (options.away === undefined ? [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }] : options.machineProviders ?? []),
+        limitsFor: () => (options.away === undefined ? limits() : options.machineLimits ?? {}),
+        rpcFor: () => ({ call: (...args: any[]) => { calls.push(options.away === undefined ? args : ["there", ...args]); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } }),
         awayMachine: () => options.away, reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
         document: doc, Popover, Ring, Gauge: () => null, Shrink: () => null, renderer: domRenderer, sp: (n: number) => n,
     });
@@ -180,12 +184,21 @@ test("reached on credits (#434): says so, and switching away doesn't claim the t
     } finally { hard.dispose(); }
 });
 
-test("another machine's session opened here: this computer's plan limits and accounts aren't its", () => {
-    const m = mount({ reached: true, away: "box" });
+test("another machine's session opened here: its plan limits and accounts are that machine's, not this computer's", () => {
+    // This computer's account is at its limit; box's isn't known to be.
+    const none = mount({ reached: true, away: "box" });
+    try {
+        none.show();
+        expect(text(none.root)).not.toContain("Limit reached");
+        expect(none.calls).toEqual([]);
+    } finally { none.dispose(); }
+    // Box's own account at its limit: said, and its other accounts are asked of box.
+    const boxes = [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "default", accounts: [{ id: "default", name: "Default" }, { id: "second", name: "Second" }] } }];
+    const m = mount({ away: "box", machineProviders: boxes, machineLimits: { [planLimitKey("cli", "default")]: { at: timestamp, reached: true, windows: [{ label: "5-hour", usedPercent: 100 }] } } });
     try {
         m.show();
-        expect(text(m.root)).not.toContain("Limit reached");
-        expect(m.calls).toEqual([]);
+        expect(text(m.root)).toContain("5-hour limit");
+        expect(m.calls.map((c: any[]) => c.slice(0, 2))).toEqual([["there", "accounts.list"]]);
     } finally { m.dispose(); }
 });
 

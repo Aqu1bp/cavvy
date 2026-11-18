@@ -107,7 +107,8 @@ function Pane(p: { id: string; first: boolean; last: boolean; share: number; par
     // or a model it picks is that session's.
     const take = () => {
         wasFocused = focused();
-        if (!wasFocused) focusPane(p.id);
+        // One that couldn't open: only its Retry tries again (focusing it would, and may go to its machine to ask).
+        if (!wasFocused && !paneOpening[p.id]?.error) focusPane(p.id);
     };
     let section: HTMLElement | undefined;
     // Kept out of sight with the keyboard in it (a switch by key while typing): let go of now, or the browser keeps it
