@@ -3314,6 +3314,12 @@ button.att-card:hover {
         order: -1;
     }
 
+    /* A button left alone in its row (a question's Skip, with or without Answer above it) takes the row. */
+    .ask-row .pbtn:only-of-type,
+    .ask-row .pbtn.primary + .grow + .pbtn:last-child {
+        grid-column: 1 / -1;
+    }
+
     .schedule-when,
     .goal-status {
         display: none;
