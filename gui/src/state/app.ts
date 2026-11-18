@@ -55,12 +55,12 @@ rpc.route = (method, params) => {
  * What machine `id` is on: its row's, or (its row not listed yet, after a reload) the one the window was showing it
  * from (cavvy.navigation's `on`); else the window's own.
  */
-function machineOf(id: string): string | undefined {
+export function machineOf(id: string): string | undefined {
     // Opened here from another machine (a fork made there may not be listed yet).
     if (awayOn.has(id)) return awayOn.get(id) || undefined;
     const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
     if (at) return at.machine;
-    if (restoredOn && restoredOn.id === id) return restoredOn.on || undefined;
+    if (restoredOn.has(id)) return restoredOn.get(id) || undefined;
     return machine;
 }
 /**
@@ -243,9 +243,11 @@ let shownNow: () => string | undefined = () => undefined;
  */
 function tellShown() {
     const id = shownNow();
-    const there = id !== undefined ? away.get(id) : undefined;
-    if (app.conn === "open") void rpc.call("session.shown", { id: there ? undefined : id }).catch(() => undefined);
-    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: there === link ? id : undefined }).catch(() => undefined);
+    // In a split, the other pane too, to its machine when the focused one isn't on it.
+    const shown = id === undefined ? [] : [id, ...onScreen.beside().filter((x) => x !== id)];
+    const on = (link: Rpc) => shown.find((x) => (away.get(x) ?? rpc) === link);
+    if (app.conn === "open") void rpc.call("session.shown", { id: on(rpc) }).catch(() => undefined);
+    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: on(link) }).catch(() => undefined);
 }
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
@@ -488,12 +490,16 @@ const NAVIGATION_KEY = "cavvy.navigation";
  * The session the window was showing as it loaded, and the machine it's on ("" this computer), when that isn't the
  * window's: it's opened from there again (machineOf), its row maybe not listed yet.
  */
-let restoredOn: { id: string; on: string } | undefined;
+const restoredOn = new Map<string, string>();
+/** `id` was shown from machine `on` before the reload (a split's other pane, state/split.ts): opened from there again. */
+export function restoredFrom(id: string, on: string) {
+    restoredOn.set(id, on);
+}
 /** Per webview/tab, separate from device-wide preferences and auth links. */
 function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
     try {
         const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
-        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn = { id: saved.activeId, on: saved.on };
+        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn.set(saved.activeId, saved.on);
         return {
             activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
             homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
@@ -1759,6 +1765,7 @@ export function start() {
     shownNow = () => (hidden() ? undefined : app.activeId);
     createRoot(() => createEffect(() => {
         shownNow();
+        onScreen.beside();
         if (app.conn === "open") tellShown();
     }));
     rpc.onState((s) => {

@@ -6,22 +6,27 @@
 
 import { batch, createContext, createRoot, createSignal, useContext } from "solid-js";
 import { createStore, unwrap } from "solid-js/store";
-import { activate, app, forgetSession, handleFor, onScreen, openBeside, wasDeleted } from "./app";
+import { activate, app, forgetSession, handleFor, machineOf, onScreen, openBeside, restoredFrom, wasDeleted } from "./app";
+import { machine } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { safeRenderText } from "../lib/render-error";
 import { agentFocus, inspectorPane, review, setAgentFocus, setInspectorPane, setReview, splitActions } from "./ui";
 import type { InspectorPane } from "../lib/inspector";
 
 export type Side = "left" | "right";
-/** `added`: the one dropped last, on `side`; `anchor`, the other. */
-export interface Split { anchor: string; added: string; side: Side }
+/** `added`: the one dropped last, on `side`; `anchor`, the other. `on`: the machine of each not on the window's ("" this computer). */
+export interface Split { anchor: string; added: string; side: Side; on?: Record<string, string> }
 
 const SPLIT_KEY = "cavvy.split";
 
 function load(): Split | undefined {
     try {
         const s = JSON.parse(sessionStorage.getItem(SPLIT_KEY) ?? "null");
-        if (typeof s?.anchor === "string" && typeof s.added === "string" && s.anchor !== s.added && (s.side === "left" || s.side === "right")) return s;
+        if (typeof s?.anchor === "string" && typeof s.added === "string" && s.anchor !== s.added && (s.side === "left" || s.side === "right")) {
+            // Opened from there again, their rows maybe not listed yet.
+            for (const id of [s.anchor, s.added]) if (typeof s.on?.[id] === "string") restoredFrom(id, s.on[id]);
+            return { anchor: s.anchor, added: s.added, side: s.side };
+        }
     } catch { /* storage off: none */ }
     return undefined;
 }
@@ -32,7 +37,14 @@ export { split };
 function setSplit(s: Split | undefined) {
     setSplitNow(s);
     try {
-        if (s) sessionStorage.setItem(SPLIT_KEY, JSON.stringify(s));
+        if (s) {
+            const on: Record<string, string> = {};
+            for (const id of [s.anchor, s.added]) {
+                const m = machineOf(id);
+                if (m !== machine) on[id] = m ?? "";
+            }
+            sessionStorage.setItem(SPLIT_KEY, JSON.stringify(Object.keys(on).length ? { ...s, on } : s));
+        }
         else sessionStorage.removeItem(SPLIT_KEY);
     } catch { /* in memory only */ }
 }

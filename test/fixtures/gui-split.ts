@@ -76,6 +76,11 @@ s.dropSession("b", "left");
 await settle();
 assert.deepEqual(s.split(), { anchor: "a", added: "b", side: "left" });
 assert.deepEqual(s.splitIds(), ["b", "a"], "the dropped one goes to the half it was dropped on");
+assert.equal(JSON.parse(values.get("cavvy.split")!).on, undefined, "both on the window's machine: none saved");
+// After a reload, a pane's session of another machine opens from that machine, its row maybe not listed yet.
+assert.equal(appState.machineOf("unlisted"), undefined);
+appState.restoredFrom("unlisted", "box");
+assert.equal(appState.machineOf("unlisted"), "box");
 assert.equal(appState.app.activeId, "b", "and is focused");
 assert.equal(ui.review(), undefined, "its own panel: no diff reader of a's");
 assert.equal(s.besideReads(), true, "a's reader, kept, holds the side panel open and as wide while b is focused");
