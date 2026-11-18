@@ -3609,16 +3609,21 @@ export class Engine {
             case "limits.get":
                 return [...this.limits.values()];
             case "usage.summary": {
-                const own = await usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
-                const who: Record<string, string> = {};
-                for (const [key, s] of this.accountStatus) if (s.email) who[key] = s.email;
-                own.who = who;
-                own.names = Object.fromEntries(AGENT_CLIS.flatMap((d) => (d.account ? listAccounts(d.id) : []).filter((a) => a.id !== "default").map((a) => [`${d.id}:${a.id}`, a.name])));
+                const days = usageDays(p.days);
+                const reading = usageSummary(days, Date.now(), [...this.limits.values()]).then((own) => {
+                    const who: Record<string, string> = {};
+                    for (const [key, s] of this.accountStatus) if (s.email) who[key] = s.email;
+                    own.who = who;
+                    own.names = Object.fromEntries(AGENT_CLIS.flatMap((d) => (d.account ? listAccounts(d.id) : []).filter((a) => a.id !== "default").map((a) => [`${d.id}:${a.id}`, a.name])));
+                    // Asked by the user's own computer, to add to its own (usage-machines.ts): the detail isn't added.
+                    if (p.brief === true) own.buckets = [];
+                    return own;
+                });
                 // The user's own computer adds its servers' (a subscription is used on all of them); a server answers with its own.
                 // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
                 const links = this.serverLinks;
-                if (this.o.away || !links) return own;
-                return usageEverywhere(own, { names: links.list().map((s) => s.name), connected: links.connectedServers() });
+                if (this.o.away || !links) return reading;
+                return usageEverywhere(days, reading, { names: links.list().map((s) => s.name), connected: links.connectedServers() });
             }
             case "app.update.get":
                 return this.updates.get();

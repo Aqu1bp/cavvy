@@ -112,7 +112,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
             </div>
         </section>
         <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1)}>
-            <UsageAccounts accounts={accounts()} metric={m()} total={total()} hl={setHl} />
+            <UsageAccounts accounts={accounts()} names={p.data.names} metric={m()} total={total()} hl={setHl} />
         </Show>
         <UsageChart data={p.data} metric={m()} />
         <h3 class="set-h">By token type</h3>
@@ -142,10 +142,10 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
 }
 
 /** What each account gave, under a heading per source; the bars are shares of the whole range, so accounts compare across sources. */
-function UsageAccounts(p: { accounts: AccountTotal[]; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
+function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary gives: another machine's accounts, and this computer's in a window that isn't on it. */ names?: Record<string, string>; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
     const info = (a: AccountTotal) => app.providers.find((x) => x.id === a.provider);
     const account = (a: AccountTotal) => info(a)?.agentCli?.accounts?.find((x) => x.id === a.accountId);
-    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
+    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : p.names?.[`${a.source}:${a.accountId}`] ?? account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
     const meta = (a: AccountTotal) => {
         if (a.source === "api") return "API key";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
