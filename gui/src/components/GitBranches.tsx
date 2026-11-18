@@ -8,10 +8,9 @@ import type { GitBranchEntry, GitBranchList, GitPrListInfo, GitPrWorktree, GitSy
 import { RpcError } from "../lib/rpc";
 import type { SessionHandle } from "../state/app";
 import { app, createSession, handleFor, requestTrust, rpc, setApp, toast } from "../state/app";
-import { requestComposerFocus } from "../state/ui";
 import { changedOutside, refreshGitChanges, sessionReadReady } from "../state/changes";
 import { withShortcut } from "../state/keybindings";
-import { gitDialog, setGitDialog } from "../state/ui";
+import { gitDialog, requestComposerFocus, setGitDialog } from "../state/ui";
 import { ago, plural, tildify } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
