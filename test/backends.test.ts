@@ -536,8 +536,8 @@ describe("Claude Code backend", () => {
         await a.run("plan it");
         expect(plan).toBe("1. Do the thing");
         expect(a.mode()).toBe("acceptEdits");
-        // Cavvy's accept-edits runs Claude Code in its default mode (Cavvy approves the edits).
-        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] });
+        // Cavvy's accept-edits is Claude Code's own.
+        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
     });
 
     test("ExitPlanMode: a plan taken to another session stops Claude Code's turn, still in plan mode", async () => {
