@@ -6,8 +6,8 @@
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
-import { app, homeOn, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
-import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
+import { app, homeOn, homeProjects, noModel, refreshHomeProjects, reportError, rpcFor, serversUi } from "../state/app";
+import { chooseHomeProject, connectCli, openHomeProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
@@ -89,7 +89,7 @@ export function Home() {
     const trust = async (yes: boolean) => {
         await trustAndContinue(app.homeCwd!, yes);
         void refetch();
-        if (yes) void refreshProjects();
+        if (yes) void refreshHomeProjects();
     };
 
     // The terminal rows shown under the composer: home.css places the group by them. When they arrive
@@ -115,8 +115,8 @@ export function Home() {
     };
     const pick = async () => {
         setPickerOpen(false);
-        const path = await chooseProject();
-        if (path) await openProject(path);
+        const path = await chooseHomeProject();
+        if (path) await openHomeProject(path);
     };
     let composer: HTMLDivElement | undefined;
     // / and ! start a message (a command, a shell command), so they only type into an empty composer; @ goes anywhere.
@@ -200,14 +200,14 @@ export function Home() {
                 <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
-                    <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
+                    <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
                         {(pr) => (
                             <button
                                 role="menuitem"
                                 class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
                                 onClick={() => {
                                     setPickerOpen(false);
-                                    void openProject(pr.path);
+                                    void openHomeProject(pr.path);
                                     requestComposerFocus();
                                 }}
                             >
@@ -244,7 +244,7 @@ export function Home() {
                                 ) that can run commands on this computer.
                             </p>
                             <div class="ask-row">
-                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
+                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshHomeProjects(); }}>
                                     Trust this folder
                                 </button>
                                 <span class="grow" />

@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayUnopened, createSession, homeCwdAfter, homeHere, homeModeOf, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -63,6 +63,26 @@ export async function chooseFolder(o: { title?: string; action?: string; start?:
 /** Choose a project folder. */
 export function chooseProject(): Promise<string | undefined> {
     return chooseFolder();
+}
+
+/** A folder for Home, on the machine it's on: another machine's from its own folders, not this computer's picker. */
+export function chooseHomeProject(): Promise<string | undefined> {
+    if (homeOn() === undefined) return chooseProject();
+    const link = rpcFor(undefined);
+    return new Promise((resolve) => setFolderPickerOpen({ then: resolve, link }));
+}
+
+/** Home in `path`, on the machine Home is on. */
+export async function openHomeProject(path: string) {
+    const on = homeOn();
+    if (on === undefined) return openProject(path);
+    try {
+        const info = await rpcFor(undefined).call("projects.inspect", { path });
+        if (!info.exists) return toast(`${path} isn't a folder`, "error");
+        newSession(info.path, { machine: on || undefined });
+    } catch (e) {
+        reportError(e);
+    }
 }
 
 /** Carry on with a Claude Code or Codex session in Cavvy: import it, or open the session that already holds it. */

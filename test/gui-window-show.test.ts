@@ -64,7 +64,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
         node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, onCleanup: stub, onMount: stub,
         React: { Fragment: "Fragment" },
         ChevronDown: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub,
-        app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, serversUi: stub, connectCli: stub, openProject: stub, trustAndContinue: stub,
+        app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshHomeProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseHomeProject: stub, homeProjects: () => [], noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, serversUi: stub, connectCli: stub, openHomeProject: stub, trustAndContinue: stub,
         requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
         CliSessions: stub, Composer: stub, ErrorCards: stub, Menu: stub, ProviderIcon: stub, WorktreePicker: stub,

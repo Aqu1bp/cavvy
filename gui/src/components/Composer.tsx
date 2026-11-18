@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, awayMachine, connFor, handleFor, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
+import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -63,7 +63,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let bar: HTMLDivElement | undefined;
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
-    const draftKey = () => p.sessionId ?? "home";
+    const draftKey = () => p.sessionId ?? homeDraftKey();
     // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
     const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);

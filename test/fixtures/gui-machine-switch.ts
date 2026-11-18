@@ -59,7 +59,8 @@ class ServerSocket extends Socket {
             looked.push({ url: this.url, method });
             reply(method === "fs.mentions" ? [] : {});
         } else if (method === "settings.get") reply(onBox ? { model: "boxp:only-on-box" } : {});
-        else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
+        else if (method === "projects.recent") reply(onBox ? [{ path: "/srv/app", name: "app", exists: true, trusted: true, needsTrust: [] }, { path: "/srv/api", name: "api", exists: true, trusted: true, needsTrust: [] }] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
+        else if (method === "projects.inspect") reply({ path: params.path, exists: true });
         else if (method === "session.create") {
             made.push({ url: this.url, cwd: params.cwd, mode: params.mode });
             reply({ seq: 0, epoch: "e", state: { id: `made-${made.length}`, cwd: params.cwd, busy: false, interactions: [] }, turns: [], agents: [] });
@@ -73,7 +74,8 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, rpcFor, warmFor, homeOn, homeSettings, machineFor } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
+const { folderPickerOpen } = await import("../../gui/src/state/ui");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -152,10 +154,40 @@ try {
     // New session from it: Home on box again. From the window's own: Home here.
     newSession(app.homeCwd);
     assert.equal(homeOn(), "box");
+    // Each machine's Home keeps what's picked on it, for the window's life: the permission mode (box's isn't put back
+    // to its default by going Home on it again, nor this computer's by box's), and its own draft.
+    const { setMode, chooseHomeProject, openHomeProject } = await import("../../gui/src/state/actions");
+    await setMode("default");
+    assert.equal(homeModeOf(), "default", "Manual picked on box's Home");
+    assert.equal(homeDraftKey(), "home@box", "box's Home has its own draft");
+    await settle();
+    // Box's projects, not this computer's; and its folders to choose from, not this computer's picker.
+    assert.deepEqual(homeProjects().map((p) => p.path), ["/srv/app", "/srv/api"], "box's projects");
+    void chooseHomeProject();
+    const looking2 = looked.length;
+    await folderPickerOpen()!.link!.call("fs.dirs", { path: "~" });
+    assert.deepEqual(looked.slice(looking2).map((l) => l.url.includes("box")), [true], "box's folders");
+    folderPickerOpen()!.then(undefined);
+    // A project picked there: Home stays on box, in that folder.
+    await openHomeProject("/srv/api");
+    assert.equal(homeOn(), "box", "Home stays on box");
+    assert.equal(app.homeCwd, "/srv/api");
+    assert.deepEqual(switched, [], "and the window stays here");
+    newSession(app.homeCwd);
+    assert.equal(homeModeOf(), "default", "box's pick kept after a new session there");
     await activate("l1");
     newSession(app.homeCwd);
     assert.equal(homeOn(), undefined, "Home on this computer");
+    assert.equal(homeModeOf(), undefined, "this computer's Home isn't given box's pick");
+    assert.equal(homeDraftKey(), "home", "nor its draft");
+    assert.deepEqual(homeProjects().map((p) => p.path), ["/home/me/web"], "and lists this computer's projects");
     assert.deepEqual(modelsFor(undefined), app.models);
+    await activate("made-1");
+    newSession(app.homeCwd);
+    assert.equal(homeOn(), "box");
+    assert.equal(homeModeOf(), "default", "box's pick kept after a visit to this computer's session");
+    await activate("l1");
+    newSession(app.homeCwd);
     await activate("b1");
     await settle();
     // One of box's on screen but not opened here (its connection still being made, or box unreachable): Home here, in

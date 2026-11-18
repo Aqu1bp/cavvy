@@ -68,7 +68,14 @@ function machineOf(id: string): string | undefined {
  * session there, as opening one of its sessions opens it here, over the connection to it. The window isn't loaded
  * again for it (0.2-0.5 s, and what was typed meanwhile went astray).
  */
-const [homeAway, setHomeAway] = createSignal<{ on: string; cwd: string; link: Rpc; mode?: PermissionModeId }>();
+const [homeAway, setHomeAway] = createSignal<{ on: string; cwd: string; link: Rpc }>();
+/** The permission mode picked on Home on each other machine, for the window's life (app.homeMode is this computer's). */
+const [awayModes, setAwayModes] = createStore<Record<string, PermissionModeId>>({});
+/** Each other machine's recent projects, for Home's project menu while it's on that machine. */
+const [machineProjects, setMachineProjects] = createStore<Record<string, ProjectInfo[]>>({});
+function machineProjectsAgain(on: string, link: Rpc) {
+    void link.call("projects.recent", {}).then((p) => setMachineProjects(on, reconcile(p, { key: "path" })), () => undefined);
+}
 /** Each other machine's settings, for Home on it: the model, effort and permission mode a session made there starts with. */
 const [machineSettings, setMachineSettings] = createStore<Record<string, GuiSettings>>({});
 function machineSettingsAgain(on: string, link: Rpc) {
@@ -93,6 +100,7 @@ export function homeOnMachine(on: string, cwd: string): boolean {
         setApp("activeId", undefined);
     });
     if (!(on in machineSettings)) machineSettingsAgain(on, link);
+    machineProjectsAgain(on, link);
     if (!(on in machineModels)) machineModelsAgain(on, link);
     return true;
 }
@@ -107,14 +115,32 @@ export function homeSettings(): GuiSettings {
 }
 /** The permission mode picked on Home: its machine's own (a server's is Bypass; this computer's is never set by a server's). */
 export function homeModeOf(): PermissionModeId | undefined {
-    return homeOn() !== undefined ? homeAway()!.mode : app.homeMode;
+    const on = homeOn();
+    return on !== undefined ? awayModes[on] : app.homeMode;
 }
-/** Picked on Home on another machine: kept for the session it makes. False on the window's own. */
+/** Picked on Home on another machine: kept for it while the window's open, as app.homeMode is here. False on the window's own. */
 export function setHomeAwayMode(mode: PermissionModeId): boolean {
-    const h = homeOn() !== undefined ? homeAway() : undefined;
-    if (!h) return false;
-    setHomeAway({ ...h, mode });
+    const on = homeOn();
+    if (on === undefined) return false;
+    setAwayModes(on, mode);
     return true;
+}
+/** The recent projects Home's menu offers: those of the machine it's on. */
+export function homeProjects(): ProjectInfo[] {
+    const on = homeOn();
+    return on !== undefined ? (machineProjects[on] ?? []) : app.projects;
+}
+/** Home's draft: one for each machine, so what's typed for one isn't sent on another. */
+export function homeDraftKey(): string {
+    const on = homeOn();
+    return on !== undefined ? `home@${on}` : "home";
+}
+/** The projects of the machine Home is on again (one opened there goes first). */
+export function refreshHomeProjects(): Promise<void> {
+    const h = homeOn() !== undefined ? homeAway() : undefined;
+    if (!h) return refreshProjects();
+    machineProjectsAgain(h.on, h.link);
+    return Promise.resolve();
 }
 /** A setting picked on Home on another machine: saved there. Undefined on the window's own. */
 export function updateHomeSettings(patch: Partial<GuiSettings>): Promise<GuiSettings> | undefined {
