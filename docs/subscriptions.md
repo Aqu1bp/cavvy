@@ -66,11 +66,27 @@ A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through
 
 ## The CLI's credentials
 
-What Cavvy never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus Cavvy's own provider keys. That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave Cavvy. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`) and `args` (extra arguments):
+What Cavvy never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus Cavvy's own provider keys and the tokens that would sign a CLI in (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, …). That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave Cavvy or have in your shell. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`), `args` (extra arguments) and `env` (below):
 
 ```jsonc
 { "agents": { "claude-code": {}, "codex": { "path": "~/bin/codex", "args": ["-c", "model_reasoning_summary=detailed"] } } }
 ```
+
+### Environment variables
+
+Each CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) can be started with environment variables of your own: **Settings → Providers → ••• → Environment variables…** on a CLI that's on, or `env` in `providers.json`. For example, Claude Code through OpenRouter or another Anthropic-compatible router:
+
+| Name | Value |
+|---|---|
+| `ANTHROPIC_BASE_URL` | `https://openrouter.ai/api` |
+| `ANTHROPIC_AUTH_TOKEN` | your router key, marked secret (the lock) |
+| `ANTHROPIC_API_KEY` | empty |
+
+- A variable you set is passed to that CLI only, even when it's one Cavvy otherwise strips (`ANTHROPIC_AUTH_TOKEN` above), and over the same name in Cavvy's own environment. Other CLIs, Cavvy's tools, hooks and MCP servers don't get it. Without any, a CLI's environment is as described above: what you have in your shell for Cavvy (an `ANTHROPIC_API_KEY`, say) never reaches it.
+- A secret value is stored like an API key (the OS keychain, or `~/.cavvy/credentials.json` with mode 600) and only its name goes in `providers.json` (`"secretEnv": ["ANTHROPIC_AUTH_TOKEN"]`). It's masked wherever Cavvy shows or saves text, and Settings never shows it again: leave its field blank to keep it. The CLI itself has it in its environment, so commands it runs can read it, as they can any variable you start a CLI with.
+- The account folders' variables (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `CODEX_HOME`) and Cavvy's own (`CAVVY…`) can't be set here: use accounts for the first. What Cavvy sets for a launch (its session marker, a one-off's settings) goes over yours.
+- A change applies from each session's next message: a CLI already running is restarted then (after its background work, if it has any). The CLI's model list is listed again with the new variables.
+- Turning a CLI off removes its variables, secrets included.
 
 ## Why it's built this way
 

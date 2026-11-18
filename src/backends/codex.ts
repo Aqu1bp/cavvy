@@ -38,6 +38,7 @@ import { servedSessionTool } from "../tools/session-tools";
 import { servedWorktreeTool } from "../tools/worktree-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { signInAdvice } from "./account-login";
 import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
@@ -143,7 +144,7 @@ export function untrustedArgs(cwd: string): string[] {
 function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[] } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
     const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : [])];
-    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: cliEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
 async function handshake(rpc: Rpc) {

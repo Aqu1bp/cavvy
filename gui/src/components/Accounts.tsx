@@ -9,6 +9,7 @@ import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Spinner } from "./ui/bits";
+import { EnvDialog } from "./CliEnv";
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..") ? undefined : "Use 1–64 plain characters, starting with a letter or number, without '..'.";
@@ -41,6 +42,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     const [renameError, setRenameError] = createSignal<string>();
     const [removing, setRemoving] = createSignal<AccountInfo>();
     const [removeError, setRemoveError] = createSignal<string>();
+    const [envOpen, setEnvOpen] = createSignal(false);
+    const env = () => cli()?.env ?? [];
     let providerMenu: HTMLButtonElement | undefined;
     const cli = () => p.provider.agentCli;
     const installed = () => cli()?.installed !== false;
@@ -143,6 +146,11 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <div class="prov-name">
                     <span class="truncate">{p.provider.name}</span>
                     <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
+                    <Show when={p.provider.configured && env().length}>
+                        <button class="tag env-tag" title={env().map((v) => v.name).join(", ")} onClick={() => setEnvOpen(true)}>
+                            {env().length === 1 ? "1 variable" : `${env().length} variables`}
+                        </button>
+                    </Show>
                     <Show when={p.provider.configured}>
                         <Show when={problem()} fallback={<span class="cli-dot" role="img" aria-label="Connected" title="Connected" />}>
                             <span class="cli-problem">{problem()}</span>
@@ -166,6 +174,9 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                             <button class="menu-item" role="menuitem" disabled={busy() || adding()} onClick={() => choose(() => { setActionError(undefined); setAdding(true); })}>Add account…</button>
                         </Show>
                         <Show when={single()} keyed>{(a) => accountItems(a)}</Show>
+                        <Show when={p.provider.configured}>
+                            <button class="menu-item" role="menuitem" onClick={() => choose(() => setEnvOpen(true))}>Environment variables…</button>
+                        </Show>
                         <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(refreshNow)}>Refresh status</button>
                         <button class="menu-item" role="menuitem" onClick={() => choose(() => setHelp(true))}>Learn more…</button>
                         <Show when={p.provider.configured && p.onTurnOff}>
@@ -227,6 +238,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 : "A new account shares Default's settings and history; only the sign-in differs."}</p>
             <p>A folder you choose is used as it is, with nothing shared.</p>
         </Dialog>
+        <Show when={envOpen()}><EnvDialog provider={p.provider} onClose={() => setEnvOpen(false)} /></Show>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
             <p>{a().managed && !a().invalid ? "Deletes the folder Cavvy made" : "Leaves its folder untouched"}: <code class="account-path">{a().folder}</code></p>
             <p>This doesn't sign it out: run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with its folder first.</p>

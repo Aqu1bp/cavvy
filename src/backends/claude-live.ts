@@ -30,6 +30,7 @@ import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/h
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
 import { accountEnv } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { claudeMemoryDirectory } from "./claude-memory";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
@@ -2062,7 +2063,7 @@ class ClaudeCliAdapter implements AgentCliAdapter {
 
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const env = accountEnv(this.def.id, cfg.accountId, cfg.cwd);
+        const env = cliEnv(this.def.id, cfg.accountId, cfg.cwd);
         const t = cfg as BackendTurn;
         const { pluginDir } = claudeSkills(this.def.id, t);
         const agentsPath = cfg.agents && Object.keys(cfg.agents).length && !cfg.readOnly ? agentsFileFor(cfg.agents) : undefined;

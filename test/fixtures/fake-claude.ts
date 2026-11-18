@@ -72,6 +72,7 @@
 // FAKE_MCP_BATCH=1   the "mcp" scenario's calls are all said first (one response with several), then run one by one
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
+// FAKE_ECHO_ENV     NAME,NAME2: each turn answers with those variables' values, as it was started with them
 // FAKE_TRANSCRIPTS=1 keeps each session as a transcript under its config folder's projects/ (CLAUDE_CONFIG_DIR, or
 //                    ~/.claude), as Claude Code does; --resume finds only those ("No conversation found" otherwise).
 //                    --fork-session copies the resumed one's. Each prompt, and each message folded into a running
@@ -924,6 +925,12 @@ async function turn(content: any[], uuid?: string) {
     if (scenario === "auth-failed") {
         out({ type: "assistant", message: { role: "assistant", model: "<synthetic>", usage: unread, content: [{ type: "text", text: "Invalid API key" }] }, error: "authentication_failed", parent_tool_use_id: null, session_id: sessionId });
         return result("success", { is_error: true, result: "Invalid API key", usage: unread });
+    }
+    // FAKE_ECHO_ENV=NAME,NAME2: answers with those variables as it was started with them (unset: "-").
+    if (process.env.FAKE_ECHO_ENV) {
+        const said = process.env.FAKE_ECHO_ENV.split(",").map((n) => `${n.trim()}=${process.env[n.trim()] ?? "-"}`).join("\n");
+        text(said);
+        return result("success", { result: said });
     }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });

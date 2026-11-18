@@ -17,12 +17,12 @@ export interface AcpAgent {
     /** Arguments after the def's acpArgs, and environment, for a process: only what's fixed for its life. */
     spawn(cfg: SpawnConfig): { args: string[]; env: Record<string, string> };
     /** Its models' ids (passed to it verbatim), without opening a session (which would land in its history). */
-    listModels(bin: string, signal?: AbortSignal): Promise<{ id: string; name?: string }[]>;
+    listModels(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ id: string; name?: string }[]>;
     /**
      * Whether it's signed in, without reading its sign-in (its own status command). Left out: it's signed in when it
      * starts and answers initialize.
      */
-    status?(bin: string, signal?: AbortSignal): Promise<{ signedIn: boolean; description: string }>;
+    status?(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string }>;
     /**
      * Its own plan mode, set to `plan` in Cavvy's plan mode and back to `normal` outside it: a config option
      * (`configId`), or its session mode (session/set_mode) when there's none.
@@ -183,8 +183,8 @@ const OPENCODE: AcpAgent = {
     spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
     keepsFolder: true,
     // `opencode models`: provider/model, one a line (about half a second).
-    async listModels(bin, signal) {
-        const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
+    async listModels(bin, signal, env) {
+        const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });
         if (r.code !== 0) throw new Error(`opencode models failed: ${r.stderr.trim().split("\n").pop() ?? `exit code ${r.code}`}`);
         return r.stdout
             .split("\n")
@@ -196,8 +196,8 @@ const OPENCODE: AcpAgent = {
 };
 
 /** `grok models`: whether it's signed in (its first line), and its models (about a second and a half). */
-async function grokModels(bin: string, signal?: AbortSignal): Promise<{ said: string; models: string[] }> {
-    const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
+async function grokModels(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ said: string; models: string[] }> {
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });
     if (r.code !== 0) throw new Error(`grok models failed: ${cliMessage(r.stderr) || `exit code ${r.code}`}`);
     const lines = r.stdout.split("\n");
     // "You are logged in with grok.com." or "You are not authenticated.", then "  * grok-4.7 (default)", "  - grok-4.6".
@@ -448,11 +448,11 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
  */
 const GROK: AcpAgent = {
     spawn: () => ({ args: [], env: {} }),
-    async listModels(bin, signal) {
-        return (await grokModels(bin, signal)).models.map((id) => ({ id }));
+    async listModels(bin, signal, env) {
+        return (await grokModels(bin, signal, env)).models.map((id) => ({ id }));
     },
-    async status(bin, signal) {
-        const { said } = await grokModels(bin, signal);
+    async status(bin, signal, env) {
+        const { said } = await grokModels(bin, signal, env);
         // Signed out it says "You are not authenticated." (with an empty GROK_HOME), and session/new answers -32000.
         if (/not (authenticated|logged in|signed in)/i.test(said)) return { signedIn: false, description: "not signed in" };
         const m = said.match(/logged in with (.+?)\.?$/i);
