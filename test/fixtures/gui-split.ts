@@ -65,10 +65,10 @@ solid.createRoot(() => {
 assert.equal(s.canDrop("a"), false);
 await appState.activate("a");
 await settle();
-// One in view: any other here can come beside it; not itself, nor one on another machine.
+// One in view: any other can come beside it, on whichever machine (opened over its own connection); not itself.
 assert.equal(s.canDrop("b"), true);
 assert.equal(s.canDrop("a"), false);
-assert.equal(s.canDrop("far"), false);
+assert.equal(s.canDrop("far"), true);
 
 ui.setInspectorPane("commands");
 ui.setReview({ path: "a.ts" });

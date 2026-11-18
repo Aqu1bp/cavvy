@@ -1235,6 +1235,26 @@ export function forkMakingOf(id: string): string | undefined {
     return forksMaking.get(id);
 }
 
+/** `id`, a session of machine `on`'s, is opened here over `link` from now on. */
+function linked(id: string, on: string | undefined, link: Rpc) {
+    away.set(id, link);
+    awayOn.set(id, on ?? "");
+    if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
+    // And its settings: Home on it (a new session from this one) starts with them.
+    if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
+    tellShown();
+}
+
+/**
+ * Opens a session without showing it in the main view (the one beside it in a split, Panes): one of another
+ * machine's over the connection to it, made first if it isn't.
+ */
+export async function openBeside(id: string): Promise<SessionHandle> {
+    const on = machineOf(id);
+    if (on !== machine && !away.has(id)) linked(id, on, await linkFor(on));
+    return openSession(id);
+}
+
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
     // One on another machine: opened here, over a connection to that machine's Cavvy (linkFor), as one of the window's
@@ -1277,12 +1297,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (elsewhere) {
             const link = await linkFor(on);
             if (!current()) return;
-            away.set(id, link);
-            awayOn.set(id, on ?? "");
-            if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
-            // And its settings: Home on it (a new session from this one) starts with them.
-            if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
-            tellShown();
+            linked(id, on, link);
         }
         const h = await openSession(id);
         if (!current()) return;
