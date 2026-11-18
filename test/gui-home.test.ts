@@ -359,7 +359,7 @@ function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | un
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
         Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, rpc: {},
+        app: { conn: "open" }, homeOn: () => undefined, rpcFor: () => ({}),
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.

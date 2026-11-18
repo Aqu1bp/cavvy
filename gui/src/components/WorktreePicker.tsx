@@ -23,13 +23,13 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [listing, { refetch }] = createResource(
         // Home's machine's (rpcFor): the same path on another machine is another folder.
         () => app.conn === "open" && ([p.cwd, homeOn()] as const),
-        async ([path]): Promise<{ path: string; worktrees: WorktreeInfo[]; error?: string }> => {
-            try { return { path, worktrees: await rpcFor(undefined).call("projects.worktrees", { path }) }; }
-            catch (e) { return { path, worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
+        async ([path, on]): Promise<{ path: string; on?: string; worktrees: WorktreeInfo[]; error?: string }> => {
+            try { return { path, on, worktrees: await rpcFor(undefined).call("projects.worktrees", { path }) }; }
+            catch (e) { return { path, on, worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
         },
     );
-    // Only this folder's: another project's, kept while this one's loads, would open or branch from that one.
-    const here = () => (listing()?.path === p.cwd ? listing() : undefined);
+    // Only this folder's, on this machine: another's, kept while this one's loads, would open or branch from that one.
+    const here = () => (listing()?.path === p.cwd && listing()?.on === homeOn() ? listing() : undefined);
     const label = (w: WorktreeInfo) => w.branch || (w.detached ? `Detached · ${w.head?.slice(0, 7) ?? "HEAD"}` : "Worktree");
     const main = () => here()?.worktrees.find((w) => w.main);
     const current = () => here()?.worktrees.find((w) => w.current);
