@@ -91,3 +91,28 @@ test("the palette shows this machine's hits while the servers answer, then asks 
     expect(asked).toEqual([undefined, true, undefined, true]);
     expect(shown).toEqual([{ hits: ["m1"], more: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
 });
+
+test("for a window on one of its servers, the user's computer searches its own sessions and the other servers'", async () => {
+    const { isolate } = await import("./helpers/isolate");
+    const iso = isolate();
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({});
+    const asked: string[] = [];
+    const server = (name: string) => ({ ask: async () => (asked.push(name), { hits: [{ ...hit(`${name}1`, 5) }], partial: false }) });
+    (engine as any).serverLinks = { connectedServers: () => new Map([["box", server("box")], ["lab", server("lab")]]) };
+    // The connection a window on box keeps to this computer's Cavvy.
+    const client = { subs: new Set<string>(), send() {}, machine: "box" };
+    engine.clients.add(client as never);
+    try {
+        const r = (await engine.handle(client as never, "sessions.search", { query: "migration", limit: 20, others: true } as never)) as { hits: { id: string; machine?: string }[] };
+        expect([r.hits.map((h) => [h.id, h.machine]), asked]).toEqual([[["lab1", "lab"]], ["lab"]]);
+        // Not asked for the others: this computer's own only, as before.
+        asked.length = 0;
+        await engine.handle(client as never, "sessions.search", { query: "migration two", limit: 20 });
+        expect(asked).toEqual([]);
+    } finally {
+        (engine as any).serverLinks = undefined;
+        await engine.stop();
+        iso.cleanup();
+    }
+});

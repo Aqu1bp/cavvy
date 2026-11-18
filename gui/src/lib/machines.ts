@@ -4,7 +4,7 @@
 
 import { createSignal } from "solid-js";
 import { reconcile } from "solid-js/store";
-import type { ServerProblem, UnknownHost } from "@shared/protocol";
+import type { ServerProblem, SessionSearchResult, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
 import { app, pendingPicked, rpc, setApp, setConnNote } from "../state/app";
@@ -52,7 +52,32 @@ if (home) {
     // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
     // Cavvy. So does Usage: this computer's adds up every machine's. Set here, loaded before the window's own connection is made (its credentials come through this file).
     const route = rpc.route;
-    rpc.route = (method, params) => (method.startsWith("app.update.") || method === "usage.summary" ? (home.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : route?.(method, params));
+    const ask = (m: string, p: unknown) => (home.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
+    /** A call this route makes of the window's own Cavvy isn't routed again. */
+    let own = false;
+    /**
+     * Search: the window's server searches its own sessions, as it always has, and this computer's Cavvy (while it's
+     * reached) the rest: this computer's and the other servers'. Its hits are named from this window: this
+     * computer's "", another server's by its name. Without it, the server's own stand.
+     */
+    const search = (params: unknown): Promise<SessionSearchResult> => {
+        own = true;
+        const here = rpc.call("sessions.search", params as never);
+        own = false;
+        const there = (ask("sessions.search", { ...(params as object), others: true }) as Promise<SessionSearchResult>).catch(() => undefined);
+        return Promise.all([here, there]).then(([a, b]) => {
+            if (a.stale || !b || b.stale || !Array.isArray(b.hits)) return a;
+            const limit = Number((params as { limit?: unknown }).limit) || 50;
+            return { partial: a.partial || b.partial, ...(a.pending || b.pending ? { pending: true } : {}), hits: [...a.hits, ...b.hits.filter((h) => h.machine !== machine).map((h) => ({ ...h, machine: h.machine ?? "" }))].sort((x, y) => y.at - x.at).slice(0, limit) };
+        });
+    };
+    rpc.route = (method, params) => {
+        if (method.startsWith("app.update.") || method === "usage.summary") return ask(method, params);
+        if (!own && home.state === "open" && method === "sessions.search") return search(params);
+        // Read ahead there too, for the search that follows.
+        if (!own && home.state === "open" && method === "sessions.searchWarm") void ask(method, params).catch(() => undefined);
+        return route?.(method, params);
+    };
 }
 
 function homeOpen(): Promise<void> {
