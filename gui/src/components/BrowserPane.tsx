@@ -125,7 +125,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // Watching: the server sizes the page to the pane and streams it while the pane shows.
 
-    const watching = () => visible() && !settingsTab() && connOn(its) === "open" && connected();
+    // Once the session is open on its machine again after a reconnect: watched before, it's refused there.
+    const watching = () => visible() && !settingsTab() && connOn(its) === "open" && connected() && p.handle.ready();
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const watch = () => {
         if (native) return;

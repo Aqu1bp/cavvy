@@ -242,10 +242,11 @@ function usePanelWork(handle: () => SessionHandle) {
     const agents = createMemo(() => uncleared(handle().id, agentRows(tasks(), handle().view.agents)));
     const commands = createMemo(() => uncleared(handle().id, commandRows(tasks())));
     // What the agent does in the browser is told even while the pane isn't showing (a dot on its icon).
-    createEffect(on(() => handle().id, (id) => void loadBrowserState(id).catch(() => undefined)));
+    // Asked again once the session is open again on its machine (its connection came back).
+    createEffect(on([() => handle().id, () => handle().ready()], ([id, ready]) => void (ready && loadBrowserState(id).catch(() => undefined))));
     // And on the simulator, whose view shows only on a Mac with Xcode.
     // Another machine's session: what this computer lends it is asked of first (lib/lent.ts).
-    createEffect(on(() => handle().id, (id) => void (awayMachine(id) === undefined ? Promise.resolve() : import("../lib/lent")).then(() => loadSimulatorState(id)).catch(() => undefined)));
+    createEffect(on([() => handle().id, () => handle().ready()], ([id, ready]) => void (ready && (awayMachine(id) === undefined ? Promise.resolve() : import("../lib/lent")).then(() => loadSimulatorState(id)).catch(() => undefined))));
     return { changes, agents, commands };
 }
 
