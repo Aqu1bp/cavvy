@@ -392,6 +392,41 @@ test("a call this machine can't take now is answered, not left waiting: over fou
     }
 });
 
+test("a call decided there under another mode than this machine's now is turned away, and the server told the new one", async () => {
+    const { MachineWatch } = await import("../src/servers/watch");
+    const results: { callId: string; isError?: boolean }[] = [];
+    const told: unknown[] = [];
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "offers.result") return void results.push(m.params);
+                if (m.method === "offers.set") return void told.push(m.params.mode);
+                if (m.method !== "sessions.list") return;
+                ws.send(JSON.stringify({ id: m.id, result: [] }));
+                if (m.params?.archived) return;
+                // On its way while the mode here went from Bypass to Manual: then one decided under Manual.
+                for (const [callId, mode] of [["old", "bypassPermissions"], ["new", "default"]]) ws.send(JSON.stringify({ event: { type: "offers.call", callId, tool: "SimulatorControl", input: { action: "list" }, mode, session: { id: "s", title: "t" } } }));
+            },
+        },
+    });
+    const started: string[] = [];
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => ["simulator"], lendMode: () => "default", lend: () => (started.push("ran"), Promise.resolve({ text: "ok" })) });
+    watch.start();
+    try {
+        await until("both answered", () => results.length === 2);
+        expect(results.map((r) => [r.callId, !!r.isError])).toEqual([["old", true], ["new", false]]);
+        expect(started).toEqual(["ran"]);
+        // Already told this mode when the connection opened: not told again.
+        expect(told).toEqual(["default"]);
+    } finally {
+        watch.stop();
+        void srv.stop(true);
+    }
+});
+
 test("two of the user's machines can lend to one server: one leaving doesn't take the tools away while the other is there", async () => {
     const { Engine } = await import("../src/server/engine");
     const { lent } = await import("../src/tools/lent");

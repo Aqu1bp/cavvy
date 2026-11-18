@@ -1959,8 +1959,8 @@ export class Engine {
      * machine goes away.
      */
     borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
-        const client = [...this.lenders.keys()].at(-1);
-        if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        const [client, lender] = [...this.lenders].at(-1) ?? [];
+        if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
             const done = (r: ToolResult) => {
@@ -1974,7 +1974,8 @@ export class Engine {
             };
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
-            client.send({ type: "offers.call", callId, tool, input, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            // With the mode it was decided under: the lender turns it away if its own has changed since.
+            client.send({ type: "offers.call", callId, tool, input, mode: lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 

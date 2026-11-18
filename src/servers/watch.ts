@@ -488,12 +488,13 @@ export class MachineWatch {
                     answer(NOT_LENT);
                     return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = this.o.lendMode?.()) } }));
                 }
-                // Its default mode changed since the server was told (in the terminal's /config, say): told now, and this
-                // call is decided again there, under it.
+                // Decided there under another default mode than this machine's now (changed in the terminal's /config, or
+                // the call was on its way when it changed): decided again there, under this one.
                 const mode = this.o.lendMode?.();
-                if (mode !== sentMode) {
+                if ((typeof ev.mode === "string" ? ev.mode : sentMode) !== mode) {
                     answer({ text: "Your Mac's permission mode just changed. Call it again.", isError: true });
-                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = mode) } }));
+                    if (mode !== sentMode) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = mode) } }));
+                    return;
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);

@@ -1933,7 +1933,7 @@ export type ServerEvent =
      * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
      * checks, and answers with offers.result. offers.cancel: the call was given up here.
      */
-    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; mode?: string; session: { id: string; title: string } }
     | { type: "offers.cancel"; callId: string }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
