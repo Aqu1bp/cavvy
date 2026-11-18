@@ -23,7 +23,7 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, gitDialog, gitModule, openGit, deletedOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, deletedOpen, gitDialog, gitModule, openGit } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
@@ -312,8 +312,8 @@ const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) =
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
-const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const RecentlyDeleted = lazy(() => import("./components/RecentlyDeleted").then((m) => ({ default: m.RecentlyDeleted })));
+const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
