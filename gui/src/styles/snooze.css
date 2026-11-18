@@ -1,0 +1,29 @@
+/* Snooze in a session's row menu (RowExtras.tsx): its times under it, each with when it wakes at its end. */
+.snz-chev {
+    margin-left: auto;
+    transition: transform var(--dur-fast);
+}
+
+.snz-chev.open {
+    transform: rotate(90deg);
+}
+
+.menu-item.compact.snz-opt {
+    padding-left: calc(37 * var(--sp));
+}
+
+.snz-opt .menu-hint {
+    margin-left: auto;
+    font-size: 0.857rem;
+    white-space: nowrap;
+}
+
+.snz-custom .input {
+    width: 100%;
+}
+
+.snz-problem {
+    margin: calc(6 * var(--sp)) 0 0;
+    color: var(--danger);
+    font-size: 0.857rem;
+}
