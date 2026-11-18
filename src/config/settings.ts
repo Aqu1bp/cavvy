@@ -157,6 +157,8 @@ export interface Settings {
     notifications?: NotificationMode;
     /** A finished turn alerts only when it took at least this long (default 30). */
     notifyAfterSeconds?: number;
+    /** The GUI settles sessions left idle this many days: 0 (never), 1, 3, 7 (default) or 14. */
+    autoSettleDays?: number;
     /** A message sent while a turn runs: "steer" joins it at its next step (default), "queue" waits for it to end. Tab (TUI) or mod+shift+enter (GUI) does the other. */
     followUpBehavior?: FollowUp;
     /** After a Claude Code or Codex turn stops on the plan's usage limit, continue by itself when it resets (default true). */

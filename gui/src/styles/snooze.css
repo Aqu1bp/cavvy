@@ -32,3 +32,9 @@
 .snz-custom .dialog-actions {
     margin-top: calc(14 * var(--sp));
 }
+
+/* Never auto-settle's check, at the end of its row while it's on. */
+.snz-tick {
+    margin-left: auto;
+    color: var(--fg-2);
+}

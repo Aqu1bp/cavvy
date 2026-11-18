@@ -47,6 +47,7 @@ const SETTINGS_KEYS = [
     "codex",
     "notifications",
     "notifyAfterSeconds",
+    "autoSettleDays",
     "followUpBehavior",
     "autoResume",
     "delegation",
