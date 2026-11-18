@@ -46,6 +46,8 @@ if (home) {
         // The app is this computer's: its update is shown in a window on a server too.
         if (e.type === "app.update") setApp("update", reconcile(e.info));
     });
+    // Asked for again whenever this computer's Cavvy is reached: what it said while it wasn't didn't arrive.
+    home.onState((s) => s === "open" && void home.call("app.update.get", {}).then((u) => setApp("update", reconcile(u)), () => undefined));
     void home.connect();
     // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
     // Cavvy. Set here, loaded before the window's own connection is made (its credentials come through this file).
