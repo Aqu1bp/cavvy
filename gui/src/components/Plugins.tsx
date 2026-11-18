@@ -7,7 +7,7 @@
 import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, awayMachine, reportError, rpc as own, rpcFor, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, reportError, rpc as own, rpcFor, toast } from "../state/app";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -93,15 +93,19 @@ export function Plugins() {
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
     const cwd = () => app.homeCwd;
-    // The plugins of the machine the folder is on: the session's in view (or Home's), as they were when this opened.
-    const rpc = rpcFor(app.activeId);
-    const on = awayMachine(app.activeId);
+    // The plugins of the machine the folder is on: the session's in view (or Home's), read with the folder each time.
+    const link = () => {
+        // Its machine not reached yet: the window's own isn't asked about a folder that isn't its.
+        if (app.activeId && awayUnopened(app.activeId)) throw new Error("Still connecting to that session's machine. Try again in a moment.");
+        return rpcFor(app.activeId);
+    };
+    const on = () => awayMachine(app.activeId);
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
         try {
-            setInfo(await rpc.call("plugins.list", { cwd: cwd() }));
+            setInfo(await link().call("plugins.list", { cwd: cwd() }));
         } catch (e) {
             reportError(e);
         } finally {
@@ -120,7 +124,7 @@ export function Plugins() {
         if (busy()) return;
         setBusy(key);
         try {
-            const r = await rpc.call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
+            const r = await link().call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
             setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
@@ -189,7 +193,7 @@ export function Plugins() {
                 {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
             <div class="pg-bar">
-                <Show when={on}><span class="set-note">On {on}</span></Show>
+                <Show when={on()}><span class="set-note">On {on()}</span></Show>
                 <Segmented
                     label="Show"
                     size="sm"
@@ -283,7 +287,7 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on {on || "this computer"}, so install only from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on {on() || "this computer"}, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>

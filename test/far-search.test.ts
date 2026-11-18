@@ -105,7 +105,8 @@ test("a window on the user's computer lists and restores what was deleted on its
     expect(deleted).toContain('on ? rpc.call("servers.relay", { name: on, method: "session.restore", params: { id } }) : rpc.call("session.restore", { id })');
     expect(deleted).toContain("s.machine && restoredFrom(s.id, s.machine)");
     const plugins = await read("Plugins.tsx");
-    expect(plugins).toContain("const rpc = rpcFor(app.activeId);");
+    expect(plugins).toContain("return rpcFor(app.activeId);");
+    expect(plugins).toContain("if (app.activeId && awayUnopened(app.activeId)) throw");
     // Only a maker's logo is asked of the window's own Cavvy.
     expect(plugins.split("own.call(").length).toBe(2);
 });

@@ -2815,10 +2815,10 @@ export class Engine {
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash": {
-                const here = listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
-                // On the user's own computer, for its windows: what was deleted on the servers it's connected to as well.
-                if (this.o.away || client.machine) return here;
-                return [...here, ...(await trashOnServers(this.serverLinks?.connectedServers() ?? new Map()))].sort((a, b) => b.deletedAt - a.deletedAt);
+                // `servers`: what was deleted on the servers this machine is connected to instead (the user's own
+                // computer, for its windows). Asked apart, so a slow server doesn't hold this machine's own list.
+                if (p.servers === true) return this.o.away || client.machine ? [] : await trashOnServers(this.serverLinks?.connectedServers() ?? new Map());
+                return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
             }
             case "sessions.searchWarm":
                 // Not waited for: the first search finds what's been read by then, and reads the rest itself.

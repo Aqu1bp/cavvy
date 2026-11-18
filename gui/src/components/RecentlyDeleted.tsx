@@ -23,6 +23,8 @@ export function RecentlyDeleted() {
             setList(undefined);
             setRestored(new Set<string>());
             rpc.call("sessions.trash", {}).then(setList, (e) => (setList([]), reportError(e)));
+            // The servers' follow this machine's own: one that's slow doesn't hold the list.
+            rpc.call("sessions.trash", { servers: true }).then((there) => there.length && deletedOpen() && setList((l) => [...(l ?? []), ...there].sort((a, b) => b.deletedAt - a.deletedAt)), () => undefined);
         }),
     );
     const restore = async (id: string, on?: string) => {
