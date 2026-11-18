@@ -66,6 +66,13 @@ export interface BackendPermission {
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**
+     * The agent CLI runs in its own counterpart of the session's mode (Claude Code in every mode, Codex's and Grok's
+     * own reviewers in auto), which decided this needs the user: Cavvy adds nothing of its own mode. Its deny rules
+     * and protections refuse, its allow rules and session choices approve, hooks have their say, and otherwise the
+     * user is asked. (In bypass, whatever any backend asks about runs: see Agent.backendPermission.)
+     */
+    ownMode?: boolean;
+    /**
      * One of the backend's own the mode doesn't decide (Grok's bookkeeping, its plan file in plan mode): deny
      * rules and Cavvy's protections refuse it, as in bypass; otherwise it's approved without asking. A change to
      * Cavvy's or git's configuration is decided as any other.

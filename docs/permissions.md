@@ -7,7 +7,7 @@
 | Mode | What runs without asking |
 |---|---|
 | **Manual** (default) | Reads, searches and read-only shell commands inside the workspace. Everything else asks. |
-| **Accept edits** | The above, plus file edits inside the workspace. |
+| **Accept edits** | The above, plus file edits inside the workspace. On Claude Code, its own accept-edits mode, which also runs file commands (`rm`, `mv`, `sed`) inside the workspace ([Claude Code and Codex](subscriptions.md)). |
 | **Plan** | Read-only research. Edits and state-changing commands are refused until you approve the plan the model presents. |
 | **Auto** | Edits in the workspace and temp directories, shell commands inside a sandbox, and anything else a reviewer model judges routine and asked for. Risky actions are turned back to the model with the reason; after repeated blocks, or when the reviewer can't decide, they're shown to you. See [Auto mode](#auto-mode). |
 | **Bypass permissions** | Everything. Only available when started with `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or with `permissions.allowBypass` in your user settings. |
@@ -15,7 +15,7 @@
 Whatever the mode:
 
 - Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env` (`env -S '…'` included), `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo` with any of their options, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`, `/BIN/RM`), since the shell finds `/bin/rm` for that name there. A program named by a variable (`$X`) isn't known to them. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
-- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too). On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
+- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too). For an agent CLI in Bypass, this holds for what reaches Cavvy: everything OpenCode, Grok Build and Antigravity run (Cavvy decides each of their calls), but almost nothing from Claude Code or Codex, which run in their own bypass modes and don't ask. Anything else an agent CLI asks about in Bypass runs without asking you; deny rules, Cavvy's credential store and your hooks still hold it ([Claude Code and Codex](subscriptions.md)). On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
 - Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask.
 
 ### What each choice in a prompt does
