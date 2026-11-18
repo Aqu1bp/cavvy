@@ -1583,13 +1583,14 @@ export class Engine {
     }
 
     /**
-     * Back in the list: by its time or because it needs you (`mark`: its row says it woke until it's opened), or by
-     * the user's hand. Settled, it's back in play too: it's come back to be looked at.
+     * Back in the list: by itself (its time, or it needs you: its row says it woke until it's opened, unless a window
+     * shows it now), or by the user's hand. Waking by itself, a settled one is back in play: it's come back to be looked at.
      */
-    private wake(id: string, mark: boolean) {
+    private wake(id: string, self: boolean) {
+        const mark = self && ![...this.clients].some((c) => c.shown === id);
         updateStore((s) => {
             woken(s, id, mark);
-            if (mark && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
+            if (self && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
         });
         this.upsertRow(id);
         this.alarm.arm(nextWake(readStore()));

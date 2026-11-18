@@ -167,20 +167,20 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
             </Show>
             <Show when={snoozable()}>
                 <button role="menuitem" class="menu-item compact" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    <AlarmClock size={14} /> <span class="menu-label">{snoozed() ? "Snooze until…" : p.ids.length > 1 ? `Snooze ${sessionCount(p.ids.length)}` : "Snooze"}</span>
+                    <AlarmClock size={14} /> <span>{snoozed() ? "Snooze until…" : p.ids.length > 1 ? `Snooze ${sessionCount(p.ids.length)}` : "Snooze"}</span>
                     <ChevronRight size={14} class={`snz-chev ${open() ? "open" : ""}`} />
                 </button>
                 <Show when={open()}>
                     <For each={snoozeChoices(Date.now())}>
                         {(c) => (
                             <button role="menuitem" class="menu-item compact snz-opt" onClick={() => choose(c.at)}>
-                                <span class="menu-label">{c.label}</span>
-                                <span class="menu-hint">{wakesText(c.at, Date.now())}</span>
+                                <span>{c.label}</span>
+                                <span class="menu-hint">{c.hint}</span>
                             </button>
                         )}
                     </For>
                     <button role="menuitem" class="menu-item compact snz-opt" onClick={() => (p.close(), askCustom(p.ids))}>
-                        <span class="menu-label">Custom…</span>
+                        Custom…
                     </button>
                 </Show>
             </Show>

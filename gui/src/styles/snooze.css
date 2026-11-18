@@ -9,7 +9,8 @@
 }
 
 .menu-item.compact.snz-opt {
-    padding-left: calc(37 * var(--sp));
+    padding-left: calc(39 * var(--sp));
+    white-space: nowrap;
 }
 
 .snz-opt .menu-hint {
@@ -26,4 +27,8 @@
     margin: calc(6 * var(--sp)) 0 0;
     color: var(--danger);
     font-size: 0.857rem;
+}
+
+.snz-custom .dialog-actions {
+    margin-top: calc(14 * var(--sp));
 }

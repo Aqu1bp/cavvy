@@ -157,6 +157,17 @@ describe("snoozing sessions", () => {
         await engine.stop();
     });
 
+    test("one a window shows as it wakes isn't marked", async () => {
+        const { clock, engine, call, saved, row } = setup();
+        const id = saved();
+        await call("session.snooze", { id, until: clock.now() + HOUR });
+        await call("session.shown", { id });
+        clock.advance(HOUR);
+        expect(row(id)?.snoozedUntil).toBeUndefined();
+        expect(row(id)?.woke).toBeUndefined();
+        await engine.stop();
+    });
+
     test("Wake now: back without a mark; Undo of a snooze is the same", async () => {
         const { clock, engine, call, saved, row } = setup();
         const id = saved();
