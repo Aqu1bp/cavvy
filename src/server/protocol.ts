@@ -1933,7 +1933,7 @@ export type ServerEvent =
      * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
      * checks, and answers with offers.result. offers.cancel: the call was given up here.
      */
-    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; mode?: string; session: { id: string; title: string } }
     | { type: "offers.cancel"; callId: string }
     /** On a server, to the user's own computer: what a session here asks about the user's other machines' sessions (src/server/far-peers.ts). */
     | { type: "peers.call"; callId: string; op: string; params: Record<string, unknown> }
@@ -2080,7 +2080,7 @@ export interface Methods {
      * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
      * server sent it (offers.call).
      */
-    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.set": { params: { kinds: string[]; mode?: string }; result: null };
     "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
     /**
      * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
