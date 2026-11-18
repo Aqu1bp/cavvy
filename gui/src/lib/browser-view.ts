@@ -28,10 +28,10 @@ export function zoomStep(zoom: number, dir: 1 | -1): number {
     return [...ZOOMS].reverse().find((z) => z < zoom - 0.001) ?? ZOOMS[0]!;
 }
 
-/** A side typed in, kept within what a page can be; undefined if it isn't a number. */
+/** A side typed in, if it's a number a page can have (MIN_SIDE to MAX_SIDE); undefined if it isn't one. */
 export function side(text: string): number | undefined {
     const n = Math.round(Number(text.trim()));
-    return text.trim() && Number.isFinite(n) ? Math.min(MAX_SIDE, Math.max(MIN_SIDE, n)) : undefined;
+    return text.trim() && Number.isFinite(n) && n >= MIN_SIDE && n <= MAX_SIDE ? n : undefined;
 }
 
 /** How much a device's page is drawn smaller to fit the box (never larger than its own size). */
