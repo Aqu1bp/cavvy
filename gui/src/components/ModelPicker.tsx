@@ -124,7 +124,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The accounts of the machine the session is on: another machine's session opened here has that machine's.
     const away = () => awayMachine(p.sessionId) !== undefined;
     const accountInfo = (provider = currentProvider()) => providersFor(p.sessionId).find((p) => p.id === provider)?.agentCli;
-    const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
+    const selectedAccount = (provider = currentProvider()) => p.sessionId ? handleFor(p.sessionId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
     const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
