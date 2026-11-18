@@ -97,7 +97,7 @@ If the connection drops, the window keeps what it shows and says why beside `Rec
 
 Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
 
-Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
+Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins. Sessions there can also reach your Mac's sessions, and yours theirs ([other machines](other-sessions.md#on-your-other-machines)).
 
 ## Your Mac's Simulator, from a server
 

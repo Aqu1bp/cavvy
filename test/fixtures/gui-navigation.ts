@@ -2,7 +2,7 @@ import { boundary } from "../helpers/render-boundary";
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 import { readFileSync } from "node:fs";
-import { all, component, node, noSplit, renderer, singlePane, text } from "../helpers/gui-render";
+import { all, component, node, noSplit, renderer, singlePane, text, noTerminal } from "../helpers/gui-render";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const mode = process.argv[2];
@@ -85,6 +85,7 @@ const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url)
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense"]);
 const widgets = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
+    ...noTerminal,
     // Stubs first: a component given explicitly below wins.
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
     ...noSplit, Panes: singlePane(),

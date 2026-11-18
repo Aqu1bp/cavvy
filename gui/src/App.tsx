@@ -1,12 +1,14 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { watchCodeMetrics } from "./lib/code-metrics";
-import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connFor, connNote, handleFor, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, awayUnopened, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { tabMachines } from "./lib/terminal";
+import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
@@ -22,8 +24,8 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
+import { preloadTerminal, TerminalPanel, terminalOpenedEarly } from "./components/TerminalPanel";
+import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
@@ -316,6 +318,45 @@ const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => 
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
+    // A terminal panel for each machine whose sessions the window has shown, each with its own shells there: a session
+    // of another machine's opens its terminal on that machine, over the connection its session is shown over.
+    /** The machine of what's in view and the connection to it; "pending" while another machine's session is opening. */
+    const terminalAt = (): { on: string | undefined; link?: Rpc } | "pending" => {
+        const id = app.activeId;
+        if (id === undefined) {
+            const on = homeOn();
+            return on === undefined ? { on } : { on, link: rpcFor(undefined) };
+        }
+        return linkedMachine(id) ?? (awayUnopened(id) ? "pending" : { on: undefined });
+    };
+    /** The machine whose panel is current (takes the session's actions); null while it's still opening. */
+    const terminalOn = () => {
+        const at = terminalAt();
+        return at === "pending" ? null : at.on;
+    };
+    /** The machine whose panel shows: the current one, or the window's own while an account's sign-in shows (Settings). */
+    const terminalShowing = () => (terminalLogin() ? undefined : terminalOn());
+    // Opened while the session in view is still connecting: its machine's panel starts a shell once it's there.
+    createEffect(on(terminalOpen, (open) => { if (open && untrack(terminalOn) === null) terminalOpenedEarly(); }, { defer: true }));
+    // For that session only: going elsewhere first, it's over.
+    createEffect(on(() => app.activeId, () => terminalOpenedEarly(false), { defer: true }));
+    // None shows (another machine's session still opening): the sheet keeps no terminal row for it.
+    createEffect(() => { if (terminalShowing() === null) setTerminalShown(false); });
+    const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);
+    const addTerminalMachine = (on: string, link: Rpc) => {
+        if (!untrack(terminalMachines).some((m) => m.on === on)) setTerminalMachines((all) => [...all, { on, link }]);
+    };
+    createEffect(() => {
+        const at = terminalAt();
+        if (at !== "pending" && at.on !== undefined && at.link) addTerminalMachine(at.on, at.link);
+    });
+    // Another session or Home in view: an account's sign-in tab no longer holds the window's own terminal there.
+    createEffect(on(() => app.activeId, () => setTerminalLogin(false), { defer: true }));
+    // Shells kept on other machines for this window's tabs (a reload): their panels come back now, not when one of
+    // their sessions is next shown, so their shells are attached to again before they're let go (src/server/terminals.ts).
+    onMount(() => {
+        for (const on of tabMachines()) if (on !== (machine ?? "")) void machineLink(on).then((link) => addTerminalMachine(on, link), () => undefined);
+    });
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {
@@ -661,7 +702,9 @@ export function App() {
                                 </RenderBoundary>
                             </Show>
                         </div>
-                        <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
+                        <For each={terminalMachines()}>{(m) => (
+                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} showing={terminalShowing() === m.on} cwd={terminalOn() === m.on ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
+                        )}</For>
                     </div>
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />

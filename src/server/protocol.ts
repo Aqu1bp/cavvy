@@ -1935,6 +1935,8 @@ export type ServerEvent =
      */
     | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; mode?: string; session: { id: string; title: string } }
     | { type: "offers.cancel"; callId: string }
+    /** On a server, to the user's own computer: what a session here asks about the user's other machines' sessions (src/server/far-peers.ts). */
+    | { type: "peers.call"; callId: string; op: string; params: Record<string, unknown> }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -2093,6 +2095,16 @@ export interface Methods {
      */
     "sync.files": { params: Record<string, never>; result: Record<string, string> };
     "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
+    /**
+     * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
+     * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,
+     * `peers.read`, `peers.send`: asked of a server by that computer, about the server's own sessions.
+     */
+    "peers.hub": { params: Record<string, never>; result: null };
+    "peers.result": { params: { callId: string; result?: unknown; error?: string }; result: null };
+    "peers.list": { params: { query?: string; limit: number }; result: unknown[] };
+    "peers.read": { params: { id: string; turns?: number }; result: unknown };
+    "peers.send": { params: { id: string; message: string; from: { id: string; title: string; mode: string } }; result: unknown };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
