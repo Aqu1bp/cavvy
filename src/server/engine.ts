@@ -2418,6 +2418,8 @@ export class Engine {
     }
 
     private async openInEditor(p: Record<string, any>): Promise<{ editor: string }> {
+        // A server has no screen to open one on, and the editor chosen in Settings is the user's own computer's.
+        if (this.o.away) throw new RpcError("Editors can't open a server's files yet.", "unsupported");
         const id = optStr(p.editor) ?? this.guiSettings().editor;
         if (!id) throw new RpcError("Choose an editor in Settings → General → Open files with.", "no_editor");
         const def = editorById(id);

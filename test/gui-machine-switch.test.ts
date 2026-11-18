@@ -21,4 +21,18 @@ test("a server session's sign-in port, plan folder and Finder reveal follow its 
     for (const f of ["RightPanel.tsx", "ReviewPane.tsx", "PlanDialogs.tsx"]) expect(await read(`components/${f}`)).not.toContain("canReveal");
     // Where a plan is saved is chosen among its machine's folders.
     expect(await read("components/PlanDialogs.tsx")).toContain("setFolderPickerOpen({ then, link: rpcFor(p.sessionId), ...o })");
+
+// Home in a folder on another machine: its worktrees are that machine's, listed, made and removed over the
+// connection to it (rpcFor), and the one picked opens there.
+test("Home's worktree picker asks the machine Home is on", async () => {
+    const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
+    const picker = await read("WorktreePicker.tsx");
+    expect(picker).toContain('rpcFor(undefined).call("projects.worktrees"');
+    expect(picker).toContain("openProject(w.path, true)");
+    const dialogs = await read("WorktreeDialogs.tsx");
+    // Each dialog's `rpc` is Home's machine's; none is the window's own.
+    expect(dialogs.split("const rpc = rpcFor(undefined);").length).toBe(3);
+    expect(dialogs).not.toMatch(/import \{[^}]*\brpc\b[^}]*\} from "\.\.\/state\/app"/);
+    expect(dialogs).not.toMatch(/openProject\([^,)]*\)/);
+    expect(await read("Home.tsx")).toContain("<Show when={app.homeCwd && info()?.git}>");
 });
