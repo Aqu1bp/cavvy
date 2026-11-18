@@ -614,6 +614,19 @@ test("a call is never asked about here, whatever this machine's mode; its deny r
     } finally {
         writeFileSync(file, was);
     }
+    // Half-written (or blank) just as a call comes: not a file with no rules. The call is turned away, and the
+    // session it's lent through isn't left counted as busy.
+    for (const broken of ['{ "permissions": { "deny": [', ""]) {
+        writeFileSync(file, broken);
+        try {
+            const after = ran.length;
+            const refused = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+            expect([refused.isError, refused.text.includes("Call it again"), ran.length]).toEqual([true, true, after]);
+        } finally {
+            writeFileSync(file, was);
+        }
+    }
+    expect((await Promise.all([...(mine.engine as any).guests.values()])).map((rt: any) => rt.lending)).not.toContain(1);
     // And taken out again, it's gone.
     const again = ran.length;
     await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);

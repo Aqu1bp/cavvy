@@ -5621,11 +5621,14 @@ export class Runtime {
         if (!agent) return { text: "Cavvy on your Mac has no model set up yet, which it needs before it lends its Simulator. Ask the user to set one up there.", isError: true };
         this.lending++;
         this.lastLent = Date.now();
-        // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't be
-        // read just now (being written) isn't one with no rules.
-        if (loadScopeChecked("user", this.ws.cwd).unreadable) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
-        this.ws.reload();
         try {
+            // This machine's rules as they are now: no turn of this session's own reads them again. Read once more
+            // after: a file that can't be read just now, is blank, or holds a deny that wasn't loaded is being
+            // written, and isn't one with fewer rules.
+            this.ws.reload();
+            const now = loadScopeChecked("user", this.ws.cwd);
+            const held = this.ws.settings.permissions?.deny ?? [];
+            if (now.unreadable || now.empty || (now.settings.permissions?.deny ?? []).some((r) => !held.includes(r))) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
             return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;

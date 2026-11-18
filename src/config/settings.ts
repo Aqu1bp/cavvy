@@ -456,9 +456,9 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
 }
 
 /** A scope's settings, and whether its file is there but couldn't be read or parsed (then they're empty). */
-export function loadScopeChecked(scope: SettingsScope, cwd: string): { settings: Settings; unreadable: boolean } {
+export function loadScopeChecked(scope: SettingsScope, cwd: string): { settings: Settings; unreadable: boolean; /** There, with nothing in it. */ empty: boolean } {
     const r = readSettingsFile(settingsPath(scope, cwd));
-    return { settings: r.settings, unreadable: r.unreadable };
+    return { settings: r.settings, unreadable: r.unreadable, empty: r.empty };
 }
 
 /**
