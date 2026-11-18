@@ -121,9 +121,13 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     const limit = Math.max(1, Math.min(Number(params.limit) || 20, 200));
     if (op === "list") {
         const query = typeof params.query === "string" ? params.query : undefined;
-        const mine = denied("ListSessions") ? [] : here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
+        const why = denied("ListSessions");
+        const mine = why ? [] : here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
         // The other servers not answering leaves this computer's.
-        return newest([...mine, ...(await far.list({ query, limit }).catch(() => []))], limit);
+        const theirs = await far.list({ query, limit }).catch(() => []);
+        // Nothing to list, and this computer's own were kept back: said, not taken for none.
+        if (why && !theirs.length) throw new PeerError(why);
+        return newest([...mine, ...theirs], limit);
     }
     const id = str(params.id, 300);
     const s = split(id);

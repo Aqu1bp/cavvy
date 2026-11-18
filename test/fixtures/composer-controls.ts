@@ -108,7 +108,7 @@ const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight,
     // A session of another machine asks over its own connection (state/app.ts rpcFor): here, all are this one, and
     // which asked through it is noted.
     get rpcFor() { return (sessionId?: string) => ({ call: (method: string, params: unknown) => (askedFor.push([sessionId, session()]), this.rpc.call(method, params)) }); },
-    connFor: () => appState.conn, awayMachine: () => undefined, modelsFor: () => appState.models ?? [], providersFor: () => appState.providers ?? [], homeSettings: () => appState.settings ?? {}, homeModeOf: () => appState.homeMode, homeDraftKey: () => "home", serversUi: async () => ({}),
+    connFor: () => appState.conn, awayMachine: () => undefined, modelsFor: () => appState.models ?? [], providersFor: () => appState.providers ?? [], limitsFor: () => appState.limits ?? {}, homeSettings: () => appState.settings ?? {}, homeModeOf: () => appState.homeMode, homeDraftKey: () => "home", serversUi: async () => ({}),
     rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; if (holdCommands) return new Promise(() => {}); return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }, { name: "compact", description: "Summarize", noAttachments: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined, documentElement: { getBoundingClientRect: () => ({ top: 0, bottom: 800 }) } },

@@ -115,7 +115,12 @@ export function peerOps(host: PeerHost, server: boolean) {
         },
         send: async (id: string, text: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }> => {
             const rt = await reach(host, id);
-            if (!server && freerMode(rt.mode, from.mode)) throw new PeerError(`Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than the sending session's ${modeName(from.mode)} mode, so it can't be sent work from there. Ask the user to send it themselves.`);
+            if (!server && freerMode(rt.mode, from.mode)) throw new PeerError(
+                    // From another machine (`<machine>/<id>`): it counts as Auto at most here, whatever it runs in there.
+                    from.id.includes("/")
+                        ? `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than a session on another machine counts for here (${modeName(from.mode)} mode at most), so it can't be sent work from there. Ask the user to send it themselves.`
+                        : `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than the sending session's ${modeName(from.mode)} mode, so it can't be sent work from there. Ask the user to send it themselves.`,
+                );
             const delivery = deliverTo(host, rt, { id: from.id, title: from.title }, text);
             return { text: deliveryText(runtimeSummary(rt), delivery), delivery, title: runtimeSummary(rt).title };
         },

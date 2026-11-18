@@ -79,7 +79,7 @@ test("a slow server doesn't hold what this machine found: it's answered at once 
 test("the palette shows this machine's hits while the servers answer, then asks for the rest in the same round", async () => {
     const { searchRounds } = await import("../gui/src/lib/search");
     const asked: (boolean | undefined)[] = [];
-    const shown: { hits: string[]; more: boolean }[] = [];
+    const shown: { hits: string[]; more: boolean; servers?: boolean }[] = [];
     const answers = [
         { hits: [hit("m1", 9)], partial: false, pending: true },
         { hits: [hit("m1", 9), hit("b1", 5)], partial: true },
@@ -87,9 +87,24 @@ test("the palette shows this machine's hits while the servers answer, then asks 
         { hits: [hit("m1", 9)], partial: false, pending: true },
         { hits: [hit("m1", 9), hit("b1", 5), hit("b0", 1)], partial: false },
     ];
-    await searchRounds(async (rest) => (asked.push(rest), answers.shift()!), () => true, (p) => void shown.push({ hits: p.hits.map((h) => h.id), more: p.more }));
+    await searchRounds(async (rest) => (asked.push(rest), answers.shift()!), () => true, (p) => void shown.push({ hits: p.hits.map((h) => h.id), more: p.more, ...(p.servers ? { servers: true } : {}) }));
     expect(asked).toEqual([undefined, true, undefined, true]);
-    expect(shown).toEqual([{ hits: ["m1"], more: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
+    // The first is said to be waiting on the servers, not on older sessions.
+    expect(shown).toEqual([{ hits: ["m1"], more: true, servers: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
+});
+
+test("a message hit keeps its name when later hits move it, so the selection stays on it", async () => {
+    const src = await Bun.file(new URL("../gui/src/components/CommandPalette.tsx", import.meta.url)).text();
+    // By its machine, session and place in it; several in one message by their order there. Not by its row.
+    expect(src).toContain("const at = `m-${JSON.stringify([h.machine ?? \"\", h.id, h.seg, h.index])}`;");
+    // And a selected message isn't folded away by hits that join it.
+    expect(src).toContain('if (results()[sel()]?.section === "Messages") setAllMessages(true);');
+    expect(src).toContain("id: `${at}-${nth}`,");
+    expect(src).not.toContain("-${h.index}-${i}`");
+    const { keepSelection } = await import("../gui/src/lib/palette-order");
+    const before = [{ id: "m--a-0-1-0" }, { id: "m--b-0-2-0" }];
+    const after = [{ id: "m-box-x-0-0-0" }, { id: "m--a-0-1-0" }, { id: "m-box-y-0-0-0" }, { id: "m--b-0-2-0" }];
+    expect([keepSelection(before, after, 0, false), keepSelection(before, after, 1, false)]).toEqual([1, 3]);
 });
 
 test("what was deleted on each server is listed as its, and only rows a window can show", async () => {
@@ -112,4 +127,28 @@ test("a window on the user's computer lists and restores what was deleted on its
     expect(plugins).toContain("return its === (on || own) ? app.homeCwd : undefined;");
     // No call about plugins goes anywhere but where the rows came from (a maker's logo aside).
     expect(plugins.split("rpc.call(").length).toBe(3);
+});
+
+test("for a window on one of its servers, the user's computer searches its own sessions and the other servers'", async () => {
+    const { isolate } = await import("./helpers/isolate");
+    const iso = isolate();
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({});
+    const asked: string[] = [];
+    const server = (name: string) => ({ ask: async () => (asked.push(name), { hits: [{ ...hit(`${name}1`, 5) }], partial: false }) });
+    (engine as any).serverLinks = { connectedServers: () => new Map([["box", server("box")], ["lab", server("lab")]]) };
+    // The connection a window on box keeps to this computer's Cavvy (which may not know yet which server it's for).
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client as never);
+    try {
+        const r = (await engine.handle(client as never, "sessions.search", { query: "migration", limit: 20, others: "box" } as never)) as { hits: { id: string; machine?: string }[] };
+        expect([r.hits.map((h) => [h.id, h.machine]), asked]).toEqual([[["lab1", "lab"]], ["lab"]]);
+        // The rest of a search this connection never started (it was made anew meanwhile): waited for, not pending again.
+        const rest = (await engine.handle(client as never, "sessions.search", { query: "migration two", limit: 20, others: "box", rest: true } as never)) as { hits: unknown[]; pending?: boolean };
+        expect([rest.hits.length, rest.pending]).toEqual([1, undefined]);
+    } finally {
+        (engine as any).serverLinks = undefined;
+        await engine.stop();
+        iso.cleanup();
+    }
 });

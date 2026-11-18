@@ -73,7 +73,7 @@ export function CommandPalette() {
     const [hits, setHits] = createSignal<{ query: string; hits: SessionSearchHit[] }>({ query: "", hits: [] });
     const [searching, setSearching] = createSignal(false);
     // Past the server's budget: reading older sessions still, or stopped before all were read.
-    const [older, setOlder] = createSignal<"more" | "incomplete">();
+    const [older, setOlder] = createSignal<"more" | "servers" | "incomplete">();
     let asked = 0;
     let wait: ReturnType<typeof setTimeout> | undefined;
     createEffect(
@@ -100,12 +100,15 @@ export function CommandPalette() {
                         (rest) => rpc.call("sessions.search", { query, limit: MAX_HITS, ...(rest ? { rest } : {}) }),
                         () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
+                            // A message is selected: every message stays in sight, so later hits that join them
+                            // (a slow server's) can't push it out from under the selection.
+                            if (results()[sel()]?.section === "Messages") setAllMessages(true);
                             setHits({ query, hits: r.hits });
-                            setOlder(r.more ? "more" : r.incomplete ? "incomplete" : undefined);
+                            setOlder(r.servers ? "servers" : r.more ? "more" : r.incomplete ? "incomplete" : undefined);
                         },
                     );
                 } catch {
-                    if (mine === asked) setHits({ query: "", hits: [] });
+                    if (mine === asked) (setHits({ query: "", hits: [] }), setOlder(undefined));
                 } finally {
                     if (mine === asked) setSearching(false);
                 }
@@ -124,7 +127,7 @@ export function CommandPalette() {
         setAgentFocus(undefined);
         setJumpTarget({ sessionId: h.id, seg: h.seg, index: h.index, role: h.role, query });
         // One on a server, maybe not in the list: opened from there.
-        if (h.machine) restoredFrom(h.id, h.machine);
+        if (h.machine !== undefined) restoredFrom(h.id, h.machine);
         void activate(h.id, h.cwd);
     };
 
@@ -190,10 +193,16 @@ export function CommandPalette() {
         // Fresh answers are authoritative, even if a capped session list missed
         // an Undo. The generation check above drops answers predating deletion.
         // What was said, as it reads (no Markdown syntax), with the session it's in under it.
-        const messages: Entry[] = said.hits.map((h, i) => {
+        // Named by what it is, not where it stands: hits that arrive later (a slow server's) move it, and the
+        // selection goes with it. Several in one message are told apart by their order there.
+        const seen = new Map<string, number>();
+        const messages: Entry[] = said.hits.map((h) => {
             const sn = plainSnippet(h.snippet, h.match);
+            const at = `m-${JSON.stringify([h.machine ?? "", h.id, h.seg, h.index])}`;
+            const nth = seen.get(at) ?? 0;
+            seen.set(at, nth + 1);
             return {
-                id: `m-${h.id}-${h.seg}-${h.index}-${i}`,
+                id: `${at}-${nth}`,
                 section: "Messages",
                 label: sn.text,
                 desc: `${h.title} · ${atMachine(h.machine)}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
@@ -263,7 +272,7 @@ export function CommandPalette() {
                 <kbd>Esc</kbd>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For each={results()} fallback={<div class="pal-empty">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -294,7 +303,7 @@ export function CommandPalette() {
                     )}
                 </For>
                 <Show when={results().length && older()}>
-                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
+                    <div class="pal-note">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
                 </Show>
             </div>
         </Dialog>

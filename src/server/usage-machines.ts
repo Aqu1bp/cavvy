@@ -138,14 +138,28 @@ export function addMachines(own: UsageSummary, others: { name: string; summary: 
  * once, so all of them count the same range, near enough. `servers`: every server's name, and the connection to each
  * that's connected. One that isn't, or doesn't answer with a summary in time, is named in `uncounted`.
  */
-export async function usageEverywhere(days: UsageDays, reading: Promise<UsageSummary>, servers: { names: string[]; connected: Map<string, UsageAsk> }, ms = ASK_MS): Promise<UsageSummary> {
-    if (!servers.names.length) return reading;
-    // `brief`: without its detail by hour and account, which isn't added (and is most of a long range's answer).
-    const [own, ...asked] = await Promise.all([reading, ...servers.names.map(async (name) => {
-        const summary = await servers.connected.get(name)?.ask("usage.summary", { days, brief: true }, ms).then((raw) => machineSummary(raw, days), () => undefined);
-        return { name, summary };
-    })]);
-    const counted = asked.filter((a): a is { name: string; summary: NonNullable<typeof a.summary> } => Boolean(a.summary));
+/** What each server said its usage is (none: not connected, or no summary in time), asked at once. */
+export type Asked = { name: string; summary?: Said }[];
+
+/** Each server asked for its own usage: `brief`, without its detail by hour and account, which isn't added (and is most of a long range's answer). */
+export function askMachines(days: UsageDays, servers: { names: string[]; connected: Map<string, UsageAsk> }, ms = ASK_MS): Promise<Asked> {
+    return Promise.all(
+        servers.names.map(async (name) => ({ name, summary: await servers.connected.get(name)?.ask("usage.summary", { days, brief: true }, ms).then((raw) => machineSummary(raw, days), () => undefined) })),
+    );
+}
+
+/** `own` with what the servers said: those that said nothing usable are named in `uncounted`. */
+export function withMachines(own: UsageSummary, asked: Asked): UsageSummary {
+    const counted = asked.filter((a): a is { name: string; summary: Said } => Boolean(a.summary));
     const uncounted = asked.filter((a) => !a.summary).map((a) => a.name);
     return { ...addMachines(own, counted), ...(uncounted.length ? { uncounted } : {}) };
+}
+
+/** How long this computer's own figures wait for the servers' before they're shown without them (the servers' follow). */
+export const USAGE_GRACE_MS = 1500;
+
+export async function usageEverywhere(days: UsageDays, reading: Promise<UsageSummary>, servers: { names: string[]; connected: Map<string, UsageAsk> }, ms = ASK_MS): Promise<UsageSummary> {
+    if (!servers.names.length) return reading;
+    const [own, asked] = await Promise.all([reading, askMachines(days, servers, ms)]);
+    return withMachines(own, asked);
 }

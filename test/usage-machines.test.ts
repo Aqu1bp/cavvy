@@ -104,3 +104,34 @@ test("only numbers and short names are kept of what a server says", () => {
     expect(machineSummary({ ...said, totals: {} }, 1)).toBeUndefined();
     expect(machineSummary({ ...said, interval: "day" }, 1)).toBeUndefined();
 });
+
+test("a slow server doesn't hold this computer's own figures: they're answered at once as its own so far, and the rest brings the server's", async () => {
+    const { isolate } = await import("./helpers/isolate");
+    const iso = isolate();
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({});
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client as never);
+    let asked = 0;
+    let answer!: (v: unknown) => void;
+    const slow = { ask: () => (asked++, new Promise((r) => (answer = r))) };
+    (engine as any).serverLinks = { stopWatching() {}, list: () => [{ name: "box" }], connectedServers: () => new Map([["box", slow]]) };
+    try {
+        const first = (await engine.handle(client as never, "usage.summary", { days: 1, first: true } as never)) as { waiting?: string[]; uncounted?: string[] };
+        expect([first.waiting, first.uncounted, asked]).toEqual([["box"], undefined, 1]);
+        // The rest of it: the same asking, waited for; a server with nothing usable to say is named.
+        const rest = engine.handle(client as never, "usage.summary", { days: 1, rest: true } as never) as Promise<{ waiting?: string[]; uncounted?: string[] }>;
+        answer({ not: "a summary" });
+        expect([(await rest).waiting, (await rest).uncounted, asked]).toEqual([undefined, ["box"], 1]);
+        // Asked afresh, the server is asked again. A window that doesn't ask for its own first waits for the whole.
+        const whole = engine.handle(client as never, "usage.summary", { days: 1 }) as Promise<{ waiting?: string[]; uncounted?: string[] }>;
+        await Bun.sleep(20);
+        expect(asked).toBe(2);
+        answer({});
+        expect([(await whole).waiting, (await whole).uncounted]).toEqual([undefined, ["box"]]);
+    } finally {
+        (engine as any).serverLinks = undefined;
+        await engine.stop();
+        iso.cleanup();
+    }
+});
