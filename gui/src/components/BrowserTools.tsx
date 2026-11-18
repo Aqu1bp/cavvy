@@ -132,6 +132,9 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         if (tab !== undefined) void rpc.call("browser.find", { id: o.id(), tab, query: "" }).catch(() => undefined);
     };
     const openFind = () => {
+        // Where they were in the page, to go back to as it closes (the search moves the page's focus to what it finds).
+        const key = o.native && !finding() ? keyOf(o.tab()?.targetId) : undefined;
+        if (key) electron?.browserPageFocus?.(key, "keep");
         findOpens++;
         setMenuOpen(false);
         setFinding(true);
@@ -147,8 +150,12 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         asked++;
         setFound(undefined);
         if (query()) clearFound();
-        // Back to the page, as a browser's find bar does.
-        if (o.native) webview()?.focus();
+        // Back to the page, where they were in it, as a browser's find bar does.
+        if (o.native) {
+            webview()?.focus();
+            const key = keyOf(o.tab()?.targetId);
+            if (key) electron?.browserPageFocus?.(key, "restore");
+        }
         else o.keyboard()?.focus({ preventScroll: true });
         const closing = ++findOpens;
         o.giveBack(findBar?.offsetHeight ?? 0, () => closing === findOpens && setFinding(false));

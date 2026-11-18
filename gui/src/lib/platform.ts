@@ -47,6 +47,8 @@ export interface ElectronBridge {
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
     /** Resolves once a tab's page has laid itself out at its webview's size and drawn at it (false: not within a moment). */
     browserPainted?(key: string, size: { width: number; height: number }): Promise<boolean>;
+    /** Where the person was in the tab's page, kept as its find bar opens and gone back to as it closes. */
+    browserPageFocus?(key: string, what: "keep" | "restore"): void;
 }
 
 export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;

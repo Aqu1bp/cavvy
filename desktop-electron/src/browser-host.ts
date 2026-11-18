@@ -497,6 +497,22 @@ export class BrowserHost {
         }
     }
 
+    /**
+     * Where the person was in a tab's page as its find bar opens (`keep`), and back there as it closes (`restore`), as a
+     * browser's find bar does. Searching moves the page's selection to what it found, which takes the focus off the
+     * field they were typing in: given the keyboard back, the page had it on nothing and their typing went nowhere.
+     * Kept in the canvas colour's world, which the page's scripts neither see nor change.
+     */
+    pageFocus(key: string, what: "keep" | "restore") {
+        const tab = this.tabsByKey.get(key);
+        if (!tab || tab.closed || tab.wc.isDestroyed()) return;
+        const code =
+            what === "keep"
+                ? "globalThis.__cavvyFocus = document.activeElement !== document.body ? document.activeElement : null; 0"
+                : "(() => { const el = globalThis.__cavvyFocus; globalThis.__cavvyFocus = null; if (el && el.isConnected && document.activeElement !== el) el.focus({ preventScroll: true }); return 0; })()";
+        void tab.wc.executeJavaScriptInIsolatedWorld(CANVAS_WORLD, [{ code }]).catch(() => undefined);
+    }
+
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
     sized(key: string, size: { width: number; height: number; scale: number }) {
         const tab = this.tabsByKey.get(key);
