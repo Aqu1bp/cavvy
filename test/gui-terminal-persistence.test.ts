@@ -469,9 +469,11 @@ test("a window keeps each machine's terminal tabs apart: back from a server, thi
 
 test("the machines a window keeps terminal tabs for are read back from where they're kept", async () => {
     const { tabMachines } = await import("../gui/src/lib/terminal");
-    const store = new Map<string, string>([["cavvy.terminals", "{}"], ["cavvy.terminals.box", "{}"], ["cavvy.other", "{}"]]);
+    const tabs = JSON.stringify({ tabs: [{ id: "t", cwd: "/p", number: 1, terminal: "t" }], next: 2, open: false });
+    // A machine visited with no tab left (none kept for it) isn't one.
+    const store = new Map<string, string>([["cavvy.terminals", tabs], ["cavvy.terminals.box", tabs], ["cavvy.terminals.lab", JSON.stringify({ tabs: [], next: 1, open: false })], ["cavvy.other", tabs]]);
     const old = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
-    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { get length() { return store.size; }, key: (i: number) => [...store.keys()][i] ?? null } });
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { get length() { return store.size; }, key: (i: number) => [...store.keys()][i] ?? null, getItem: (k: string) => store.get(k) ?? null } });
     try {
         expect(tabMachines().sort()).toEqual(["", "box"]);
     } finally {

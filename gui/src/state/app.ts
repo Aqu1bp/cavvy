@@ -191,7 +191,7 @@ export function warmFor(id: string) {
     const on = at.machine;
     void linkFor(on).catch(() => {
         // Not reached: it isn't kept trying for a row only pointed at. A click tries again, and says why.
-        if (![...awayOn.values()].includes(on ?? "")) dropLink(on);
+        if (![...awayOn.values()].includes(on ?? "") && !heldLinks.has(on ?? "")) dropLink(on);
     });
 }
 
@@ -262,13 +262,27 @@ function tellShown() {
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
 
-/** The connection to machine `on` (awayMachine's names: "" this computer, in a window on a server), made if it isn't. */
+/** Machines whose connection a terminal panel holds (machineLink): kept, though none of their sessions is open here. */
+const heldLinks = new Set<string>();
+
+/**
+ * The connection to machine `on` (awayMachine's names: "" this computer, in a window on a server), made if it isn't,
+ * and kept: not waited on, so one that can't be reached yet keeps trying by itself (a terminal panel waits for it).
+ */
 export function machineLink(on: string): Promise<Rpc> {
-    return linkFor(on || undefined);
+    heldLinks.add(on);
+    return linkMade(on || undefined);
 }
 
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
 async function linkFor(name: string | undefined): Promise<Rpc> {
+    const link = await linkMade(name);
+    await opened(link);
+    return link;
+}
+
+/** The connection to `name`'s Cavvy, made and listened to if it isn't: not waited on. */
+async function linkMade(name: string | undefined): Promise<Rpc> {
     // This computer's Cavvy says where a server's is. In a window on a server it's another connection of the window's.
     const home = machine ? (await import("../lib/machines")).home : undefined;
     const on = name ?? "";
@@ -298,7 +312,6 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
             tellShown();
         });
     }
-    await opened(link);
     return link;
 }
 rpc.retriesCredentials = isDesktop;

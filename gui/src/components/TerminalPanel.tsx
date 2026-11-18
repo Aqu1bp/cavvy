@@ -26,6 +26,8 @@ const TerminalScreen = lazy(() => {
 export const preloadTerminal = () => TerminalScreen.preload();
 
 const MAX_TABS = 12;
+/** The terminal is being shown again as the page loads, with the tabs it had: no panel opens a shell for it. */
+let reopening = false;
 
 /**
  * Mounted while hidden: each tab keeps its emulator and shell across chat navigation. The tabs are kept
@@ -35,10 +37,12 @@ const MAX_TABS = 12;
  * One for each machine whose sessions the window has shown (App.tsx): `on` is that machine (awayMachine; none, the
  * window's own) and `link` the connection to its Cavvy, where its shells run. `current`: the session in view is on it.
  */
-export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; link?: Rpc; current?: boolean }) {
+export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; link?: Rpc; current?: boolean; showing?: boolean }) {
     const link = p.link ?? rpc;
     const conn = () => connOn(p.on);
     const current = () => p.current !== false;
+    // What shows: the current one's, except while an account's sign-in on the window's own machine shows (App.tsx).
+    const showing = () => p.showing ?? current();
     // Where its tabs are kept: under the machine the shells are on (lib/terminal.ts tabsKey; "" this computer).
     const at = p.on ?? machine;
     const saved = loadTabs(at);
@@ -46,16 +50,15 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     const [selected, setSelected] = createSignal<string | undefined>(saved.selected);
     const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
-    const visible = () => current() && terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
-    // The sheet gives the panel its row while it shows: the one of the machine in view says.
-    createEffect(() => { if (current()) setTerminalShown(visible()); });
+    const visible = () => showing() && terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
+    // The sheet gives the panel its row while it shows: the one that's showing says.
+    createEffect(() => { if (showing()) setTerminalShown(visible()); });
     let next = saved.next;
     // Not saved until the saved tabs are back, which would lose them to a reload meanwhile.
     const [restored, setRestored] = createSignal(false);
     let restoring = false;
     let disposed = false;
     onCleanup(() => { disposed = true; });
-    let reopening = false;
     const save = () => {
         if (restored()) saveTabs({ tabs: tabs().map(({ attach: _, closing: __, ...t }) => t), next, open: terminalOpen(), selected: selected(), closed: closes.ids }, at);
     };
@@ -81,7 +84,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
             }
             setRestored(true);
             // An explicit panel opening while its list was loading still starts the first shell.
-            if (current() && terminalOpen() && !back.open && !p.hidden && !currentTabs().length) add();
+            if (current() && showing() && terminalOpen() && !back.open && !p.hidden && !currentTabs().length) add();
             save();
         } catch (e) {
             if (!(e instanceof RpcError && e.code === "disconnected")) reportError(e);
@@ -109,6 +112,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         if (conn() !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
         if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
+        // The session's: a sign-in tab of the window's own machine no longer holds the view.
+        setTerminalLogin(false);
         const tab = { id, terminal: id, cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
         if (setup) setupTickets.set(tab.id, setup.ticket);
         terminalAsked();
@@ -133,6 +138,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     const signIn = (session: string, interaction: string) => {
         if (!restored() || !p.cwd || conn() !== "open" || full()) return toast("Close a terminal, then try again", "warn"), false;
         const id = crypto.randomUUID();
+        setTerminalLogin(false);
         signInTabs.set(id, { session, interaction });
         terminalAsked();
         setTabs((all) => [...all, { id, cwd: p.cwd!, number: next++, terminal: id }]);
@@ -158,7 +164,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
     createEffect(on(terminalOpen, (open) => {
-        if (!open || reopening || !current()) return;
+        if (!open || reopening || !current() || !showing()) return;
         // Opened by the user: its terminal takes the keyboard, even from a card that waits (lib/terminal-keys.ts).
         terminalAsked();
         if (!p.hidden && !currentTabs().length) add();
@@ -169,6 +175,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setupTickets.delete(tab.id);
         signInTabs.delete(tab.id);
         if (currentTabs().length === 1) setTerminalOpen(false);
+        // The sign-in was what held the window's own terminal in view: the session's machine's shows again.
+        if (tab.login) setTerminalLogin(false);
         setTabs((all) => all.filter((t) => t !== tab));
     };
     let panel: HTMLElement | undefined;

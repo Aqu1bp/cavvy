@@ -8,7 +8,7 @@ import { tabMachines } from "./lib/terminal";
 import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
@@ -329,11 +329,15 @@ export function App() {
         }
         return linkedMachine(id) ?? (awayUnopened(id) ? "pending" : { on: undefined });
     };
+    /** The machine whose panel is current (takes the session's actions); null while it's still opening. */
     const terminalOn = () => {
-        if (terminalLogin()) return undefined;
         const at = terminalAt();
         return at === "pending" ? null : at.on;
     };
+    /** The machine whose panel shows: the current one, or the window's own while an account's sign-in shows (Settings). */
+    const terminalShowing = () => (terminalLogin() ? undefined : terminalOn());
+    // None shows (another machine's session still opening): the sheet keeps no terminal row for it.
+    createEffect(() => { if (terminalShowing() === null) setTerminalShown(false); });
     const [terminalMachines, setTerminalMachines] = createSignal<{ on: string | undefined; link: Rpc }[]>([{ on: undefined, link: rpc }]);
     const addTerminalMachine = (on: string, link: Rpc) => {
         if (!untrack(terminalMachines).some((m) => m.on === on)) setTerminalMachines((all) => [...all, { on, link }]);
@@ -695,7 +699,7 @@ export function App() {
                             </Show>
                         </div>
                         <For each={terminalMachines()}>{(m) => (
-                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} cwd={terminalOn() === m.on && !terminalLogin() ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
+                            <RenderBoundary><TerminalPanel on={m.on} link={m.link} current={terminalOn() === m.on} showing={terminalShowing() === m.on} cwd={terminalShowing() === m.on && !terminalLogin() ? (active()?.view.state.cwd ?? app.homeCwd) : undefined} hidden={!!settingsTab()} /></RenderBoundary>
                         )}</For>
                     </div>
                 </div>
