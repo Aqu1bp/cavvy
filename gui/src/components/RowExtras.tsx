@@ -1,6 +1,6 @@
 // What a session's row menu offers beyond the usual (Sidebar.tsx RowMenu), loaded the first time the rail is pointed
-// at or focused: Wake now, Snooze ▸ (until a time), and More ▸ (Regenerate title, Never auto-settle, New session). And
-// the whole menu of several rows picked together (BulkItems), which a click on one row never needs.
+// at or focused: Wake now, Snooze ▸ (until a time), and More ▸ (Regenerate title, Never auto-settle, New session in its
+// folder). And the whole menu of several rows picked together (BulkItems), which a click on one row never needs.
 
 import "../styles/snooze.css";
 import { batch, createSignal, For, Show } from "solid-js";
@@ -142,17 +142,17 @@ export default function RowExtras(p: { ids: readonly string[]; close: () => void
     return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><MoreItems id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
 }
 
-/** What's used less, a step away: More ▸. */
+/** What's used less, a step away: More ▸. New session in its folder: the row's project (or worktree), on its machine. */
 function MoreItems(p: { id: string; close: () => void }) {
     const s = () => summary(p.id);
     return (
-        <Submenu icon={<Ellipsis size={14} />} label="More" width={210}>
+        <Submenu icon={<Ellipsis size={14} />} label="More" width={264}>
             <TitleItem id={p.id} close={p.close} />
             <KeepItem id={p.id} close={p.close} />
             <Show when={s()}>
                 {(s) => (
-                    <button role="menuitem" class="menu-item compact" title={`New session in ${s().projectName}`} onClick={() => (p.close(), newSession(s().cwd, s()))}>
-                        <Plus size={14} /> New session
+                    <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => (p.close(), newSession(s().cwd, s()))}>
+                        <Plus size={14} /> <span class="truncate">New session in {s().projectName}</span>
                     </button>
                 )}
             </Show>

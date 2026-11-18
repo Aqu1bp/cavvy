@@ -126,7 +126,7 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            {/* Wake now, Snooze ▸ and More ▸ (Regenerate title, Never auto-settle, New session). */}
+            {/* Wake now, Snooze ▸ and More ▸ (Regenerate title, Never auto-settle, New session in its folder). */}
             <RowExtras ids={[p.s.id]} close={close} />
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
@@ -478,13 +478,13 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     </span>
                     <span class="slim-acts">
                         <Show when={!snoozed()}>
-                            <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
+                            <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={`${p.s.pinned ? "Unpin" : "Pin"} ${p.s.title}`} onClick={() => void pin(p.s.id, !p.s.pinned)}>
                                 <Show when={p.s.pinned} fallback={<Pin size={13} />}>
                                     <PinOff size={13} />
                                 </Show>
                             </button>
                         </Show>
-                        <button ref={more} class="hb sm" title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
+                        <button ref={more} class="hb sm" title="More" aria-label={`More for ${p.s.title}`} aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                             <MoreHorizontal size={14} />
                         </button>
                     </span>
