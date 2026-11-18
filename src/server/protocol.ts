@@ -1616,6 +1616,40 @@ export interface GitPublishInfo {
     compareUrl?: string;
     pr?: GitPrInfo;
 }
+/** A branch against its upstream, from what was last fetched (GitSyncInfo is read without the network). */
+export interface GitSyncInfo {
+    detached: boolean;
+    branch?: string;
+    /** "origin/main"; unset when the branch has none. */
+    upstream?: string;
+    ahead?: number;
+    behind?: number;
+    /** The upstream's branch was deleted on the remote. */
+    gone?: boolean;
+}
+export interface GitPullResult {
+    /** current: nothing to pull; pulled: fast-forwarded by `pulled` commits; diverged: commits on both sides, nothing changed. */
+    result: "current" | "pulled" | "diverged";
+    branch: string;
+    upstream: string;
+    ahead: number;
+    behind: number;
+    pulled?: number;
+}
+export interface GitBranchEntry {
+    /** Local: "feature"; remote: "origin/feature". */
+    name: string;
+    upstream?: string;
+    /** Last commit, ms. */
+    at?: number;
+    /** Checked out in this other worktree. */
+    worktree?: string;
+}
+export interface GitBranchList {
+    current?: string;
+    local: GitBranchEntry[];
+    remote: GitBranchEntry[];
+}
 export interface GitPublishRequest {
     fingerprint: string;
     action: "push" | "pr";
@@ -2292,6 +2326,18 @@ export interface Methods {
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
+    /** `sessionId`: the session it's for, so the call goes to that session's machine. */
+    /** The branch of the folder against its upstream, from local refs (no network). */
+    "git.sync": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo };
+    "git.branches": { params: { cwd: string; sessionId?: string }; result: GitBranchList };
+    /** Fetch the branch's remote (or origin). */
+    "git.fetch": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo & { remote: string } };
+    /** Fetch, then fast-forward only; refused while a session works in the folder. */
+    "git.pull": { params: { cwd: string; sessionId?: string }; result: GitPullResult };
+    /** Refused while a session works in the folder. `remote`: `branch` is a remote one (origin/x). */
+    "git.switch": { params: { cwd: string; sessionId?: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
+    /** A new branch at HEAD, switched to. */
+    "git.createBranch": { params: { cwd: string; sessionId?: string; name: string }; result: { branch: string } };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
