@@ -831,7 +831,7 @@ export function gitChanges(cwd: string, req: GitChangesRequest, snapshots?: Turn
             return { ...notRepo(req.scope, "No snapshot was recorded for this turn."), repo: top.code === 0, incomplete: true, snapshotAvailable: false, notes: ["No snapshot was recorded for this turn."] };
         }
         const result = await run();
-        return { ...result, turns: snapshots?.list().map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })) };
+        return { ...result, turns: snapshots?.shown().map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })) };
     });
 }
 

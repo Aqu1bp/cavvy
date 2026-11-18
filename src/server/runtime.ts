@@ -5040,11 +5040,15 @@ export class Runtime {
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
         const snapshots = this.rewindSnapshots();
+        // When each was sent, from its turn: the same prompt sent twice is told apart by it.
+        const sent = new Map<number, number>();
+        for (const turn of this.view.turns) if (turn.prompt?.index !== undefined && turn.startedAt) sent.set(turn.prompt.index, turn.startedAt);
         return rewindTargets(this.session.messages)
             .reverse()
             .map((t) => {
                 const { tracked, whole, files } = changedBy(snapshots, history, t.checkpoint);
-                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) };
+                const at = sent.get(t.index);
+                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}), ...(at ? { at } : {}) };
             });
     }
 
@@ -5180,6 +5184,9 @@ export class Runtime {
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
         }
         if (rewindConversation) {
+            // The turns from this prompt on leave the review pane's list with the conversation (checkpoints are increasing times).
+            const from = this.session.messages.slice(index).flatMap((m) => (m.role === "user" && m.meta?.checkpoint !== undefined ? [m.meta.checkpoint] : []))[0];
+            if (from !== undefined) this.rewindSnapshots()?.rewound(from);
             if (this.agent) this.agent.rewind(index);
             else {
                 this.session.rewind(index);
@@ -5192,7 +5199,8 @@ export class Runtime {
             if (backends.length && !(code && plan.whole)) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        // Only a conversation rewound has less in it: files restored alone leave the context as it was.
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), ...(rewindConversation ? { contextTokens: 0 } : {}) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
