@@ -243,6 +243,8 @@ export const MAX_FILES = 3000;
 /** Names that are keys, whatever is in them. */
 export const SECRET_NAME = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.?credentials(\..*)?|\.netrc|\.npmrc|auth\.json)$/i;
 export const SKIP_DIR = new Set([".git", "node_modules", ".venv", "__pycache__", ".DS_Store"]);
+/** Claude Code's own: the skills it brings from the account it's signed in to, and keeps level itself on each machine. */
+export const CLI_SYNCED = ".claude/skills/synced";
 
 export interface CopyPlan {
     /** A folder laid out as the server's home is. */
@@ -300,7 +302,7 @@ class Stage {
             return 0;
         }
         for (const name of names.sort()) {
-            if (SKIP_DIR.has(name)) continue;
+            if (SKIP_DIR.has(name) || `${to}/${name}` === CLI_SYNCED) continue;
             const path = join(from, name);
             let dir: boolean;
             try {
