@@ -39,6 +39,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const state = () => browserState(id());
     const tab = () => currentTab(state());
     const status = () => paneStatus(state());
+    /** The agent drove the tab last and its turn is still going: what's said beside the tabs. */
+    const agentUsing = createMemo(() => status() === "agent" && app.sessions.find((s) => s.id === id())?.status === "running");
     let box: HTMLDivElement | undefined;
     let canvas: HTMLCanvasElement | undefined;
     let address: HTMLInputElement | undefined;
@@ -247,7 +249,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }));
     };
 
-    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status });
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status, reload: () => command("reload", { tab: tab()?.id }) });
 
     // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
     // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's
@@ -374,7 +376,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // The address bar and the tabs
 
-    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
+    const call = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
+    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void call(c, extra);
+    /** A new tab, the address bar ready for where it goes (as a browser's own new tab is). */
+    const newTab = () => {
+        address?.focus();
+        void call("new_tab").then(() => requestAnimationFrame(() => address?.focus()));
+    };
     const go = (e: SubmitEvent) => {
         e.preventDefault();
         const url = draft();
@@ -442,12 +450,12 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         </div>
                     )}
                 </For>
-                <button class="hb sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={() => command("new_tab")}>
+                <button class="hb sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={newTab}>
                     <Plus size={14} />
                 </button>
                 <span class="grow" />
-                <Show when={status() === "agent"}>
-                    <span class="br-who" title="You can use the page too: the agent is told when you have">
+                <Show when={agentUsing()}>
+                    <span class="br-who" title="Agent is using this tab. You can use the page too: the agent is told when you have">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this tab</span>
                     </span>

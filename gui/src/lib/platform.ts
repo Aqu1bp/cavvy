@@ -28,7 +28,7 @@ export interface ElectronBridge {
      * (lib/page-focus.ts): `focused` when a tab's page holds the window's keyboard after something the agent did to
      * it, `person` when the person presses (`press`), types or scrolls in one. Returns how to stop.
      */
-    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "canvas"; key: string; color: string } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string } | { type: "refocus"; key: string } | { type: "find"; key: string }) => void): () => void;
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "canvas"; key: string; color: string } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string } | { type: "refocus"; key: string } | { type: "find"; key: string } | { type: "reload"; key: string }) => void): () => void;
     /** Opens a tab's page's DevTools, in a window of their own placed clear of `pane` (the Browser pane's box) where it can be. */
     browserDevTools?(key: string, pane?: { x: number; y: number; width: number; height: number }): void;
     /** The person is back in the window (a press or focus of theirs there): no page is theirs any more. */

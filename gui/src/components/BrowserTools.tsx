@@ -46,6 +46,8 @@ export interface PaneToolsOptions {
     keyboard: () => HTMLElement | undefined;
     /** A bar closes, giving its height back to the page: `close` runs once the page can take it without a blank strip. */
     giveBack: (px: number, close: () => void) => void;
+    /** Reloads the current tab (F5, Ctrl+R / ⌘R in the pane, as in a browser). */
+    reload: () => void;
 }
 
 export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element } {
@@ -157,20 +159,26 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         setFound(undefined);
     }, { defer: true }));
 
-    // Ctrl+F (⌘F) with the keyboard in the pane: the page's find, not the conversation's. Taken before the page's own
-    // keyboard field sends it to the page.
+    // Ctrl+F (⌘F) with the keyboard in the pane: the page's find, not the conversation's; F5 or Ctrl+R (⌘R) reloads the
+    // page, as in a browser. Taken before the page's own keyboard field sends them to the page.
     onMount(() => {
         const root = o.root();
         const key = (e: KeyboardEvent) => {
-            if (e.key.toLowerCase() !== "f" || !isMod(e) || e.altKey || e.shiftKey || o.status() === "unavailable") return;
+            if (o.status() === "unavailable" || e.altKey) return;
+            const find = e.key.toLowerCase() === "f" && isMod(e) && !e.shiftKey;
+            const reload = (e.key === "F5" && !isMod(e)) || (e.key.toLowerCase() === "r" && isMod(e));
+            if (!find && !(reload && o.tab())) return;
             e.preventDefault();
             e.stopPropagation();
-            openFind();
+            if (find) openFind();
+            else o.reload();
         };
         root?.addEventListener("keydown", key, true);
         // In the desktop app the page has the keyboard itself: the app tells which page was asked (browser-host.ts).
         const off = o.native ? electron?.onBrowser((e) => {
-            if (e.type === "find" && e.key === keyOf(o.tab()?.targetId)) openFind();
+            if (e.key !== keyOf(o.tab()?.targetId)) return;
+            if (e.type === "find") openFind();
+            else if (e.type === "reload") o.reload();
         }) : undefined;
         onCleanup(() => {
             root?.removeEventListener("keydown", key, true);
