@@ -18,8 +18,12 @@
 // being drawn (tab-rest.ts). Any command for it, or a pane showing it, wakes it first, so the agent never finds it
 // different. Not one still loading.
 
-import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
+import { app, BrowserWindow, nativeTheme, screen, session, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { DEVTOOLS_MIN, devToolsBounds, devToolsTitle } from "./devtools-place";
+import type { Rect } from "./window-state";
 import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
@@ -146,6 +150,9 @@ const POPUP: BrowserWindowConstructorOptions = {
     webPreferences: { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true, spellcheck: false },
 };
 
+/** The longest a DevTools window waits to be shown for DevTools to have loaded in it. */
+const DEVTOOLS_SHOW_MS = 1500;
+
 /** Ctrl+F, or ⌘F on a Mac, alone. */
 const findKey = (input: Input) => input.type === "keyDown" && input.key.toLowerCase() === "f" && (process.platform === "darwin" ? input.meta && !input.control : input.control && !input.meta) && !input.alt && !input.shift;
 
@@ -163,6 +170,8 @@ export class BrowserHost {
     private attaching: string[] = [];
     private attachWaiters = new Map<string, (wc: WebContents) => void>();
     private closing = false;
+    /** Each tab's DevTools window, by the GUI's key for the tab. */
+    private devToolsWindows = new Map<string, BrowserWindow>();
     /** The tabs a pane or the floating view shows (by the GUI's keys): never frozen. */
     private onScreen = new Set<string>();
     readonly stats = { frozen: 0, woken: 0, refused: 0, resleeps: 0, hideSent: 0, showSent: 0, hiddenPlaying: 0, lastShown: [] as string[] };
@@ -365,15 +374,85 @@ export class BrowserHost {
     }
 
     /**
-     * The person asked for a tab's DevTools (the Browser pane's menu): Chromium's own, in a window of their own, for that
-     * page alone. The tab is woken first, so they're never looking at a page that's asleep.
+     * The person asked for a tab's DevTools (the Browser pane's menu): Chromium's own, for that page alone, in a window
+     * the app makes for them, titled for the page, placed beside the app's window (devtools-place.ts: where it was
+     * last, else beside the window, else away from the Browser pane, `pane` in the window's CSS pixels) and closed with
+     * the tab. Asked again, the one that's open comes to the front. The tab is woken first, so they're never looking at
+     * a page that's asleep.
      */
-    devTools(key: string) {
+    devTools(key: string, pane?: Rect) {
         const tab = this.tabsByKey.get(key);
         if (!tab || tab.closed || tab.wc.isDestroyed()) return;
+        const open = this.devToolsWindows.get(key);
+        if (open && !open.isDestroyed()) {
+            if (open.isMinimized()) open.restore();
+            open.show();
+            open.focus();
+            return;
+        }
+        const placed = this.devToolsPlace(pane);
         void this.wake(tab).then(() => {
-            if (!tab.closed && !tab.wc.isDestroyed()) tab.wc.openDevTools({ mode: "detach", activate: true });
+            if (tab.closed || tab.wc.isDestroyed() || this.devToolsWindows.get(key)?.isDestroyed() === false) return;
+            const wc = tab.wc;
+            const dt = new BrowserWindow({
+                width: placed.width,
+                height: placed.height,
+                // Placed as it's created where the system honours that; on Linux window managers place a new window by
+                // their own rules (and count a place given now twice over its frame), so there it's placed once shown.
+                ...(process.platform === "linux" ? {} : { x: placed.x, y: placed.y }),
+                minWidth: DEVTOOLS_MIN.width,
+                minHeight: DEVTOOLS_MIN.height,
+                title: devToolsTitle(wc.getTitle()),
+                show: false,
+                autoHideMenuBar: true,
+                // DevTools' own background, so it doesn't flash white in the dark.
+                backgroundColor: nativeTheme.shouldUseDarkColors ? "#282828" : "#ffffff",
+                webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false },
+            });
+            this.devToolsWindows.set(key, dt);
+            // Its own page would title it "DevTools - <address>": the page's title instead, as the person knows it.
+            dt.on("page-title-updated", (e) => e.preventDefault());
+            const retitle = () => !dt.isDestroyed() && dt.setTitle(devToolsTitle(wc.getTitle()));
+            wc.on("page-title-updated", retitle);
+            wc.on("did-navigate", retitle);
+            // Closed from elsewhere (the page's own DevTools shortcut toggling them off): the window goes too.
+            const closed = () => !dt.isDestroyed() && dt.close();
+            wc.on("devtools-closed", closed);
+            keepDevToolsPlace(dt);
+            // Shown once DevTools have drawn, so it doesn't open blank; at the latest a moment after.
+            const show = () => {
+                if (dt.isDestroyed() || dt.isVisible()) return;
+                dt.show();
+                dt.setBounds(placed);
+            };
+            dt.webContents.once("did-finish-load", show);
+            setTimeout(show, DEVTOOLS_SHOW_MS);
+            dt.once("closed", () => {
+                if (this.devToolsWindows.get(key) === dt) this.devToolsWindows.delete(key);
+                if (wc.isDestroyed()) return;
+                wc.off("page-title-updated", retitle);
+                wc.off("did-navigate", retitle);
+                wc.off("devtools-closed", closed);
+                if (wc.isDevToolsOpened()) wc.closeDevTools();
+            });
+            try {
+                wc.setDevToolsWebContents(dt.webContents);
+                wc.openDevTools({ mode: "detach", activate: true });
+            } catch (e) {
+                console.error(`[cavvy] couldn't open DevTools: ${(e as Error).message}`);
+                dt.destroy();
+            }
         });
+    }
+
+    /** Where a DevTools window opens now (devtools-place.ts), `pane` being the Browser pane in the window's CSS pixels. */
+    private devToolsPlace(pane?: Rect): Rect {
+        const win = this.window();
+        const app = win && !win.isDestroyed() ? win.getBounds() : screen.getPrimaryDisplay().workArea;
+        const content = win && !win.isDestroyed() ? win.getContentBounds() : app;
+        const zoom = win && !win.isDestroyed() ? win.webContents.getZoomFactor() : 1;
+        const onScreen = pane && { x: content.x + pane.x * zoom, y: content.y + pane.y * zoom, width: pane.width * zoom, height: pane.height * zoom };
+        return devToolsBounds({ app, pane: onScreen, work: screen.getDisplayMatching(app).workArea, displays: screen.getAllDisplays().map((d) => d.workArea), saved: readDevToolsPlace() });
     }
 
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
@@ -797,6 +876,10 @@ export class BrowserHost {
         }
         for (const popup of tab.popups) if (!popup.isDestroyed()) popup.destroy();
         tab.popups.clear();
+        // Its DevTools close with it.
+        const devTools = this.devToolsWindows.get(tab.key);
+        this.devToolsWindows.delete(tab.key);
+        if (devTools && !devTools.isDestroyed()) devTools.destroy();
         // The GUI drops the webview, and its page with it.
         this.toGui({ type: "destroy", key: tab.key });
         if (tell) {
@@ -804,4 +887,42 @@ export class BrowserHost {
             this.event(tab.channel, "Target.targetDestroyed", { targetId: tab.targetId });
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Where the DevTools windows were last (one place for all of them), kept between launches.
+
+const devToolsFile = () => join(app.getPath("userData"), "devtools-window.json");
+
+function readDevToolsPlace(): unknown {
+    try {
+        return JSON.parse(readFileSync(devToolsFile(), "utf8"));
+    } catch {
+        return undefined;
+    }
+}
+
+/** Saves where a DevTools window is as it's moved or resized (a moment after it stops) and as it closes. */
+function keepDevToolsPlace(w: BrowserWindow) {
+    let timer: NodeJS.Timeout | undefined;
+    const save = () => {
+        clearTimeout(timer);
+        if (w.isDestroyed() || !w.isVisible() || w.isMinimized() || w.isFullScreen()) return;
+        const b = w.getNormalBounds();
+        try {
+            mkdirSync(dirname(devToolsFile()), { recursive: true });
+            const tmp = `${devToolsFile()}.${process.pid}.tmp`;
+            writeFileSync(tmp, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
+            renameSync(tmp, devToolsFile());
+        } catch {
+            // Not kept this time: it opens beside the window.
+        }
+    };
+    const later = () => {
+        clearTimeout(timer);
+        timer = setTimeout(save, 500);
+    };
+    w.on("resize", later);
+    w.on("move", later);
+    w.on("close", save);
 }

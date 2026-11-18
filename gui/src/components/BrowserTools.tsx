@@ -216,7 +216,8 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     const devTools = () => {
         setMenuOpen(false);
         const key = keyOf(o.tab()?.targetId);
-        if (key) electron?.browserDevTools?.(key);
+        const r = o.root()?.getBoundingClientRect();
+        if (key) electron?.browserDevTools?.(key, r && { x: r.x, y: r.y, width: r.width, height: r.height });
     };
 
     /** A row of the menu; `extra` is read as things change (zooming keeps the menu open). */
