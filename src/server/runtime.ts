@@ -415,6 +415,43 @@ export function cleanTitle(title: string): string {
     return title.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+/** What a session's title is asked to be. */
+const TITLE_RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+
+/** A model's answer as a title: its first line, without a label, quotes or marks; undefined when it's a paragraph. */
+export function modelTitle(raw: string | undefined): string | undefined {
+    const title = raw
+        ?.replace(/<[^>]*>/g, "")
+        .split("\n")
+        .map((l) => l.trim())
+        .find(Boolean)
+        ?.replace(/^(session\s+)?(title|name):\s*/i, "")
+        .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
+        .slice(0, 60);
+    return title && title.split(/\s+/).length <= 10 ? title : undefined;
+}
+
+/**
+ * The conversation as a title is made from: its first request, then the latest of what was said (newest last), each
+ * line marked with who said it. Text only: no tool calls or results, no system reminders. Empty with nothing said.
+ */
+export function conversationGist(messages: readonly Message[], max = 4000): string {
+    const said = messages
+        .map((m) => ({ who: m.role === "user" ? "User" : "Assistant", text: m.content.map((p) => (p.type === "text" ? p.text : "")).join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim() }))
+        .filter((m) => m.text);
+    if (!said.length) return "";
+    const line = (m: (typeof said)[number], n: number) => `${m.who}: ${m.text.length > n ? `${m.text.slice(0, n)}…` : m.text}`;
+    const first = said[0]!.who === "User" ? line(said[0]!, 800) : "";
+    const latest: string[] = [];
+    let room = max - first.length;
+    for (let i = said.length - 1; i >= (first ? 1 : 0) && room > 100; i--) {
+        const l = line(said[i]!, Math.min(600, room - 20));
+        latest.unshift(l);
+        room -= l.length + 1;
+    }
+    return [first && `First request:\n${first}`, latest.length ? `Latest:\n${latest.join("\n")}` : ""].filter(Boolean).join("\n\n");
+}
+
 /** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
 const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|cavvy|buddy|friend|mate))?[\s!.?,:)(]*$/i;
 
@@ -4777,7 +4814,7 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        const RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+        const RULES = TITLE_RULES;
         // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model: a CLI process of its
         // own each time. Sessions asking while one runs are asked about together after it (title-queue.ts).
         try {
@@ -4801,19 +4838,9 @@ export class Runtime {
                 return titlesByNumber(reply, prompts.length);
             });
             mine.throwIfAborted();
-            title = raw
-                ?.replace(/<[^>]*>/g, "")
-                .split("\n")
-                .map((l) => l.trim())
-                .find(Boolean)
-                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
-                .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
-                .slice(0, 60);
+            title = modelTitle(raw);
             // Not a title: the prompt said back, or a paragraph.
-            if (title && title.split(/\s+/).length > 10) {
-                this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
-                title = undefined;
-            }
+            if (raw && !title) this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
         } catch (e) {
             // Its model can't answer one at all (Antigravity, an ACP agent): the prompt names it now.
             if (e instanceof WholeTurnsOnly) this.titleTries = TITLE_TRIES;
@@ -4824,6 +4851,31 @@ export class Runtime {
         if (title && !this.session.title) this.rename(title);
         // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
         else if (!title) this.titleAsked = false;
+    }
+
+    /**
+     * Named again from the conversation so far (the row's or the title bar's Regenerate title), by the model and rules
+     * the first title was made with. The new title, or an error: the old title stays.
+     */
+    async regenerateTitle(): Promise<string> {
+        await this.ready;
+        if (!this.client || this.closed) throw new RpcError("This session has no model to name it with.", "no_model");
+        const about = conversationGist(this.session.messages);
+        if (!about) throw new RpcError("There's nothing in this session to name it after yet.", "empty");
+        let raw: string;
+        try {
+            const target = await this.smallTarget();
+            raw = await this.complete(`You name coding-assistant sessions for a sidebar, from the conversation so far: what it's about now, not only how it started. Reply with only the title: ${TITLE_RULES}`, redactPrefix(about, 4000), AbortSignal.timeout(60_000), { target });
+        } catch (e) {
+            if (e instanceof WholeTurnsOnly) throw new RpcError("This session's model can't make a title.", "unsupported");
+            this.engine.log(`session ${this.id}: no new title: ${(e as Error).message}`);
+            throw new RpcError(`The model didn't answer: ${redact((e as Error).message).split("\n")[0]!.slice(0, 200)}`, "failed");
+        }
+        const title = modelTitle(raw);
+        if (!title) throw new RpcError("The model's answer wasn't a title.", "failed");
+        if (this.closed) throw new RpcError("The session was closed.", "closed");
+        this.rename(title);
+        return title;
     }
 
     /** `!command` from the input box: the user runs it themselves; the model sees it with the next prompt. */

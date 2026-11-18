@@ -1837,7 +1837,7 @@ export interface LentSession {
  * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
  * as it's archived, which asks about folders on that machine.
  */
-export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze", "session.neverSettle"] as const;
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze", "session.neverSettle", "session.regenerateTitle"] as const;
 /**
  * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
  * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
@@ -2299,6 +2299,8 @@ export interface Methods {
      * failure, or the end of the turn it was running. `until: null` wakes it now.
      */
     "session.snooze": { params: { id: string; until: number | null }; result: null };
+    /** Named again by the small model from the conversation so far; the old title stays when that fails. */
+    "session.regenerateTitle": { params: { id: string }; result: { title: string } };
     /** Never settled by itself when it's been idle (`on`), or as any other again. */
     "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */

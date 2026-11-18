@@ -1,17 +1,17 @@
 // What a session's row menu offers beyond the usual (Sidebar.tsx RowMenu), loaded the first time the rail is pointed
-// at or focused: Snooze (until a time, or until it needs you), Wake now and Never auto-settle. And the whole menu of several rows picked
+// at or focused: Snooze (until a time, or until it needs you), Wake now, Never auto-settle and Regenerate title. And the whole menu of several rows picked
 // together (BulkItems), which a click on one row never needs.
 
 import "../styles/snooze.css";
 import { batch, createSignal, For, Show } from "solid-js";
 import { render } from "solid-js/web";
-import { AlarmClock, AlarmClockOff, Anchor, Archive, ArchiveRestore, CheckCheck, ChevronRight, Trash2, Undo2, X } from "lucide-solid";
+import { AlarmClock, AlarmClockOff, Anchor, Archive, ArchiveRestore, CheckCheck, ChevronRight, Sparkles, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { app, reportError, rpc, setApp, toast } from "../state/app";
+import { app, handleFor, reportError, rpc, setApp, toast } from "../state/app";
 import { freeRail } from "../state/ui";
 import { unselect } from "../state/sidebar";
 import { sessionCount, type BulkPlan } from "../lib/rail-select";
-import { archiveSessions, deleteSessions, settleSessions } from "../state/actions";
+import { archiveSessions, deleteSessions, rename, settleSessions } from "../state/actions";
 import { customProblem, fromLocalInput, localInput, snoozeChoices, wakesText } from "../lib/snooze";
 import { Dialog } from "./ui/Dialog";
 
@@ -69,6 +69,27 @@ export async function wakeSessions(ids: readonly string[]) {
     unselect(r.done);
 }
 
+/** Sessions being named again: a second click meanwhile does nothing. */
+const naming = new Set<string>();
+
+/**
+ * Named again by the small model from the conversation so far (the row's menu, or the title bar's). Undo puts the old
+ * title back; a failure leaves it as it was and says so.
+ */
+export async function regenerateTitle(id: string) {
+    if (naming.has(id)) return;
+    naming.add(id);
+    const before = summary(id)?.title ?? handleFor(id)?.view.state.title;
+    try {
+        await rpc.call("session.regenerateTitle", { id });
+    } catch {
+        return void toast("Couldn't regenerate the title", "warn");
+    } finally {
+        naming.delete(id);
+    }
+    toast("Title regenerated", "info", before ? { label: "Undo", run: () => rename(id, before) } : undefined);
+}
+
 /** Never settled by itself when it's been idle (Settings → General), or as any other again. */
 async function neverSettle(id: string, on: boolean) {
     setApp("sessions", (s) => s.id === id, "neverSettle", on || undefined);
@@ -114,7 +135,7 @@ function askCustom(ids: readonly string[]) {
 
 /** `plan`: several picked (a selected row's menu): every action for all of them. Otherwise Snooze and Wake now for `ids`. */
 export default function RowExtras(p: { ids: readonly string[]; close: () => void; plan?: BulkPlan; clear?: () => void }) {
-    return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><KeepItem id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
+    return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><KeepItem id={p.ids[0]!} close={p.close} /><TitleItem id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
 }
 
 /** The actions on several selected sessions, as menu items (a selected row's context menu). */
@@ -154,6 +175,14 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
                 <Trash2 size={14} /> Delete {n(plan.delete)}
             </button>
         </>
+    );
+}
+
+function TitleItem(p: { id: string; close: () => void }) {
+    return (
+        <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void regenerateTitle(p.id))}>
+            <Sparkles size={14} /> Regenerate title
+        </button>
     );
 }
 
