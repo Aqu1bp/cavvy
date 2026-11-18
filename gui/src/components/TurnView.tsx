@@ -18,7 +18,7 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app, handleFor, loadTurn } from "../state/app";
+import { activate, app, handleFor, loadTurn, restoredFrom } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -86,9 +86,17 @@ function PeerQuote(p: { from: { id: string; title: string }; text: string; find?
     const [open, setOpen] = createSignal(false);
     const long = () => p.text.split("\n").length > 14 || p.text.length > 1400;
     createEffect(() => p.reveal && setOpen(true));
+    // One on another of the user's machines is named `<machine>/<id>` (the user's own computer: "mac" or "desktop").
+    const at = () => /^([^/]+)\/(.+)$/.exec(p.from.id);
+    const from = () => `“${p.from.title}”${at() ? ` on ${at()![1]}` : ""}`;
+    const show = () => {
+        const m = at();
+        if (m) restoredFrom(m[2]!, /^(mac|desktop)$/.test(m[1]!) ? "" : m[1]!);
+        void activate(m ? m[2]! : p.from.id);
+    };
     return (
         <div class="peer-card">
-            <button class="peer-head" title={`From “${p.from.title}”`} aria-label={`Message from “${p.from.title}”`} onClick={() => activate(p.from.id)}>
+            <button class="peer-head" title={`From ${from()}`} aria-label={`Message from ${from()}`} onClick={show}>
                 <MessageSquareText size={14} aria-hidden="true" />
                 Message from another session
             </button>
