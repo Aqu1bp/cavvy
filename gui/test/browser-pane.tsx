@@ -30,7 +30,7 @@ const root = document.getElementById("root")!;
 const result = document.getElementById("result")!;
 const calls: { method: string; params: any }[] = [];
 const id = "pane-fixture";
-const handle = { id } as SessionHandle;
+const handle = { id, ready: () => true } as SessionHandle;
 const state = (active: number): BrowserState => ({ status: "ready", active, tabs: [1, 2].map(id => ({ id, title: `Page ${id}`, url: "http://localhost/", loading: false, owner: "agent", canGoBack: false, canGoForward: false, crashed: false })) });
 rpc.call = (async (method: string, params: any) => { calls.push({ method, params }); return browserState(id); }) as typeof rpc.call;
 rpc.browserStream = () => rpc;

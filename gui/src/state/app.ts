@@ -54,6 +54,8 @@ export function linkedMachine(id: string): { on: string; link: Rpc } | undefined
 rpc.route = (method, params) => {
     // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`. Others'
     // ids (an account's, a terminal's) aren't sessions', whatever they're called.
+    // What this computer lends a server's session (offers.*) is this computer's own, whichever machine that session is on.
+    if (method.startsWith("offers.")) return undefined;
     const p = params as { id?: unknown; sessionId?: unknown } | undefined;
     const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
     const link = id !== undefined ? away.get(id) : undefined;
