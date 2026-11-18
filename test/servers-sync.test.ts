@@ -27,7 +27,8 @@ const ask = async (method: string, params: any) => {
 
 test("only the synced folders' plain paths are taken", () => {
     for (const ok of [".cavvy/skills/a/SKILL.md", ".claude/skills/a/refs/x.md", ".cavvy/commands/fix.md"]) expect(syncablePath(ok)).toBe(true);
-    for (const bad of [".cavvy/settings.json", ".claude/CLAUDE.md", ".cavvy/skills/../settings.json", "/etc/passwd", ".cavvy/skills//x", ".cavvy/skills/a\\b", ".ssh/authorized_keys", 7]) expect(syncablePath(bad)).toBe(false);
+    for (const bad of [".cavvy/settings.json", ".claude/CLAUDE.md", ".cavvy/skills/../settings.json", "/etc/passwd", ".cavvy/skills//x", ".cavvy/skills/a\\b", ".ssh/authorized_keys", ".claude/skills/synced/org_user/pdf/SKILL.md", 7]) expect(syncablePath(bad)).toBe(false);
+    expect(syncablePath(".claude/skills/synced-notes/SKILL.md")).toBe(true);
 });
 
 test("a server gets this machine's skills and commands, not a file that holds a key, and is brought level after", async () => {

@@ -28,7 +28,8 @@ function syncedRoots(): { from: string; to: string }[] {
 /** A path a server takes: under one of the synced folders, in plain parts. */
 const SYNCED_PATH = /^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//;
 export function syncablePath(p: unknown): p is string {
-    if (typeof p !== "string" || p.length > 300 || !SYNCED_PATH.test(p) || /[\0-\x1f\\]/.test(p)) return false;
+    // Nor Claude Code's own folder there (one recorded as sent before it was left out isn't taken away from a server either).
+    if (typeof p !== "string" || p.length > 300 || !SYNCED_PATH.test(p) || /[\0-\x1f\\]/.test(p) || p.startsWith(`${CLI_SYNCED}/`)) return false;
     const parts = p.split("/");
     return parts.length <= 9 && parts.every((x) => x !== "" && x !== "." && x !== "..");
 }
