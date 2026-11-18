@@ -7,7 +7,9 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
 import { AlertTriangle, ExternalLink, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
-import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
+import { app, awayMachine, handleFor, reportError, requestTrust, rpc, rpcFor, toast } from "../state/app";
+import { machine as windowMachine } from "../lib/platform";
+import { home } from "../lib/machines";
 import { sessionReadReady } from "../state/changes";
 import { mcpOpen, setMcpOpen } from "../state/ui";
 import { tildify } from "../lib/format";
@@ -170,10 +172,17 @@ export function McpDialog() {
                 const { url } = await rpc.call("session.mcpSignIn", { id: sid, name: s.name });
                 // The window shares this page's origin until it navigates: only ever to a web page.
                 if (!/^https?:\/\//i.test(url)) throw new Error("The sign-in link isn't a web page.");
+                // A session on a server: its sign-in's page ends on this computer, where the browser is. This
+                // computer's Cavvy answers there and hands it on (the window's own, or the one a window on a server keeps beside it).
+                // (None for this computer's own session, in a window on a server too: its page ends where it listens.)
+                const on = awayMachine(sid) ?? windowMachine;
+                if (on) await (windowMachine ? home! : rpc).call("servers.mcpCallback", { name: on, url });
                 if (win && !win.closed) {
                     win.opener = null;
                     win.location.href = url;
                 }
+                // The desktop app opens no blank window: the page is asked for now, and it opens it in the browser.
+                else if (!win) window.open(url, "_blank", "noopener");
                 return () => {
                     setSignInLink({ name: s.name, url });
                     toast(`Sign in to ${s.label} in your browser.`);
@@ -192,7 +201,7 @@ export function McpDialog() {
         if (cwd && request) {
             requestTrust(cwd, () => {
                 if (request.current()) void load();
-            }, "mcp-approval");
+            }, "mcp-approval", undefined, rpcFor(id()), awayMachine(id()));
         }
     };
 

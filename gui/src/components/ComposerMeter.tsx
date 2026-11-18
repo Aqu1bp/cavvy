@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
-import { app, awayMachine, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { keysHere, usePane } from "../state/split";
 import { now } from "../lib/clock";
@@ -45,10 +45,10 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const [switching, setSwitching] = createSignal(false);
     const state = () => p.sessionId ? handleFor(p.sessionId)?.view.state : undefined;
     const provider = () => state()?.model?.provider ?? p.provider;
-    const providerInfo = () => app.providers.find((x) => x.id === provider());
+    const providerInfo = () => providersFor(p.sessionId).find((x) => x.id === provider());
     const accountId = () => state()?.accounts?.[provider() ?? ""] ?? providerInfo()?.agentCli?.defaultAccount ?? "default";
-    // This computer's plan limits: none shown for another machine's session opened here (its machine has its own).
-    const limits = () => (awayMachine(p.sessionId) !== undefined ? undefined : app.limits[planLimitKey(provider() ?? "", accountId())]);
+    // The plan limits of the session's machine's accounts: another machine's session opened here has that machine's.
+    const limits = () => limitsFor(p.sessionId)[planLimitKey(provider() ?? "", accountId())];
     const meter = createMemo(() => meterOf(limits(), now()));
     const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
     const alternatives = () => limitAlternatives(accounts(), accountId());
@@ -63,7 +63,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         if (!key) return;
         let active = true;
         setChecking(true);
-        void rpc.call("accounts.list", { provider: provider()!, refresh: true }).then((items) => {
+        void rpcFor(p.sessionId).call("accounts.list", { provider: provider()!, refresh: true }).then((items) => {
             if (active) setAccounts(items);
         }).catch((error) => { if (active) reportError(error); }).finally(() => { if (active) setChecking(false); });
         onCleanup(() => { active = false; });

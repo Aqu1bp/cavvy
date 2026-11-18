@@ -64,7 +64,7 @@ export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
-    const [info, { refetch }] = createResource(
+    const [inspected, { refetch }] = createResource(
         // On Home's machine (another's, in a folder of its own).
         () => (app.conn === "open" && app.homeCwd ? { path: app.homeCwd, on: homeOn() } : false),
         ({ path }) =>
@@ -73,6 +73,8 @@ export function Home() {
                 return undefined;
             }),
     );
+    // No folder (none chosen yet, or none on the machine Home came back to): what the last one was isn't this one's.
+    const info = () => (app.homeCwd ? inspected() : undefined);
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => (homeOn() !== undefined ? [] : app.providers.filter((p) => p.agentCli?.installed && !p.configured));
     // Another machine's has its sessions' models (one is open here).
@@ -165,7 +167,7 @@ export function Home() {
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
             {/* Worktrees are made on the window's own machine. */}
-            <Show when={app.homeCwd && info()?.git && homeOn() === undefined}>
+            <Show when={app.homeCwd && info()?.git}>
                 <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
             </Show>
             <span class="grow" />
@@ -241,7 +243,7 @@ export function Home() {
                             <p>
                                 <b>{basename(app.homeCwd ?? "")}</b> has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
-                                ) that can run commands on this computer.
+                                ) that can run commands on {(homeOn() ?? machine) || "this computer"}.
                             </p>
                             <div class="ask-row">
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>

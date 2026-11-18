@@ -353,13 +353,13 @@ test("Home shows the error cards above the trust and connect cards", () => {
 
 // ---- The worktree picker ----------------------------------------------------------------------------
 
-function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | undefined, loading: boolean) {
+function picker(cwd: string, listed: { path: string; on?: string; worktrees: unknown[] } | undefined, loading: boolean, on?: string) {
     const opened: string[] = [];
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
         Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, rpc: {}, openGit: stub,
+        app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}), openGit: stub,
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
@@ -379,6 +379,9 @@ test("the worktree picker never offers another project's worktrees while this on
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
     expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
+    // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
+    expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
+    expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(4);
 });
 
 // ---- The limit pill ---------------------------------------------------------------------------------
@@ -414,7 +417,8 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         planLimitKey,
         app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
-        awayMachine: () => undefined, reportError: stub, rpc: {}, toast: stub,
+        awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
+        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         now: () => noon, limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),

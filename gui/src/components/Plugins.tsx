@@ -7,7 +7,8 @@
 import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, linkFor, machineOf, reportError, rpc, toast } from "../state/app";
+import { machine as windowMachine, os } from "../lib/platform";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -92,20 +93,64 @@ export function Plugins() {
     /** The details dialog, one object per opening: an install started in one closes only that one. */
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
-    const cwd = () => app.homeCwd;
+    /**
+     * Whose plugins these are: the window's own machine's, or a server's picked here ("": the window's own). Not the
+     * session's in view: that changes under Settings, and what's listed and what's done must be one machine's.
+     */
+    const [where, setWhere] = createSignal("");
+    /** The user's servers, to pick from (in a window on this computer; a window on a server has its own only). */
+    const [servers, setServers] = createSignal<string[]>([]);
+    /** Where the rows shown came from: what's done to one is done there, in the folder it was listed for. */
+    let origin: { link: typeof rpc; cwd?: string } | undefined;
+    let asked = 0;
+    /** The folder in view, when it's on that machine: its project's own plugins count there, and nowhere else. */
+    const folderOn = (on: string) => {
+        const id = app.activeId;
+        // By name, each as the user's own computer names it ("" itself): the window's own machine is a server's
+        // name in a window on one, where "" from awayMachine is this computer's.
+        const own = windowMachine ?? "";
+        const its = awayMachine(id) ?? (awayUnopened(id) ? (machineOf(id!) ?? "") : own);
+        return its === (on || own) ? app.homeCwd : undefined;
+    };
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
+        const mine = ++asked;
+        const on = where();
         try {
-            setInfo(await rpc.call("plugins.list", { cwd: cwd() }));
+            // The window's own Cavvy, or that server's, reached first.
+            const from = { link: on ? await linkFor(on) : rpc, cwd: folderOn(on) };
+            const got = await from.link.call("plugins.list", { cwd: from.cwd });
+            // Another machine was picked meanwhile: its list is on its way.
+            if (mine !== asked) return;
+            origin = from;
+            setInfo(got);
         } catch (e) {
+            if (mine !== asked) return;
+            // Nothing of the machine shown before stays under this one's name.
+            origin = undefined;
+            setInfo(undefined);
             reportError(e);
         } finally {
-            setLoading(false);
+            if (mine === asked) setLoading(false);
         }
     };
+    const pick = (on: string) => {
+        // The one shown, picked again, only when its list didn't come: tried again.
+        if ((on === where() && origin) || busy()) return;
+        setWhere(on);
+        setDetails(undefined);
+        setConfirm(undefined);
+        // What was typed for one machine (a marketplace's path there) isn't sent to another.
+        setSource("");
+        origin = undefined;
+        setInfo(undefined);
+        setLoading(true);
+        void load();
+    };
     onMount(() => {
+        if (!windowMachine) void rpc.call("servers.list", {}).then((r) => setServers(r.servers.map((s) => s.name)), () => undefined);
         void load().then(() => {
             const i = info();
             // First visit with nothing installed: show what there is to install.
@@ -114,11 +159,12 @@ export function Plugins() {
     });
 
     const act: Act = async (key, params, done) => {
-        if (busy()) return;
+        const from = origin;
+        if (busy() || !from) return;
         setBusy(key);
         try {
-            const r = await rpc.call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
-            setInfo(r);
+            const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);
+            if (origin === from) setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
         } catch (e) {
@@ -183,7 +229,12 @@ export function Plugins() {
                 {confirm()?.body}
             </ConfirmDialog>
             <Show when={details()} keyed>
-                {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
+                {(d) => <PluginDetails plugin={d.pl} markets={markets()} on={where() || windowMachine} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
+            </Show>
+            <Show when={servers().length}>
+                <div class="pg-bar">
+                    <Segmented label="Machine" size="sm" value={where()} onChange={pick} options={[{ value: "", label: os === "macos" ? "This Mac" : "This computer" }, ...servers().map((s) => ({ value: s, label: s }))]} />
+                </div>
             </Show>
             <div class="pg-bar">
                 <Segmented
@@ -192,13 +243,13 @@ export function Plugins() {
                     value={view()}
                     onChange={show}
                     options={[
-                        { value: "installed", label: <>Installed <Show when={!loading()}><span class="plg-n">{installed().length}</span></Show></> },
-                        { value: "discover", label: <>Discover <Show when={!loading()}><span class="plg-n">{available().length}</span></Show></> },
-                        { value: "marketplaces", label: <>Marketplaces <Show when={!loading()}><span class="plg-n">{markets().length}</span></Show></> },
+                        { value: "installed", label: <>Installed <Show when={!loading() && info()}><span class="plg-n">{installed().length}</span></Show></> },
+                        { value: "discover", label: <>Discover <Show when={!loading() && info()}><span class="plg-n">{available().length}</span></Show></> },
+                        { value: "marketplaces", label: <>Marketplaces <Show when={!loading() && info()}><span class="plg-n">{markets().length}</span></Show></> },
                     ]}
                 />
                 <span class="grow" />
-                <Show when={view() !== "marketplaces" && !loading()}>
+                <Show when={view() !== "marketplaces" && !loading() && info()}>
                     <label class="pg-search">
                         <Search size={14} />
                         <input ref={searchEl} aria-label="Search plugins" placeholder={view() === "installed" ? "Search installed plugins" : `Search ${plural(available().length, "plugin")}`} value={query()} onInput={(e) => setQuery(e.currentTarget.value)} spellcheck={false} autocomplete="off" />
@@ -212,6 +263,14 @@ export function Plugins() {
             </div>
             <Show when={!loading()} fallback={<div class="pg-load" role="status"><Spinner size={14} /> Reading your marketplaces…</div>}>
                 <Switch>
+                    {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
+                    <Match when={!info()}>
+                        {empty(Puzzle, where() || windowMachine ? `Couldn't load ${where() || windowMachine}'s plugins` : "Couldn't load plugins", undefined, () => (
+                            <button class="btn secondary sm" onClick={() => (setLoading(true), void load())}>
+                                Try again
+                            </button>
+                        ))}
+                    </Match>
                     <Match when={view() === "marketplaces"}>
                         <div class="pg-add">
                             <label>
@@ -279,7 +338,7 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on this computer, so install only from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on {where() || "this computer"}, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
@@ -363,7 +422,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
 }
 
 /** A plugin's details: its full summary, who makes it, and where to install it. */
-function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<void> }) {
+function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; on?: string; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<void> }) {
     const [scope, setScope] = createSignal<PluginScope>("user");
     const pl = p.plugin;
     const cat = categoryOf(pl.category);
@@ -431,7 +490,7 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
             </Show>
             <p class="pg-warn">
                 <Info size={13} />
-                It can run commands on this computer.
+                It can run commands on {p.on || "this computer"}.
             </p>
             <div class="dialog-actions">
                 <span class="grow" />
@@ -452,6 +511,12 @@ function whereText(pl: PluginInfo): string {
     if (!pl.enabled) return "Off here";
     const on = (["local", "project", "user"] as const).find((s) => pl.scopes[s]);
     return on === "local" ? "On just for you here" : on === "project" ? "On for everyone in this project" : "On for you everywhere";
+}
+
+/** What uninstalling takes it out of: the settings it's set in (as the server removes it: every scope that names it, on or off). */
+function uninstallText(pl: PluginInfo): string {
+    const here = pl.scopes.project !== undefined || pl.scopes.local !== undefined;
+    return here && pl.scopes.user !== undefined ? "It's removed from this project and from your own settings." : here ? "It's removed from this project." : "It's removed from your own settings.";
 }
 
 function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; act: Act; confirm: (c: Confirm) => void; details: () => void; sameName?: boolean }) {
@@ -532,7 +597,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: "It's removed from this project and from your own settings.",
+                                body: uninstallText(pl()),
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),

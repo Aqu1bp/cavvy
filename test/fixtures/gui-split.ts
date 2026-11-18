@@ -65,10 +65,10 @@ solid.createRoot(() => {
 assert.equal(s.canDrop("a"), false);
 await appState.activate("a");
 await settle();
-// One in view: any other here can come beside it; not itself, nor one on another machine.
+// One in view: any other can come beside it, on whichever machine (opened over its own connection); not itself.
 assert.equal(s.canDrop("b"), true);
 assert.equal(s.canDrop("a"), false);
-assert.equal(s.canDrop("far"), false);
+assert.equal(s.canDrop("far"), true);
 
 ui.setInspectorPane("commands");
 ui.setReview({ path: "a.ts" });
@@ -76,10 +76,15 @@ s.dropSession("b", "left");
 await settle();
 assert.deepEqual(s.split(), { anchor: "a", added: "b", side: "left" });
 assert.deepEqual(s.splitIds(), ["b", "a"], "the dropped one goes to the half it was dropped on");
+assert.deepEqual(JSON.parse(values.get("cavvy.split")!).on, { a: "", b: "" }, "each one's machine, the window's own too");
+// After a reload, a pane's session of another machine opens from that machine, its row maybe not listed yet.
+assert.equal(appState.machineOf("unlisted"), undefined);
+appState.restoredFrom("unlisted", "box");
+assert.equal(appState.machineOf("unlisted"), "box");
 assert.equal(appState.app.activeId, "b", "and is focused");
 assert.equal(ui.review(), undefined, "its own panel: no diff reader of a's");
 assert.equal(s.besideReads(), true, "a's reader, kept, holds the side panel open and as wide while b is focused");
-assert.deepEqual(JSON.parse(values.get("cavvy.split")!), s.split(), "kept for a reload of this window");
+assert.deepEqual({ ...JSON.parse(values.get("cavvy.split")!), on: undefined }, { ...s.split(), on: undefined }, "kept for a reload of this window");
 
 // Each one's panel comes back as it was.
 ui.setInspectorPane("agents");

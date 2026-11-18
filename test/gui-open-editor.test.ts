@@ -282,3 +282,12 @@ describe("fs.image limits", () => {
         await rejects(call("fs.image", { sessionId: id, path: "huge.png" }), "limit");
     });
 });
+
+test("a server says it can't, rather than asking for an editor to be chosen there", async () => {
+    const away = new Engine({ away: true });
+    try {
+        await rejects(away.handle(c, "fs.open" as never, { sessionId: "any", path: "README.md" } as never), "unsupported", /can't open a server's files/);
+    } finally {
+        await away.stop();
+    }
+});

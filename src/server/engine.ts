@@ -3,6 +3,9 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { applySync, readSynced } from "../servers/sync";
+import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
+import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -24,9 +27,9 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
-import { APP_VERSION, cavvyHome, paths } from "../config/paths";
+import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
@@ -35,8 +38,10 @@ import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
+import { deliverCallback } from "../mcp/oauth";
+import { APP_NAME } from "../config/name";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
-import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
 import { clearModelSettings, type ModelSetting } from "../providers/model-refs";
@@ -68,7 +73,10 @@ import { LENDABLE, setLent, type Lendable } from "../tools/lent";
 import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
-import type { PeerHost } from "./session-peers";
+import { peerOps, type PeerHost } from "./session-peers";
+import { checkMessage, PeerError, type FarPeers } from "../agent/peers";
+import { findMatch } from "../permissions/rules";
+import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -77,6 +85,7 @@ import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
+import { askMachines, USAGE_GRACE_MS, withMachines, type Asked } from "./usage-machines";
 import type {
     ArchiveOffer,
     ArchiveResult,
@@ -112,6 +121,7 @@ import type {
     RunOutcome,
     SessionOp,
     SessionSnapshot,
+    SessionSearchHit,
     SessionSearchResult,
     SessionSummary,
     WorktreeInfo,
@@ -234,6 +244,8 @@ export interface EngineClient {
     shown?: string | null;
     /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
     machine?: string;
+    /** Sessions of servers this machine lends to that this window shows (offers.session), by `name\0id`: it hears how what's lent them changes. */
+    lentShown?: Set<string>;
     /** It shows the other machines' sessions (servers.overview): it's told how they change, and what they have to say. */
     watching?: boolean;
 }
@@ -355,8 +367,19 @@ export class Workspace {
         return this.skills;
     }
 
-    reload() {
-        this.settings = loadSettings(this.cwd, { trusted: this.trusted });
+    /**
+     * Read again unless a settings file can't be read just now (false, and nothing changes): for what must not go on
+     * under fewer rules than the files hold.
+     */
+    reloadReadable(): boolean {
+        const settings = loadSettings(this.cwd, { trusted: this.trusted });
+        if (loadedUnreadable(settings)) return false;
+        this.reload(settings);
+        return true;
+    }
+
+    reload(settings = loadSettings(this.cwd, { trusted: this.trusted })) {
+        this.settings = settings;
         this.commands = loadCustomCommands(this.cwd, this.trusted);
         this.skills = loadSkills(this.cwd, this.trusted);
         this.engine.workspaceChanged(this);
@@ -441,6 +464,10 @@ export class Engine {
     private forking = new Map<string, Promise<Runtime>>();
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
+    /** What a window's latest search asked the servers (searchSessions), until it's answered with. */
+    /** What a window's latest usage summary asked the servers (usage.summary), until it's answered with. */
+    private usageAsks = new WeakMap<EngineClient, { days: number; own: Promise<Awaited<ReturnType<typeof usageSummary>>>; there: Promise<Asked> }>();
+    private farSearches = new WeakMap<EngineClient, { key: string; there: ReturnType<typeof searchServers> }>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -612,6 +639,7 @@ export class Engine {
         this.stopping = true;
         // First: a call a server's session waits for here is told this machine went away, not answered by its end.
         this.serverLinks?.stopWatching();
+        for (const c of [...this.mcpCallbacks.values()]) c.stop();
         this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
@@ -652,8 +680,10 @@ export class Engine {
     /** The session's simulator changed: the windows that have it open hear of it. */
     sendSimulator(sessionId: string, state: SimulatorState) {
         // One that lends to a session on a server shows in that session: this machine's windows on that server hear of it too.
-        const lentTo = this.runtimes.get(sessionId)?.guestOf;
-        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo)) c.send({ type: "simulator.state", sessionId, state });
+        const rt = this.runtimes.get(sessionId);
+        const lentTo = rt?.guestOf;
+        const shown = lentTo !== undefined && rt?.guestSession ? `${lentTo}\0${rt.guestSession.id}` : undefined;
+        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo) || (shown && c.lentShown?.has(shown))) c.send({ type: "simulator.state", sessionId, state });
     }
 
     /** The session's browser changed: the windows that have it open hear of it. */
@@ -1090,35 +1120,51 @@ export class Engine {
     /** Search's files being read ahead (sessions.searchWarm). */
     private searchWarming?: Promise<unknown>;
 
-    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean, rest?: boolean, others?: string): Promise<SessionSearchResult> {
         if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
         const seq = (this.searches.get(client) ?? 0) + 1;
         this.searches.set(client, seq);
         if (query.trim().length < 2) return { hits: [], partial: false };
+        const most = Math.max(1, Math.min(Math.floor(limit), 200));
+        // On the user's own computer, for its windows: the servers it's connected to are searched at the same time.
+        // For a window that's on one of them (`others`, its name): the rest of them, that one searching itself.
+        // Asked once for a search: the window asking for the rest of it (`rest`, after an answer the servers' weren't
+        // in yet) waits on the same asking. Any other asking is a search of its own.
+        const key = JSON.stringify([query, most, archived, others]);
+        let far = rest ? this.farSearches.get(client) : undefined;
+        const again = far?.key === key;
+        if (!far || !again) {
+            far = { key, there: !this.o.away && (!client.machine || others) ? searchServers(new Map([...(this.serverLinks?.connectedServers() ?? [])].filter(([name]) => name !== others)), { query, limit: most, archived }) : Promise.resolve([]) };
+            this.farSearches.set(client, far);
+        }
         const arch = new Set(readStore().archived ?? []);
         const r = await searchSessions(query, {
-            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            limit: most,
             include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
             stale: () => this.searches.get(client) !== seq || this.stopping,
             open: new Set(this.runtimes.keys()),
         });
         if (r.stale) return { hits: [], partial: true, stale: true };
-        return {
-            partial: r.partial,
-            hits: r.hits.map((h) => ({
-                id: h.id,
-                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
-                cwd: h.cwd,
-                projectName: basename(h.cwd) || h.cwd,
-                archived: arch.has(h.id),
-                seg: h.seg,
-                index: h.index,
-                role: h.role,
-                snippet: h.snippet,
-                ...(h.match ? { match: h.match } : {}),
-                at: h.at,
-            })),
-        };
+        // The servers get a moment past this machine's own answer. One slower than that doesn't hold what was found
+        // here: that's answered now, said to be waiting for them (pending), and the window asks for the rest.
+        // (The rest asked for with nothing kept, on a connection made since: waited for too, not said to be pending again.)
+        const there = await (again || rest ? far.there : Promise.race([far.there, new Promise<undefined>((r) => setTimeout(r, FAR_GRACE_MS))]));
+        if (this.searches.get(client) !== seq) return { hits: [], partial: true, stale: true };
+        if (there && this.farSearches.get(client) === far) this.farSearches.delete(client);
+        const here = r.hits.map((h): SessionSearchHit => ({
+            id: h.id,
+            title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+            cwd: h.cwd,
+            projectName: basename(h.cwd) || h.cwd,
+            archived: arch.has(h.id),
+            seg: h.seg,
+            index: h.index,
+            role: h.role,
+            snippet: h.snippet,
+            ...(h.match ? { match: h.match } : {}),
+            at: h.at,
+        }));
+        return there ? withServers({ partial: r.partial, hits: here }, there, most) : { partial: r.partial, pending: true, hits: here };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -1564,6 +1610,79 @@ export class Engine {
     /** Ports of a server brought here for a window's sign-in card (servers.forward): closed with the card, or with the window. */
     private forwards = new Map<string, { opening: Promise<{ close(): void }>; clients: Set<EngineClient> }>();
 
+    /** The ports this machine answers on for MCP sign-ins of sessions on its servers (mcpCallback), each until its sign-in ends or its time is up. */
+    private mcpCallbacks = new Map<number, { client: EngineClient; stop(): void }>();
+    /** The latest sign-in to ask for each port (mcpCallback), while its server is asked whether it can take the answer. */
+    private mcpAsked = new Map<number, object>();
+    /**
+     * An MCP sign-in on server `name` ends in the browser here, on a port of this machine its link (`url`) names.
+     * Nothing of the server's is brought here: this machine answers `/callback` on that port itself, hands what it
+     * was sent to the server's Cavvy, and says in its own words how that went. Only the answer to this sign-in (its
+     * `state`) is handed on, to this server alone. For a few minutes, on the user's click in a window, and no longer
+     * than that window stays.
+     */
+    private async mcpCallback(client: EngineClient, name: string, url: string): Promise<null> {
+        if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+        let link: URL | undefined, back: URL | undefined;
+        try {
+            link = new URL(url);
+            back = new URL(link.searchParams.get("redirect_uri") ?? "");
+        } catch {
+            back = undefined;
+        }
+        const port = Number(back?.port);
+        const state = link?.searchParams.get("state");
+        if (!back || !state || back.protocol !== "http:" || back.hostname !== "127.0.0.1" || back.pathname !== "/callback" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new RpcError("That sign-in doesn't end on this computer.", "invalid");
+        const server = (await this.servers()).connectedServers().get(name);
+        if (!server) throw new RpcError(`${name} isn't connected right now.`, "failed");
+        // A Cavvy there that can't take the answer: said now, not after the user has signed in in the browser.
+        // The latest asked for a port is the one that gets it, whichever server answers first.
+        const asked = {};
+        this.mcpAsked.set(port, asked);
+        const able = await server.ask("mcp.callback", { query: "" }, 15_000).then((r) => typeof (r as { status?: unknown } | null)?.status === "number", (e: Error) => (/unknown method/i.test(e.message) ? false : e));
+        if (able === false) throw new RpcError(`Cavvy on ${name} is too old to finish this sign-in. Update it: ${APP_NAME} servers update ${name}`, "failed");
+        if (able !== true) throw new RpcError(`${name} didn't answer. Try again.`, "failed");
+        // The window went, this Cavvy is stopping, or another sign-in asked for the port, meanwhile.
+        if (!this.clients.has(client) || this.stopping) throw new RpcError("Disconnected", "disconnected");
+        if (this.mcpAsked.get(port) !== asked) throw new RpcError("Another sign-in started on this port. Start this one again.", "failed");
+        const page = (title: string, body: string, status = 200) => new Response(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h2>${title}</h2><p>${body}</p></body>`, { status, headers: { "Content-Type": "text/html; charset=utf-8", Connection: "close" } });
+        const failed = () => page("Sign-in didn't finish", `Go back to ${APP_TITLE} and start it again.`, 400);
+        // The same sign-in started again takes the place of the one before it on its port.
+        this.mcpCallbacks.get(port)?.stop();
+        const entry = {
+            client,
+            stop: () => {
+                clearTimeout(timer);
+                if (this.mcpCallbacks.get(port) === entry) this.mcpCallbacks.delete(port);
+                void listener?.stop();
+            },
+        };
+        const timer = setTimeout(() => entry.stop(), 5 * 60_000);
+        let listener: ReturnType<typeof Bun.serve> | undefined;
+        try {
+            listener = Bun.serve({
+                hostname: "127.0.0.1",
+                port,
+                fetch: async (req) => {
+                    const q = new URL(req.url);
+                    if (req.method !== "GET" || q.pathname !== "/callback") return new Response("Not found", { status: 404, headers: { Connection: "close" } });
+                    // Another sign-in's answer (an old tab, another server's): not this server's to see.
+                    if (q.searchParams.get("state") !== state || q.search.length > 4001) return failed();
+                    const r = (await server.ask("mcp.callback", { query: q.search.slice(1) }, 15_000).catch(() => undefined)) as { status?: unknown } | undefined;
+                    if (r?.status !== 200) return failed();
+                    // Done: nothing more is answered here.
+                    setTimeout(entry.stop, 1000);
+                    return page("Signed in", `You can close this tab and go back to ${APP_TITLE}.`);
+                },
+            });
+        } catch {
+            clearTimeout(timer);
+            throw new RpcError(`Port ${port} is in use on this computer, so the sign-in can't finish here. Close what's using it, then try again.`, "failed");
+        }
+        this.mcpCallbacks.set(port, entry);
+        return null;
+    }
+
     private unforward(client: EngineClient, key: string) {
         const f = this.forwards.get(key);
         if (!f?.clients.delete(client) || f.clients.size) return;
@@ -1577,7 +1696,9 @@ export class Engine {
         this.fileSearches.get(client)?.abort();
         this.fileSearches.delete(client);
         for (const key of [...this.forwards.keys()]) this.unforward(client, key);
+        for (const c of [...this.mcpCallbacks.values()]) if (c.client === client) c.stop();
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
+        this.dropHub(client);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
@@ -2330,7 +2451,7 @@ export class Engine {
      * On a server: the connected machines that lend this one their tools (offers.set), the latest to say so last, and
      * the calls they're running. A call goes to the latest; when a machine leaves, the others still lend.
      */
-    private lenders = new Map<EngineClient, Lendable[]>();
+    private lenders = new Map<EngineClient, { kinds: Lendable[]; mode: PermissionMode }>();
     private lentCalls = new Map<string, { client: EngineClient; done: (r: ToolResult) => void }>();
 
     /**
@@ -2338,9 +2459,11 @@ export class Engine {
      * which runs it through its own checks. Answers when it does, when the call is given up here, or when that
      * machine goes away.
      */
-    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
-        const client = [...this.lenders.keys()].at(-1);
-        if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal, decided?: PermissionMode): Promise<ToolResult> {
+        const [client, lender] = [...this.lenders].at(-1) ?? [];
+        if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        // Decided while nothing was lent (the Mac's Cavvy away for a moment, back since): not under its mode, so not sent.
+        if (!decided) return Promise.resolve({ content: "Your Mac's Cavvy connected to this machine only just now. Call it again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
             const done = (r: ToolResult) => {
@@ -2354,17 +2477,60 @@ export class Engine {
             };
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
-            client.send({ type: "offers.call", callId, tool, input, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            // With the mode it was decided under: the lender turns it away if its own has changed since.
+            client.send({ type: "offers.call", callId, tool, input, mode: decided, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 
     /** A machine says what it lends now (nothing: it stopped, or left): its calls end when it lends nothing, and sessions learn what they have. */
-    private setLender(client: EngineClient, kinds: Lendable[], left = false) {
+    private setLender(client: EngineClient, kinds: Lendable[], left = false, mode: PermissionMode = "default") {
         this.lenders.delete(client);
-        if (kinds.length) this.lenders.set(client, kinds);
+        if (kinds.length) this.lenders.set(client, { kinds, mode });
         // Only its leaving ends what it was asked: a machine that stops lending still answers the calls it has.
         if (left) for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
-        setLent(new Set([...this.lenders.values()].flat()));
+        // Calls go to the latest lender (borrow): its mode holds them.
+        setLent(new Set([...this.lenders.values()].flatMap((l) => l.kinds)), [...this.lenders.values()].at(-1)?.mode);
+    }
+
+    /** On a server: the user's own computers connected here that answer for the other machines' sessions (far-peers.ts), the latest last. */
+    private peerHubs = new Set<EngineClient>();
+    private peerCalls = new Map<string, { client: EngineClient; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+    private dropHub(client: EngineClient) {
+        this.peerHubs.delete(client);
+        for (const [id, c] of this.peerCalls) {
+            if (c.client !== client) continue;
+            this.peerCalls.delete(id);
+            clearTimeout(c.timer);
+            c.reject(new PeerError("Cavvy on your computer went away before it answered."));
+        }
+    }
+
+    /** What a session here reaches the user's other machines' sessions through, if anything (far-peers.ts). */
+    farPeers(): FarPeers | undefined {
+        if (this.o.away) {
+            return serverFarPeers((op, params) => {
+                const client = [...this.peerHubs].at(-1);
+                if (!client) return Promise.reject(new PeerError("Sessions on your other machines are reached through Cavvy on your computer, which isn't connected to this server right now."));
+                const callId = randomUUID();
+                return new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => {
+                        this.peerCalls.delete(callId);
+                        reject(new PeerError("Cavvy on your computer didn't answer in time."));
+                    }, PEERS_WAIT_MS);
+                    (timer as { unref?: () => void }).unref?.();
+                    this.peerCalls.set(callId, { client, resolve, reject, timer });
+                    client.send({ type: "peers.call", callId, op, params });
+                });
+            });
+        }
+        // The user's computer: only while it has servers.
+        try {
+            if (!listServers().length) return undefined;
+        } catch {
+            return undefined;
+        }
+        return homeFarPeers(() => this.serverLinks?.connectedServers() ?? new Map());
     }
 
     /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
@@ -2406,11 +2572,6 @@ export class Engine {
         const opening = this.guestFor(name, call.session);
         if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
         const rt = await opening;
-        // Under this machine's mode as it is now: the session here was made under the one it had then. Bypass only
-        // while it's still allowed here, as for a session that starts now.
-        const set = this.defaultMode(rt.ws);
-        const mode = set === "bypassPermissions" && !rt.bypassAllowed() ? "default" : set;
-        if (rt.mode !== mode) rt.setMode(mode, { fromAgent: true });
         // What the session there is called now, for what the user is told of it.
         const title = await lentTitle(call.session.title);
         if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
@@ -2436,7 +2597,9 @@ export class Engine {
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             const title = await lentTitle(session.title);
-            const rt = await this.createSession(folder, { unlisted: true });
+            // In Manual whatever this machine's default: its calls were asked about where they were made (runLent), and
+            // Plan would refuse them.
+            const rt = await this.createSession(folder, { unlisted: true, mode: "default" });
             rt.guestOf = name;
             rt.guestSession = { id: session.id, title };
             rt.lastLent = Date.now();
@@ -2469,7 +2632,7 @@ export class Engine {
         const at = rt.guestSession;
         if (name === undefined || !at) return;
         const lent = this.lentSession(gone ? undefined : rt);
-        for (const c of this.clients) if (c.machine === name) c.send({ type: "offers.session", name, sessionId: at.id, lent });
+        for (const c of this.clients) if (c.machine === name || c.lentShown?.has(`${name}\0${at.id}`)) c.send({ type: "offers.session", name, sessionId: at.id, lent });
         // And its row in the list, in any window, says it waits for the user.
         this.serverLinks?.asking(name, at.id, lent.asks.length > 0);
     }
@@ -2546,7 +2709,18 @@ export class Engine {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
+                lendMode: () => lendingMode(loadSettings(homedir(), { trusted: false }), homedir(), this.bypassAllowed(homedir())),
                 lend: (name, call, signal) => this.lend(name, call, signal),
+                // The user's own machine keeps its skills and commands on its servers.
+                sync: !this.o.away,
+                // What a session on a server asks about the user's other machines' sessions: this computer answers.
+                peers: (name, op, params) =>
+                    answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map(), (tool) => {
+                        // This computer's own rules for the session tools hold for what a server asks through it: of its sessions, and of the other servers'.
+                        const { settings, unreadable } = loadScopeChecked("user", homedir());
+                        if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about sessions on other machines.";
+                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.` : undefined;
+                    }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -2735,8 +2909,9 @@ export class Engine {
         // Shorter, or on: what's idle that long settles now.
         if ("autoSettleDays" in patch) this.sweep();
         this.reloadSettings();
-        // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
-        if ("simulator" in patch) this.serverLinks?.relend();
+        // The Simulator turned off or on, or the mode its calls are held to changed: the servers this machine lends it to
+        // hear now, and what waits here for it ends.
+        if ("simulator" in patch || "defaultMode" in patch || "allowBypass" in patch) this.serverLinks?.relend();
         return this.guiSettings(cwd);
     }
 
@@ -2770,6 +2945,8 @@ export class Engine {
     }
 
     private async openInEditor(p: Record<string, any>): Promise<{ editor: string }> {
+        // A server has no screen to open one on, and the editor chosen in Settings is the user's own computer's.
+        if (this.o.away) throw new RpcError("Editors can't open a server's files yet.", "unsupported");
         const id = optStr(p.editor) ?? this.guiSettings().editor;
         if (!id) throw new RpcError("Choose an editor in Settings → General → Open files with.", "no_editor");
         const def = editorById(id);
@@ -3213,15 +3390,21 @@ export class Engine {
                 // The timer held back by a laptop's sleep: what's due wakes before it's listed.
                 if (this.alarm.due()) this.sweep();
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
-            case "sessions.trash":
+            case "sessions.trash": {
+                // `servers`: what was deleted on the servers this machine is connected to instead (the user's own
+                // computer, for its windows). Asked apart, so a slow server doesn't hold this machine's own list.
+                if (p.servers === true) return this.o.away || client.machine ? { rows: [], silent: [] } : await trashOnServers(this.serverLinks?.connectedServers() ?? new Map());
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
+            }
             case "sessions.searchWarm":
                 // Not waited for: the first search finds what's been read by then, and reads the rest itself.
                 this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));
+                // And the servers it searches too (far-search.ts), so their first search isn't a cold one.
+                if (!this.o.away && !client.machine) for (const w of this.serverLinks?.connectedServers().values() ?? []) void w.ask("sessions.searchWarm", {}).catch(() => undefined);
                 return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
-                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined, p.rest === true, typeof p.others === "string" && p.others ? p.others.slice(0, 100) : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);
@@ -3778,8 +3961,22 @@ export class Engine {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
                 if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
-                this.setLender(client, kinds);
+                this.setLender(client, kinds, false, PERMISSION_MODES.find((m) => m === p.mode) ?? "default");
                 return null;
+            }
+            case "sync.files": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                return readSynced();
+            }
+            case "sync.apply": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
+                try {
+                    return applySync(p.files, p.remove);
+                } finally {
+                    // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
+                    // Skills are read again by themselves.
+                    for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
+                }
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.
@@ -3788,6 +3985,9 @@ export class Engine {
                 const sessionId = str(p.sessionId, "sessionId");
                 if (!/^[\w.-]{1,120}$/.test(sessionId)) throw new RpcError("That isn't a session's id.", "invalid");
                 if (!(await this.servers(client)).list().some((s) => s.name === name)) throw new RpcError(`No server is called ${name}.`, "invalid");
+                // A window on this machine that shows that session (a server's, opened here) hears how it changes, as the
+                // windows on that server do (lentChanged, sendSimulator).
+                if (!client.machine) (client.lentShown ??= new Set()).add(`${name}\0${sessionId}`);
                 let opening = this.guests.get(`${name}\0${sessionId}`);
                 const settings = loadSettings(homedir(), { trusted: false });
                 // The user started or chose a device in the session's Simulator pane: there's one to show from then on.
@@ -3804,6 +4004,42 @@ export class Engine {
                 if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
                 const name = str(p.name, "name");
                 return [...this.runtimes.values()].flatMap((rt) => (rt.guestOf === name && rt.guestSession && rt.asks.length ? [{ sessionId: rt.guestSession.id, lent: this.lentSession(rt) }] : []));
+            }
+            case "peers.hub": {
+                // Only a server is answered for by the user's computer: that computer answers for itself.
+                if (!this.o.away) throw new RpcError("This machine answers for its own sessions.", "unsupported");
+                this.peerHubs.delete(client);
+                this.peerHubs.add(client);
+                return null;
+            }
+            case "peers.result": {
+                const call = this.peerCalls.get(str(p.callId, "callId"));
+                if (!call || call.client !== client) return null;
+                this.peerCalls.delete(str(p.callId, "callId"));
+                clearTimeout(call.timer);
+                if (typeof p.error === "string") call.reject(new PeerError(p.error.slice(0, 1000)));
+                else call.resolve(p.result);
+                return null;
+            }
+            case "peers.list":
+            case "peers.read":
+            case "peers.send": {
+                // Asked by the user's own computer, about this server's sessions (far-peers.ts).
+                if (!this.o.away) throw new RpcError("Only a server is asked about its sessions this way.", "unsupported");
+                const ops = peerOps(this.peerHost(), true);
+                try {
+                    if (method === "peers.list") return ops.list({ query: optStr(p.query), limit: num(p.limit, 20) });
+                    if (method === "peers.read") return ops.read(str(p.id, "id"), typeof p.turns === "number" ? p.turns : undefined) ?? null;
+                    const f = (p.from && typeof p.from === "object" ? p.from : {}) as Record<string, unknown>;
+                    const mode = PERMISSION_MODES.find((m) => m === f.mode) ?? "bypassPermissions";
+                    // Named as this server names another machine's session (`mac/<id>`, `box/<id>`): shown in the message.
+                    const from = str(f.id, "from.id");
+                    if (!/^[\w.-]{1,40}\/[\w.-]{1,120}$/.test(from)) throw new RpcError("That message names no session it's from.", "invalid");
+                    return await ops.send(str(p.id, "id"), checkMessage(p.message), { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
+                } catch (e) {
+                    if (e instanceof PeerError) throw new RpcError(e.message, "peer");
+                    throw e;
+                }
             }
             case "offers.result": {
                 const call = this.lentCalls.get(str(p.callId, "callId"));
@@ -3870,6 +4106,15 @@ export class Engine {
             case "servers.restore":
                 (await this.servers(client)).restore(str(p.name, "name"));
                 return null;
+            case "mcp.callback": {
+                // Whole or not at all: a cut one would be another answer.
+                const query = str(p.query, "query");
+                if (query.length > 4000) return { status: 400 };
+                const took = deliverCallback(query);
+                return { status: took === undefined ? 404 : took ? 200 : 400 };
+            }
+            case "servers.mcpCallback":
+                return this.mcpCallback(client, str(p.name, "name"), str(p.url, "url"));
             case "servers.forward": {
                 if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
                 const entry = (await import("../servers/store")).getServer(str(p.name, "name"));
@@ -4123,8 +4368,40 @@ export class Engine {
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
             case "limits.get":
                 return [...this.limits.values()];
-            case "usage.summary":
-                return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
+            case "usage.summary": {
+                const days = usageDays(p.days);
+                const reading = usageSummary(days, Date.now(), [...this.limits.values()]).then((own) => {
+                    const who: Record<string, string> = {};
+                    for (const [key, s] of this.accountStatus) if (s.email) who[key] = s.email;
+                    own.who = who;
+                    own.names = Object.fromEntries(AGENT_CLIS.flatMap((d) => (d.account ? listAccounts(d.id) : []).filter((a) => a.id !== "default").map((a) => [`${d.id}:${a.id}`, a.name])));
+                    // Asked by the user's own computer, to add to its own (usage-machines.ts): the detail isn't added.
+                    if (p.brief === true) own.buckets = [];
+                    return own;
+                });
+                // The user's own computer adds its servers' (a subscription is used on all of them); a server answers with its own.
+                // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
+                const links = this.serverLinks;
+                if (this.o.away || !links) return reading;
+                const names = links.list().map((s) => s.name);
+                if (!names.length) return reading;
+                const connected = links.connectedServers();
+                // A window that shows this computer's own first (`first`) and asks for the rest (`rest`); any other
+                // asker (an older window) waits for the whole of it, as before.
+                if (p.first !== true && p.rest !== true) return withMachines(await reading, await askMachines(days, { names, connected }));
+                // Asked once for a summary, with this computer's own as read then: the rest is that same reading and
+                // that same asking, waited for.
+                let kept = p.rest === true ? this.usageAsks.get(client) : undefined;
+                const again = kept?.days === days;
+                if (!kept || !again) this.usageAsks.set(client, (kept = { days, own: reading, there: askMachines(days, { names, connected }) }));
+                const own = await kept.own;
+                // The servers get a moment past this computer's own reading. Slower than that, its own is answered
+                // now, said to be waiting for those it asked, and the window asks for the rest.
+                const there = await (again || p.rest === true ? kept.there : Promise.race([kept.there, new Promise<undefined>((r) => setTimeout(r, USAGE_GRACE_MS))]));
+                if (!there) return { ...own, waiting: names.filter((n) => connected.has(n)), ...(names.some((n) => !connected.has(n)) ? { uncounted: names.filter((n) => !connected.has(n)) } : {}) };
+                if (this.usageAsks.get(client) === kept) this.usageAsks.delete(client);
+                return withMachines(own, there);
+            }
             case "app.update.get":
                 return this.updates.get();
             case "app.update.check":

@@ -28,6 +28,13 @@ Object.assign(globalThis, {
 
 const summary = (id: string, o: object = {}) => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
 const opened: { url: string; id: string }[] = [];
+/** Where each question about the app's update went. */
+const updates: string[] = [];
+/** Each search: which Cavvy was asked, and what. */
+const searches: [string, any][] = [];
+let failSearch = false;
+/** This computer's Cavvy never answers a search. */
+let hungSearch = false;
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -57,6 +64,10 @@ class ServerSocket extends Socket {
         } else if (method === "settings.get") reply({});
         else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
         else if (method === "session.close" || method === "session.shown") reply(null);
+        // The window's own Cavvy is box's here (no app to update); this computer's has one.
+        // Search: box's own Cavvy finds box's; this computer's, asked for the others, its own and the other servers'.
+        else if (method === "sessions.search") searches.push([this.url.includes("mac.test") ? "mac" : "box", params]), hungSearch && this.url.includes("mac.test") ? undefined : reply(this.url.includes("mac.test") ? (failSearch ? undefined : { partial: false, pending: true, hits: [{ id: "m1", at: 30 }, null, { id: "l1", at: 10, machine: "lab" }, { id: "b1", at: 20, machine: "box" }] }) : { partial: false, hits: [{ id: "b1", at: 20, machine: "" }, null] });
+        else if (method.startsWith("app.update.")) updates.push(this.url), reply(!this.url.includes("mac.test") ? { unavailable: "not here" } : { current: "abc", checkedAt: 1, asked: method });
         else reply([]);
     }
 }
@@ -89,4 +100,44 @@ assert.notEqual(app.homeCwd, "/Users/me/macproj", "not in a folder of this compu
 assert.equal(app.homeCwd, "/home/me/web", "in the window's latest project");
 assert.deepEqual(switched, [], "and the window stays where it is");
 assert.equal(app.activeId, undefined);
+// The app's update is this computer's, asked over the connection to its Cavvy, not of box's (which has no app).
+const { home } = await import("../../gui/src/lib/machines");
+Object.assign(home!, { credentials: async () => ({ url: "ws://mac.test/ws", token: "mac-token" }) });
+void home!.connect();
+await settle();
+// Asked as that connection opens (and each time it's back), with nothing else asking.
+assert.equal((app.update as any)?.unavailable, undefined, "not box's answer");
+assert.equal((app.update as any)?.asked, "app.update.get", "this computer's");
+// And what the window asks of it (About's Check, the Update button) goes there too, none of it to box.
+const { refreshUpdate } = await import("../../gui/src/state/app");
+const asked = updates.length;
+await refreshUpdate();
+assert.equal(updates.length, asked + 1);
+// (Before the servers code was loaded, this script's stand-in for it let the first one through to box: in the app
+// that code is loaded to connect the window at all.)
+assert.ok(updates.slice(asked).every((u) => u.includes("mac.test")), "nothing about the update is asked of box");
+// What this computer's Cavvy says of it later is shown; what box's says isn't.
+home!.hear({ type: "app.update", info: { current: "def" } } as never);
+assert.equal((app.update as any)?.current, "def");
+rpc.hear({ type: "app.update", info: { unavailable: "box's" } } as never);
+assert.equal((app.update as any)?.current, "def", "box's word on updates isn't the window's");
+// Search: box searches its own, this computer's Cavvy the rest (its own and the other servers'); together, newest
+// first, each hit named from this window: this computer's as "", box's with no name, another server's by its name.
+const found = (await rpc.call("sessions.search", { query: "needle", limit: 20 })) as { hits: { id: string; machine?: string }[]; pending?: boolean };
+assert.deepEqual(found.hits.map((h) => [h.id, h.machine]), [["m1", ""], ["b1", undefined], ["l1", "lab"]]);
+assert.equal(found.pending, true, "what this computer's Cavvy still waits for is asked for again");
+assert.deepEqual(searches.map(([who, p]) => [who, p.others]), [["box", undefined], ["mac", "box"]]);
+// This computer's Cavvy answering nothing usable, or not reached: box's own search still answers.
+failSearch = true;
+assert.deepEqual(((await rpc.call("sessions.search", { query: "needle" })) as typeof found).hits.map((h) => [h.id, h.machine]), [["b1", undefined]]);
+// Reached but not answering: box's own hits come once it's been waited on, not never.
+hungSearch = true;
+const searchAt = Date.now();
+assert.deepEqual(((await rpc.call("sessions.search", { query: "needle" })) as typeof found).hits.map((h) => [h.id, h.machine]), [["b1", undefined]]);
+assert.ok(Date.now() - searchAt >= 2_900 && Date.now() - searchAt < 6_000, "waited the time a server gets, no longer");
+hungSearch = false;
+Object.assign(home!, { state: "closed" });
+searches.length = 0;
+assert.deepEqual(((await rpc.call("sessions.search", { query: "needle" })) as typeof found).hits.map((h) => [h.id, h.machine]), [["b1", undefined]]);
+assert.deepEqual(searches.map(([who]) => who), ["box"]);
 process.exit(0);

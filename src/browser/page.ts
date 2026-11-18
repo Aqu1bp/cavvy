@@ -854,10 +854,12 @@ export class Page {
     private far?: FarStream<{ data: string; width: number; height: number }>;
 
     /**
-     * Frames of the page go to the hooks, at the page's size and scale. `far`: its pane is watched over a network,
-     * so they're lighter while the page moves (FAR_QUALITY), and the still when it stops is the sharp one.
+     * Frames of the page go to the hooks, at the page's size and scale. `stillScale`: its pane is watched over a
+     * network, so they're lighter while the page moves (FAR_QUALITY, and the page drawn at 1x: BrowserSession.drawn),
+     * and the still when it stops is the sharp one, drawn again at the pane's scale.
      */
-    async startScreencast(far = false) {
+    async startScreencast(stillScale?: number) {
+        const far = stillScale !== undefined;
         const [width, height] = [this.viewport.width * this.viewport.scale, this.viewport.height * this.viewport.scale];
         this.streaming = true;
         this.streamEpoch++;
@@ -868,8 +870,15 @@ export class Page {
                   show: (frame) => this.streaming && !this.closed && this.o.hooks.frame(this, frame),
                   still: async () => {
                       if (!this.streaming || this.closed) return undefined;
-                      const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
-                      return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: Bun.hash(data) };
+                      const { width, height, scale } = this.viewport;
+                      // Drawn again at the pane's scale: a clip, which is in the page's coordinates, so where it's scrolled to.
+                      let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
+                      if (stillScale !== scale) {
+                          const { cssVisualViewport: v } = await this.send<{ cssVisualViewport: { pageX: number; pageY: number } }>("Page.getLayoutMetrics");
+                          clip = { x: v.pageX, y: v.pageY, width, height, scale: stillScale / scale };
+                      }
+                      const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false, ...(clip ? { clip } : {}) });
+                      return { frame: { data, width, height }, key: Bun.hash(data) };
                   },
               })
             : undefined;

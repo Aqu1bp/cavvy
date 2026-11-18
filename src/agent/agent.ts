@@ -78,6 +78,8 @@ import { findRecipe, signedOutIn, signInRecipes, type SignInRecipe } from "./sig
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
+import { lentAs, lentMode } from "../tools/lent";
+import { narrowerMode } from "./peers";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
@@ -3069,7 +3071,7 @@ export class Agent {
     }
 
     /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__cavvy__*, mcp__cavvy__browser_act) must be enforced here. */
-    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>): Promise<ServerToolResult | undefined> {
+    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>, lent = false): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
         // Like the command check below, explicit asks still apply in bypass mode.
@@ -3079,7 +3081,7 @@ export class Agent {
         const invalid = await refusal?.();
         if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
-        if (decision.behavior !== "ask" || !decision.rule) return undefined;
+        if (lent || decision.behavior !== "ask" || !decision.rule) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
         const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
         if (signal.aborted) return refuse("Interrupted by user");
@@ -3182,15 +3184,15 @@ export class Agent {
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
     /**
-     * A call of one of this machine's tools that another of the user's machines asked for (Engine.lend): through the
-     * same checks as a call a CLI makes of a tool Cavvy serves, which are this machine's own (its rules, its mode,
-     * its user).
+     * A call of one of this machine's tools that another of the user's machines asked for (Engine.lend). It was
+     * checked there, under the mode of the session that made it, and its user answered any question in that
+     * session: this machine doesn't ask again. Its deny rules and hooks still hold.
      */
     runLent(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult> {
-        return this.runServed(tool, input, signal);
+        return this.runServed(tool, input, signal, undefined, true);
     }
 
-    private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
+    private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string, lent = false): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
         // Nor the user's other sessions: a message is from this session, and an answer to it wakes the main agent. Sending
@@ -3205,14 +3207,14 @@ export class Agent {
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
-            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)));
+            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)), lent);
             if (refused) return refused;
         }
         // Under the backend's own id for the call, so its steps show on that call's row. Waited for only where steps are worth it (a server being set up takes minutes).
         const servedAs = servedServerName(tool.name);
         if (!callId && servedAs) callId = await this.servedCallId(`mcp__${MCP_SERVER_NAME}__${servedAs}`, input, true);
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
-        const prep = await this.prepare(call, signal, tool);
+        const prep = await this.prepare(call, signal, tool, lent);
         if ("result" in prep) {
             if (prep.stop || this.hookStop) this.stopServedTurn?.();
             return { text: prep.result.content, isError: true };
@@ -3435,6 +3437,9 @@ export class Agent {
         return this.tools.find((t) => t.name === name);
     }
 
+    /** The lender's mode each call of a lent tool was decided under (prepare), for as long as the call is. */
+    private lentDecided = new WeakMap<ToolCallPart, PermissionMode>();
+
     private toolContext(callId: string, signal: AbortSignal, sandbox?: Sandbox): ToolContext {
         return {
             callId: callId || undefined,
@@ -3540,6 +3545,7 @@ export class Agent {
         call: ToolCallPart,
         signal: AbortSignal,
         served?: Tool<any>,
+        lent = false,
     ): Promise<{ tool: Tool<any>; input: any; auto?: string; sandbox?: boolean } | { result: ToolResultPart; stop?: boolean }> {
         const quiet = Boolean(served);
         const tool = served ?? this.findTool(call.name);
@@ -3581,7 +3587,11 @@ export class Agent {
             }
         }
 
-        const mode = this.o.mode.get();
+        // A tool another machine lends: no freer than that machine's own default (tools/lent.ts).
+        const lender = lentMode(tool.name);
+        // Read with it: what the reviewer or the user allows from here on was decided under this one.
+        if (lender) this.lentDecided.set(call, lentAs());
+        const mode = lender ? narrowerMode(this.o.mode.get(), lender) : this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
         // What an approval is recorded as: the call as the model made it, before hosts are added.
@@ -3590,6 +3600,8 @@ export class Agent {
         if (isShellTool(tool.name) && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
+        // Lent to another machine: asked about there, under its session's mode (runLent). Past a deny, it runs.
+        if (lent) return { tool, input, sandbox };
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
         if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
 
@@ -3708,7 +3720,7 @@ export class Agent {
         let result: ToolResult;
         const cwdBefore = this.state.cwd;
         try {
-            result = await tool.run(input, this.toolContext(call.id, signal, sandbox));
+            result = await tool.run(input, { ...this.toolContext(call.id, signal, sandbox), lentAs: this.lentDecided.get(call) });
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }

@@ -38,6 +38,12 @@ export function component(source: string, name: string, dependencies: Record<str
 export const all = (n: Node): Node[] => [n, ...n.children.flatMap(all)];
 export const text = (n: Node): string => (n.text ?? "") + n.children.map(text).join("");
 
+/** App.tsx's terminal, one panel per machine (components/TerminalPanel.tsx): closed, on the window's own machine. */
+export const noTerminal = {
+    terminalOpen: () => false, setTerminalOpen() {}, setTerminalShown() {}, terminalLogin: () => false, setTerminalLogin() {}, terminalOpenedEarly() {},
+    homeOn: () => undefined, linkedMachine: () => undefined, awayUnopened: () => false, machineLink: () => new Promise(() => {}), tabMachines: () => [], rpc: {},
+};
+
 /** App.tsx's split view (state/split.ts) with no split: for fixtures that render App with one session. */
 export const noSplit = { split: () => undefined, focusMoved: () => false, prune() {}, restoreSplit() {}, conversationLeast: () => 480 };
 

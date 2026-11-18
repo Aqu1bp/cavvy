@@ -24,6 +24,8 @@ export type PeerStatus = "working" | "waiting" | "idle" | "elsewhere";
 
 export interface PeerSummary {
     id: string;
+    /** The machine it's on, when that isn't this one (its id then names it: `<machine>/<id>`). */
+    machine?: string;
     title: string;
     cwd: string;
     status: PeerStatus;
@@ -55,7 +57,30 @@ export interface SessionPeers {
     start?(o: { prompt: string; title: string } & StartChoice): Promise<PeerSummary & { effort?: Effort }>;
     /** Why a session couldn't be started on that model and effort (with the models there are), before the user is asked. */
     checkStart?(o: StartChoice): Promise<string | undefined>;
+    /** The sessions on the user's other machines, where this one can reach them (src/server/far-peers.ts). */
+    far?: {
+        list: FarPeers["list"];
+        read: FarPeers["read"];
+        /** From this session. Throws PeerError. */
+        send(id: string, message: string): ReturnType<FarPeers["send"]>;
+    };
 }
+
+/**
+ * Sessions on the user's other machines, by an id that names the machine (`box/<id>`, `mac/<id>`): what this machine
+ * reaches them through answers in words, already as the model reads them.
+ */
+export interface FarPeers {
+    /** Newest first, at most `limit`, those whose title or id contains `query`; `machine` set on each. */
+    list(o: { query?: string; limit: number }): Promise<PeerSummary[]>;
+    /** Its last `turns` turns (readText), or undefined when there's no such session. Throws PeerError. */
+    read(id: string, turns?: number): Promise<{ text: string; title: string; turns: number } | undefined>;
+    /** A message to it from `from` (this session, as that machine names it back). Throws PeerError. */
+    send(id: string, message: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }>;
+}
+
+/** Whether an id names a session on another machine (`<machine>/<id>`). */
+export const farId = (id: string) => id.includes("/");
 
 /** The model (provider:model) and effort a session is started on; this session's when left out. */
 export interface StartChoice {
@@ -254,6 +279,13 @@ export function listText(peers: SessionPeers, o: { all?: boolean; query?: string
         return `${s.id}  “${redact(oneLine(s.title, 100))}”  ${STATUS_WORDS[s.status]}, ${ago(s.updatedAt, now)}${s.model ? `, ${s.model}` : ""}${where}`;
     });
     return { text: `Sessions ${scope}, newest first (this one left out)${looked}:\n${lines.join("\n")}`, count: rows.length };
+}
+
+/** Sessions on the user's other machines, after this machine's own (listText). */
+export function farListText(rows: PeerSummary[], now = Date.now()): string {
+    if (!rows.length) return "";
+    const lines = rows.map((s) => `${s.id}  “${redact(oneLine(s.title, 100))}”  ${STATUS_WORDS[s.status]}, ${ago(s.updatedAt, now)}${s.model ? `, ${s.model}` : ""}  on ${s.machine}, folder: ${s.cwd}`);
+    return `On the user's other machines, newest first:\n${lines.join("\n")}`;
 }
 
 const isTurnStart = (m: Message): boolean => m.role === "user" && [undefined, "prompt", "command", "wake", "summary"].includes(m.meta?.kind);

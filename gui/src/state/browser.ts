@@ -6,7 +6,7 @@ import { createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { BrowserState, ServerEvent } from "@shared/protocol";
 import { agentOpened } from "../lib/browser";
-import { app, rpc, toast } from "./app";
+import { app, rpc, rpcFor, toast } from "./app";
 import { setPrefs } from "./prefs";
 import { setInspectorPane } from "./ui";
 
@@ -53,7 +53,7 @@ export function adoptBrowserState(id: string, state: BrowserState) {
 
 /** Reads where the session's browser stands. */
 export async function loadBrowserState(id: string): Promise<void> {
-    adoptBrowserState(id, await rpc.call("browser.state", { id }));
+    adoptBrowserState(id, await rpcFor(id).call("browser.state", { id }));
 }
 
 /** Shows the Browser pane: the panel open, on its tab. */

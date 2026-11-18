@@ -181,8 +181,8 @@ export class BrowserSession implements PoolClient {
                     this.feed.clearWaiting();
                     // Asked again with other limits it goes on with the old ones: it is started over.
                     await want.stopScreencast();
-                    await want.setViewport(v);
-                    await want.startScreencast(this.o.far);
+                    await want.setViewport(this.drawn(v));
+                    await want.startScreencast(this.o.far ? v.scale : undefined);
                 }
             } catch {
                 // the tab closed meanwhile
@@ -205,7 +205,16 @@ export class BrowserSession implements PoolClient {
     }
 
     viewport(): Viewport {
-        return this.view ?? AGENT_VIEWPORT;
+        return this.view ? this.drawn(this.view) : AGENT_VIEWPORT;
+    }
+
+    /**
+     * The size a page is drawn at for the pane. Watched over a network, at 1x: drawing is most of what a frame costs a
+     * server, and the still when it stops is taken at the pane's scale, as sharp as ever (page.ts startScreencast).
+     * Measured on a two-core server, a 313 by 794 pane scrolling: 19 to 25 ms of CPU a frame at 1x, 68 to 78 at 2x.
+     */
+    private drawn(v: Viewport): Viewport {
+        return this.o.far ? { ...v, scale: 1 } : v;
     }
 
     refuse(url: string, approved?: BrowserApproval): string | undefined {

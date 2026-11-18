@@ -3,10 +3,11 @@
 // server's Cavvy directly, as it talks to this computer's when it's on none.
 
 import { createSignal } from "solid-js";
-import type { ServerProblem, UnknownHost } from "@shared/protocol";
+import { reconcile } from "solid-js/store";
+import type { ServerProblem, SessionSearchResult, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, pendingPicked, setConnNote } from "../state/app";
+import { app, pendingPicked, rpc, setApp, setConnNote } from "../state/app";
 import { PICKED_KEY } from "./picked";
 import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -37,13 +38,59 @@ export function setMachineIssue(i: MachineIssue | undefined) {
 }
 
 /** This computer's own Cavvy, for a window that's on a server; undefined for one that isn't (it's the window's own). */
+/** How long a search in a window on a server waits for this computer's Cavvy. */
+export const HOME_SEARCH_MS = 3_000;
+
 export const home: Rpc | undefined = machine ? new Rpc(credentials, windowKey) : undefined;
 if (home) {
     home.retriesCredentials = true;
     home.onEvent((e) => {
         if (e.type === "servers.progress" && e.name === machine && machineIssue()?.kind === "connecting") setMachineIssue({ kind: "connecting", text: e.text, percent: e.percent });
+        // The app is this computer's: its update is shown in a window on a server too.
+        if (e.type === "app.update") setApp("update", reconcile(e.info));
     });
+    // Asked for again whenever this computer's Cavvy is reached: what it said while it wasn't didn't arrive.
+    home.onState((s) => s === "open" && void home.call("app.update.get", {}).then((u) => setApp("update", reconcile(u)), () => undefined));
     void home.connect();
+    // And asked of it: whichever machine the window is on, what's asked about the update goes to this computer's
+    // Cavvy. So does Usage: this computer's adds up every machine's. Set here, loaded before the window's own connection is made (its credentials come through this file).
+    const route = rpc.route;
+    const ask = (m: string, p: unknown) => (home.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
+    /** A call this route makes of the window's own Cavvy isn't routed again. */
+    let own = false;
+    /**
+     * Search: the window's server searches its own sessions, as it always has, and this computer's Cavvy (while it's
+     * reached) the rest: this computer's and the other servers'. Its hits are named from this window: this
+     * computer's "", another server's by its name. Without it, the server's own stand.
+     */
+    /** The window's own server's hits: its own, whatever it says of them (one can't be opened on another machine). */
+    const ownSearch = (params: unknown): Promise<SessionSearchResult> => {
+        own = true;
+        const here = rpc.call("sessions.search", params as never).then((r) => (Array.isArray(r.hits) ? { ...r, hits: r.hits.filter((h) => h && typeof h === "object" && typeof h.id === "string" && typeof h.at === "number").map(({ machine: _, ...h }) => h) } : r));
+        own = false;
+        return here;
+    };
+    const search = (params: unknown): Promise<SessionSearchResult> => {
+        const here = ownSearch(params);
+        // Not waited on past a server's own time to answer (far-search.ts FAR_SEARCH_MS): one that's stuck doesn't hold the window's own hits.
+        const there = Promise.race([(ask("sessions.search", { ...(params as object), others: machine }) as Promise<SessionSearchResult>).catch(() => undefined), new Promise<undefined>((done) => setTimeout(done, HOME_SEARCH_MS))]);
+        return Promise.all([here, there]).then(([a, b]) => {
+            if (a.stale || !b || b.stale || !Array.isArray(b.hits)) return a;
+            // As many as were asked for, as the Cavvys count them (engine.ts searchSessions).
+            const asked = Number((params as { limit?: unknown }).limit);
+            const limit = Math.max(1, Math.min(Math.floor(Number.isFinite(asked) ? asked : 50), 200));
+            // Only what can be shown and opened; the window's own server's are its own to find.
+            const theirs = b.hits.filter((h) => h && typeof h === "object" && typeof h.id === "string" && typeof h.at === "number" && h.machine !== machine).map((h) => ({ ...h, machine: h.machine ?? "" }));
+            return { partial: a.partial || b.partial === true, ...(a.pending || b.pending === true ? { pending: true } : {}), hits: [...a.hits, ...theirs].sort((x, y) => y.at - x.at).slice(0, limit) };
+        });
+    };
+    rpc.route = (method, params) => {
+        if (method.startsWith("app.update.") || method === "usage.summary") return ask(method, params);
+        if (!own && method === "sessions.search") return home.state === "open" ? search(params) : ownSearch(params);
+        // Read ahead there too, for the search that follows.
+        if (!own && home.state === "open" && method === "sessions.searchWarm") void ask(method, params).catch(() => undefined);
+        return route?.(method, params);
+    };
 }
 
 function homeOpen(): Promise<void> {

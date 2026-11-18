@@ -278,7 +278,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
 /** A new session in the pull request's worktree, its composer holding the pull request to work on. */
 async function openPrSession(made: GitPrWorktree): Promise<void> {
     try {
-        const h = await createSession(made.path, app.homeMode);
+        const h = await createSession(made.path, { mode: app.homeMode });
         setApp("activeId", h.id);
         h.addDraft({ text: `Pull request #${made.pr.number}: ${made.pr.title}\n${made.pr.url}\n\n` });
         requestComposerFocus();

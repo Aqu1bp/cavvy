@@ -1,4 +1,5 @@
 // Local transcript history and the existing per-account plan limit reports.
+import { machine as windowMachine } from "../lib/platform";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Hourglass, Info, KeyRound, RotateCcw } from "lucide-solid";
 import { planLimitKey, type UsageBucket, type UsageDays, type UsageSource, type UsageSummary, type UsageTotals } from "@shared/protocol";
@@ -111,8 +112,9 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
                 </div>}</For>
             </div>
         </section>
-        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1)}>
-            <UsageAccounts accounts={accounts()} metric={m()} total={total()} hl={setHl} />
+        {/* Also for one account alone when it's another machine's (`<id>@<server>`): its row says where that usage was. */}
+        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1) || accounts().some((a) => a.source !== "api" && a.accountId.includes("@"))}>
+            <UsageAccounts accounts={accounts()} names={p.data.names} metric={m()} total={total()} hl={setHl} />
         </Show>
         <UsageChart data={p.data} metric={m()} />
         <h3 class="set-h">By token type</h3>
@@ -132,7 +134,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
         <div class="set-h usage-bar"><h3>By {breakdown() === "model" ? "model" : p.data.interval === "hour" ? "hour" : "day"}</h3><span class="spacer" /><Segmented label="Usage breakdown" size="sm" value={breakdown()} onChange={setBreakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: p.data.interval === "hour" ? "Hour" : "Day" }]} /></div>
         <UsageTable data={p.data} metric={m()} by={breakdown()} hl={setHl} />
         <p class="set-note u-notes">
-            Only this computer's usage. Costs are at API list prices, not what a plan bills.
+            Costs are at API list prices, not what a plan bills.
             <Show when={p.data.totals.unknown}> Costs leave out unpriced usage; the Tokens view includes it.</Show>
             <Show when={p.data.totals.estimated}> ~ marks a newer model priced like the one before it.</Show>
             {p.data.approxDated ? ` Times are approximate for ${plural(p.data.approxDated, "older record")}.` : ""}{p.data.approxPriced ? ` ${plural(p.data.approxPriced, "record")} may be unpriced.` : ""}
@@ -142,12 +144,14 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
 }
 
 /** What each account gave, under a heading per source; the bars are shares of the whole range, so accounts compare across sources. */
-function UsageAccounts(p: { accounts: AccountTotal[]; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
+function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary gives: another machine's accounts, and this computer's in a window that isn't on it. */ names?: Record<string, string>; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
     const info = (a: AccountTotal) => app.providers.find((x) => x.id === a.provider);
     const account = (a: AccountTotal) => info(a)?.agentCli?.accounts?.find((x) => x.id === a.accountId);
-    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
+    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : p.names?.[`${a.source}:${a.accountId}`] ?? account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
     const meta = (a: AccountTotal) => {
         if (a.source === "api") return "API key";
+        // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
+        if (windowMachine) return "";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
         return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };
@@ -262,8 +266,15 @@ export function UsageView() {
         try {
             if (view() === "limits") await refreshLimits();
             else {
-                const r = await rpc.call("usage.summary", { days: days() });
+                const asked = days();
+                const r = await rpc.call("usage.summary", { days: asked, first: true });
                 if (mine === seq) setData(r);
+                // This computer's own so far: the servers' are added when they've answered. If that can't be asked
+                // for, what's shown stays, and says which weren't counted.
+                if (mine === seq && r.waiting?.length) {
+                    const all = await rpc.call("usage.summary", { days: asked, rest: true }).catch(() => ({ ...r, waiting: undefined, uncounted: [...(r.uncounted ?? []), ...r.waiting!] }));
+                    if (mine === seq) setData(all);
+                }
             }
         } catch (e) { if (mine === seq) setError(e instanceof Error ? e.message : String(e)); }
         finally { if (mine === seq) setLoading(false); }
@@ -283,6 +294,8 @@ export function UsageView() {
             <Show when={loading() && !data()}><p class="set-note" role="status">Loading usage…</p></Show>
             <Show when={!error() && data()}>{d => <div class={`usage-body ${stale() ? "busy" : ""}`}>
                 <Show when={d().truncated}><div class="u-partial" role="status"><Info size={14} /><span>Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
+                <Show when={d().waiting?.length && d().days === days()}><div class="u-partial" role="status"><Info size={14} /><span>Adding {d().waiting!.join(", ")}…</span></div></Show>
+                <Show when={d().uncounted?.length}><div class="u-partial" role="status"><Info size={14} /><span>Not counted: {d().uncounted!.join(", ")}.</span></div></Show>
                 <Show when={d().rows.length} fallback={noModel() && !d().truncated ? <div class="set-group u-state"><b>No model connected.</b><button class="btn secondary sm" onClick={() => setSettingsTab("providers")}>Connect a model</button></div> : <div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
                     <UsageDashboard data={d()} metric={view() === "tokens" ? "tokens" : "cost"} />
                 </Show>
