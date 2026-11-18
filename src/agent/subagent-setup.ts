@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { dirname, join, relative } from "path";
 import type { Settings } from "../config/settings";
 import { trustedByUser } from "../config/trust";
-import type { PermissionMode } from "../permissions/modes";
+import { stricter, type PermissionMode } from "../permissions/modes";
 import { McpManager, serverSegment } from "../mcp/manager";
 import { approvalOf } from "../mcp/approval";
 import { createWorktree, runGitAsync } from "../server/worktrees";
@@ -19,13 +19,12 @@ import type { AgentDef, AgentHooks } from "./agents";
 // Permission mode
 
 /**
- * The mode a sub-agent runs in, given the parent's now. Bypass and auto in
- * the parent win (as in Claude Code), and so does plan: a session that's
- * planning changes nothing, whatever its agents say.
+ * The mode a sub-agent runs in, given the parent's now: the session's, or its
+ * definition's own where that's stricter. A definition can make an agent
+ * stricter than the session (a plan agent stays read-only), never looser.
  */
 export function childMode(parent: PermissionMode, own: PermissionMode | undefined): PermissionMode {
-    if (!own || parent === "bypassPermissions" || parent === "auto" || parent === "plan") return parent;
-    return own;
+    return own ? stricter(parent, own) : parent;
 }
 
 // ---------------------------------------------------------------------------
