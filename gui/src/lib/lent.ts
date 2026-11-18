@@ -14,7 +14,7 @@ import { home } from "./machines";
 import { machine } from "./platform";
 import type { Rpc } from "./rpc";
 import { far } from "../state/actions";
-import { app, awayMachine, others, rpc, upsertSession } from "../state/app";
+import { app, awayMachine, others, rpc, rpcFor, upsertSession } from "../state/app";
 import { adoptSimulatorState, loadSimulatorState, sim } from "../state/simulator";
 
 /** What this computer has for each session of this window's server, by the session's id there. */
@@ -31,9 +31,10 @@ function took(session: string, l: LentSession) {
     setLent(session, reconcile(l));
 }
 
-function ask(h: Rpc, session: string, open = false): Promise<LentSession> {
+/** What this computer (`h`) has for `session`, on server `name` (the window's, in a window on a server). */
+function ask(h: Rpc, session: string, open = false, name = machine!): Promise<LentSession> {
     const title = app.sessions.find((s) => s.id === session)?.title;
-    return h.call("offers.session", { name: machine!, sessionId: session, ...(title ? { title } : {}), ...(open ? { open } : {}) }).then((l) => {
+    return h.call("offers.session", { name, sessionId: session, ...(title ? { title } : {}), ...(open ? { open } : {}) }).then((l) => {
         took(session, l);
         return l;
     });
@@ -121,4 +122,41 @@ if (home && machine) {
     // And the session on screen's simulator, as this computer has it now.
     h.onState((s) => s === "open" && (again(), asking(), app.activeId && void loadSimulatorState(app.activeId).catch(() => undefined)));
     if (h.state === "open") asking();
+}
+
+// A window on this computer: a server's session opened here (state/app.ts awayMachine) that uses this computer's
+// Simulator is shown from this computer's own Cavvy, over the window's own connection, as above with the two the other
+// way round: its pictures never go to the server and back. Loaded when such a session is shown (RightPanel).
+if (!machine) {
+    const here = { state: sim.state, stream: sim.stream };
+    /** Those of the window's sessions whose server has simulators of its own (it's a Mac). */
+    const own = new Set<string>();
+    const askHere = (session: string, open = false) => ask(rpc, session, open, awayMachine(session)!);
+    sim.state = async (id) => {
+        if (awayMachine(id) === undefined) return here.state(id);
+        const theirs = await rpcFor(id).call("simulator.state", { id });
+        if (theirs.status !== "unavailable") {
+            own.add(id);
+            return theirs;
+        }
+        own.delete(id);
+        return lentState(rpc, await askHere(id), theirs);
+    };
+    sim.stream = (session) => {
+        const id = session();
+        if (awayMachine(id) === undefined) return here.stream(session);
+        if (own.has(id)) return rpcFor(id).browserStream();
+        return lentStream(rpc.browserStream(), { session, guest: () => lent[session()]?.id, open: async (at) => (await askHere(at, true)).id, outlook: async (at) => lentState(rpc, await askHere(at)), none: adoptSimulatorState });
+    };
+    rpc.onEvent((e) => {
+        if (e.type === "offers.session" && awayMachine(e.sessionId) === e.name) {
+            const hadId = lent[e.sessionId]?.id;
+            took(e.sessionId, e.lent);
+            // The session's simulator came to be (its agent used it), or is no more: the pane and its tab follow.
+            if (e.lent.id !== hadId) void (e.lent.id ? Promise.resolve(e.lent) : askHere(e.sessionId)).then((l) => lentState(rpc, l)).then((st) => adoptSimulatorState(e.sessionId, st), () => undefined);
+        } else if (e.type === "simulator.state") {
+            const session = sessionOf.get(e.sessionId);
+            if (session) adoptSimulatorState(session, e.state);
+        }
+    });
 }
