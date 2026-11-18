@@ -68,7 +68,8 @@ export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
 /** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken); `path` stays the name shown. */
 /** `worktree`: another worktree of the session's repository, looked at on its branch (a turn's card naming where it worked). */
-export const [review, setReview] = createSignal<{ path?: string; token?: string; scope?: ReviewScope; turnId?: number; worktree?: string } | undefined>();
+/** `file`: the file viewer in its place instead (components/FileViewer.tsx), on a file of the session's (at `line`). */
+export const [review, setReview] = createSignal<{ path?: string; token?: string; scope?: ReviewScope; turnId?: number; worktree?: string; file?: { path: string; line?: number } } | undefined>();
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);

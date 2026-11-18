@@ -113,6 +113,7 @@ import type {
     WorktreeInfo,
     PluginActionParams,
     PluginsInfo,
+    ProjectSearchResult,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listPlugins } from "../plugins/install";
@@ -131,6 +132,8 @@ import { autoSettleDays, AUTO_SETTLE_DAYS, forgetPlay, notePlay, settleable, set
 import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
 import { keepAwake } from "../agent/keep-awake";
+import { searchProject } from "./project-search";
+import { readProjectFile } from "./file-view";
 
 export interface EngineOptions {
     /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
@@ -446,6 +449,8 @@ export class Engine {
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
     private homeFiles = new Map<string, FileIndex>();
+    /** Each window's Search in project under way: a newer one (or the window going) stops it. */
+    private fileSearches = new Map<EngineClient, AbortController>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
@@ -1440,6 +1445,8 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        this.fileSearches.get(client)?.abort();
+        this.fileSearches.delete(client);
         for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
@@ -2676,6 +2683,43 @@ export class Engine {
         return { mediaType, data: bytes.toString("base64") };
     }
 
+    /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
+    private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
+        const { cwd } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query.slice(0, 256) : "";
+        const limit = Math.max(1, Math.min(200, Number.isInteger(p.limit) ? p.limit : 50));
+        const files = p.sessionId !== undefined ? this.runtime(p.sessionId).ws.files : this.workspaces.get(cwd)?.files;
+        if (!files) throw new RpcError("That folder isn't open in Cavvy", "not_open");
+        // Folders are in the listing too ("src/"): asked for more, so as many files are left.
+        const found = await files.searchSoon(query.trim(), limit * 2);
+        return { paths: found.filter((f) => !f.endsWith("/")).slice(0, limit) };
+    }
+
+    /** Search in project: in the session's folder, the window's last search stopped first. */
+    private async searchFiles(client: EngineClient, p: Record<string, any>): Promise<ProjectSearchResult> {
+        const { cwd } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query : "";
+        if (!query || query.length > 1000 || query.includes("\0") || query.includes("\n")) throw new RpcError("Search for 1 to 1,000 characters on one line", "invalid");
+        this.fileSearches.get(client)?.abort();
+        const ctl = new AbortController();
+        this.fileSearches.set(client, ctl);
+        let root: string;
+        try {
+            root = realpathSync(cwd);
+        } catch {
+            throw new RpcError("The session's folder is gone", "not_found");
+        }
+        try {
+            const r = await searchProject(root, { query, caseSensitive: p.caseSensitive === true, wholeWord: p.wholeWord === true, regex: p.regex === true }, ctl.signal);
+            return ctl.signal.aborted ? { ...r, cancelled: true } : r;
+        } catch (e) {
+            if (ctl.signal.aborted) return { files: [], matches: 0, truncated: false, via: "js", cancelled: true };
+            throw new RpcError(e instanceof Error ? e.message : String(e), "invalid");
+        } finally {
+            if (this.fileSearches.get(client) === ctl) this.fileSearches.delete(client);
+        }
+    }
+
     private async commandProvider(cwd: string): Promise<string | undefined> {
         const usable = async (ref: string | undefined) => {
             const model = ref && resolveModelInfo(ref);
@@ -3678,6 +3722,18 @@ export class Engine {
                 return this.pathsExist(p);
             case "fs.image":
                 return this.readImage(p);
+            case "fs.files":
+                return this.findFiles(p);
+            case "fs.search":
+                return this.searchFiles(client, p);
+            case "fs.searchCancel":
+                this.fileSearches.get(client)?.abort();
+                this.fileSearches.delete(client);
+                return null;
+            case "fs.read": {
+                const { cwd, roots } = this.openScope(p);
+                return readProjectFile(checkPathInput(p.path), cwd, roots);
+            }
             case "commands.list": {
                 const cwd = resolve(expandHome(str(p.cwd, "cwd")));
                 const provider = optStr(p.provider) ?? await this.commandProvider(cwd);

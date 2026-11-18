@@ -317,6 +317,8 @@ const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs }
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
 
 export function App() {
+    /** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
+    const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
     // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
     // there by the time either is first opened.
     onMount(() => {
@@ -422,6 +424,8 @@ export function App() {
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
             "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            "app:goToFile": () => openFinder("files"),
+            "app:searchFiles": () => openFinder("search"),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
             "app:switchBranch": () => void (!settingsTab() && openGit("openBranches")),
@@ -669,7 +673,7 @@ export function App() {
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
-            <CommandPalette />
+            <CommandPalette files={openFinder} />
             <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
             <Show when={folderShown()}><FolderPicker /></Show>
