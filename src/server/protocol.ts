@@ -1446,6 +1446,8 @@ export interface UsageSummary {
     names?: Record<string, string>;
     /** Servers whose usage isn't in this: not connected, or no answer. The rest of the user's machines are counted (usage-machines.ts). */
     uncounted?: string[];
+    /** Servers still being asked: this is this computer's own so far. Asked again with `rest`, theirs are added. */
+    waiting?: string[];
 }
 
 /** A commit on main the installed desktop app doesn't have yet. */
@@ -2422,7 +2424,7 @@ export interface Methods {
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */
-    "usage.summary": { params: { days: UsageDays; brief?: boolean }; result: UsageSummary };
+    "usage.summary": { params: { days: UsageDays; brief?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for (UsageSummary.waiting). */ rest?: boolean }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
     /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */
