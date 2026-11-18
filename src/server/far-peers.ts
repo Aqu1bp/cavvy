@@ -130,12 +130,11 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     const limit = Math.max(1, Math.min(Number(params.limit) || 20, 200));
     if (op === "list") {
         const query = typeof params.query === "string" ? params.query : undefined;
-        const why = denied("ListSessions");
-        const mine = why ? [] : here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
+        // This computer's rules stand for what goes through it too: another server's sessions as its own.
+        allowed("ListSessions");
+        const mine = here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
         // The other servers not answering leaves this computer's.
         const theirs = await far.list({ query, limit }).catch(() => []);
-        // Nothing to list, and this computer's own were kept back: said, not taken for none.
-        if (why && !theirs.length) throw new PeerError(why);
         return newest([...mine, ...theirs], limit);
     }
     const id = str(params.id, 300);
@@ -145,8 +144,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     if (s.on === asker) throw new PeerError(`${id} is on this machine: a session here goes by its id alone (${s.id}).`);
     if (op === "read") {
         const turns = typeof params.turns === "number" ? params.turns : undefined;
-        if (s.on !== HOME_NAME) return far.read(id, turns);
         allowed("ReadSession");
+        if (s.on !== HOME_NAME) return far.read(id, turns);
         return here.read(s.id, turns);
     }
     if (op === "send") {
@@ -159,8 +158,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         const message = checkMessage(params.message);
         // Into one of this computer's: a server's session counts as Auto at most, so one here in Bypass takes no work
         // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't).
+        allowed("SendToSession");
         if (s.on === HOME_NAME) {
-            allowed("SendToSession");
             return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
         }
         const link = others.get(s.on);
