@@ -371,10 +371,17 @@ export async function checkDiffComments(root: HTMLElement) {
             for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n as Text);
             return out;
         };
+        // Colored first: a row's colors landing after it's selected, and before the view hears of the selection, put
+        // new text in it, which cuts the selection short there. On a slow runner these rows' part was still to come.
+        const colored = () => [5003, 5004, 5005, 5006].every((i) => scroller.querySelector(`[data-i="${i}"] .txt span`));
+        check(await until(colored, 20_000), "the rows to select are colored");
         const from = texts(5003)[0]!;
         const to = texts(5006).at(-1)!;
         const sel = document.getSelection()!;
+        // Heard by the view (its listener is before this one), which then keeps the rows.
+        const heard = new Promise((resolve) => document.addEventListener("selectionchange", resolve, { once: true }));
         sel.setBaseAndExtent(from, 0, to, to.length);
+        await heard;
         await settle();
         scroller.scrollTop = scroller.scrollHeight;
         await until(() => scroller.querySelector(`[data-i="9999"]`));

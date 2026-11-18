@@ -2,7 +2,7 @@
 // Default has no selectors here, so it is ~/.claude and ~/.codex, which named accounts link into
 // (account-layout.ts). Bun caches homedir at startup, so the tests run in a child with a temporary HOME.
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -325,7 +325,7 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
             await run("Continue on Personal");
             expect(session.messages.slice(0, before.length)).toEqual(before);
             expect(session.model).toBe(`${provider}:default`);
-            const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+            const lines = fakeLog(log);
             const starts = lines.filter((l) => l.argv);
             expect(starts[0].claudeConfigDir).toBeUndefined();
             expect(starts[0].codexHome).toBeUndefined();
@@ -350,7 +350,7 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
             addAccount(provider, { id: selected.id, name: selected.name, folder: join(iso.home, `${provider}-replacement`) }, [root]);
             await run("Continue after replacing the account folder");
             expect(events.some((e) => e.type === "notice" && /account folder changed/.test(e.message))).toBe(true);
-            const after = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+            const after = fakeLog(log);
             if (provider === "claude-code") expect(after.filter((l) => l.argv).at(-1).argv).not.toContain("--resume");
             else expect(after.some((l) => l.received?.method === "thread/resume")).toBe(false);
             // Default's own thread from the first turn is kept for it (#413): back there, it's taken up again.

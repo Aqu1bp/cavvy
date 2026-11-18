@@ -21,7 +21,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { activate, app, awayMachine, handleFor, loadTurn, restoredFrom } from "../state/app";
 import { machine, os } from "../lib/platform";
 import { Notice } from "./blocks/Notices";
-import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
+import { hasErrorCard, isWorkRow, leadingNotices, quietBlocks, quietWake, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
 
 /** A work log opened by a click: segments drawn at once, then in each frame after. */
@@ -640,9 +640,21 @@ export function TurnView(p: TurnViewProps) {
 function TurnViewContent(p: TurnViewProps) {
     let article: HTMLElement | undefined;
     // A limit's card takes the place of the turn's earlier "limit reached" (lib/notices.ts).
-    const items = createMemo(() => groupBlocks(shownBlocks(p.turn.blocks)));
-    const segs = createMemo(() => workSegments(items()));
     const running = () => p.turn.status === "running";
+    // The CLI's own turn, reporting on background work (a command, a sub-agent ended): no row says so. What ended is
+    // the first line of the turn's work, and folds away with it.
+    const quiet = untrack(() => quietWake(p.turn.prompt));
+    const wokenBy: NoticeBlock | undefined = quiet ? { t: "notice", id: "prompt", level: "info", text: untrack(() => p.turn.prompt!.text), wake: true } : undefined;
+    const items = createMemo(() => {
+        // With something after it, a quiet turn's "limit reached" is old news: what came next says how things stand.
+        const rows = groupBlocks(quietBlocks(shownBlocks(p.turn.blocks), quiet, p.last));
+        return wokenBy && rows.some(isWorkRow) ? [{ kind: "block" as const, block: wokenBy }, ...rows] : rows;
+    });
+    const segs = createMemo(() => workSegments(items()));
+    // Nothing of it to show (its CLI was stopped by a limit before it did anything): no gap for it either.
+    const empty = () => quiet && !running() && !items().length;
+    // Only cards (a limit's): close under the reply before it, as one in that reply's own turn is.
+    const attached = () => quiet && !running() && !empty() && !items().some((it) => isWorkRow(it) || (it.kind === "block" && it.block.t === "text"));
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
     // The turn's one indicator, at its end: what's under way now (nothing while the answer streams).
@@ -704,7 +716,7 @@ function TurnViewContent(p: TurnViewProps) {
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
-            if (r?.turnId !== p.turn.id || r.part === "prompt") return;
+            if (r?.turnId !== p.turn.id || (r.part === "prompt" && !quiet)) return;
             const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
             if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) (setDrawnSegs(Infinity), unfold(true));
         }),
@@ -728,7 +740,7 @@ function TurnViewContent(p: TurnViewProps) {
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
     // `leaving`: what was said on the way (or a compaction, a wake), fading out with the work it's folding away with.
-    const renderItem = (it: () => Item, leaving?: () => boolean) => (
+    const renderItem = (it: () => Item, leaving?: () => boolean, folds?: () => boolean) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
                 {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={p.agents} flat hideLive={live()} />}
@@ -740,7 +752,7 @@ function TurnViewContent(p: TurnViewProps) {
                             {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
-                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} leaving={leaving?.()} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} leaving={leaving?.()} row={folds?.()} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} leaving={leaving?.()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
                         <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} in={p.state.id} text={m().text} find={m().id} reveal={findReveal()?.part === m().id} />}</Match>
@@ -756,7 +768,7 @@ function TurnViewContent(p: TurnViewProps) {
             when={seg().kind === "work"}
             fallback={
                 <Show when={!(seg() as { interim: boolean }).interim || (showWork() && drawn(i))}>
-                    {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
+                    {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding(), () => (seg() as { interim: boolean }).interim)}
                 </Show>
             }
         >
@@ -777,8 +789,8 @@ function TurnViewContent(p: TurnViewProps) {
     const lead = createMemo(() => (hasWork() ? leadingNotices(segs()) : 0));
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
-            <Show when={p.turn.prompt}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""} ${empty() ? "empty" : ""} ${attached() ? "attached" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
+            <Show when={p.turn.prompt && !quiet}>
                 <h2 class="sr-only" data-find-skip>{said}</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
             </Show>

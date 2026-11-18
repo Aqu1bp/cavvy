@@ -169,7 +169,8 @@ describe("writeJson is atomic", () => {
         );
         const end = Date.now() + 1500;
         let i = 1;
-        while (Date.now() < end) {
+        // For 1.5 s, and the few writes checked below however long a slow disk holds one.
+        while (Date.now() < end || i <= 6) {
             writeJson(f, body(i++), 0o600);
             await Bun.sleep(0);
         }
@@ -179,5 +180,7 @@ describe("writeJson is atomic", () => {
         expect(out.reads).toBeGreaterThan(5);
         expect(out.bad).toBe(0);
         expect(leftovers(d)).toEqual([]);
-    });
+        // 1.5 s by its own clock. Each write syncs the file and its folder, and on a CI runner one of them once held
+        // the writer for 4 s: the checks above all passed, half a second after Bun's 5 s limit. A slow disk is slow, not a failure.
+    }, 30_000);
 });

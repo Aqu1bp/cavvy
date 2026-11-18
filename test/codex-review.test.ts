@@ -3,6 +3,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentEvent } from "../src/agent/agent";
+import { fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const cwd = tempDir("codex-review-");
@@ -100,7 +101,7 @@ test("approved guardian warnings stay silent without creating synthetic tool rec
 for (const mode of ["auto", "default", "acceptEdits", "plan", "bypassPermissions"] as const) test(`${mode}: listener guidance is in the thread's instructions, true in every mode (the mode can change later)`, async () => {
     process.env.FAKE_COMMAND = "pwd";
     await run(mode);
-    const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => l.received ? [l.received] : []);
+    const calls = fakeLog(log).flatMap((l) => l.received ? [l.received] : []);
     const turn = calls.find((m) => m.method === "turn/start").params;
     const thread = calls.find((m) => m.method === "thread/start").params;
     const instructions = thread.developerInstructions ?? "";
@@ -145,7 +146,7 @@ test("native Codex sub-agent approvals survive in their agent records", async ()
 test("listener instructions survive rejection of the delegation configuration", async () => {
     process.env.FAKE_REJECT_CONFIG = "1";
     await run();
-    const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => l.received ? [l.received] : []);
+    const calls = fakeLog(log).flatMap((l) => l.received ? [l.received] : []);
     const threads = calls.filter((m) => m.method === "thread/start");
     expect(threads).toHaveLength(2);
     expect(threads[1].params.config).toBeUndefined();
