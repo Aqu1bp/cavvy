@@ -211,8 +211,10 @@ test("a window on this machine that shows a server's session hears what this mac
         await until("the window here to hear it has one", () => mac.events.some((e) => e.type === "offers.session" && e.sessionId === "shown-here" && e.lent.id === opened.id));
         await here.call("simulator.command", { id: opened.id, command: "select", udid: "AAAA" });
         await until("its simulator to be told of here", () => mac.events.some((e) => e.type === "simulator.state" && e.sessionId === opened.id));
-        // A session it never showed isn't its business.
-        expect(mac.events.some((e) => e.type === "offers.session" && e.sessionId !== "shown-here")).toBe(false);
+        // A session it never showed isn't its business: the windows on the server hear of it, this one doesn't.
+        await here.call("offers.session", { name: "box", sessionId: "not-shown", title: "Not shown", open: true });
+        await until("the window on the server to hear of the other", () => here.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown"));
+        expect(mac.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown")).toBe(false);
     } finally {
         await mac.close();
     }
