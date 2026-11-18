@@ -14,7 +14,7 @@ import { archive, archiveSessions, chooseProject, deleteSessions, newSession, op
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { ago, monogram, projectColor, promptTime, since } from "../lib/format";
+import { ago, monogram, projectColor, since, wakeTime } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, isSnoozed, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
@@ -126,11 +126,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
+            {/* Wake now, Snooze ▸ and More ▸ (Regenerate title, Never auto-settle, New session). */}
             <RowExtras ids={[p.s.id]} close={close} />
-            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
-                {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
-                <Plus size={14} /> New session
-            </button>
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
@@ -196,7 +193,7 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     );
     const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
     // Snoozed: when it wakes.
-    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? promptTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
+    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
 
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
@@ -450,8 +447,10 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     const picked = () => p.pick.picked(p.s.id);
+    // Snoozed: when it wakes stays in sight beside More, pointed at or not (Pin is in its menu).
+    const snoozed = () => isSnoozed(p.s);
     return (
-        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""} ${snoozed() ? "snz" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -464,7 +463,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
                     aria-label={rowLabel(p.s, unread(), picked())}
-                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
+                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\n${snoozed() ? `Wakes ${wakeTime(p.s.snoozedUntil!, now(), true)}` : `Updated ${(now(), ago(p.s.updatedAt))}`}`}
                 >
                     <RowLead s={p.s} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
@@ -477,11 +476,13 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                         <RowEnd s={p.s} unread={unread()} />
                     </span>
                     <span class="slim-acts">
-                        <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
-                            <Show when={p.s.pinned} fallback={<Pin size={13} />}>
-                                <PinOff size={13} />
-                            </Show>
-                        </button>
+                        <Show when={!snoozed()}>
+                            <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
+                                <Show when={p.s.pinned} fallback={<Pin size={13} />}>
+                                    <PinOff size={13} />
+                                </Show>
+                            </button>
+                        </Show>
                         <button ref={more} class="hb sm" title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                             <MoreHorizontal size={14} />
                         </button>

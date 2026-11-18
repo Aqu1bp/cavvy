@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { mountMenu, type MenuBehavior } from "../../lib/menu";
+import { menuOf, mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
 import { sp } from "../../state/prefs";
 import { settingsTab } from "../../state/ui";
@@ -107,7 +107,8 @@ export function Popover(p: PopoverProps) {
         const onDown = (e: PointerEvent) => {
             if (!open()) return;
             const t = e.target as Node;
-            if (el?.contains(t) || p.anchor()?.contains(t)) return;
+            // A submenu of it is in it too.
+            if ((el && menuOf(el, t)) || p.anchor()?.contains(t)) return;
             p.onClose();
         };
         const onKey = (e: KeyboardEvent) => {

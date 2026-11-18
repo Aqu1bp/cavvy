@@ -148,6 +148,25 @@
     color: var(--fg-3);
 }
 
+/* An item that opens a submenu (ui/Submenu.tsx): a chevron at its end, and filled while what it opened is out. */
+.menu-sub[aria-expanded="true"] {
+    background: var(--hover);
+}
+
+.menu-sub-chev {
+    margin-left: auto;
+    color: var(--fg-3) !important;
+}
+
+/* Beside its menu, springing out of the side it's on, over the menu's edge. */
+.popover.submenu {
+    z-index: 61;
+}
+
+.popover.submenu[data-side="left"] {
+    transform-origin: top right;
+}
+
 .menu-sep {
     height: 0.5px;
     margin: calc(4 * var(--sp)) calc(6 * var(--sp));
