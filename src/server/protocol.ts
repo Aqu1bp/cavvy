@@ -1308,7 +1308,17 @@ export interface ProviderInfo {
         planLimits?: boolean;
         /** Auto mode has no reviewer for it: commands ask (AUTO_WITHOUT_REVIEWER). */
         autoAsks?: boolean;
+        /** The environment variables it's started with. A secret's value is never sent: only that it's set. */
+        env?: AgentEnvVar[];
     };
+}
+
+/** An environment variable an agent CLI is started with (src/providers/agent-env.ts). */
+export interface AgentEnvVar {
+    name: string;
+    /** Left out for a secret: the saved value stays when it's saved again without one. */
+    value?: string;
+    secret?: boolean;
 }
 
 export interface ProviderModels {
@@ -2499,6 +2509,8 @@ export interface Methods {
     "providers.removeKey": { params: { provider: string }; result: null };
     /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
+    /** Set all of an agent CLI's environment variables (those left out are removed). It has to be turned on. */
+    "providers.setEnv": { params: { provider: string; vars: AgentEnvVar[] }; result: null };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
     /** Import one into a Cavvy session (or open the one that already holds it). */

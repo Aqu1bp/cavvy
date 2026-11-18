@@ -372,16 +372,24 @@ export interface VertexConfig {
 
 /**
  * An agent CLI turned on with /login claude-code or /login codex. Nothing
- * secret: the CLI keeps its own sign-in.
+ * secret: the CLI keeps its own sign-in, and a secret environment variable's
+ * value is in the credential store (src/providers/agent-env.ts).
  */
 export interface AgentCliConfig {
     /** The CLI's path, when it isn't the one on PATH. */
     path?: string;
     /** Extra arguments, placed before Cavvy's own. */
     args?: string[];
+    /** Environment variables it's started with, over Cavvy's own environment (agent-env.ts). */
+    env?: Record<string, string>;
+    /** Variables it's started with whose values are secret: kept in the credential store, never here. */
+    secretEnv?: string[];
     accounts?: CliAccount[];
     defaultAccount?: string;
 }
+
+/** An environment variable's name, as a shell writes one. */
+export const validEnvName = (name: unknown): name is string => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name);
 
 /** Metadata only; sign-in data belongs exclusively to the CLI. */
 export interface CliAccount {
@@ -458,6 +466,14 @@ export function readAgentConfig(id: string): AgentCliConfig | undefined {
     const out: AgentCliConfig = {};
     if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
     if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
+    if (a.env && typeof a.env === "object" && !Array.isArray(a.env)) {
+        const env = Object.entries(a.env).filter((e): e is [string, string] => validEnvName(e[0]) && typeof e[1] === "string" && !e[1].includes("\0"));
+        if (env.length) out.env = Object.fromEntries(env);
+    }
+    if (Array.isArray(a.secretEnv)) {
+        const names = [...new Set(a.secretEnv.filter(validEnvName))];
+        if (names.length) out.secretEnv = names;
+    }
     if (Array.isArray(a.accounts)) {
         out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string").map((x) => ({
             ...x,

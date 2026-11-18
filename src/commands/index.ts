@@ -24,7 +24,6 @@ import {
     readAgentConfig,
     readProvidersFileForUpdate,
     readVertexConfig,
-    removeAgentConfig,
     removeVertexConfig,
     resolveBaseUrl,
     saveAgentConfig,
@@ -38,6 +37,7 @@ import {
     type VertexConfig,
     type WireKind,
 } from "../providers/registry";
+import { turnOffAgent } from "../providers/agent-env";
 import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
@@ -851,7 +851,7 @@ async function logoutCommand(app: App, args: string) {
     if (row.source === "gcloud" || row.source === "cli") {
         try {
             if (row.source === "gcloud") removeVertexConfig();
-            else removeAgentConfig(id);
+            else await turnOffAgent(id);
         } catch (e) {
             app.notice(redact((e as Error).message), "error");
             return;

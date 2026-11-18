@@ -22,6 +22,7 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { accountEnv } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { signInAdvice } from "./account-login";
 import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
@@ -1483,7 +1484,7 @@ export class CodexLiveAdapter implements AgentCliAdapter {
         const bin = requireCli(id, CODEX_CLI);
         const hooks = CODEX_HOOK_EVENTS.filter((e) => cfg.hooks?.[e]?.length);
         const args = ["app-server", ...extraArgs(id), ...(cfg.trusted === false ? untrustedArgs(cfg.cwd) : []), ...(hooks.length ? codexHookArgs(hooks) : [])];
-        const env = accountEnv(id, cfg.accountId, cfg.cwd);
+        const env = cliEnv(id, cfg.accountId, cfg.cwd);
         const o = cfg.orchestrator;
         // The thread's config, set when it's opened: a change needs a new app-server (and thread/resume).
         const thread = {

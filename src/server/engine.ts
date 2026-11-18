@@ -39,7 +39,8 @@ import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
 import { AppUpdates } from "./app-update";
@@ -2208,6 +2209,7 @@ export class Engine {
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
+                        env: agentEnvInfo(p.id),
                         ...(def.autoAsks ? { autoAsks: true } : {}),
                     },
                 });
@@ -3576,6 +3578,19 @@ export class Engine {
                 return await this.addKey(optStr(p.provider), str(p.key, "key"));
             case "providers.connectCli":
                 return await this.connectCli(str(p.provider, "provider"));
+            case "providers.setEnv": {
+                const id = str(p.provider, "provider");
+                if (getProvider(id)?.auth !== "cli") throw new RpcError(`${id} isn't used through a CLI`, "invalid");
+                try {
+                    await saveAgentEnv(id, p.vars);
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                // A running CLI keeps what it started with; its next turn starts a new one (its launch fingerprint changed).
+                forgetClient(id);
+                void this.refreshListings(true);
+                return null;
+            }
             case "offers.set": {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
                 if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
@@ -3707,7 +3722,7 @@ export class Engine {
                     // Keep account folders registered and protected until explicitly removed.
                     if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
-                    removeAgentConfig(id);
+                    await turnOffAgent(id);
                     forgetClient(id);
                     await this.afterKeyChange(id);
                     return null;

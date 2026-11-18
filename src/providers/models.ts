@@ -23,6 +23,7 @@ import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
 import { dirname } from "path";
 import { account, defaultAccount } from "./accounts";
+import { agentEnvFingerprint, loadAgentSecrets } from "./agent-env";
 
 export function createClient(def: ProviderDef, key: string | undefined): ProviderClient {
     switch (def.kind) {
@@ -53,11 +54,18 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
         const cfg = readAgentConfig(def.id);
         // An agent without accounts (ACP) has only its default sign-in.
         const selected = cfg && agentCli(def.id)?.account ? account(def.id, defaultAccount(def.id)) : undefined;
-        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}|${selected?.id ?? "default"}|${selected?.folder ?? ""}` } : undefined;
+        // Its variables by a hash: this is stored with its models.
+        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}|${selected?.id ?? "default"}|${selected?.folder ?? ""}${envPart(def.id)}` } : undefined;
     }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;
     return { fp: fingerprint(key?.value) + "|" + (def.kind === "openai" ? providerConfiguration(def) : def.baseUrl), key: key?.value };
+}
+
+/** A CLI's variables in its fingerprint, by a hash; nothing when it has none, so a listing cached before them still counts. */
+function envPart(provider: string): string {
+    const fp = agentEnvFingerprint(provider);
+    return fp ? `|env:${fp}` : "";
 }
 
 function providerConfiguration(def: ProviderDef): string {
@@ -69,6 +77,8 @@ export async function clientFor(providerId: string): Promise<ProviderClient> {
     const def = getProvider(providerId);
     if (!def) throw new ProviderError(`Unknown provider "${providerId}". Run /providers to see the list.`);
     const cred = await credentialFingerprint(def);
+    // A secret variable saved by another Cavvy since this one read them.
+    if (cred && def.auth === "cli") await loadAgentSecrets(def.id);
     if (!cred) throw new ProviderError(def.auth === "gcloud" ? `${def.name} isn't set up. Run /login vertex.` : def.auth === "cli" ? `${def.name} isn't turned on. Run /login ${def.id}.` : `No API key for ${def.name}. Run /login to add one.`, 401);
     const hit = clients.get(providerId);
     if (hit && hit.fp === cred.fp) return hit.client;

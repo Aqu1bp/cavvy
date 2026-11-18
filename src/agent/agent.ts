@@ -68,6 +68,7 @@ import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers
 import { attachedAsText, forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
+import { loadAgentSecrets } from "../providers/agent-env";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
@@ -2642,6 +2643,8 @@ export class Agent {
             declined = true;
             stopper.abort();
         };
+        // A secret variable another Cavvy saved since this one read them (a CLI is started synchronously).
+        await loadAgentSecrets(this.model.provider);
         const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), session, sink);
         this.runningIn = base.cwd;
         let stopRounds = 0;
@@ -2901,6 +2904,7 @@ export class Agent {
             drainQueued: () => [],
         };
         this.backendsUsed.add(backend);
+        await loadAgentSecrets(this.model.provider);
         const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
