@@ -192,4 +192,6 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
     browserDevTools: (key: string, pane?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send("browser_devtools", key, pane),
     browserPainted: (key: string, size: { width: number; height: number }): Promise<boolean> => ipcRenderer.invoke("browser_painted", key, size),
+    /** Where the person was in the tab's page, kept as its find bar opens and gone back to as it closes. */
+    browserPageFocus: (key: string, what: "keep" | "restore") => ipcRenderer.send("browser_page_focus", key, what),
 });
