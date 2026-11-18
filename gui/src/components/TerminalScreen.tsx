@@ -226,10 +226,12 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     // -----------------------------------------------------------------------
     // Links and the context menu
 
+    /** Its shell runs on another machine (that machine's terminal panel): its paths aren't files here, so they aren't links. */
+    const elsewhere = link !== rpc;
     /** The session this terminal's folder is, when it's the one in view here (paths are then its: its other folders too). */
     const session = () => {
         const id = app.activeId;
-        return id && !awayMachine(id) && handleFor(id)?.view.state.cwd === p.tab.cwd ? id : undefined;
+        return !elsewhere && id && awayMachine(id) === undefined && handleFor(id)?.view.state.cwd === p.tab.cwd ? id : undefined;
     };
     const scope = () => (session() ? { sessionId: session() } : { cwd: p.tab.cwd });
     /** A server on this machine (localhost) in the session's Browser pane, where there is one; anything else in the system's browser. */
@@ -289,7 +291,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         term.open(container);
         // Asked for by xterm only for the line under the pointer, as it moves there: nothing per chunk of output.
         term.registerLinkProvider(linkProvider(term, {
-            exists: (paths) => rpc.call("fs.exists", { ...scope(), paths }),
+            exists: (paths) => (elsewhere ? Promise.resolve(paths.map(() => null)) : rpc.call("fs.exists", { ...scope(), paths })),
             openUrl: (url) => void openUrl(url),
             openFile: (path, line, col) => void openInEditor(path, line, { col, ...scope() }),
             hint: (l, on) => {
