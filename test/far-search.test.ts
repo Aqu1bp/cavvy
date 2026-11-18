@@ -42,3 +42,32 @@ test("a server is given its own search's time and the way back: a slow but worki
     expect(FAR_SEARCH_MS).toBeGreaterThan(2_500);
     expect(there[0]!.hits.map((h) => [h.id, h.machine])).toEqual([["late", "box"]]);
 });
+
+test("a slow server doesn't hold what this machine found: it's answered at once as part of it, and the next asking brings the server's", async () => {
+    const { isolate } = await import("./helpers/isolate");
+    const iso = isolate();
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({});
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client as never);
+    let asked = 0;
+    const hit = { id: "s1", title: "t", cwd: "/srv/app", projectName: "app", snippet: "needle here", seg: 0, index: 0, at: 5, role: "user", archived: false };
+    const slow = { ask: async () => (asked++, await Bun.sleep(900), { hits: [hit], partial: false }) };
+    (engine as any).serverLinks = { connectedServers: () => new Map([["box", slow]]) };
+    try {
+        const started = Date.now();
+        const first = (await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20 })) as { hits: unknown[]; partial: boolean };
+        // This machine's own (none here) without the server's 900 ms, and said to be part of the answer.
+        expect([first.hits, first.partial, Date.now() - started < 800]).toEqual([[], true, true]);
+        const second = (await engine.handle(client as never, "sessions.search", { query: "needle", limit: 20 })) as { hits: { id: string; machine?: string }[]; partial: boolean };
+        expect([second.hits.map((h) => [h.machine, h.id]), second.partial, asked]).toEqual([[["box", "s1"]], false, 1]);
+        // A quick server is in the first answer.
+        (engine as any).serverLinks = { connectedServers: () => new Map([["box", { ask: async () => ({ hits: [hit], partial: false }) }]]) };
+        const quick = (await engine.handle(client as never, "sessions.search", { query: "needle two", limit: 20 })) as { hits: unknown[]; partial: boolean };
+        expect([quick.hits.length, quick.partial]).toEqual([1, false]);
+    } finally {
+        (engine as any).serverLinks = undefined;
+        await engine.stop();
+        iso.cleanup();
+    }
+});
