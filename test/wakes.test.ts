@@ -310,4 +310,26 @@ describe("reopening a session", () => {
         const turns = replay({ segments: [{ messages }], current: messages, ui: new UiLog(`${dir}/b.jsonl`, "b"), meta: (c) => ({ title: c.name }), newId: () => `t${++n}` });
         expect(turns[1]!.prompt).toEqual({ text: "Background command finished: Run the suite", wake: true, background: true });
     });
+
+    test("one from a log that doesn't mark them is told by its text: the label alone, not wrapped events", () => {
+        const pr = { label: "PR #4: checks failed", source: "pull-request", text: "The lint check failed.", at: 0 };
+        const messages = [
+            { role: "user", content: [{ type: "text", text: "run the suite" }], meta: { kind: "prompt" } },
+            { role: "assistant", provider: "test", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Running." }] },
+            { role: "user", content: [{ type: "text", text: "Background sub-agent failed: Map auth" }], meta: { kind: "wake", display: "Background sub-agent failed: Map auth" } },
+            { role: "user", content: [{ type: "text", text: formatWakes([pr]) }], meta: { kind: "wake", display: wakeDisplay([pr]) } },
+            { role: "assistant", provider: "test", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Fixing." }] },
+            { role: "user", content: [{ type: "text", text: "Try the other branch" }], meta: { kind: "wake", display: "Try the other branch", from: { id: "s2", title: "Other" } } },
+        ] as Message[];
+        const dir = tempDir("cavvy-wakes-ui-");
+        dirs.push(dir);
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui: new UiLog(`${dir}/c.jsonl`, "c"), meta: (c) => ({ title: c.name }), newId: () => `t${++n}` });
+        expect(turns.map((t) => t.prompt)).toEqual([
+            { text: "run the suite", index: 0 },
+            { text: "Background sub-agent failed: Map auth", wake: true, background: true },
+            { text: "PR #4: checks failed", wake: true },
+            { text: "Try the other branch", wake: true, from: { id: "s2", title: "Other" } },
+        ]);
+    });
 });

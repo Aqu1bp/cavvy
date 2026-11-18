@@ -240,14 +240,26 @@ test("a session whose store is of the version before opens with all its turns", 
     await close(t.id);
     const index = storeOf(t.file, t.id);
     for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
-    // As the version before wrote it, its logs as they are (it would be read, were it of this version), and no turns.
+    // As version 3 wrote it, its logs as they are (it would be read, were it of this version), and no turns.
     const lines = readFileSync(index, "utf-8").trimEnd().split("\n");
     const meta = JSON.parse(lines.at(-1)!);
     writeFileSync(index, JSON.stringify({ v: 3, logs: meta.logs, ids: meta.ids, turns: [], agents: [], ui: meta.ui }));
     expect(unset(await everything(t.id))).toEqual(built);
     await close(t.id);
     for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
-    expect(JSON.parse(readFileSync(index, "utf-8").trimEnd().split("\n").at(-1)!).v).toBe(4);
+    expect(JSON.parse(readFileSync(index, "utf-8").trimEnd().split("\n").at(-1)!).v).toBe(5);
+    // As version 4 wrote it (lines, as now): its turns are built again too, not read as they were stored.
+    // What it stored is made wrong (each turn's place kept), to tell turns read from it from turns built again.
+    const now = readFileSync(index, "utf-8").trimEnd().split("\n");
+    const turns = index.replace(/\.json$/, ".jsonl");
+    const stored = readFileSync(turns, "utf-8");
+    expect(stored).toContain('"status":"done"');
+    writeFileSync(turns, stored.replaceAll('"status":"done"', '"status":"gone"'));
+    writeFileSync(index, [...now.slice(0, -1), JSON.stringify({ ...JSON.parse(now.at(-1)!), v: 4 })].join("\n") + "\n");
+    expect(unset(await everything(t.id))).toEqual(built);
+    await close(t.id);
+    for (let i = 0; i < 200 && !existsSync(index); i++) await Bun.sleep(10);
+    expect(JSON.parse(readFileSync(index, "utf-8").trimEnd().split("\n").at(-1)!).v).toBe(5);
     expect(unset(await everything(t.id))).toEqual(built);
     await close(t.id);
 }, 60_000);

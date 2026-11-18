@@ -20,8 +20,11 @@ import type { UiLight } from "./history";
 import type { AgentRun, Turn } from "./protocol";
 import { linesFromEnd } from "../util/lines";
 
-/** The store's format: an index of another is not read. */
-const VERSION = 4;
+/**
+ * The store's format: an index of another is not read. Also raised when turns are built differently from the same logs
+ * (5: a turn its CLI started is marked from logs that don't mark it), so stored ones are built again.
+ */
+const VERSION = 5;
 /** Old versions of turns the store may hold beyond twice what's current, before it's rewritten without them. */
 const COMPACT_SLACK = 8 * 1024 * 1024;
 /** How much of a log's end is kept, to tell later that it's the same log, unchanged. */
