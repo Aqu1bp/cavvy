@@ -34,10 +34,14 @@ test("a server gets this machine's skills and commands, not a file that holds a 
     put(join(iso.home, "skills", "review", "SKILL.md"), "---\nname: review\n---\nReview it.");
     put(join(claude, "skills", "ship", "SKILL.md"), "---\nname: ship\n---\nShip it.");
     put(join(iso.home, "commands", "fix.md"), "Fix the bug.");
+    // Claude Code's own, from the account it's signed in to: it keeps those level itself on each machine. A skill
+    // of the user's that happens to hold a folder called that is theirs.
+    put(join(claude, "skills", "synced", "org_user", "pdf", "SKILL.md"), "From the account.");
+    put(join(claude, "skills", "ship", "synced", "notes.md"), "Mine.");
     put(join(iso.home, "skills", "deploy", "SKILL.md"), "Use the key AKIAIOSFODNN7EXAMPLE to deploy.");
     put(join(iso.home, "skills", "deploy", ".env"), "X=1");
     const mine = localSyncFiles();
-    expect([...mine.keys()].sort()).toEqual([".cavvy/commands/fix.md", ".cavvy/skills/review/SKILL.md", ".claude/skills/ship/SKILL.md"]);
+    expect([...mine.keys()].sort()).toEqual([".cavvy/commands/fix.md", ".cavvy/skills/review/SKILL.md", ".claude/skills/ship/SKILL.md", ".claude/skills/ship/synced/notes.md"]);
 
     await syncTo(ask);
     expect(readFileSync(join(server, ".cavvy/skills/review/SKILL.md"), "utf-8")).toContain("Review it.");

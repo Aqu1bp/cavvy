@@ -13,7 +13,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
+import { CLI_SYNCED, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
 
 /** Where each kind is kept, here and (as a path under the home) on a server. */
 function syncedRoots(): { from: string; to: string }[] {
@@ -55,9 +55,9 @@ export function localSyncFiles(): Map<string, SyncFile> {
             return;
         }
         for (const name of names) {
-            if (SKIP_DIR.has(name) || out.size >= MAX_FILES) continue;
-            const path = join(from, name);
             const dest = `${to}/${name}`;
+            if (SKIP_DIR.has(name) || dest === CLI_SYNCED || out.size >= MAX_FILES) continue;
+            const path = join(from, name);
             try {
                 const l = lstatSync(path);
                 // A link is followed only at the top (a skill kept elsewhere), as the copy does.
