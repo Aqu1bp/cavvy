@@ -201,6 +201,16 @@ test("a call from a session there is asked about there, under that session's mod
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
+test("a session there in Bypass is asked about a call that runs here when this machine's own default asks (Bypass is the server's)", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    // This machine's default is Manual: the call is asked about, in the session's own chat there.
+    expect((await answer(remote, id, "yes")).kind).toBe("permission");
+    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+    expect(told(id)!.asks).toEqual([]);
+});
+
 test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {
@@ -357,8 +367,8 @@ test("a call this machine can't take now is answered, not left waiting: over fou
                 ws.send(JSON.stringify({ id: m.id, result: [] }));
                 // Once, on the list of those in play (the archived are asked for after it).
                 if (m.params?.archived) return;
-                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, session: { id: `s${i}`, title: "t" } } }));
-                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, session: { id: "s9", title: "t" } } }));
+                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, mode: "default", session: { id: `s${i}`, title: "t" } } }));
+                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, mode: "default", session: { id: "s9", title: "t" } } }));
                 ws.send(JSON.stringify({ event: { type: "offers.call", callId: "odd", tool: 7, input: {}, session: { id: "../x" } } }));
             },
         },
@@ -376,6 +386,42 @@ test("a call this machine can't take now is answered, not left waiting: over fou
             ["long", true, "That call's input is too"],
             ["odd", true, "That call isn't one your"],
         ]);
+    } finally {
+        watch.stop();
+        void srv.stop(true);
+    }
+});
+
+test("a call decided there under another mode than this machine's now is turned away, and the server told the new one", async () => {
+    const { MachineWatch } = await import("../src/servers/watch");
+    const results: { callId: string; isError?: boolean }[] = [];
+    const told: unknown[] = [];
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "offers.result") return void results.push(m.params);
+                if (m.method === "offers.set") return void told.push(m.params.mode);
+                if (m.method !== "sessions.list") return;
+                ws.send(JSON.stringify({ id: m.id, result: [] }));
+                if (m.params?.archived) return;
+                // On its way while the mode here went from Bypass to Manual: then one decided under Manual.
+                // And one from a server too old to say.
+                for (const [callId, mode] of [["old", "bypassPermissions"], ["new", "default"], ["unsaid", undefined]]) ws.send(JSON.stringify({ event: { type: "offers.call", callId, tool: "SimulatorControl", input: { action: "list" }, mode, session: { id: "s", title: "t" } } }));
+            },
+        },
+    });
+    const started: string[] = [];
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => ["simulator"], lendMode: () => "default", lend: () => (started.push("ran"), Promise.resolve({ text: "ok" })) });
+    watch.start();
+    try {
+        await until("all answered", () => results.length === 3);
+        expect(results.map((r) => [r.callId, !!r.isError])).toEqual([["old", true], ["unsaid", true], ["new", false]]);
+        expect(started).toEqual(["ran"]);
+        // Already told this mode when the connection opened: not told again.
+        expect(told).toEqual(["default"]);
     } finally {
         watch.stop();
         void srv.stop(true);

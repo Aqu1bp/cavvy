@@ -97,7 +97,7 @@ If the connection drops, the window keeps what it shows and says why beside `Rec
 
 Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
 
-Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
+Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins. Sessions there can also reach your Mac's sessions, and yours theirs ([other machines](other-sessions.md#on-your-other-machines)).
 
 ## Your Mac's Simulator, from a server
 
@@ -105,9 +105,10 @@ A server has no iOS simulators. Your Mac has, and while the desktop app is open 
 
 It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand.
 
-A call is asked about once, in that session, under its own permission mode, as any of its tools: in Bypass it runs, in Auto it goes through that session's Auto check, and in Manual starting or acting on a device asks first in its chat. Your Mac doesn't ask again. What it still keeps:
+A call is asked about once, in that session, under the stricter of its own permission mode and your Mac's default mode (Plan on your Mac counts as Manual): Bypass is for what runs on the server. With your Mac in Auto, a session there in Bypass or Auto goes through its Auto check; in Manual, starting or acting on a device asks first in its chat. Your Mac doesn't ask again. What it still keeps:
 
 - Its deny rules apply, and `open_url` won't open a `file:` address there for a server.
+- A server running an older Cavvy can't use it until it's updated (`cavvy servers update <name>`).
 - One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 
 A screenshot comes back to the server and is kept there, so the chat on the server shows it.

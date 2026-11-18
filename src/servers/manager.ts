@@ -126,11 +126,14 @@ export class ServerLinks {
             onNotice?: (name: string, n: MachineNotice) => void;
             /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
             lends?: () => string[];
+            lendMode?: () => string;
             lend?: (name: string, call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             /** This machine's skills and commands are kept on its servers (src/servers/sync.ts): the user's own machine. */
             sync?: boolean;
             /** How long a change to them settles before servers hear of it. */
             syncSettleMs?: number;
+            /** Answers what a session on server `name` asks about the user's other machines' sessions (src/server/far-peers.ts). */
+            peers?: (name: string, op: string, params: Record<string, unknown>) => Promise<unknown>;
             source?: BuildSource;
             renewAfterMs?: number;
             watchRetryMs?: number[];
@@ -159,8 +162,10 @@ export class ServerLinks {
                 session: (change) => this.o.onSession?.(name, change),
                 notice: (n) => this.o.onNotice?.(name, n),
                 lends: this.o.lends,
+                lendMode: this.o.lendMode,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
                 sync: this.o.sync ? syncTo : undefined,
+                peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
             });
@@ -599,6 +604,11 @@ export class ServerLinks {
         saveServer(entry);
         this.removed.delete(name);
         if (this.watching) this.watchAll();
+    }
+
+    /** The servers connected now, to ask about their sessions (src/server/far-peers.ts), by name. */
+    connectedServers(): Map<string, MachineWatch> {
+        return new Map([...this.watches].filter(([, w]) => w.overview().state === "connected"));
     }
 
     /** What this machine lends changed (its Simulator turned off or on): each server it's connected to is told now. */
