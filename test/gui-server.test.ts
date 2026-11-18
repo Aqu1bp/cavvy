@@ -2470,11 +2470,14 @@ describe("using a plan through an installed CLI", () => {
         expect(pr).toMatchObject({ configured: true, source: "your plan" });
 
         // Defaults that name it go back to unset as it's turned off, and the window is told which.
+        const was = await c.call<GuiSettings>("settings.get", {});
         await c.call("settings.update", { patch: { model: "claude-code:default", smallModel: "claude-code:sonnet" } });
         expect(await c.call("providers.removeKey", { provider: "claude-code" })).toEqual({ reset: ["model", "smallModel"] });
         expect((await claudeCode(c)).configured).toBe(false);
         const s = await c.call<GuiSettings>("settings.get", {});
         expect([s.model ?? null, s.smallModel ?? null]).toEqual([null, null]);
+        // As the other tests expect them.
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 
@@ -2482,6 +2485,7 @@ describe("using a plan through an installed CLI", () => {
         const c = await client();
         process.env.PATH = `${bin}:${PATH}`;
         await c.call("providers.connectCli", { provider: "claude-code" });
+        const was = await c.call<GuiSettings>("settings.get", {});
         const { id } = await c.call<{ id: string }>("providers.addInstance", { base: "claude-code", name: "My Router", models: ["router/model-a", "router/model-b"] });
         expect(id).toBe("claude-code@my-router");
         // A model taken off its list resets what was set to it; one still there stays.
@@ -2493,6 +2497,7 @@ describe("using a plan through an installed CLI", () => {
         const { clientFor } = await import("../src/providers/models");
         await expect(clientFor(id)).rejects.toThrow(/^Claude Code · My Router was removed\. Pick another model\.$/);
         await c.call("providers.removeKey", { provider: "claude-code" });
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 
