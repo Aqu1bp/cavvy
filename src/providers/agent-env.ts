@@ -17,9 +17,9 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { agentCli, baseCli } from "../backends/defs";
 import { registerSecret } from "../util/redact";
 import { ProviderError } from "./types";
-import { readAgentConfig, readProvidersFile, readProvidersFileForUpdate, removeAgentConfig, validEnvName, writeProvidersFile } from "./registry";
+import { providerLabel, readAgentConfig, readProvidersFile, readProvidersFileForUpdate, removeAgentConfig, writeProvidersFile } from "./registry";
+import { envNameProblem } from "../server/env-names";
 import { accountEnv } from "./accounts";
-import { providerLabel } from "./registry";
 
 /** A variable as Settings shows and saves it. A secret's value is never sent out: left out, the saved one stays. */
 export interface AgentEnvVar {
@@ -28,17 +28,11 @@ export interface AgentEnvVar {
     secret?: boolean;
 }
 
-/** Account folders are chosen with accounts; Cavvy's own markers are Cavvy's. */
-const RESERVED = new Set(["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "CAVVY"]);
 const MAX_VALUE = 32 * 1024;
 const MAX_VARS = 64;
 
-/** Why a name can't be set for a CLI, if it can't. */
-export function envNameProblem(name: string): string | undefined {
-    if (!validEnvName(name)) return `"${name}" isn't a variable name: use letters, digits and _, not starting with a digit.`;
-    if (RESERVED.has(name) || name.startsWith("CAVVY_")) return name.startsWith("CAVVY") ? `${name} is Cavvy's own.` : `${name} is set by the account: add an account instead.`;
-    return undefined;
-}
+// Which names can be set: shared with the GUI's editor, which says so as a name is typed.
+export { envNameProblem };
 
 /** Where a secret variable's value is stored (the credential store's name for it). */
 export function secretEnvId(provider: string, name: string): string {
