@@ -11,7 +11,7 @@ import { liveLine, workSegments } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
 import { app, loadAgent, machineFor, type SessionHandle } from "../state/app";
-import { refLabel } from "./ModelPicker";
+import { modelName, refLabel } from "./ModelPicker";
 import { newSession, stopAgent } from "../state/actions";
 import { paneDock, setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
@@ -123,10 +123,10 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     // Finished, the work folds away under its result; the result isn't in the fold too.
     const items = createMemo(() => groupBlocks(!live(a()) && lastText() && result() === lastText()!.text.trim() ? a().blocks.filter((b) => b.id !== lastText()!.id) : a().blocks));
     const showWork = () => live(a()) || unfolded();
-    const model = () => (a().model ? shortModelRef(a().model) : (st().model?.name ?? "Session model"));
+    const model = () => (a().model ? shortModelRef(a().model) : st().model ? modelName(st().model!) : "Session model");
     /** The model and whose it is, by name ("Sonnet · Claude Code · OpenRouter"), never its ref. */
     const modelTitle = () => {
-        const l = a().model ? refLabel(a().model!, app.models) : st().model ? { name: st().model!.name, provider: st().model!.providerName } : undefined;
+        const l = a().model ? refLabel(a().model!, app.models) : st().model ? { name: modelName(st().model!), provider: st().model!.providerName } : undefined;
         return l && (l.provider ? `${l.name} · ${l.provider}` : l.name);
     };
     const provider = () => agentProvider(a(), st().model?.provider, p.handle.view.agents);
