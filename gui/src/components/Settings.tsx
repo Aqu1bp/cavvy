@@ -24,7 +24,7 @@ import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
-import { EffortSlider, refLabel } from "./ModelPicker";
+import { EffortSlider, modelName, refLabel } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
@@ -156,7 +156,8 @@ function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: 
                 <For each={groups()}>
                     {(g) => (
                         <optgroup label={g.providerName}>
-                            <For each={g.models}>{(m) => <option value={m.ref}>{m.name}</option>}</For>
+                            {/* Named as the model picker names it: "Opus 5.5", not "Opus 5.5 (claude-opus-5-5)". */}
+                            <For each={g.models}>{(m) => <option value={m.ref}>{modelName(m)}</option>}</For>
                         </optgroup>
                     )}
                 </For>

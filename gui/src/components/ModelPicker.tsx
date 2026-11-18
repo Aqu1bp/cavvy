@@ -127,7 +127,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const [sel, setSel] = createSignal(0);
     const [filter, setFilter] = createSignal<string>(FAVORITES);
     /** The provider filters' fades: "more-l", "more-r", where more pills are scrolled out of sight. */
-    const [edges, setEdges] = createSignal("");
+    /** How much taller the tabs are than one row, when they wrap (px): the panel grows by it, so the list keeps its rows. */
+    const [tabsMore, setTabsMore] = createSignal(0);
     /** The heading's list of accounts is open. */
     const [acctOpen, setAcctOpen] = createSignal(false);
     // The saved model, when nothing is connected, is no model: the chip doesn't name what can't run.
@@ -277,9 +278,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     };
 
     const measureFilters = () => {
-        const f = filtersEl;
-        if (!f) return;
-        setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
+        const tabs = filtersEl?.querySelectorAll<HTMLElement>('[role="tab"]');
+        if (tabs?.length) setTabsMore(Math.max(0, tabs[tabs.length - 1]!.offsetTop - tabs[0]!.offsetTop));
     };
     /** Opens or closes the heading's list of accounts; from the keyboard, focus goes into it (to the session's one) or back to its button. */
     const openAccounts = (open: boolean, focus: boolean) => {
@@ -288,12 +288,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const to = open ? (acctEl?.querySelector(".mp-acct-it.on") ?? acctEl?.querySelector(".mp-acct-it")) : acctEl?.querySelector(".mp-acct-btn");
         (to as HTMLElement | null | undefined)?.focus();
     };
-    /** The chosen filter, scrolled into the row's view. */
-    const revealFilter = () =>
-        requestAnimationFrame(() => {
-            filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-            measureFilters();
-        });
 
     createEffect(
         on(
@@ -312,7 +306,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 requestAnimationFrame(() => {
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
-                    filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
                     measureFilters();
                 });
             },
@@ -324,8 +317,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         setQ("");
         setFilter(provider);
         setSel(0);
-        revealFilter();
     };
+    // The tabs wrap to another row when there are more than one row holds: measured again when they change.
+    createEffect(on(() => (p.open && view() === "models" ? groups().map((g) => g.providerName).join("\0") : undefined), (names) => names !== undefined && requestAnimationFrame(measureFilters), { defer: true }));
     const filterIds = () => [FAVORITES, ...groups().map((g) => g.provider)];
     // Another list's heading starts with its accounts closed.
     createEffect(on(acctProvider, () => setAcctOpen(false), { defer: true }));
@@ -594,7 +588,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={view() === "effort" ? 288 : 340}
+                // One width for both views: at 288 the effort's heading cut a name like "Default (recommended)" short.
+                width={340}
                 maxHeight={460}
                 minHeight={view() === "effort" ? 0 : 200}
                 class={`mp ${view() === "effort" ? "mp-effort" : ""}`}
@@ -625,7 +620,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 </Show>
                 <Show when={view() === "models"}>
                 {/* A click anywhere else in the picker closes the accounts list. */}
-                <div class="mp-wrap" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
+                <div class="mp-wrap" style={{ "--mp-fit": fit(), "--mp-more": `${tabsMore()}px` }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         {/* Back to the effort, where the picker opened on it. */}
                         <Show when={hasEffortView()} fallback={<Search size={14} />}>
@@ -643,21 +638,10 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <Settings2 size={13} />
                         </button>
                     </div>
-                    {/* Whose models are listed: the favourites or one provider's, as plain words (a wheel scrolls them sideways).
-                        At the row's end, the listed provider's account, where it's a subscription with accounts. */}
+                    {/* Whose models are listed: the favourites or one provider's, as plain words, each whole: more than a row
+                        holds wrap to another. At the row's end, the listed provider's account, where it's a subscription with accounts. */}
                     <div class="mp-bar">
-                        <div
-                            class={`mp-filters ${edges()}`}
-                            ref={filtersEl}
-                            role="tablist"
-                            aria-label="Providers"
-                            onScroll={measureFilters}
-                            onWheel={(e) => {
-                                if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-                                e.currentTarget.scrollLeft += e.deltaY;
-                                e.preventDefault();
-                            }}
-                        >
+                        <div class="mp-filters" ref={filtersEl} role="tablist" aria-label="Providers">
                             <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
                                 <Star size={13} />
                                 Favorites
