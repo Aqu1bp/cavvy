@@ -1845,7 +1845,8 @@ describe("sessions", () => {
         const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
         for (const n of [1, 2]) {
             await c.call("session.send", { id, text: "justrun: echo made > shell.txt" });
-            if (n === 1) await c.answer(id, { kind: "permission", choice: "yes" });
+            // Allowed once: the same command asks again the second time.
+            await c.answer(id, { kind: "permission", choice: "yes" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === n, 15_000);
         }
         const targets = await c.call("session.rewindTargets", { id });

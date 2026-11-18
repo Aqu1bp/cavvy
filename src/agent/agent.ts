@@ -3316,9 +3316,11 @@ export class Agent {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
             if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
+        // The CLI's own mode decided this needs the user. Not for a read-only agent: Cavvy has it ask (its own rule).
+        const ownMode = req.ownMode === true && !this.o.readOnly;
         // Approved without asking: by an allow rule, an action the user allowed for the session, or an edit Cavvy's mode
-        // approves (accept edits: inside the workspace).
-        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
+        // approves (accept edits: inside the workspace), unless the CLI's own mode decided it needs the user.
+        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || (tool.category === "edit" && !ownMode));
         const memory = { memoryDir: this.o.memoryDir };
         let decision = this.o.checker.check(tool, input, mode, cwd, memory);
         let ruled = approves(decision);
@@ -3330,11 +3332,13 @@ export class Agent {
         }
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
-        if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
+        const saysNothing = (req.asksAlways ?? this.o.readOnly) && !ownMode;
+        if (command && saysNothing && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
         // Likewise a read, search or listing (or a to-do list) Cavvy would let its own models do without asking.
-        if (req.asksAlways && decision.behavior === "allow" && (tool.category === "read" || tool.category === "meta" || tool.name === "WebSearch")) ruled = true;
+        if (req.asksAlways && !ownMode && decision.behavior === "allow" && (tool.category === "read" || tool.category === "meta" || tool.name === "WebSearch")) ruled = true;
         if (req.widens) {
-            // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
+            // More access for the backend's sandbox: never in plan mode, never past a deny rule or into Cavvy's credential
+            // store, and asked about in every mode but bypass (which gives the CLI everything anyway).
             if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
             const deny = this.o.settings().permissions?.deny ?? [];
             const access: ["read" | "write", string[]][] = [
@@ -3358,8 +3362,11 @@ export class Agent {
         } catch {
             // keep the backend's title
         }
-        // Codex was told to ask only so PreToolUse hooks would see the call (bypass mode): the mode decides, as it would have.
-        if (req.hooksOnly && decision.behavior === "allow") ruled = true;
+        // Bypass: whatever an agent CLI (or its sub-agent) still asks about runs, as in the CLI's own bypass mode, where
+        // it asks about nothing. Deny rules and Cavvy's credential store refused it above (extra sandbox access too).
+        // What bypass itself still asks about (a catastrophic command: rm -rf ~, mkfs) reaches the user, as for Cavvy's
+        // own tools. Hooks still have their say. (Codex and Grok told to ask only so PreToolUse hooks see the call: hooksOnly.)
+        if ((mode === "bypassPermissions" || req.hooksOnly) && decision.behavior === "allow") ruled = true;
         // A PreToolUse hook that asks wants the user, whatever the rules say.
         if (req.hookDecision === "ask") ruled = false;
         if (ruled) return { allow: true };

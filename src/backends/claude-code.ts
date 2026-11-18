@@ -192,14 +192,13 @@ export const CLAUDE_SCHEDULE_TOOLS = ["CronCreate", "CronDelete", "CronList", "S
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
 /**
- * Claude Code's modes for Cavvy's. Not acceptEdits for acceptEdits:
- * Claude Code's own also runs file commands (rm, mv, sed) without asking,
- * where Cavvy's still asks for shell commands. It runs in default mode
- * instead, and Cavvy approves its edits inside the workspace itself.
+ * Claude Code's modes for Cavvy's: each its own counterpart, which decides
+ * what it asks the user about (its acceptEdits also runs file commands such
+ * as rm, mv and sed without asking).
  */
 export const MODES: Record<PermissionMode, string> = {
     default: "default",
-    acceptEdits: "default",
+    acceptEdits: "acceptEdits",
     plan: "plan",
     auto: "auto",
     bypassPermissions: "bypassPermissions",
@@ -2082,7 +2081,8 @@ class ClaudeTurn {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
-        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
+        // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
@@ -2134,6 +2134,9 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     // Cavvy's deny and ask rules also cover what Claude Code would do without asking.
     // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
     const permissions = claudePermissions(t.rules, o.accountDenies !== false);
+    // Edits to Cavvy's own configuration ask in every mode but bypass, as for Cavvy's own tools: Claude Code's own
+    // modes (accept edits, auto) would otherwise make them without asking.
+    permissions.ask.push(...cavvyConfigAsks([t.rules.root, ...t.additionalDirectories]));
     // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Cavvy's schedule tools keep them instead.
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
@@ -2230,6 +2233,17 @@ export function claudePermissions(r: { deny: string[]; ask: string[]; root: stri
     const folders = (accounts ? [...accountProtectionFolders(), ...aliases.map((h) => join(h, "accounts"))] : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
     return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
+}
+
+/**
+ * Ask rules for edits to Cavvy's own configuration (a project's .cavvy/ and .mcp.json, at any depth, and the settings
+ * files in Cavvy's home): the model mustn't widen its own permissions unseen. Claude Code's edit tools only: in accept edits, its
+ * file commands (sed, mv) aren't covered.
+ */
+export function cavvyConfigAsks(roots: string[]): string[] {
+    const abs = (p: string) => `Edit(/${p})`;
+    const projects = [...new Set(roots)].flatMap((r) => [join(r, ".cavvy/**"), join(r, "**/.cavvy/**"), join(r, ".mcp.json"), join(r, "**/.mcp.json")]);
+    return [...projects, join(cavvyHome(), "*.json")].map(abs);
 }
 
 /** Claude Code's tool name and input as Cavvy's own tool sees them (for rules, titles, previews). */

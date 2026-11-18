@@ -217,11 +217,12 @@ hooks:
 });
 
 describe("helpers", () => {
-    test("the parent's bypass, auto and plan win over the agent's mode", () => {
-        expect(childMode("default", "acceptEdits")).toBe("acceptEdits");
+    test("the stricter of the parent's mode and the agent's own: an agent is never looser than its session", () => {
+        expect(childMode("default", "acceptEdits")).toBe("default");
         expect(childMode("acceptEdits", "default")).toBe("default");
-        expect(childMode("bypassPermissions", "default")).toBe("bypassPermissions");
-        expect(childMode("auto", "acceptEdits")).toBe("auto");
+        expect(childMode("bypassPermissions", "default")).toBe("default");
+        expect(childMode("bypassPermissions", "plan")).toBe("plan");
+        expect(childMode("auto", "acceptEdits")).toBe("acceptEdits");
         expect(childMode("plan", "bypassPermissions")).toBe("plan");
         expect(childMode("default", undefined)).toBe("default");
     });
@@ -372,15 +373,14 @@ describe("running", () => {
         expect(childRequests[0]!.tools.map((t) => t.name).sort()).toEqual(["Glob", "Grep", "Read"]);
     });
 
-    test("permissionMode: the agent's own, but never out of plan mode", async () => {
+    test("permissionMode: the agent's own only where stricter than the session's, and never out of plan mode", async () => {
         defineAgent("editor", "permissionMode: acceptEdits");
         childScript = (_r, n) => (n % 2 === 1 ? use(`w${n}`, "Write", { file_path: join(cwd, `out${n}.txt`), content: "hi" }) : say("wrote"));
         mainCalls(["t1", "Task", task("editor")]);
         const a = await makeAgent();
         await a.run("go");
-        // In default mode a Write asks; the agent's acceptEdits writes in the workspace without asking.
-        expect(a.asked).toHaveLength(0);
-        expect(existsSync(join(cwd, "out1.txt"))).toBe(true);
+        // In default mode a Write asks, the agent's acceptEdits notwithstanding: it can't be looser than the session.
+        expect(a.asked).toHaveLength(1);
 
         // The session plans: Task itself is refused for anything but explore, and the mode is plan for it anyway.
         mainCalls(["t2", "Task", task("editor")]);

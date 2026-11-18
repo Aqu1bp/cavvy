@@ -536,8 +536,8 @@ describe("Claude Code backend", () => {
         await a.run("plan it");
         expect(plan).toBe("1. Do the thing");
         expect(a.mode()).toBe("acceptEdits");
-        // Cavvy's accept-edits runs Claude Code in its default mode (Cavvy approves the edits).
-        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] });
+        // Cavvy's accept-edits is Claude Code's own.
+        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
     });
 
     test("ExitPlanMode: a plan taken to another session stops Claude Code's turn, still in plan mode", async () => {
@@ -2024,14 +2024,21 @@ describe("review findings (PR #1)", () => {
         expect(p.deny.some((r) => r.includes("credentials.json"))).toBe(true);
     });
 
-    test("3. accept edits: Claude Code's file commands still ask; edits in the workspace don't", async () => {
+    test("3. accept edits is Claude Code's own: its file commands and edits in the workspace run unasked; other commands ask", async () => {
         writeFileSync(join(cwd, "victim.txt"), "v\n");
         process.env.FAKE_SCENARIO = "rm";
-        const rm = await makeAgent({ provider: "claude-code", mode: "acceptEdits" });
+        const rm = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
         await rm.run("delete it");
-        expect(existsSync(join(cwd, "victim.txt"))).toBe(true);
-        expect(toolEnds(rm.events)[0]!.result.content).toMatch(/not granted/);
-        expect(claudeArgs()[claudeArgs().indexOf("--permission-mode") + 1]).toBe("default");
+        expect(existsSync(join(cwd, "victim.txt"))).toBe(false);
+        expect(rm.asked).toHaveLength(0);
+        expect(claudeArgs()[claudeArgs().indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+        rmSync(LOG, { force: true });
+        process.env.FAKE_SCENARIO = "bash";
+        process.env.FAKE_COMMAND = "npm test";
+        const bash = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
+        await bash.run("test it");
+        delete process.env.FAKE_COMMAND;
+        expect(bash.asked.map((r) => r.tool.name)).toEqual(["Bash"]);
         rmSync(LOG, { force: true });
         process.env.FAKE_SCENARIO = "write";
         const write = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
@@ -2047,6 +2054,23 @@ describe("review findings (PR #1)", () => {
         await a.run("go");
         expect(a.asked.map((r) => r.tool.name)).toEqual(["Write"]);
         expect(existsSync(join(cwd, ".claude", "settings.json"))).toBe(false);
+    });
+
+    test("3. Cavvy's own config: Claude Code is told to ask, so accept edits and auto ask about it", async () => {
+        process.env.FAKE_SCENARIO = "write-config";
+        process.env.FAKE_CONFIG_FILE = ".cavvy/settings.json";
+        try {
+            for (const mode of ["acceptEdits", "auto"] as const) {
+                rmSync(LOG, { force: true });
+                Bun.spawnSync(["mkdir", "-p", join(cwd, ".cavvy")]);
+                const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
+                await a.run("go");
+                expect([mode, a.asked.map((r) => r.tool.name)]).toEqual([mode, ["Write"]]);
+                expect(existsSync(join(cwd, ".cavvy", "settings.json"))).toBe(false);
+            }
+        } finally {
+            delete process.env.FAKE_CONFIG_FILE;
+        }
     });
 
     test("4. a Codex rename into a denied path is refused without asking", async () => {
@@ -4232,7 +4256,7 @@ describe("Cavvy's agents on Claude Code", () => {
         expect(starts()[0].argv).not.toContain("--agents");
     });
 
-    test("each agent's own permissionMode decides its asks, as when Cavvy runs it", async () => {
+    test("what a sub-agent asks about: the session's mode, or the agent's own where stricter; a card whenever Claude Code asks, but none in bypass", async () => {
         mkdirSync(paths.userAgents(), { recursive: true });
         writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
         writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
@@ -4245,13 +4269,14 @@ describe("Cavvy's agents on Claude Code", () => {
             await a.run("go");
             return { asked: a.asked.length, answer: answers()[0] };
         };
-        // An acceptEdits agent in a default session: its edit in the workspace goes through, as Cavvy's own run would.
-        expect(await run("writer", "default")).toEqual({ asked: 0, answer: "allow" });
-        // The reverse: a default agent in an acceptEdits session is asked.
+        // Claude Code decided in its own mode that the user should see it: the card, in every mode but bypass.
+        expect(await run("writer", "default")).toEqual({ asked: 1, answer: "deny" });
         expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
-        // Claude Code's own agents (and any it doesn't name) are under the session's mode.
         expect(await run("general-purpose", "default")).toEqual({ asked: 1, answer: "deny" });
-        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 0, answer: "allow" });
+        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
+        // Bypass: no card, whoever asks; an agent stricter than that (careful) still asks.
+        expect(await run("general-purpose", "bypassPermissions")).toEqual({ asked: 0, answer: "allow" });
+        expect(await run("careful", "bypassPermissions")).toEqual({ asked: 1, answer: "deny" });
         // Plan mode in the session wins over the agent's own.
         expect((await run("writer", "plan")).answer).toBe("deny");
     });
