@@ -7,8 +7,8 @@
 // and it hasn't changed since (the server keeps a record of what it was given: SYNCED_FILE). The same files stay
 // here as the copy leaves here: one named like a key, or with a key of a known format in it.
 
-import { createHash } from "crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
+import { createHash, randomUUID } from "crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
@@ -81,6 +81,24 @@ export function localSyncFiles(): Map<string, SyncFile> {
     return out;
 }
 
+/** Where a server's `path` (a synced one) is kept here. */
+function localPath(path: string): string | undefined {
+    const r = syncedRoots().find((r) => path.startsWith(`${r.to}/`));
+    return r && join(r.from, path.slice(r.to.length + 1));
+}
+
+/** Written in full under a name no one else uses, then put in place: never through what's at `dest` meanwhile. */
+function writeNew(dest: string, body: Buffer | string, mode: number) {
+    const tmp = `${dest}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, body, { mode, flag: "wx" });
+    try {
+        renameSync(tmp, dest);
+    } catch (e) {
+        rmSync(tmp, { force: true });
+        throw e;
+    }
+}
+
 /** The folders whose changes are kept level, as they're named here. */
 export function syncedFolders(): string[] {
     return syncedRoots().map((r) => r.from);
@@ -105,9 +123,7 @@ export function readSynced(): Record<string, string> {
 
 function writeSynced(record: Record<string, string>) {
     mkdirSync(dirname(SYNCED_FILE()), { recursive: true });
-    const tmp = `${SYNCED_FILE()}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
-    renameSync(tmp, SYNCED_FILE());
+    writeNew(SYNCED_FILE(), JSON.stringify(record), 0o600);
 }
 
 /** What's at `path` under `home` now, if it's a plain file reached through plain folders (no link below the synced folder). */
@@ -122,8 +138,9 @@ function current(home: string, path: string): { sha?: string; blocked: boolean }
             if (l.isSymbolicLink()) return { blocked: true };
             if (i === parts.length) return l.isFile() ? { sha: sha(readFileSync(at)), blocked: false } : { blocked: true };
             if (!l.isDirectory()) return { blocked: true };
-        } catch {
-            return { blocked: false };
+        } catch (e) {
+            // Not there: written. Anything else (no permission, an I/O error): left alone.
+            return { blocked: (e as NodeJS.ErrnoException).code !== "ENOENT" };
         }
     }
     return { blocked: false };
@@ -138,56 +155,62 @@ export function applySync(files: unknown, remove: unknown, home = homedir()): { 
     const record = readSynced();
     let written = 0;
     let removed = 0;
-    for (const f of Array.isArray(files) ? files : []) {
-        if (!f || typeof f !== "object" || !syncablePath(f.path) || typeof f.data !== "string") continue;
-        const body = Buffer.from(f.data, "base64");
-        if (body.length > MAX_FILE) continue;
-        const now = current(home, f.path);
-        if (now.blocked) continue;
-        const given = record[f.path];
-        // Its own (never given), or given and changed there since: left as it is.
-        if (now.sha !== undefined && now.sha !== given) continue;
-        const h = sha(body);
-        if (now.sha === h) {
-            record[f.path] = h;
-            continue;
-        }
-        const dest = join(home, f.path);
-        mkdirSync(dirname(dest), { recursive: true });
-        const tmp = `${dest}.cavvy-sync.tmp`;
-        writeFileSync(tmp, body, { mode: f.exec === true ? 0o755 : 0o644 });
-        renameSync(tmp, dest);
-        record[f.path] = h;
-        written++;
+    try {
+        take();
+    } finally {
+        // What was done before a failure is recorded, or the next sync takes it for the server's own.
+        writeSynced(record);
     }
-    for (const path of Array.isArray(remove) ? remove : []) {
-        if (!syncablePath(path) || !(path in record)) continue;
-        const now = current(home, path);
-        if (now.blocked) continue;
-        if (now.sha !== undefined && now.sha !== record[path]) {
-            // Changed there since: it's the server's now.
-            delete record[path];
-            continue;
-        }
-        if (now.sha !== undefined) {
-            rmSync(join(home, path), { force: true });
-            removed++;
-            // A skill's folder left empty goes with it, up to the synced folder.
-            let dir = dirname(join(home, path));
-            const stop = new Set([".cavvy/skills", ".claude/skills", ".cavvy/commands"].map((r) => join(home, r)));
-            while (!stop.has(dir) && dir.startsWith(home)) {
-                try {
-                    rmdirSync(dir);
-                } catch {
-                    break;
-                }
-                dir = dirname(dir);
-            }
-        }
-        delete record[path];
-    }
-    writeSynced(record);
     return { written, removed };
+
+    function take() {
+        for (const f of Array.isArray(files) ? files : []) {
+            if (!f || typeof f !== "object" || !syncablePath(f.path) || typeof f.data !== "string") continue;
+            const body = Buffer.from(f.data, "base64");
+            if (body.length > MAX_FILE) continue;
+            const now = current(home, f.path);
+            if (now.blocked) continue;
+            const h = sha(body);
+            // As this machine has it already (the one-time copy put it there): taken as given.
+            if (now.sha === h) {
+                record[f.path] = h;
+                continue;
+            }
+            // Its own (never given), or given and changed there since: left as it is.
+            if (now.sha !== undefined && now.sha !== record[f.path]) continue;
+            const dest = join(home, f.path);
+            mkdirSync(dirname(dest), { recursive: true });
+            writeNew(dest, body, f.exec === true ? 0o755 : 0o644);
+            record[f.path] = h;
+            written++;
+        }
+        for (const path of Array.isArray(remove) ? remove : []) {
+            if (!syncablePath(path) || !(path in record)) continue;
+            const now = current(home, path);
+            if (now.blocked) continue;
+            if (now.sha !== undefined && now.sha !== record[path]) {
+                // Changed there since: it's the server's now.
+                delete record[path];
+                continue;
+            }
+            if (now.sha !== undefined) {
+                rmSync(join(home, path), { force: true });
+                removed++;
+                // A skill's folder left empty goes with it, up to the synced folder.
+                let dir = dirname(join(home, path));
+                const stop = new Set([".cavvy/skills", ".claude/skills", ".cavvy/commands"].map((r) => join(home, r)));
+                while (!stop.has(dir) && dir.startsWith(home)) {
+                    try {
+                        rmdirSync(dir);
+                    } catch {
+                        break;
+                    }
+                    dir = dirname(dir);
+                }
+            }
+            delete record[path];
+        }
+    }
 }
 
 /** Under this much a message: a server takes 48 MB, and a few MB at a time keeps one call short. */
@@ -202,7 +225,8 @@ export async function syncTo(ask: (method: string, params: Record<string, unknow
     const theirs = await ask("sync.files", {});
     const given = theirs && typeof theirs === "object" ? (theirs as Record<string, unknown>) : {};
     const send = [...mine.values()].filter((f) => given[f.path] !== f.sha);
-    const remove = Object.keys(given).filter((p) => syncablePath(p) && !mine.has(p));
+    // Gone here, not just left out of this scan (too many or too big, unreadable a moment): gone there.
+    const remove = Object.keys(given).filter((p) => syncablePath(p) && !mine.has(p) && !existsSync(localPath(p) ?? ""));
     if (!send.length && !remove.length) return;
     let batch: SyncFile[] = [];
     let size = 0;

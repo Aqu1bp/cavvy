@@ -9,7 +9,7 @@
 
 import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
@@ -302,7 +302,7 @@ export class ServerLinks {
     private copyOffer(): { copy?: { what: string }; left?: string } {
         let plan;
         try {
-            plan = planCopy(this.userSettings());
+            plan = planCopy(this.userSettings(), { skills: !this.o.sync });
         } catch {
             return {};
         }
@@ -326,7 +326,7 @@ export class ServerLinks {
     /** The one-time copy of settings, memory, skills and commands. What the server took, in words ("" when it had them all). */
     async copy(name: string): Promise<{ took: string; left?: string }> {
         const entry = requireServer(name);
-        const plan = planCopy(this.userSettings());
+        const plan = planCopy(this.userSettings(), { skills: !this.o.sync });
         try {
             const took = describeCopy(countCopied(await sendCopy(entry, plan)));
             const left = describeLeft(plan.left);
@@ -617,34 +617,53 @@ export class ServerLinks {
         this.unwatchSynced();
     }
 
-    /** What watches this machine's skills and commands for changes, while servers are watched (sync). */
-    private syncWatchers: FSWatcher[] = [];
+    /** What watches each of this machine's skills and commands folders for changes, while servers are watched (sync). */
+    private syncWatchers = new Map<string, FSWatcher>();
     private syncTimer?: ReturnType<typeof setTimeout>;
 
+    private syncChanged() {
+        clearTimeout(this.syncTimer);
+        this.syncTimer = setTimeout(() => {
+            for (const w of this.watches.values()) w.resync();
+        }, this.o.syncSettleMs ?? 1500);
+        (this.syncTimer as { unref?: () => void }).unref?.();
+    }
+
     private watchSynced() {
-        if (!this.o.sync || this.syncWatchers.length || this.stopped) return;
-        const changed = () => {
-            clearTimeout(this.syncTimer);
-            this.syncTimer = setTimeout(() => {
-                for (const w of this.watches.values()) w.resync();
-            }, this.o.syncSettleMs ?? 1500);
-            (this.syncTimer as { unref?: () => void }).unref?.();
-        };
-        for (const dir of syncedFolders()) {
-            if (!existsSync(dir)) continue;
-            try {
-                const w = watch(dir, { recursive: true, persistent: false }, changed);
-                w.on("error", () => undefined);
-                this.syncWatchers.push(w);
-            } catch {
-                // Can't be watched here: it's brought level each time a server connects.
-            }
+        if (!this.o.sync || this.stopped) return;
+        for (const dir of syncedFolders()) this.watchSyncedFolder(dir);
+    }
+
+    /** `dir` and what's in it; not there yet, the folder it would be made in, till it is. */
+    private watchSyncedFolder(dir: string) {
+        if (this.syncWatchers.has(dir) || this.stopped) return;
+        const there = existsSync(dir);
+        if (!there && !existsSync(dirname(dir))) return;
+        try {
+            const w = watch(there ? dir : dirname(dir), { recursive: there, persistent: false }, (_e, name) => {
+                if (there) return this.syncChanged();
+                if (String(name) !== basename(dir) || !existsSync(dir)) return;
+                this.unwatchSyncedFolder(dir, w);
+                this.watchSyncedFolder(dir);
+                this.syncChanged();
+            });
+            // Gone (the folder removed): watched again the next time servers are.
+            w.on("error", () => this.unwatchSyncedFolder(dir, w));
+            this.syncWatchers.set(dir, w);
+        } catch {
+            // Can't be watched here: it's brought level each time a server connects.
         }
+    }
+
+    private unwatchSyncedFolder(dir: string, w: FSWatcher) {
+        w.close();
+        if (this.syncWatchers.get(dir) === w) this.syncWatchers.delete(dir);
     }
 
     private unwatchSynced() {
         clearTimeout(this.syncTimer);
-        for (const w of this.syncWatchers.splice(0)) w.close();
+        for (const w of this.syncWatchers.values()) w.close();
+        this.syncWatchers.clear();
     }
 
     /** The engine is stopping: every connection is closed and signed out. */

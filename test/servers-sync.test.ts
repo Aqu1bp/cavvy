@@ -88,3 +88,29 @@ test("a server writes nothing through a link below the synced folder, nor outsid
     expect(existsSync(join(elsewhere, "SKILL.md"))).toBe(false);
     expect(existsSync(join(server, ".bashrc"))).toBe(false);
 });
+
+test("what the one-time copy left there, as this machine has it, is kept level after; the app's copy leaves skills to this", async () => {
+    put(join(iso.home, "skills", "copied", "SKILL.md"), "Copied once.");
+    put(join(server, ".cavvy/skills/copied/SKILL.md"), "Copied once.");
+    await syncTo(ask);
+    expect(readSynced()[".cavvy/skills/copied/SKILL.md"]).toBeDefined();
+    put(join(iso.home, "skills", "copied", "SKILL.md"), "Changed here.");
+    await syncTo(ask);
+    expect(readFileSync(join(server, ".cavvy/skills/copied/SKILL.md"), "utf-8")).toBe("Changed here.");
+    const { planCopy } = await import("../src/servers/copy");
+    const plan = planCopy(undefined, { skills: false });
+    try {
+        expect([plan.counts.skills, plan.counts.commands]).toEqual([0, 0]);
+    } finally {
+        plan.cleanup();
+    }
+});
+
+test("a file still here but left out of a scan isn't removed there", async () => {
+    put(join(iso.home, "skills", "kept", "SKILL.md"), "Kept.");
+    await syncTo(ask);
+    // Now holds a key: not sent, but not gone here either.
+    put(join(iso.home, "skills", "kept", "SKILL.md"), "Kept. AKIAIOSFODNN7EXAMPLE");
+    await syncTo(ask);
+    expect(readFileSync(join(server, ".cavvy/skills/kept/SKILL.md"), "utf-8")).toBe("Kept.");
+});

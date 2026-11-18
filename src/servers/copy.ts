@@ -318,8 +318,11 @@ class Stage {
     }
 }
 
-/** What would be copied from this machine, staged. `settings`: this machine's own settings file, read. */
-export function planCopy(settings: Settings | undefined): CopyPlan {
+/**
+ * What would be copied from this machine, staged. `settings`: this machine's own settings file, read. `skills: false`:
+ * not skills and commands (the desktop app keeps them level on its servers: sync.ts).
+ */
+export function planCopy(settings: Settings | undefined, o: { skills?: boolean } = {}): CopyPlan {
     const dir = mkdtempSync(join(tmpdir(), "cavvy-copy-"));
     const stage = new Stage(dir);
     const claude = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
@@ -347,10 +350,12 @@ export function planCopy(settings: Settings | undefined): CopyPlan {
             return 0;
         }
     };
-    stage.tree(join(cavvyHome(), "skills"), ".cavvy/skills");
-    stage.tree(join(claude, "skills"), ".claude/skills");
-    counts.skills = skillsIn(join(dir, ".cavvy", "skills")) + skillsIn(join(dir, ".claude", "skills"));
-    counts.commands = stage.tree(paths.userCommands(), ".cavvy/commands");
+    if (o.skills !== false) {
+        stage.tree(join(cavvyHome(), "skills"), ".cavvy/skills");
+        stage.tree(join(claude, "skills"), ".claude/skills");
+        counts.skills = skillsIn(join(dir, ".cavvy", "skills")) + skillsIn(join(dir, ".claude", "skills"));
+        counts.commands = stage.tree(paths.userCommands(), ".cavvy/commands");
+    }
     return { stage: dir, counts, left, files: stage.files, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
