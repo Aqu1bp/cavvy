@@ -1,6 +1,6 @@
 import "../styles/cli-env.css";
 import { createMemo, createSignal, createUniqueId, Index, Show } from "solid-js";
-import { Lock, LockOpen, Plus, X } from "lucide-solid";
+import { ChevronRight, Lock, LockOpen, Plus, X } from "lucide-solid";
 import type { AgentEnvVar, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
@@ -264,11 +264,11 @@ export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInst
                     <textarea class="input mono" rows={2} spellcheck={false} placeholder="One model id a line, as the CLI takes it" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
                 </label>
                 <details class="account-advanced" open={Boolean(p.instance?.path || p.instance?.args?.length)}>
-                    <summary>Program and arguments</summary>
+                    <summary><ChevronRight size={14} class="chev" />Program and arguments</summary>
                     <label>
                         <span>Path</span>
                         {/* Left blank, it runs what its CLI runs: that program's path, or the one on PATH. */}
-                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ?? `The ${cli} on your PATH`} title={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
+                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ? `Same as ${cli}: ${p.provider.agentCli.path}` : `The ${cli} on your PATH`} title={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
                     </label>
                     <label>
                         <span>Arguments</span>

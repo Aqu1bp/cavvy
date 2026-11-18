@@ -45,7 +45,7 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
-        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
+        MoreHorizontal: () => null, Check: () => null, ChevronRight: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
         addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
@@ -160,8 +160,11 @@ test("not installed offers Install and no menu; installed but off offers to use 
     } finally { missing.dispose(); }
     let connects = 0;
     const [connecting, setConnecting] = solid.createSignal(false);
-    const off = fixture(undefined, "claude-code", { cli: { installed: true }, props: { get connecting() { return connecting(); }, onConnect: () => connects++ } });
+    const off = fixture([{ ...defaultAccount, signedIn: true, plan: "max" }], "claude-code", { cli: { installed: true }, props: { get connecting() { return connecting(); }, onConnect: () => connects++ } });
     try {
+        // Turned off, it shows no plan, though it's still signed in to one.
+        expect(off.nodes().some((n) => n.props.class === "tag")).toBe(false);
+        expect(text(off.root)).toContain("Not set up");
         const use = off.button("Use my Claude subscription");
         use.props.onClick();
         expect(connects).toBe(1);
@@ -248,7 +251,7 @@ test("Cancel and Escape clear the card and return focus to the provider's menu b
 });
 
 test("two accounts list as rows: identity, sign in again, make default, rename and confirmed removal", async () => {
-    const f = fixture([defaultAccount, personal]);
+    const f = fixture([defaultAccount, personal], "claude-code", { info: { configured: true } });
     try {
         await settle(); f.calls.length = 0;
         const rows = () => f.nodes().filter((n) => n.props.role === "listitem");
