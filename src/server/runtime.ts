@@ -75,7 +75,7 @@ import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
-import { gitChanges } from "./git-changes";
+import { gitChanges, gitLog } from "./git-changes";
 import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-worktrees";
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
@@ -99,6 +99,7 @@ import type {
     GitPublishRequest,
     GitPrInfo,
     GitScope,
+    GitLogEntry,
     EffortLevel,
     Interaction,
     InteractionResponse,
@@ -5164,7 +5165,7 @@ export class Runtime {
      * What git says changed in the session's folder, whoever changed it; or, with `worktree`, in another
      * worktree of its repository (only one `git worktree list` reports: never any other folder).
      */
-    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
+    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         const { worktree, pathToken, baseToken, ...rest } = req;
         let other: { real: string; gitDir: string } | undefined;
         if (worktree !== undefined) {
@@ -5180,8 +5181,18 @@ export class Runtime {
         if (pathToken !== undefined) rest.path = this.gitHandles.resolve("path", root, pathToken);
         if (baseToken !== undefined) rest.base = this.gitHandles.resolve("ref", root, baseToken);
         try {
-            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path, commit: rest.commit, ignoreWhitespace: rest.ignoreWhitespace, full: rest.full }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
             return this.gitHandles.shown(info, root);
+        } catch (e) {
+            throw redactedError(e);
+        }
+    }
+
+    /** HEAD's recent commits, in the session's folder or another worktree of its repository: when the review pane's commit list opens. */
+    async gitLog(worktree?: string): Promise<{ commits: GitLogEntry[]; more: boolean }> {
+        const w = worktree !== undefined ? await sessionWorktree(this.ws.cwd, worktree) : undefined;
+        try {
+            return w && !w.current ? await gitLog(w.real, { gitDir: w.gitDir }) : await gitLog(this.ws.cwd);
         } catch (e) {
             throw redactedError(e);
         }
