@@ -2081,8 +2081,11 @@ class ClaudeTurn {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        // Its sub-agent asks (agent_id, its task's id): by its task, as the sub-agent's card names it.
+        const call = typeof req.agent_id === "string" ? [...this.agentTasks].find(([, task]) => task === req.agent_id)?.[0] : undefined;
+        const asker = typeof req.agent_id === "string" ? ((call && this.agentLabels.get(call)) || agentType) : undefined;
         // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
-        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}) });
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

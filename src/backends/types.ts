@@ -86,6 +86,11 @@ export interface BackendPermission {
     /** The backend's sub-agent asking, by its type (a Cavvy agent Claude Code runs natively): its own mode applies. */
     agentType?: string;
     /**
+     * Which of the backend's own sub-agents asks, by its task ("Map auth"), where the backend says (Claude Code's
+     * agent_id): the prompt says so, as it does for Cavvy's. Unlike agentLabel, what a no does is the backend's.
+     */
+    asker?: string;
+    /**
      * Its input isn't all of the call (the backend cut some of it, as Grok's gate does a long one): a yes covers this
      * call only, never remembered, and "don't ask again" isn't offered.
      */
