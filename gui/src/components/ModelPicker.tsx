@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -228,8 +228,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The provider whose heading has its accounts: a CLI provider, in its own list.
     const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
-    // The limits known here are this computer's accounts': another machine's "Default" isn't this one's.
-    const limitOf = (provider: string, id: string) => (away() ? undefined : app.limits[planLimitKey(provider, id)]);
+    // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
+    const limitOf = (provider: string, id: string) => limitsFor(p.sessionId)[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
         const l = limitOf(provider, id);
         return nearLimit(meterOf(l, now()), l, now());
