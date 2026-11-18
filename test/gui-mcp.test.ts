@@ -272,7 +272,7 @@ test("a server session's MCP sign-in has this computer answer the page's call be
     const at = src.indexOf('rpc.call("session.mcpSignIn"');
     const body = src.slice(at, at + 1200);
     // The session's server, or the one the window is on; asked of this computer's Cavvy, and before the page is opened.
-    expect(body).toContain("const on = awayMachine(sid) || windowMachine;");
+    expect(body).toContain("const on = awayMachine(sid) ?? windowMachine;");
     expect(body).toContain('if (on) await (windowMachine ? home! : rpc).call("servers.mcpCallback", { name: on, url });');
     expect(body.indexOf("servers.mcpCallback")).toBeLessThan(body.indexOf("win.location.href = url"));
 });

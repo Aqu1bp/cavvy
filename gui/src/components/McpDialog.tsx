@@ -174,7 +174,8 @@ export function McpDialog() {
                 if (!/^https?:\/\//i.test(url)) throw new Error("The sign-in link isn't a web page.");
                 // A session on a server: its sign-in's page ends on this computer, where the browser is. This
                 // computer's Cavvy answers there and hands it on (the window's own, or the one a window on a server keeps beside it).
-                const on = awayMachine(sid) || windowMachine;
+                // (None for this computer's own session, in a window on a server too: its page ends where it listens.)
+                const on = awayMachine(sid) ?? windowMachine;
                 if (on) await (windowMachine ? home! : rpc).call("servers.mcpCallback", { name: on, url });
                 if (win && !win.closed) {
                     win.opener = null;

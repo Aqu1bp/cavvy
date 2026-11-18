@@ -337,13 +337,16 @@ const PAGE = (title: string, body: string) =>
  * browser; when that isn't this one (a session on a server), that machine's Cavvy brings the answer here
  * (deliverCallback) instead of the browser reaching this machine's listener.
  */
-const waiting = new Map<string, (req: Request) => Response>();
+const waiting = new Map<string, (req: Request) => boolean>();
 
-/** The answer a sign-in's page ended with (`query`, as the browser was sent back with), given to the sign-in waiting for it: how it took it (an HTTP status), or undefined when none waits for it. */
-export function deliverCallback(query: string): number | undefined {
+/**
+ * The answer a sign-in's page ended with (`query`, as the browser was sent back with), given to the sign-in waiting
+ * for it: whether it was an authorization that sign-in took (not a refusal, nor another's), or undefined when none
+ * waits for it.
+ */
+export function deliverCallback(query: string): boolean | undefined {
     const state = new URLSearchParams(query).get("state");
-    const answer = state ? waiting.get(state) : undefined;
-    return answer?.(new Request(`http://127.0.0.1/callback?${query}`)).status;
+    return (state ? waiting.get(state) : undefined)?.(new Request(`http://127.0.0.1/callback?${query}`));
 }
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -384,6 +387,8 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
     let settle!: { resolve: (v: { code: string }) => void; reject: (e: Error) => void };
     const got = new Promise<{ code: string }>((resolve, reject) => (settle = { resolve, reject }));
     got.catch(() => undefined);
+    /** An authorization code came back for this sign-in. */
+    let taken = false;
     const answer = (req: Request): Response => {
         const q = new URL(req.url);
         if (q.pathname !== "/callback") return new Response("Not found", { status: 404 });
@@ -402,6 +407,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         }
         const code = q.searchParams.get("code");
         if (!code) return new Response(PAGE("Sign-in didn't finish", "No authorization code came back."), { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } });
+        taken = true;
         settle.resolve({ code });
         return new Response(PAGE(`Signed in to ${escapeHtml(name)}`, `You can close this tab and go back to ${APP_TITLE}.`), { headers: { "Content-Type": "text/html; charset=utf-8" } });
     };
@@ -427,7 +433,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         throw new McpError(`couldn't listen on 127.0.0.1:${fixedPort ?? 0} for the sign-in (${(e as Error).message})${fixedPort ? "; free that port or change oauth.callbackPort" : ""}`);
     }
     try {
-        waiting.set(state, answer);
+        waiting.set(state, (req) => (answer(req), taken));
         const redirect = `http://127.0.0.1:${server.port}/callback`;
         let client: Entry["client"];
         if (oauth.clientId) {
