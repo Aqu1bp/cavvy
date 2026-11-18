@@ -15,5 +15,5 @@
 /* Adding a named instance (InstanceDialog): labelled fields, one under another. */
 .instance-form label, .instance-field { display: grid; gap: calc(6 * var(--sp)); }
 .instance-form label > span, .instance-field > span { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
-.instance-form textarea { resize: vertical; min-height: calc(52 * var(--sp)); }
+.dialog .instance-form textarea.input { resize: vertical; min-height: calc(56 * var(--sp)); }
 .instance-form details label { margin-top: calc(8 * var(--sp)); }
