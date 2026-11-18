@@ -79,6 +79,15 @@
     row-gap: calc(4 * var(--sp));
 }
 
+/* The zoom and the way back to filling the pane, at the row's end: they wrap together. */
+.br-strip-end {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    margin-left: auto;
+}
+
 .br-strip .hb {
     border-radius: var(--pill);
 }
