@@ -2172,7 +2172,8 @@ export interface Methods {
     /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
     "server.memory": { params: { types?: boolean }; result: ServerMemory };
     /** Sessions whose latest work couldn't be saved (a full disk) and would be lost if Cavvy quit now: the desktop app asks before quitting. */
-    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[] } };
+    /** `working`: this computer's sessions quitting would stop (0 while an update restarts the app). */
+    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[]; working: number } };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
