@@ -1702,8 +1702,10 @@ button.att-card:hover {
 
 /* Options that still don't fit scroll; while there are more below, the list's bottom edge fades (as base.css's lists
    with more below, here a mask: the card's fill is see-through). The second layer covers the fade, grown over it as the
-   list reaches its end, driven by its scroll position. A list that fits, or no scroll timelines: it covers it all. */
-.q-card .itab-body {
+   list reaches its end, driven by its scroll position. A list that fits, or no scroll timelines: it covers it all.
+   The same for the field and what's attached, when they scroll too (.q-mid). */
+.q-card .itab-body,
+.q-mid {
     mask-image: linear-gradient(#000 calc(100% - 28 * var(--sp)), rgb(0 0 0 / 0.08)), linear-gradient(#000, #000);
     mask-size: 100% 100%, 100% 100%;
     mask-repeat: no-repeat;
@@ -1719,6 +1721,21 @@ button.att-card:hover {
     to {
         mask-size: 100% 100%, 100% 100%;
     }
+}
+
+/* Between the question and the Answer row, which stay in sight: when the card is held to the room under the title
+   bar (stage.css .composer-dock), the options give way first (as they do to the field alone); with something
+   attached, down to one and the top of the next, then the options, the field and what's attached scroll together. */
+.q-mid {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.q-mid:has(.q-attached) .itab-body:has(.q-option:nth-child(2), .q-desc) {
+    min-height: calc(76 * var(--sp));
 }
 
 .itab-count + .q-card {

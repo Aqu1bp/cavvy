@@ -62,11 +62,18 @@
     z-index: 30;
     padding: 0 var(--stage-x) calc(12 * var(--sp));
     pointer-events: none;
+    /* Never above the conversation: in a short window a request card gets what's left under the title bar, and
+       what it holds scrolls (composer.css .ask, .q-mid). */
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100% - var(--bar-h, 52px) - 8 * var(--sp));
 }
 
 .composer-col {
     position: relative;
+    width: 100%;
     max-width: var(--dock-w);
+    min-height: 0;
     margin: 0 auto;
     display: flex;
     flex-direction: column;

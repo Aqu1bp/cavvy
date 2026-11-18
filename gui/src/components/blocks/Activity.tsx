@@ -207,10 +207,27 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
             </Show>
             <Show when={lined()}>
                 <button class={`run-h ${pictured() ? "pictured" : ""}`} data-find-skip aria-expanded={pictured() ? undefined : open()} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, pictured()!, 0, e.currentTarget) : folds.set(key(), !open()))}>
-                    <span class="run-t truncate">
-                        <Inline text={title()} />
-                    </span>
-                    <Show when={answer()}>{(a) => <span class="run-a truncate">{a()}</span>}</Show>
+                    <Show
+                        when={answer()}
+                        fallback={
+                            <span class="run-t truncate">
+                                <Inline text={title()} />
+                            </span>
+                        }
+                    >
+                        {(a) => (
+                            // The answer whole, the question giving way to it; short of room for a few of its words, the
+                            // question steps aside (onto a line out of sight) and only the answer is cut: one "…" at most.
+                            <span class="run-qa">
+                                <span class="run-q">
+                                    <span class="run-t truncate">
+                                        <Inline text={title()} />
+                                    </span>
+                                </span>
+                                <span class="run-a truncate">{a()}</span>
+                            </span>
+                        )}
+                    </Show>
                     <Show when={stats().added || stats().removed}>
                         <span class="stat">
                             <Counts added={stats().added} removed={stats().removed} />
