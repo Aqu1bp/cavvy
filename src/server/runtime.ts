@@ -759,7 +759,7 @@ export class Runtime {
         };
         this.toolState.wakes!.onReady(() => this.wake());
         // The user's other sessions, for its agent to list, read, send to and start.
-        this.toolState.peers = appPeers(engine.peerHost(), this);
+        this.toolState.peers = appPeers(engine.peerHost(), this, () => engine.farPeers());
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;

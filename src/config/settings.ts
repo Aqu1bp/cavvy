@@ -455,6 +455,12 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
     return readSettingsFile(settingsPath(scope, cwd)).settings;
 }
 
+/** A scope's settings, and whether its file is there but couldn't be read or parsed (then they're empty). */
+export function loadScopeChecked(scope: SettingsScope, cwd: string): { settings: Settings; unreadable: boolean } {
+    const r = readSettingsFile(settingsPath(scope, cwd));
+    return { settings: r.settings, unreadable: r.unreadable };
+}
+
 /**
  * Merge user < project < local. Permission lists concatenate; objects merge.
  * In an untrusted folder only the user's own settings apply, plus the

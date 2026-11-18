@@ -5,12 +5,12 @@
 // sessions another process has open.
 
 import type { ServerTool, ServerToolResult } from "../mcp/server";
-import { checkMessage, deliveryText, listText, PEER_LIMITS, PeerError, readText, type Delivery, type SessionPeers, type StartChoice } from "../agent/peers";
+import { checkMessage, deliveryText, farId, farListText, listText, PEER_LIMITS, PeerError, readText, type Delivery, type SessionPeers, type StartChoice } from "../agent/peers";
 import { EFFORT_LEVELS } from "../config/settings";
 import { redactedLine } from "../util/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
-const LIST_DESCRIPTION = `List the user's other Cavvy sessions: each one's id, title, whether it's working, waiting for the user or idle, when it was last active, and its model. Lists this project's (its repository, worktrees included) unless all is true. Use it to find the session the user means ("the one fixing the login bug") before reading it or sending it a message.`;
+const LIST_DESCRIPTION = `List the user's other Cavvy sessions: each one's id, title, whether it's working, waiting for the user or idle, when it was last active, and its model. Lists this project's (its repository, worktrees included) unless all is true; with all, also the sessions on the user's other machines (servers, their computer), whose ids name the machine (box/<id>) and which ReadSession and SendToSession take as they are. Use it to find the session the user means ("the one fixing the login bug") before reading it or sending it a message.`;
 
 const READ_DESCRIPTION = `Read what was said in another Cavvy session: its prompts and the assistant's replies, with the tools used as one line, from its last ${PEER_LIMITS.readTurns} turns unless turns says otherwise. Read a session before you answer about it or send it a message.`;
 
@@ -65,16 +65,42 @@ const cannotDrive = () => fail("Sending to and starting sessions works in the Ca
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const unknownId = (id: string) => fail(`No session ${id || "(no id given)"}. ListSessions shows the ones there are (all: true for other projects').`);
 
-export function listSessions(peers: SessionPeers | undefined, input: Record<string, unknown>): R {
+export async function listSessions(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {
     if (!peers) return unreachable();
-    const r = listText(peers, { all: input.all === true, query: typeof input.query === "string" ? input.query : undefined, limit: typeof input.limit === "number" ? input.limit : undefined });
-    return { text: r.text, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
+    const all = input.all === true;
+    const query = typeof input.query === "string" ? input.query : undefined;
+    const limit = typeof input.limit === "number" ? input.limit : undefined;
+    const r = listText(peers, { all, query, limit });
+    const reach = peers.far;
+    if (!reach) return { text: r.text, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
+    // The user's other machines' too, with every project's (their folders are another machine's).
+    if (!all) return { text: `${r.text}\nSessions on the user's other machines are listed with all: true.`, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
+    // One limit for both: what's left of it after this machine's.
+    const left = Math.max(1, Math.min(Math.floor(limit ?? 20), PEER_LIMITS.maxList)) - r.count;
+    if (left <= 0) return { text: `${r.text}\nSessions on the user's other machines aren't listed: the limit is reached. Narrow it with query, or raise limit.`, summary: `${r.count} session${r.count === 1 ? "" : "s"}` };
+    let why: string | undefined;
+    const far = await reach.list({ query, limit: left }).catch((e) => ((why = e instanceof PeerError ? e.message : "they didn't answer."), []));
+    const count = r.count + far.length;
+    const note = why && `Sessions on the user's other machines couldn't be listed: ${why}`;
+    return { text: [r.text, note ?? farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : why ? "Other machines didn't answer" : "No other sessions" };
 }
 
-export function readSession(peers: SessionPeers | undefined, input: Record<string, unknown>): R {
+export async function readSession(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {
     if (!peers) return unreachable();
     const id = str(input.id).trim();
     if (id === peers.self) return fail("That's this session.");
+    if (id && farId(id)) {
+        const reach = peers.far;
+        if (!reach) return unknownId(id);
+        try {
+            const read = await reach.read(id, typeof input.turns === "number" ? input.turns : undefined);
+            if (!read) return unknownId(id);
+            return { text: read.text, summary: `Read ${read.turns} turn${read.turns === 1 ? "" : "s"} of “${read.title}”` };
+        } catch (e) {
+            if (e instanceof PeerError) return fail(e.message);
+            throw e;
+        }
+    }
     const found = id ? peers.read(id) : undefined;
     if (!found) return unknownId(id);
     const r = readText(found, { turns: typeof input.turns === "number" ? input.turns : undefined });
@@ -91,6 +117,12 @@ export async function sendToSession(peers: SessionPeers | undefined, input: Reco
     if (id === peers.self) return fail("That's this session: a message to yourself goes nowhere.");
     try {
         const message = checkMessage(input.message);
+        if (farId(id)) {
+            const reach = peers.far;
+            if (!reach) return unknownId(id);
+            const sent = await reach.send(id, message);
+            return { text: sent.text, summary: SENT[sent.delivery] };
+        }
         const r = await peers.send(id, message);
         return { text: deliveryText(r.summary, r.delivery), summary: SENT[r.delivery] };
     } catch (e) {
@@ -137,7 +169,7 @@ export const ListSessionsTool: Tool<{ all?: boolean; query?: string; limit?: num
     category: "read",
     readOnly: true,
     title: (i) => `ListSessions(${[i.all === true ? "all" : "", typeof i.query === "string" ? i.query : ""].filter(Boolean).join(", ")})`.replace("()", ""),
-    run: async (input, ctx) => asResult(listSessions(ctx.state.peers, input)),
+    run: async (input, ctx) => asResult(await listSessions(ctx.state.peers, input)),
 };
 
 export const ReadSessionTool: Tool<{ id: string; turns?: number }> = {
@@ -147,13 +179,13 @@ export const ReadSessionTool: Tool<{ id: string; turns?: number }> = {
     category: "read",
     readOnly: true,
     title: (i) => `ReadSession(${idOf(i)})`,
-    run: async (input, ctx) => asResult(readSession(ctx.state.peers, input)),
+    run: async (input, ctx) => asResult(await readSession(ctx.state.peers, input)),
 };
 
 /** The permission prompt: which session it goes to, by its title, and the message. */
 const previewSend = async (input: { id?: unknown; message?: unknown }, ctx: ToolContext) => {
     const id = str(input.id).trim();
-    const title = id && id !== ctx.state.peers?.self ? ctx.state.peers?.read(id)?.summary.title : undefined;
+    const title = id && id !== ctx.state.peers?.self && !farId(id) ? ctx.state.peers?.read(id)?.summary.title : undefined;
     return { summary: title ? `Send a message to “${title}”` : "Send a message to another session", body: str(input.message).trim() || undefined };
 };
 
