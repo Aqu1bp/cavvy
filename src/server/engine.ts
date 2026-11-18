@@ -79,7 +79,7 @@ import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
-import { usageEverywhere } from "./usage-machines";
+import { askMachines, USAGE_GRACE_MS, withMachines, type Asked } from "./usage-machines";
 import type {
     ArchiveOffer,
     ArchiveResult,
@@ -433,6 +433,8 @@ export class Engine {
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
     /** What a window's latest search asked the servers (searchSessions), until it's answered with. */
+    /** What a window's latest usage summary asked the servers (usage.summary), until it's answered with. */
+    private usageAsks = new WeakMap<EngineClient, { days: number; own: Promise<Awaited<ReturnType<typeof usageSummary>>>; there: Promise<Asked> }>();
     private farSearches = new WeakMap<EngineClient, { key: string; there: ReturnType<typeof searchServers> }>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
@@ -3739,7 +3741,24 @@ export class Engine {
                 // No servers reached from here yet (none, or no window has asked about them): this computer's alone.
                 const links = this.serverLinks;
                 if (this.o.away || !links) return reading;
-                return usageEverywhere(days, reading, { names: links.list().map((s) => s.name), connected: links.connectedServers() });
+                const names = links.list().map((s) => s.name);
+                if (!names.length) return reading;
+                const connected = links.connectedServers();
+                // A window that shows this computer's own first (`first`) and asks for the rest (`rest`); any other
+                // asker (an older window) waits for the whole of it, as before.
+                if (p.first !== true && p.rest !== true) return withMachines(await reading, await askMachines(days, { names, connected }));
+                // Asked once for a summary, with this computer's own as read then: the rest is that same reading and
+                // that same asking, waited for.
+                let kept = p.rest === true ? this.usageAsks.get(client) : undefined;
+                const again = kept?.days === days;
+                if (!kept || !again) this.usageAsks.set(client, (kept = { days, own: reading, there: askMachines(days, { names, connected }) }));
+                const own = await kept.own;
+                // The servers get a moment past this computer's own reading. Slower than that, its own is answered
+                // now, said to be waiting for those it asked, and the window asks for the rest.
+                const there = await (again || p.rest === true ? kept.there : Promise.race([kept.there, new Promise<undefined>((r) => setTimeout(r, USAGE_GRACE_MS))]));
+                if (!there) return { ...own, waiting: names.filter((n) => connected.has(n)), ...(names.some((n) => !connected.has(n)) ? { uncounted: names.filter((n) => !connected.has(n)) } : {}) };
+                if (this.usageAsks.get(client) === kept) this.usageAsks.delete(client);
+                return withMachines(own, there);
             }
             case "app.update.get":
                 return this.updates.get();
