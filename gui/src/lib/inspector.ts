@@ -46,7 +46,7 @@ export function reviewWidthRange(shown: number, sheetWidth: number): { min: numb
 }
 
 /** The side panel's tabs. */
-export type InspectorPane = "changes" | "agents" | "commands" | "browser" | "simulator";
+export type InspectorPane = "changes" | "agents" | "commands" | "browser" | "simulator" | "sidechat";
 
 /** A tab's accessible name: its label and what its marks say ("Agents, 4 running"), shown or not. */
 export function tabName(label: string, ...marks: (string | false | undefined)[]): string {

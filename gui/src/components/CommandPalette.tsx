@@ -150,7 +150,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         if (id()) {
             for (const [m, label, key] of [["files", "Go to file…", "app:goToFile"], ["search", "Search in project…", "app:searchFiles"]] as const) out.push({ id: m, section: "Session", label, kbd: shortcutHint(key), icon: <Search size={15} />, run: () => p.files(m) });
             out.push(
-                { id: "changes", section: "Session", label: "Review changes", icon: <FileDiff size={15} />, run: () => openReview() },
+                { id: "changes", section: "Session", label: "Review changes", kbd: shortcutHint("app:toggleReview"), icon: <FileDiff size={15} />, run: () => openReview() },
                 { id: "rewind", section: "Session", label: "Rewind…", icon: <History size={15} />, run: () => setRewindOpen(true) },
                 { id: "fork", section: "Session", label: "Fork session", desc: "From the latest response", keywords: "branch copy duplicate", icon: <GitFork size={15} />, run: () => void fork(id()!) },
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },

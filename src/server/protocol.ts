@@ -856,6 +856,10 @@ export interface SessionState {
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
+    /** Its side chat, while one is open (session.sideChat), and whether it's working or waiting on the user. */
+    sideChat?: { id: string; status?: SessionStatus };
+    /** A side chat's: the session it's about. Never listed with the sessions. */
+    sideOf?: string;
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
     /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
@@ -1304,7 +1308,41 @@ export interface ProviderInfo {
         planLimits?: boolean;
         /** Auto mode has no reviewer for it: commands ask (AUTO_WITHOUT_REVIEWER). */
         autoAsks?: boolean;
+        /** The environment variables it's started with. A secret's value is never sent: only that it's set. */
+        env?: AgentEnvVar[];
+        /** Its named instances (src/providers/instances.ts), each a provider of its own in the model picker. */
+        instances?: AgentInstanceInfo[];
     };
+}
+
+/** A named instance of an agent CLI: "Claude Code · OpenRouter". */
+export interface AgentInstanceInfo {
+    /** Its provider id (claude-code@openrouter). */
+    id: string;
+    /** Its own name ("OpenRouter"). */
+    name: string;
+    path?: string;
+    args?: string[];
+    env: AgentEnvVar[];
+    /** Model ids offered besides the ones the CLI lists. */
+    models?: string[];
+}
+
+/** What a named instance is set up with, as Settings sends it. */
+export interface AgentInstanceInput {
+    name: string;
+    path?: string;
+    args?: string[];
+    env?: AgentEnvVar[];
+    models?: string[];
+}
+
+/** An environment variable an agent CLI is started with (src/providers/agent-env.ts). */
+export interface AgentEnvVar {
+    name: string;
+    /** Left out for a secret: the saved value stays when it's saved again without one. */
+    value?: string;
+    secret?: boolean;
 }
 
 export interface ProviderModels {
@@ -1531,8 +1569,19 @@ export interface ChangesInfo {
     tracked: boolean;
 }
 
-/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
-export type GitScope = "uncommitted" | "branch" | "last-turn" | "turn";
+/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. Commit: one commit against its (first) parent. */
+export type GitScope = "uncommitted" | "branch" | "commit" | "last-turn" | "turn";
+
+/** A commit, as the review pane lists them (newest first). Subject and author are redacted. */
+export interface GitLogEntry {
+    sha: string;
+    subject: string;
+    author: string;
+    /** Committed, in ms. */
+    time: number;
+    /** How many parents: 0 a root commit, 2 or more a merge (shown against its first). */
+    parents: number;
+}
 
 export interface GitFileDiff extends FileDiff {
     /** What git would call it. Renames are exact ones (the same content under a new name). */
@@ -1547,6 +1596,8 @@ export interface GitFileDiff extends FileDiff {
     filter?: string;
     /** `path` hides a registered value: send this instead of it to act on the file. */
     pathToken?: string;
+    /** Lines in the new side, when there are hunks: whether there's more of the file after the last one. */
+    lines?: number;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */
@@ -1578,6 +1629,8 @@ export interface GitChangesInfo extends ChangesInfo {
     moreAtLeast?: boolean;
     /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
     places?: TurnPlace[];
+    /** Commit scope: the commit shown. */
+    commit?: GitLogEntry;
 }
 
 /**
@@ -2366,6 +2419,10 @@ export interface Methods {
      */
     "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
+    /** The session's side chat (opened if it has none), with `text` sent to it. */
+    "session.sideChat": { params: { id: string; text?: string }; result: { id: string } };
+    /** Close the session's side chat: it's discarded. */
+    "session.closeSideChat": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
@@ -2400,7 +2457,13 @@ export interface Methods {
      * any other folder is refused. Turn scopes are the session's own folder's only.
      */
     /** `pathToken` / `baseToken`: handles from an earlier listing (GitFileDiff.pathToken, baseTokens), instead of `path` / `base`. */
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /**
+     * `commit`: the commit scope's (HEAD when unset). `ignoreWhitespace`: lines that differ only in whitespace are unchanged.
+     * `full`: with a path, that file's diff with every line as context (the review pane's hidden lines).
+     */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }; result: GitChangesInfo };
+    /** The recent commits of HEAD (of `worktree`, another worktree of the session's repository), newest first. */
+    "session.gitLog": { params: { id: string; worktree?: string }; result: { commits: GitLogEntry[]; more: boolean } };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
     /** `sessionId`: the session it's for, so the call goes to that session's machine. */
@@ -2509,6 +2572,13 @@ export interface Methods {
     "providers.removeKey": { params: { provider: string }; result: null };
     /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
+    /** Set all of an agent CLI's environment variables (those left out are removed). It has to be turned on. */
+    "providers.setEnv": { params: { provider: string; vars: AgentEnvVar[] }; result: null };
+    /** Add a named instance of an agent CLI (`base`: claude-code, codex, …); its models are listed with its setup. */
+    "providers.addInstance": { params: AgentInstanceInput & { base: string }; result: { id: string } };
+    "providers.updateInstance": { params: AgentInstanceInput & { id: string }; result: null };
+    /** Its running turns go on; a session on it then asks for another model. */
+    "providers.removeInstance": { params: { id: string }; result: null };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
     /** Import one into a Cavvy session (or open the one that already holds it). */

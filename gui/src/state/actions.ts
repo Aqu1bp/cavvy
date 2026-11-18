@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
+import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setInspectorPane, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -102,6 +102,16 @@ export async function openProject(path: string, home?: boolean) {
     }
 }
 
+/** The session's side chat, in the side panel (/btw); `text` asked there (it opens with it if there's none). */
+export async function openSideChat(id: string, text?: string) {
+    batch(() => {
+        setReview(undefined);
+        setInspectorPane("sidechat");
+        setPrefs("panel", true);
+    });
+    if (text?.trim()) await rpcFor(id).call("session.sideChat", { id, text }).catch(reportError);
+}
+
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
     const c = clientAction(text);
@@ -122,6 +132,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
             return true;
         case "fork":
             if (id) void fork(id);
+            return true;
+        case "sidechat":
+            if (id) void openSideChat(id, args);
             return true;
         case "mcp":
             if (id) setMcpOpen({ focus: args.trim() || undefined });

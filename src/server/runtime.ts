@@ -22,6 +22,7 @@ import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/hist
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
 import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
+import { SIDE_CHAT_REMINDER, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -56,7 +57,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { WholeTurnsOnly } from "../backends/one-off";
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
+import { agentCli, baseCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { IMAGE_KEY, imageKey, keepImages, readKept, toolImagesDir } from "./tool-images";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
@@ -76,7 +77,7 @@ import { answerAttachments, attachedLabel, attachedPrompt, fileSaver, toWire, ty
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
-import { gitChanges } from "./git-changes";
+import { gitChanges, gitLog } from "./git-changes";
 import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-worktrees";
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
@@ -103,6 +104,7 @@ import type {
     GitPublishRequest,
     GitPrInfo,
     GitScope,
+    GitLogEntry,
     EffortLevel,
     Interaction,
     InteractionResponse,
@@ -119,6 +121,7 @@ import type {
     SessionResumed,
     SessionTurnsPage,
     SessionState,
+    SessionStatus,
     WorkingIn,
     ToolBlock,
     ToolCategoryId,
@@ -418,7 +421,7 @@ function reportsAgent(name: string, isError: boolean | undefined): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust", "btw"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -734,9 +737,10 @@ export class Runtime {
         private engine: Engine,
         readonly ws: Workspace,
         session: Session,
-        opts: { mode?: PermissionMode; resumed: boolean },
+        opts: { mode?: PermissionMode; resumed: boolean; side?: SideChatOrigin },
     ) {
         this.session = session;
+        this.side = opts.side;
         // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
         session.onSaving = (error) => queueMicrotask(() => {
             if (!error) return this.notice("Saved again.", "info");
@@ -1371,6 +1375,7 @@ export class Runtime {
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
+            ...(this.side ? { sideOf: this.side.of } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
         };
@@ -2050,9 +2055,9 @@ export class Runtime {
         const window = m.contextWindow;
         // An agent that can't compact (an ACP agent's): never, here.
         if (agentCli(m.provider)?.caps.compact === "none") return undefined;
-        if (m.provider === "claude-code" || m.provider === "codex") {
+        if (baseCli(m.provider) === "claude-code" || baseCli(m.provider) === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
-            if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
+            if (baseCli(m.provider) === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
             return setting && window ? Math.min(setting, window) : setting;
         }
         const s = this.settings();
@@ -2540,7 +2545,7 @@ export class Runtime {
     private nativeGoalCommand(text: string, args: string): boolean {
         const c = parseGoalCommand(args);
         if (c.kind === "invalid") throw new RpcError(c.message, "invalid");
-        const claude = this.nativeGoal?.provider === "claude-code" || (this.agent?.model.provider ?? this.model?.provider) === "claude-code";
+        const claude = baseCli(this.nativeGoal?.provider) === "claude-code" || baseCli(this.agent?.model.provider ?? this.model?.provider) === "claude-code";
         if (claude && (c.kind === "pause" || c.kind === "resume")) {
             this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
             return true;
@@ -2656,7 +2661,7 @@ export class Runtime {
      * other agent works in the folder Cavvy gives it: the worktree.
      */
     private placeAgent(provider: string | undefined) {
-        if (this.workingIn) this.toolState.cwd = provider === "claude-code" ? this.ws.cwd : this.workingIn.path;
+        if (this.workingIn) this.toolState.cwd = baseCli(provider) === "claude-code" ? this.ws.cwd : this.workingIn.path;
     }
 
     private makeAgent() {
@@ -2666,6 +2671,7 @@ export class Runtime {
         this.placeAgent(this.model.provider);
         this.agent = new Agent({
             session: this.session,
+            ...(this.side ? { context: () => this.side?.context ?? [] } : {}),
             trusted: () => this.ws.trusted,
             skills: () => this.ws.freshSkills(),
             model: this.model,
@@ -2733,6 +2739,8 @@ export class Runtime {
         if (this.session.model === undefined && this.model) this.session.setModel(modelRef(this.model));
         // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
         if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
+        // A side chat's model hears what it is with the first question (an agent made again before then too).
+        if (this.side && !this.session.messageCount) this.agent.addReminder(SIDE_CHAT_REMINDER);
         this.leftIn = undefined;
     }
 
@@ -3099,7 +3107,8 @@ export class Runtime {
         this.closeOpen();
         const turnId = this.turnId;
         if (!turnId) return;
-        let texts = msg.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
+        // Redacted as each streamed piece was: an agent CLI's message isn't (a secret variable it printed, say).
+        let texts = msg.content.filter((p) => p.type === "text").map((p) => redact(p.text ?? ""));
         if (this.continuationText) {
             this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix + texts.join("") }, turnId);
             texts = [];
@@ -4246,7 +4255,7 @@ export class Runtime {
         if (!trimmed && !attachments?.length) return { queued: false };
         this.toolState.wakes?.resume();
         // These answer here and send nothing to the model, so what's attached would be lost: the message stays in the box.
-        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust)(?=\s|$)/i)?.[1]?.toLowerCase();
+        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust|btw)(?=\s|$)/i)?.[1]?.toLowerCase();
         if (bare) throw new RpcError(`/${bare} doesn't take attachments. Send them in a message of their own.`, "no_attachments");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
@@ -4258,6 +4267,12 @@ export class Runtime {
             if (this.nativeGoalCommand(trimmed, goal[1] ?? "")) return { queued: false };
         } else if (goal && !(this.busy && parseGoalCommand(goal[1] ?? "").kind === "set")) {
             await this.goalCommand(goal[1] ?? "", attachments);
+            return { queued: false };
+        }
+        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here.
+        const btw = literal || this.side ? undefined : trimmed.match(/^\/btw(?:\s+([\s\S]*))?$/i);
+        if (btw) {
+            await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
         if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
@@ -4315,7 +4330,7 @@ export class Runtime {
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
         // Until this workspace has reported its skills, let Claude Code resolve them.
-        if ((provider === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
+        if ((baseCli(provider) === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
         return c.name;
     }
 
@@ -5303,7 +5318,7 @@ export class Runtime {
      * What git says changed in the session's folder, whoever changed it; or, with `worktree`, in another
      * worktree of its repository (only one `git worktree list` reports: never any other folder).
      */
-    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
+    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         const { worktree, pathToken, baseToken, ...rest } = req;
         let other: { real: string; gitDir: string } | undefined;
         if (worktree !== undefined) {
@@ -5319,8 +5334,18 @@ export class Runtime {
         if (pathToken !== undefined) rest.path = this.gitHandles.resolve("path", root, pathToken);
         if (baseToken !== undefined) rest.base = this.gitHandles.resolve("ref", root, baseToken);
         try {
-            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path, commit: rest.commit, ignoreWhitespace: rest.ignoreWhitespace, full: rest.full }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
             return this.gitHandles.shown(info, root);
+        } catch (e) {
+            throw redactedError(e);
+        }
+    }
+
+    /** HEAD's recent commits, in the session's folder or another worktree of its repository: when the review pane's commit list opens. */
+    async gitLog(worktree?: string): Promise<{ commits: GitLogEntry[]; more: boolean }> {
+        const w = worktree !== undefined ? await sessionWorktree(this.ws.cwd, worktree) : undefined;
+        try {
+            return w && !w.current ? await gitLog(w.real, { gitDir: w.gitDir }) : await gitLog(this.ws.cwd);
         } catch (e) {
             throw redactedError(e);
         }
@@ -5804,6 +5829,18 @@ export class Runtime {
     }
     get guest(): boolean {
         return this.lentTo !== undefined;
+    }
+
+    /** A side chat's: whose it is, and that session's conversation as it sees it (src/agent/side-chat.ts). */
+    side?: SideChatOrigin;
+    /** This session's side chat, while it has one open. */
+    sideChat?: string;
+
+    /** The side chat's state, as its parent shows it (its tab's dot): undefined once it's gone. */
+    sideChatChanged(id: string | undefined, status?: SessionStatus) {
+        this.sideChat = id;
+        const now = id ? { id, ...(status && status !== "idle" ? { status } : {}) } : undefined;
+        if (JSON.stringify(now) !== JSON.stringify(this.view.state.sideChat)) this.setState({ sideChat: now });
     }
     /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
     guestSession?: { id: string; title: string };

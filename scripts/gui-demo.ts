@@ -6,6 +6,7 @@
 //   bun run gui:demo --port 4600 --token <16+ characters>    a link that stays the same: http://127.0.0.1:4600/#token=<token>
 //   bun run gui:demo --update        the desktop app's Update button, with main 7 changes ahead (scripts/demo-update.ts)
 //   bun run gui:demo --update fail   the same, with a build that fails
+//   bun run gui:demo --fake-claude   Claude Code on, as a stand-in that echoes its environment (FAKE_ECHO_ENV)
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
@@ -47,7 +48,17 @@ createDemoProject(project);
 
 const site = startDemoSite();
 const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
-writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }] }, null, 2));
+// --fake-claude: Claude Code turned on, as a stand-in (test/fixtures/fake-claude.ts) that never reaches a model or this
+// machine's own Claude Code. Its environment variables (Settings → Providers) show in its replies: set FAKE_ECHO_ENV to
+// the names to see, as in FAKE_ECHO_ENV=ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN.
+const agents: Record<string, unknown> = {};
+if (args.includes("--fake-claude")) {
+    const bin = join(root, "fake-bin", "claude");
+    mkdirSync(join(root, "fake-bin"), { recursive: true });
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${resolve(import.meta.dir, "..", "test", "fixtures", "fake-claude.ts")}" "$@"\n`, { mode: 0o755 });
+    agents["claude-code"] = { path: bin };
+}
+writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }], ...(Object.keys(agents).length ? { agents } : {}) }, null, 2));
 // Sign-ins to try ("signin gh", "signin aws", "signin gcloud", "signin docker", "signin fly: fly auth login"): a pretend
 // CLI stands in for each, so nothing of this machine's own is signed in or out. A waiting one finishes by itself.
 const acme = fakeSignInCli(root);

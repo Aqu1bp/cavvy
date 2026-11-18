@@ -2757,11 +2757,11 @@ export class TurnSnapshots {
         await this.keep(entries.map((now) => ({ path: "", change: "modified", now })), this.root ?? this.cwd, Date.now() + END_BUDGET_MS);
     }
 
-    changes(req: { scope: GitScope; turnId?: number; path?: string }): Promise<GitChangesInfo> {
+    changes(req: { scope: GitScope; turnId?: number; path?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         return coalesce(this.inflight, JSON.stringify(req), () => this.collect(req));
     }
 
-    private async collect(req: { scope: GitScope; turnId?: number; path?: string }): Promise<GitChangesInfo> {
+    private async collect(req: { scope: GitScope; turnId?: number; path?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         // A turn's closing capture may still be under way.
         await this.settled();
         const turns = this.list();
@@ -2794,7 +2794,7 @@ export class TurnSnapshots {
             out.more = wanted === undefined ? Math.max(0, all.length - listed.length) : 0;
             out.files = await render(listed, {
                 root, wt: new WorkTree(root, this.algo, true, () => {}, deadline), shown, single: wanted !== undefined, deadline,
-                eolOf: () => undefined, indexOid: () => undefined,
+                eolOf: () => undefined, indexOid: () => undefined, diff: { ignoreWhitespace: req.ignoreWhitespace, full: req.full },
                 readBlobs: async (oids, until) => {
                     const found = await blobs(root, oids, until, this.env());
                     for (const [oid, buf] of found) if (blobId(buf, oid.length === 64 ? "sha256" : "sha1") !== oid) found.delete(oid);

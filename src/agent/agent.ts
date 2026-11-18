@@ -50,6 +50,7 @@ import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground,
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
+import { withContext } from "./side-chat";
 import { cacheTtl, idleCompactPlan, type CacheWindow, type IdleCompactPlan } from "./idle-compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
@@ -61,12 +62,13 @@ import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
 import { attachedAsText, forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
+import { loadAgentSecrets } from "../providers/agent-env";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
@@ -340,6 +342,11 @@ export interface AgentOptions {
     parentFastMode?: () => boolean | undefined;
     /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
     listings?: () => ProviderListing[];
+    /**
+     * A side chat's (src/agent/side-chat.ts): another session's conversation, sent before this one's own messages
+     * and never part of them. An agent CLI is handed it with its first prompt, as a conversation it joins.
+     */
+    context?: () => readonly Message[];
 }
 
 const MAX_RETRIES = 10;
@@ -1447,7 +1454,7 @@ export class Agent {
     /** Estimated tokens in the next request. */
     estimatedContext(): number {
         const since = this.session.messagesSince(this.lastUsageTotal);
-        if (!this.contextTokens) return estimateTokens(this.session.messages) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
+        if (!this.contextTokens) return estimateTokens(withContext(this.o.context?.(), this.session.messages)) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
         return this.contextTokens + estimateTokens(since);
     }
 
@@ -1492,7 +1499,7 @@ export class Agent {
         return this.withRetries(signal, async () => {
             const last = (messages ?? this.session.messages).at(-1);
             this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
-            const sendable = await this.sendable(messages ?? this.session.messages);
+            const sendable = await this.sendable(messages ?? withContext(this.o.context?.(), this.session.messages));
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
             this.idleTried = false;
@@ -1697,7 +1704,7 @@ export class Agent {
             maxTurns: this.o.maxTurns,
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
             // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
-            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
+            hooks: baseCli(this.model.provider) === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
@@ -1753,13 +1760,13 @@ export class Agent {
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
-        const monitoring = watching && caller === "codex";
+        const monitoring = watching && baseCli(caller) === "codex";
         // Neither has a browser to show Cavvy's pane: its tools go to both.
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to both, on a Mac with Xcode.
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
-        const worktrees = caller === "codex" || acp;
+        const worktrees = baseCli(caller) === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
@@ -1830,7 +1837,7 @@ export class Agent {
         // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
         this.registration ??= registerTools(
             () => this.serverTools,
-            () => (this.model.provider === "codex" ? undefined : this.serverInstructions),
+            () => (baseCli(this.model.provider) === "codex" ? undefined : this.serverInstructions),
         );
         return {
             name: MCP_SERVER_NAME,
@@ -2248,7 +2255,8 @@ export class Agent {
      */
     private missedMessages(promptIndex: number, resume?: { synced: number }): Message[] {
         const from = resume ? resume.synced : 0;
-        const all = this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from));
+        // A side chat's CLI joins with the other session's conversation before its own.
+        const all = withContext(resume ? undefined : this.o.context?.(), this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from)));
         const has = (t: string) => all.some((x) => x.role === "user" && !x.meta?.resends && ((x.content[0]?.type === "text" && x.content[0].text === t) || textOf(x) === t));
         return all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has)));
     }
@@ -2635,6 +2643,8 @@ export class Agent {
             declined = true;
             stopper.abort();
         };
+        // A secret variable another Cavvy saved since this one read them (a CLI is started synchronously).
+        await loadAgentSecrets(this.model.provider);
         const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), session, sink);
         this.runningIn = base.cwd;
         let stopRounds = 0;
@@ -2865,7 +2875,7 @@ export class Agent {
         const resume = this.backendResume(provider, place);
         if (!resume) return false;
         // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
-        const ownHooks = provider === "codex";
+        const ownHooks = baseCli(provider) === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const hostAccount = this.session.accountId(provider);
@@ -2894,6 +2904,7 @@ export class Agent {
             drainQueued: () => [],
         };
         this.backendsUsed.add(backend);
+        await loadAgentSecrets(this.model.provider);
         const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
@@ -2902,7 +2913,7 @@ export class Agent {
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.`, ...(opts.idle ? { idle: true } : {}) });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
         // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); Cavvy runs it for Codex, and the memory files' InstructionsLoaded on both.
-        if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
+        if (!this.o.isSubagent) void (baseCli(provider) === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
     }
 
@@ -4190,7 +4201,7 @@ function nestedAgentLabel(parent: string, label: string): string {
 /** The mode a read-only agent on Claude Code or Codex runs in, under the session's mode. */
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
-    return mode === "auto" && provider === "codex" ? "auto" : "default";
+    return mode === "auto" && baseCli(provider) === "codex" ? "auto" : "default";
 }
 
 /** A call that only reads (Read, Grep, a read-only command, as the permission check takes them): it can't have changed a worktree it names. */

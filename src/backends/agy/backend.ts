@@ -13,6 +13,7 @@ import { ProviderError, type AssistantMessage, type ChatRequest, type ModelInfo 
 import { RESUME_FAILED, type SteerSource } from "../acp/connection";
 import { TurnRecord } from "../claude-live";
 import { JsonLinesProcess, cliMessage, extraArgs, findCli, requireCli, runCli } from "../cli";
+import { cliEnv } from "../../providers/agent-env";
 import { agentCli, type AgentCliDef } from "../defs";
 import type { AgentCliStatus } from "../index";
 import { expandPath } from "../../util/files";
@@ -56,7 +57,7 @@ class AgyAdapter implements AgentCliAdapter {
         if (cant) throw new Error(cant);
         const gate = gateDir();
         const args = agyArgs(this.def.id, cfg, gate);
-        const env = { [GATE_URL_ENV]: gateUrl(), [GATE_TOKEN_ENV]: this.token };
+        const env = { ...cliEnv(this.def.id), [GATE_URL_ENV]: gateUrl(), [GATE_TOKEN_ENV]: this.token };
         const fingerprint = spawnFingerprint({ bin, args, cwd: cfg.cwd, env });
         // -p= last: it takes the next argument for its prompt otherwise.
         return { bin, args: [...args, ...(cfg.resumeId ? ["--conversation", cfg.resumeId] : []), "-p="], cwd: cfg.cwd, env, fingerprint };
@@ -87,9 +88,9 @@ class AgyAdapter implements AgentCliAdapter {
 const LIST_TIMEOUT_MS = 30_000;
 
 /** `agy models`: its models (id, a tab, its name), one a line. Signed out, it says so and lists none. */
-async function listed(bin: string, signal?: AbortSignal): Promise<{ models: { id: string; name: string }[]; signedIn: boolean; said: string }> {
+async function listed(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ models: { id: string; name: string }[]; signedIn: boolean; said: string }> {
     const started = Date.now();
-    const r = await runCli(bin, ["models"], { signal, timeoutMs: LIST_TIMEOUT_MS });
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: LIST_TIMEOUT_MS, env });
     const out = `${r.stdout}\n${r.stderr}`;
     if (SIGN_IN_NEEDED.test(out)) return { models: [], signedIn: false, said: cliMessage(out) };
     // Stopped when it took too long, it says nothing.
@@ -111,7 +112,7 @@ export async function agyStatus(providerId: string, signal?: AbortSignal): Promi
     const cant = gateUnavailable();
     if (cant) return { ...base, installed: true, path, signedIn: false, description: "can't run here", problem: cant };
     try {
-        const l = await listed(path, signal);
+        const l = await listed(path, signal, cliEnv(providerId));
         if (!l.signedIn) return { ...base, installed: true, path, signedIn: false, description: "not signed in" };
         return { ...base, installed: true, path, signedIn: true, description: `signed in, ${l.models.length} model${l.models.length === 1 ? "" : "s"}` };
     } catch (e) {
@@ -123,7 +124,7 @@ export async function agyStatus(providerId: string, signal?: AbortSignal): Promi
 
 export async function agyModels(providerId: string, signal?: AbortSignal): Promise<ModelInfo[]> {
     const def = agyDef(providerId);
-    const l = await listed(requireCli(providerId, def.cli), signal);
+    const l = await listed(requireCli(providerId, def.cli), signal, cliEnv(providerId));
     if (!l.signedIn) throw new ProviderError(`${def.name} isn't signed in. Run \`${def.cli.signIn}\` in a terminal to sign in.`, 401);
     // Each id names its effort (gemini-4-argon-high), so Cavvy's effort setting has nothing to set.
     return l.models.map((m) => backendModel(providerId, m.id, m.name, { supportsImages: def.caps.images, supportsReasoning: false }));

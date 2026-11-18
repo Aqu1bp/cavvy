@@ -19,6 +19,7 @@ import { eachLine, linesFromEnd } from "../util/lines";
 import { digestOf, digestWith, type MessagesDigest } from "./history-digest";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
+import { baseCli } from "../backends/defs";
 
 export { redactedJson };
 
@@ -628,8 +629,9 @@ export class Session {
         this.write({ t: "model", model: ref });
     }
 
+    /** A named instance of a CLI runs on the account the session chose for that CLI. */
     accountId(provider: string): string {
-        return this.accounts[provider] ?? "default";
+        return this.accounts[baseCli(provider)] ?? "default";
     }
 
     /**
@@ -639,6 +641,7 @@ export class Session {
      * the conversation as context. False when it's the account already.
      */
     setAccount(provider: string, id: string): boolean {
+        provider = baseCli(provider);
         if (this.accountId(provider) === id) return false;
         let place: AccountPlace | undefined;
         try { place = accountPlace(provider, id); } catch { /* not resolvable now: a new thread */ }

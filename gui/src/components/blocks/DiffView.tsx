@@ -11,10 +11,12 @@ import { CommentBox, CommentCard, type CommentEdits } from "./DiffComments";
 import { oneSided } from "../../lib/review-stack";
 
 /** `h`: which hunk the line is in. A comment's lines stay inside one, where the numbers run on. */
-type Row = { kind: "line"; line: DiffLine; old?: number; new?: number; idx: number; h: number } | { kind: "sep"; text: string };
+/** A hunk's header; `h`, the hunk it's before (the number of hunks: after the last). */
+type Sep = { kind: "sep"; text: string; h?: number };
+type Row = { kind: "line"; line: DiffLine; old?: number; new?: number; idx: number; h: number } | Sep;
 type Line = Extract<Row, { kind: "line" }>;
 /** Side by side: the old line on the left, the new one on the right; a lone side leaves the other blank. */
-type Pair = { kind: "pair"; left?: Line; right?: Line } | { kind: "sep"; text: string };
+type Pair = { kind: "pair"; left?: Line; right?: Line } | Sep;
 
 function pairUp(rows: Row[]): Pair[] {
     const out: Pair[] = [];
@@ -95,7 +97,11 @@ export interface DiffComments {
     remove: (id: string) => void;
 }
 
-type DiffProps = { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; oneSide?: boolean; windowed?: boolean; class?: string; comments?: DiffComments };
+/**
+ * `gap`: what goes in the header of hunk `h` (the number of hunks: after the last), before its numbers: the review
+ * pane's button for the lines left out there. `tail`: a header after the last hunk too.
+ */
+type DiffProps = { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; oneSide?: boolean; windowed?: boolean; class?: string; comments?: DiffComments; gap?: (h: number) => JSX.Element; tail?: boolean };
 
 /**
  * `headerAction`: a control at the end of the header (e.g. "Open in editor"). `oneSide`: a new or deleted
@@ -127,8 +133,9 @@ function DiffViewContent(p: DiffProps) {
         const out: Row[] = [];
         let oi = 0;
         let ni = 0;
-        p.diff.hunks.forEach((h, hi) => {
-            if (hi > 0 || h.oldStart > 1) out.push({ kind: "sep", text: `@@ −${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@` });
+        const hs = p.diff.hunks;
+        hs.forEach((h, hi) => {
+            if (hi > 0 || h.oldStart > 1) out.push({ kind: "sep", text: `@@ −${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`, h: hi });
             for (const l of h.lines) {
                 const r: Row = { kind: "line", line: l, idx: out.length, h: hi };
                 if (l.t !== "add") r.old = oi++;
@@ -136,6 +143,7 @@ function DiffViewContent(p: DiffProps) {
                 out.push(r);
             }
         });
+        if (p.tail && hs.length) out.push({ kind: "sep", text: "", h: hs.length });
         return out;
     }, [], { equals: sameRows });
     const total = () => rows().filter((r) => r.kind === "line").length;
@@ -928,7 +936,7 @@ function DiffViewContent(p: DiffProps) {
                                     <Spacer gap={r} />
                                 ) : r.kind === "sep" ? (
                                     <div class="sl sep" data-u={windowed ? unitIndex().get(r) : undefined}>
-                                        <span class="txt">{r.text}</span>
+                                        <span class="txt">{p.gap?.(r.h!)}{r.text}</span>
                                     </div>
                                 ) : r.kind === "pair" ? (
                                     <>
@@ -970,7 +978,7 @@ function DiffViewContent(p: DiffProps) {
                                     <div class={oneSide() ? "dl sep one" : "dl sep"} data-u={windowed ? unitIndex().get(r) : undefined}>
                                         <span class="ln" />
                                         {oneSide() ? undefined : <span class="ln" />}
-                                        <span class="txt">{r.text}</span>
+                                        <span class="txt">{p.gap?.(r.h!)}{r.text}</span>
                                     </div>
                                 ) : r.kind === "line" ? (
                                     <>

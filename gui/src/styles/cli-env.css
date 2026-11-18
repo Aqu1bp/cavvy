@@ -1,0 +1,19 @@
+/* A CLI's environment variables (CliEnv.tsx): name, value, lock, remove, a row each. */
+.env-form { display: grid; gap: calc(10 * var(--sp)); }
+.env-hint { margin: 0; color: var(--fg-3); font-size: 0.857rem; }
+.env-editor { display: grid; gap: calc(6 * var(--sp)); }
+.env-row { display: flex; align-items: center; gap: calc(6 * var(--sp)); min-width: 0; }
+.env-row .env-name { flex: 0 1 40%; min-width: 0; }
+.env-row .env-value { flex: 1 1 60%; min-width: 0; }
+.env-lock { color: var(--fg-3); }
+.env-lock.on { color: var(--accent); }
+.env-add { justify-self: start; }
+/* The provider row's count of them, which opens them. */
+.env-tag { cursor: default; border: 0; font-family: inherit; }
+.env-tag:hover { color: var(--fg); }
+
+/* Adding a named instance (InstanceDialog): labelled fields, one under another. */
+.instance-form label, .instance-field { display: grid; gap: calc(6 * var(--sp)); }
+.instance-form label > span, .instance-field > span { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
+.dialog .instance-form textarea.input { resize: vertical; min-height: calc(56 * var(--sp)); }
+.instance-form details label { margin-top: calc(8 * var(--sp)); }

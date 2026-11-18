@@ -21,11 +21,12 @@ import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, rea
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
 import { onServer as thisIsAServer } from "./servers/role";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { agentCli } from "./backends/defs";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
+import { turnOffAgent } from "./providers/agent-env";
 import { formatPrice, formatTokens } from "./providers/pricing";
 import { modelRef } from "./providers/types";
 import { findSession, listSessions } from "./agent/session";
@@ -426,7 +427,7 @@ async function authCommand(args: string[]): Promise<number> {
         const id = arg.toLowerCase();
         let removed = false;
         try {
-            removed = removeAgentConfig(id);
+            removed = await turnOffAgent(id);
         } catch (e) {
             die(redact((e as Error).message));
         }

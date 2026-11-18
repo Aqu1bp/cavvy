@@ -66,11 +66,45 @@ A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through
 
 ## The CLI's credentials
 
-What Cavvy never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus Cavvy's own provider keys. That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave Cavvy. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`) and `args` (extra arguments):
+What Cavvy never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus Cavvy's own provider keys and the tokens that would sign a CLI in (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, …). That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave Cavvy or have in your shell. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`), `args` (extra arguments) and `env` (below):
 
 ```jsonc
 { "agents": { "claude-code": {}, "codex": { "path": "~/bin/codex", "args": ["-c", "model_reasoning_summary=detailed"] } } }
 ```
+
+### Environment variables
+
+Each CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) can be started with environment variables of your own: **Settings → Providers → ••• → Environment variables…** on a CLI that's on, or `env` in `providers.json`. For example, Claude Code through OpenRouter or another Anthropic-compatible router:
+
+| Name | Value |
+|---|---|
+| `ANTHROPIC_BASE_URL` | `https://openrouter.ai/api` |
+| `ANTHROPIC_AUTH_TOKEN` | your router key, marked secret (the lock) |
+| `ANTHROPIC_API_KEY` | empty |
+
+- A variable you set is passed to that CLI only, even when it's one Cavvy otherwise strips (`ANTHROPIC_AUTH_TOKEN` above), and over the same name in Cavvy's own environment. Other CLIs, Cavvy's tools, hooks and MCP servers don't get it. Without any, a CLI's environment is as described above: what you have in your shell for Cavvy (an `ANTHROPIC_API_KEY`, say) never reaches it.
+- A secret value is stored like an API key (the OS keychain, or `~/.cavvy/credentials.json` with mode 600) and only its name goes in `providers.json` (`"secretEnv": ["ANTHROPIC_AUTH_TOKEN"]`). It's masked wherever Cavvy shows or saves text, and Settings never shows it again: leave its field blank to keep it. The CLI itself has it in its environment, so commands it runs can read it, as they can any variable you start a CLI with.
+- The account folders' variables (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `CODEX_HOME`) and Cavvy's own (`CAVVY…`) can't be set here: use accounts for the first. What Cavvy sets for a launch (its session marker, a one-off's settings) goes over yours.
+- A change applies from each session's next message: a CLI already running is restarted then (after its background work, if it has any). The CLI's model list is listed again with the new variables.
+- Turning a CLI off removes its variables, secrets included.
+
+### Other setups of the same CLI
+
+**Settings → Providers → ••• → Add another Claude Code…** (or Codex, OpenCode, …) keeps a separate setup of the same CLI beside it: a name, environment variables, more model ids and, under **Program and arguments**, another path and arguments. It shows in the model picker and `/model` as a provider of its own, "Claude Code · OpenRouter", with the models the CLI lists when started with that setup, plus the model ids you added (a router's own names for its models, say: they're passed to the CLI as they are, `--model anthropic/claude-sonnet-4.5`). In `providers.json` it's an entry of `agents` named `<cli>@<name>`:
+
+```jsonc
+{ "agents": {
+    "claude-code": {},
+    "claude-code@openrouter": { "name": "OpenRouter", "env": { "ANTHROPIC_BASE_URL": "https://openrouter.ai/api", "ANTHROPIC_API_KEY": "" }, "secretEnv": ["ANTHROPIC_AUTH_TOKEN"], "models": ["anthropic/claude-sonnet-4.5"] }
+} }
+```
+
+- Its own `env`, `args` and `models`; its `path` if set, else its CLI's. Nothing else of its CLI's setup (its variables, its arguments) applies to it.
+- Accounts stay the CLI's: a setup runs on the account its session chose for that CLI (or the CLI's starting account), with that account's folder, settings and history. Most setups that need one carry their own credential in a variable, so a second set of accounts per setup would only be more to keep apart.
+- Its model list costs nothing at startup or when the picker opens: until it's listed, it shows its CLI's list. It's listed with its own setup when you add or change it, and when you refresh the lists (`ctrl+r` in `/model`, or the refresh button in the picker); that list is then kept, whatever its age, until the next of those.
+- Switching a session between a CLI and one of its setups is a switch of provider: the other one gets the conversation so far, as a switch to another model does.
+- **Remove** asks first, then deletes it and its secrets. A turn running on it goes on to its end. After that, a session on it can't send until you pick another model: its next message says so (it's never sent to the CLI's own setup in its place). A session reopened later on a removed setup opens on your default model.
+- Its use counts as paid (an API, not a plan) where Cavvy asks before running several paid models at once, and so does a CLI with variables of its own.
 
 ## Why it's built this way
 

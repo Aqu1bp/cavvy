@@ -66,7 +66,7 @@ import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { findCli } from "../backends/cli";
-import { AGENT_CLIS, agentCli } from "../backends/defs";
+import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { commandList, commandRefusesImages, openInBrowser, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
@@ -1254,7 +1254,7 @@ export class App {
             this.notice(c.message, "error");
             return true;
         }
-        if (this.model?.provider === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
+        if (baseCli(this.model?.provider) === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
             this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: press esc to stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
             return true;
         }
@@ -1462,7 +1462,7 @@ export class App {
         if (this.settings.showThinking) return true;
         // Anthropic "updates" display: short progress notes, always shown (Claude Code's too).
         const provider = this.model?.provider ?? "";
-        return getProvider(provider)?.kind === "anthropic" || provider === "claude-code";
+        return getProvider(provider)?.kind === "anthropic" || baseCli(provider) === "claude-code";
     }
 
     private flushThinking() {
@@ -2530,7 +2530,7 @@ export class App {
         if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
             const q = tok.text.slice(1);
             // Codex's own skills too, once it has listed them.
-            const cli = this.cliCommands?.provider === "codex" && this.model?.provider === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
+            const cli = this.cliCommands && baseCli(this.cliCommands.provider) === "codex" && baseCli(this.model?.provider) === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
             const found = [...this.skills, ...cli]
                 .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))

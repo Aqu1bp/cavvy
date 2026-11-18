@@ -53,6 +53,8 @@ export interface Prefs {
     terminalHeight: number;
     /** The docked review pane. */
     reviewWidth: number;
+    /** The review pane's diffs leave out changes of whitespace alone. */
+    reviewIgnoreWhitespace: boolean;
     /** Model refs, in the order they were starred. */
     favoriteModels: string[];
     chatWidth: "narrow" | "default" | "wide";
@@ -83,6 +85,7 @@ export const PREF_DEFAULTS: Prefs = {
     sidebarWidth: 260,
     terminalHeight: 260,
     reviewWidth: 720,
+    reviewIgnoreWhitespace: true,
     favoriteModels: [],
     chatWidth: "default",
     // "instant" came from t3code; new installs get quick panels. Saved prefs keep their value (they're stored whole).

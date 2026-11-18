@@ -39,6 +39,7 @@ import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
 import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import { accountProtectionFolders } from "./account-permissions";
@@ -216,7 +217,7 @@ export interface ClaudeStatus {
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
 export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
+    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: cliEnv(providerId, accountId) });
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -313,7 +314,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
         // Without the CLI's own telemetry, update and flag requests: a title cost 0.77 -> 0.42 CPU-s to its answer (measured,
         // Linux, the bench's stand-in API), the same model answering. Only here: a session's CLI and the model list keep them.
-        const env = { ...accountEnv(this.def.id, req.account ?? defaultAccount(this.def.id)), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+        const env = { ...cliEnv(this.def.id, req.account ?? defaultAccount(this.def.id)), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
         const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env });
         const kill = () => void proc.kill();
         req.signal?.addEventListener("abort", kill, { once: true });
@@ -341,7 +342,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: cliEnv(this.def.id, defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -1334,7 +1335,7 @@ class ClaudeTurn {
         if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         let env: ReturnType<typeof accountEnv>;
         try {
-            env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
+            env = cliEnv(this.def.id, this.t.accountId, this.t.cwd);
             // Marked as its session's, as a live process is (LiveCliSession.start): a sub-agent's turns run here.
             this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: this.t.processMark ? { ...env, [SESSION_VAR]: this.t.processMark } : env });
         } catch (e) {
