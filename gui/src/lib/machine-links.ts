@@ -97,7 +97,7 @@ export function dropLink(name: string | undefined) {
  * Once it's open (now, when it is). Waiting to try again (it couldn't be reached), it's tried now: the user asked.
  * Rejected as soon as that try fails, with why, rather than after every try it makes by itself.
  */
-export function opened(link: Rpc): Promise<void> {
+export function opened(link: Rpc, name?: string): Promise<void> {
     if (link.state === "open") return Promise.resolve();
     if (link.idle) link.reconnectNow();
     return new Promise((resolve, reject) => {
@@ -108,7 +108,7 @@ export function opened(link: Rpc): Promise<void> {
             } else if (s !== "connecting") {
                 off();
                 const problem = problems.get(link);
-                reject(new LinkError(problem?.message ?? "Couldn't reach that machine's Cavvy.", problem));
+                reject(new LinkError(problem?.message ?? `Couldn't reach Cavvy on ${name || "this computer"}.`, problem));
             }
         });
     });

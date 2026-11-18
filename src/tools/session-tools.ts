@@ -186,7 +186,9 @@ export const ReadSessionTool: Tool<{ id: string; turns?: number }> = {
 const previewSend = async (input: { id?: unknown; message?: unknown }, ctx: ToolContext) => {
     const id = str(input.id).trim();
     const title = id && id !== ctx.state.peers?.self && !farId(id) ? ctx.state.peers?.read(id)?.summary.title : undefined;
-    return { summary: title ? `Send a message to “${title}”` : "Send a message to another session", body: str(input.message).trim() || undefined };
+    // One on another machine: which machine, at least (its title is that machine's to say).
+    const on = id && farId(id) ? id.slice(0, id.indexOf("/")) : undefined;
+    return { summary: title ? `Send a message to “${title}”` : on ? `Send a message to a session on ${on}` : "Send a message to another session", body: str(input.message).trim() || undefined };
 };
 
 const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: unknown; effort?: unknown }) => {

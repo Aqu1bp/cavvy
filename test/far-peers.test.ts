@@ -88,6 +88,8 @@ test("a server asks through the user's computer: its own sessions and the other 
     const denied = await answerPeers("box", "list", { limit: 10 }, mac.ops, servers, deny);
     expect((denied as { id: string }[]).map((r) => r.id)).toEqual(["lab/l1"]);
     await expect(answerPeers("box", "read", { id: `${HOME_NAME}/m1` }, mac.ops, servers, deny)).rejects.toThrow("denies ReadSession");
+    // With nothing else to list, the list being kept back is said, not taken for no sessions.
+    await expect(answerPeers("box", "list", { limit: 10 }, mac.ops, new Map([["box", box.link]]), deny)).rejects.toThrow("denies ListSessions");
     expect(((await answerPeers("box", "read", { id: "lab/l1" }, mac.ops, servers, deny)) as { text: string }).text).toBe("turns of l1");
     // A refused list is said, not taken for none.
     await expect(serverFarPeers(() => Promise.reject(new Error("busy"))).list({ limit: 5 })).rejects.toThrow("busy");
