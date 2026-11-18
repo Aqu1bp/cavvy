@@ -16,6 +16,7 @@ import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { cavvyHome } from "../config/paths";
 import { formatSkill, mentionNames, skillMentions, withSkills, type Skill } from "../agent/skills";
+import { baseCli } from "./defs";
 
 /** Claude Code names a plugin's skills <plugin>:<name>. */
 export const CLAUDE_PLUGIN = "cavvy";
@@ -23,7 +24,7 @@ export const CLAUDE_PREFIX = `${CLAUDE_PLUGIN}:`;
 
 /** Claude Code and Codex run skills themselves; Cavvy's API models get them pasted in. */
 export function cliRunsSkills(provider: string | undefined): boolean {
-    return provider === "claude-code" || provider === "codex";
+    return baseCli(provider) === "claude-code" || baseCli(provider) === "codex";
 }
 
 /** HARNESS_SKILL_DIR: Cavvy's old name for it (legacy.ts). */

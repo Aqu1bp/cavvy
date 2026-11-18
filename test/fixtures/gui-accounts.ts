@@ -84,7 +84,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: one account 
         trigger.props.onClick();
         expect(trigger.props["aria-expanded"]).toBe(true);
         expect(f.menus[0].label).toBe(`${name} actions`);
-        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in", "Refresh status", "Learn more…"]);
+        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in", `Add another ${name}…`, "Refresh status", "Learn more…"]);
         f.button("Sign in").props.onClick();
         expect(f.logins[0].slice(0, 2)).toEqual([provider, "default"]);
         expect(trigger.props["aria-expanded"]).toBe(false);
@@ -118,7 +118,7 @@ test("a connected provider shows its plan, a status dot and its one account's em
         expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Connected");
         expect(text(f.nodes().find((n) => n.props.class?.startsWith("prov-sub"))!)).toBe("me@example.test");
         f.button("Claude Code actions").props.onClick();
-        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Environment variables…", "Refresh status", "Learn more…", "Turn off…"]);
+        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Environment variables…", "Add another Claude Code…", "Refresh status", "Learn more…", "Turn off…"]);
         f.button("Turn off…").props.onClick();
         expect(offs).toEqual([1]);
         f.calls.length = 0;

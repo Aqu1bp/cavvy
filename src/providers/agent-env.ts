@@ -14,7 +14,7 @@
 
 import { createHash } from "crypto";
 import { getKey, removeKey, setKey } from "../auth/credentials";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { registerSecret } from "../util/redact";
 import { ProviderError } from "./types";
 import { readAgentConfig, readProvidersFile, readProvidersFileForUpdate, removeAgentConfig, validEnvName, writeProvidersFile } from "./registry";
@@ -85,6 +85,10 @@ export function agentEnv(provider: string): Record<string, string> {
  * accounts). Cavvy's per-launch variables go over this.
  */
 export function cliEnv(provider: string, accountId?: string, cwd?: string): Record<string, string> {
+    // A removed instance isn't started as its CLI's own setup in its place (a plan instead of a router, say).
+    if (baseCli(provider) !== provider && !readAgentConfig(provider)) {
+        throw new ProviderError(`The ${agentCli(provider)?.name ?? baseCli(provider)} setup "${provider.slice(provider.indexOf("@") + 1)}" was removed. Pick another model.`, 404);
+    }
     const own = agentEnv(provider);
     return agentCli(provider)?.account ? { ...own, ...accountEnv(provider, accountId, cwd) } : own;
 }

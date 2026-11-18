@@ -62,7 +62,7 @@ import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
 import { attachedAsText, forBackend, pastedTexts, readsPdf } from "../providers/files";
@@ -1704,7 +1704,7 @@ export class Agent {
             maxTurns: this.o.maxTurns,
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
             // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
-            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
+            hooks: baseCli(this.model.provider) === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
@@ -1760,13 +1760,13 @@ export class Agent {
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
-        const monitoring = watching && caller === "codex";
+        const monitoring = watching && baseCli(caller) === "codex";
         // Neither has a browser to show Cavvy's pane: its tools go to both.
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to both, on a Mac with Xcode.
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
-        const worktrees = caller === "codex" || acp;
+        const worktrees = baseCli(caller) === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
@@ -1837,7 +1837,7 @@ export class Agent {
         // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
         this.registration ??= registerTools(
             () => this.serverTools,
-            () => (this.model.provider === "codex" ? undefined : this.serverInstructions),
+            () => (baseCli(this.model.provider) === "codex" ? undefined : this.serverInstructions),
         );
         return {
             name: MCP_SERVER_NAME,
@@ -2875,7 +2875,7 @@ export class Agent {
         const resume = this.backendResume(provider, place);
         if (!resume) return false;
         // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
-        const ownHooks = provider === "codex";
+        const ownHooks = baseCli(provider) === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const hostAccount = this.session.accountId(provider);
@@ -2913,7 +2913,7 @@ export class Agent {
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.`, ...(opts.idle ? { idle: true } : {}) });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
         // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); Cavvy runs it for Codex, and the memory files' InstructionsLoaded on both.
-        if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
+        if (!this.o.isSubagent) void (baseCli(provider) === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
     }
 
@@ -4201,7 +4201,7 @@ function nestedAgentLabel(parent: string, label: string): string {
 /** The mode a read-only agent on Claude Code or Codex runs in, under the session's mode. */
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
-    return mode === "auto" && provider === "codex" ? "auto" : "default";
+    return mode === "auto" && baseCli(provider) === "codex" ? "auto" : "default";
 }
 
 /** A call that only reads (Read, Grep, a read-only command, as the permission check takes them): it can't have changed a worktree it names. */

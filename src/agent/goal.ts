@@ -22,7 +22,7 @@ import { redact } from "../util/redact";
 import { duration } from "../server/duration";
 import { formatTokens } from "../providers/pricing";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import type { GoalState } from "../server/protocol";
 
 /** Claude Code's limit too. */
@@ -517,7 +517,7 @@ export function nativeGoalView(g: NativeGoal, running: boolean): GoalState {
         tokens: g.tokens ?? 0,
         judge: "native",
         by,
-        canPause: g.provider === "codex",
+        canPause: baseCli(g.provider) === "codex",
         ...(g.lastReason ? { lastReason: g.lastReason } : {}),
         ...(note ? { note } : {}),
     };
@@ -564,7 +564,7 @@ export function nativeGoalEnd(g: NativeGoal): string | undefined {
 
 /** Codex stopped its goal at a usage limit: the automatic resume after it goes on with the goal. */
 export function limitedCodexGoal(g: NativeGoal | undefined): boolean {
-    return g?.provider === "codex" && g.status === "limited";
+    return !!g && baseCli(g.provider) === "codex" && g.status === "limited";
 }
 
 /** "Goal (Codex, paused): …" and its details, for /goal while a turn runs (the CLI answers it otherwise). */

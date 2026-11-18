@@ -8,7 +8,7 @@ import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-co
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
 import { findCli } from "./cli";
-import { agentCli } from "./defs";
+import { agentCli, baseCli } from "./defs";
 import { AcpBackend, acpStatus } from "./acp/backend";
 import { AgyBackend, agyStatus } from "./agy/backend";
 
@@ -77,7 +77,7 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
     const base = { signIn: cli.signIn, signOut: cli.signOut, installHint: cli.install };
     const path = findCli(providerId, cli);
     if (!path) return { status: { ...base, installed: false, signedIn: false, description: "not installed" } };
-    if (providerId === "codex") {
+    if (baseCli(providerId) === "codex") {
         const plan: { account: CodexAccount; limits?: PlanLimits } = limits ? await codexPlan(providerId, signal, accountId) : { account: await codexAccount(providerId, signal, accountId) };
         const a = plan.account;
         return { status: { ...base, installed: true, path, signedIn: Boolean(a.type) || !a.requiresAuth, description: describeCodexAuth(a), apiKey: a.type === "apiKey", email: a.email, plan: a.planType }, limits: plan.limits };

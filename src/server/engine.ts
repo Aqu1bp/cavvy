@@ -41,11 +41,13 @@ import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
+import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
+
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
 import { AppUpdates } from "./app-update";
 import { findCli } from "../backends/cli";
-import { AGENT_CLIS, agentCli } from "../backends/defs";
+import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
@@ -849,9 +851,10 @@ export class Engine {
         return Promise.race([this.cachedListings, fresh.then(() => true)]).then((shown): unknown => (shown ? undefined : fresh));
     }
 
-    refreshListings(force = false): Promise<ProviderListing[]> {
-        if (this.refreshing && !force) return this.refreshing;
-        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
+    /** `ids`: list these providers again (an instance added or changed), the others from the cache as it stands. */
+    refreshListings(force = false, ids?: string[]): Promise<ProviderListing[]> {
+        if (this.refreshing && !force && !ids) return this.refreshing;
+        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force, ...(ids ? { refreshIds: ids } : {}) }))
             .then((l) => {
                 const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
                 const changed = key(l) !== key(this.listings);
@@ -2182,6 +2185,8 @@ export class Engine {
     private async providersList(): Promise<ProviderInfo[]> {
         const out: ProviderInfo[] = [];
         for (const p of allProviders()) {
+            // A CLI's named instances are listed with it.
+            if (p.instanceOf) continue;
             if (p.auth === "gcloud") {
                 const v = readVertexConfig();
                 out.push({ id: p.id, name: p.name, kind: p.kind, configured: Boolean(v), source: v ? "gcloud" : undefined, masked: v ? `${v.project} · ${v.location}` : undefined, requiresKey: false });
@@ -2210,6 +2215,7 @@ export class Engine {
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
                         env: agentEnvInfo(p.id),
+                        instances: listInstances(p.id),
                         ...(def.autoAsks ? { autoAsks: true } : {}),
                     },
                 });
@@ -2868,7 +2874,7 @@ export class Engine {
         const own = new Set([...named, ...prompts.map((p) => p.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
         // All Codex reports are its skills (skills/list), for the $ menu too.
-        const skill = provider === "codex";
+        const skill = baseCli(provider) === "codex";
         const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own ${skill ? "skill" : "command"}`, ...(skill ? { skill } : {}) }));
         return [...builtin, ...custom, ...skills, ...prompts, ...cli];
     }
@@ -3588,7 +3594,41 @@ export class Engine {
                 }
                 // A running CLI keeps what it started with; its next turn starts a new one (its launch fingerprint changed).
                 forgetClient(id);
-                void this.refreshListings(true);
+                void this.refreshListings(false, [id]);
+                return null;
+            }
+            case "providers.addInstance": {
+                const base = str(p.base, "base");
+                let id: string;
+                try {
+                    id = await addInstance(base, instanceInput(p));
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                // Its models, listed with its setup: only it is asked.
+                void this.refreshListings(false, [id]);
+                return { id };
+            }
+            case "providers.updateInstance": {
+                const id = str(p.id, "id");
+                try {
+                    await updateInstance(id, instanceInput(p));
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                forgetClient(id);
+                void this.refreshListings(false, [id]);
+                return null;
+            }
+            case "providers.removeInstance": {
+                const id = str(p.id, "id");
+                // A turn running on it goes on; its session's next message says to pick another model (cliEnv).
+                await removeInstance(id).catch((e) => {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                });
+                forgetClient(id);
+                void this.refreshListings(false, []);
+                this.broadcast({ type: "models.changed" });
                 return null;
             }
             case "offers.set": {
@@ -3846,7 +3886,7 @@ export class Engine {
                 // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
                 // A bare /name may be a plugin's command (/plugin:name) when only one plugin has it.
                 const plugin = () => pluginCommandFor(this.workspaces.get(cwd)?.commands ?? loadCustomCommands(cwd, isTrusted(cwd)), command!);
-                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
+                if (command && !commands.some((c) => c.name === command) && !(baseCli(provider) === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
                     throw new RpcError(`Unknown command /${command}`, "unknown_command");
                 }
                 return commands;
@@ -4077,4 +4117,7 @@ function num(v: unknown, d: number): number {
     return typeof v === "number" && Number.isFinite(v) ? v : d;
 }
 
-
+/** An instance's fields as a window sends them (instances.ts checks them). */
+function instanceInput(p: Record<string, unknown>): InstanceInput {
+    return { name: typeof p.name === "string" ? p.name : "", path: typeof p.path === "string" ? p.path : undefined, args: p.args as string[] | undefined, env: p.env as InstanceInput["env"], models: p.models as string[] | undefined };
+}

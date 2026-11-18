@@ -1,7 +1,7 @@
 import "../styles/cli-env.css";
 import { createSignal, Index, Show } from "solid-js";
 import { Lock, LockOpen, Plus, X } from "lucide-solid";
-import type { AgentEnvVar, ProviderInfo } from "@shared/protocol";
+import type { AgentEnvVar, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
@@ -133,6 +133,98 @@ export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
             >
                 <p class="env-hint">Set for {p.provider.name} only, over what Cavvy passes it.</p>
                 <EnvEditor rows={rows()} onChange={setRows} disabled={busy()} />
+                <Show when={error()}>
+                    <p class="account-error" role="alert">
+                        {error()}
+                    </p>
+                </Show>
+                <button type="submit" hidden />
+            </form>
+        </Dialog>
+    );
+}
+
+/** The lines of a box, trimmed, without blank ones. */
+const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** Add a named instance of a CLI, or change one: its name, path, arguments, variables and models. */
+export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInstanceInfo; onClose: () => void }) {
+    const cli = p.provider.name;
+    const [name, setName] = createSignal(p.instance?.name ?? "");
+    const [path, setPath] = createSignal(p.instance?.path ?? "");
+    const [args, setArgs] = createSignal((p.instance?.args ?? []).join("\n"));
+    const [models, setModels] = createSignal((p.instance?.models ?? []).join("\n"));
+    const [rows, setRows] = createSignal(envRows(p.instance?.env?.length ? p.instance.env : [{ name: "", value: "" }]));
+    const [busy, setBusy] = createSignal(false);
+    const [error, setError] = createSignal<string>();
+    const save = async () => {
+        if (busy()) return;
+        if (!name().trim()) {
+            setError("Give it a name.");
+            return;
+        }
+        setBusy(true);
+        setError(undefined);
+        const fields = { name: name().trim(), path: path().trim() || undefined, args: lines(args()), env: envVars(rows()), models: lines(models()) };
+        try {
+            if (p.instance) await rpc.call("providers.updateInstance", { id: p.instance.id, ...fields });
+            else await rpc.call("providers.addInstance", { base: p.provider.id, ...fields });
+            toast(p.instance ? "Saved. Applies from the next message." : `Added ${cli} · ${fields.name}`, "success");
+            p.onClose();
+            await Promise.all([refreshProviders(), refreshModels()]).catch(() => undefined);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <Dialog
+            open
+            onClose={() => !busy() && p.onClose()}
+            title={p.instance ? `${cli} · ${p.instance.name}` : `Add another ${cli}`}
+            width={560}
+            footer={
+                <>
+                    <button class="btn ghost" disabled={busy()} onClick={() => p.onClose()}>
+                        Cancel
+                    </button>
+                    <button class="btn primary" disabled={busy()} onClick={() => void save()}>
+                        {busy() ? <Spinner size={12} /> : p.instance ? "Save" : "Add"}
+                    </button>
+                </>
+            }
+        >
+            <form
+                class="env-form instance-form"
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    void save();
+                }}
+            >
+                <label>
+                    <span>Name</span>
+                    <input class="input" autofocus maxLength={64} placeholder="OpenRouter" value={name()} disabled={busy()} onInput={(e) => setName(e.currentTarget.value)} />
+                </label>
+                <div class="instance-field">
+                    <span>Environment variables</span>
+                    <EnvEditor rows={rows()} onChange={setRows} disabled={busy()} />
+                </div>
+                <label>
+                    <span>More models</span>
+                    <textarea class="input mono" rows={2} spellcheck={false} placeholder="One model id a line, as the CLI takes it" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
+                </label>
+                <details class="account-advanced" open={Boolean(p.instance?.path || p.instance?.args?.length)}>
+                    <summary>Program and arguments</summary>
+                    <label>
+                        <span>Path</span>
+                        <input class="input mono" spellcheck={false} placeholder={`The ${cli} on your PATH`} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
+                    </label>
+                    <label>
+                        <span>Arguments</span>
+                        <textarea class="input mono" rows={2} spellcheck={false} placeholder="One argument a line, before Cavvy's own" value={args()} disabled={busy()} onInput={(e) => setArgs(e.currentTarget.value)} />
+                    </label>
+                </details>
                 <Show when={error()}>
                     <p class="account-error" role="alert">
                         {error()}

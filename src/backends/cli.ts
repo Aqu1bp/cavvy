@@ -10,7 +10,7 @@ import { childEnv } from "../util/env";
 import { redact } from "../util/redact";
 import { ProviderError } from "../providers/types";
 import { readAgentConfig } from "../providers/registry";
-import { agentCli } from "./defs";
+import { agentCli, baseCli } from "./defs";
 
 export interface CliInfo {
     /** Program name on PATH. */
@@ -42,7 +42,7 @@ function cliOf(id: string): CliInfo {
  */
 export function findCli(providerId: string, cli: CliInfo): string | undefined {
     const PATH = [process.env.PATH, join(homedir(), ".local", "bin")].filter(Boolean).join(delimiter);
-    const configured = readAgentConfig(providerId)?.path;
+    const configured = configuredPath(providerId);
     if (configured) {
         const p = configured.startsWith("~/") ? homedir() + configured.slice(1) : configured;
         if (isAbsolute(p)) return existsSync(p) && statSync(p).isFile() ? p : undefined;
@@ -54,13 +54,18 @@ export function findCli(providerId: string, cli: CliInfo): string | undefined {
 export function requireCli(providerId: string, cli: CliInfo): string {
     const bin = findCli(providerId, cli);
     if (!bin) {
-        const configured = readAgentConfig(providerId)?.path;
+        const configured = configuredPath(providerId);
         throw new ProviderError(configured ? `${cli.product} isn't at ${configured} (set with /login ${providerId}).` : `${cli.product} isn't installed (no \`${cli.command}\` on PATH). ${cli.install}, sign in with \`${cli.signIn}\`, then try again.`, 401);
     }
     return bin;
 }
 
-/** Extra arguments saved for this CLI (providers.json), placed before Cavvy's own. */
+/** The path saved for this CLI: a named instance's own, else its CLI's. */
+function configuredPath(providerId: string): string | undefined {
+    return readAgentConfig(providerId)?.path ?? (baseCli(providerId) !== providerId ? readAgentConfig(baseCli(providerId))?.path : undefined);
+}
+
+/** Extra arguments saved for this CLI (providers.json), placed before Cavvy's own: a named instance's are its own. */
 export function extraArgs(providerId: string): string[] {
     return readAgentConfig(providerId)?.args ?? [];
 }
