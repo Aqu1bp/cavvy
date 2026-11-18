@@ -21,6 +21,7 @@ import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionR
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
+import { SIDE_CHAT_REMINDER, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -114,6 +115,7 @@ import type {
     SessionResumed,
     SessionTurnsPage,
     SessionState,
+    SessionStatus,
     WorkingIn,
     ToolBlock,
     ToolCategoryId,
@@ -408,7 +410,7 @@ function reportsAgent(name: string, isError: boolean | undefined): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust", "btw"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -683,9 +685,10 @@ export class Runtime {
         private engine: Engine,
         readonly ws: Workspace,
         session: Session,
-        opts: { mode?: PermissionMode; resumed: boolean },
+        opts: { mode?: PermissionMode; resumed: boolean; side?: SideChatOrigin },
     ) {
         this.session = session;
+        this.side = opts.side;
         // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
         session.onSaving = (error) => queueMicrotask(() => {
             if (!error) return this.notice("Saved again.", "info");
@@ -1320,6 +1323,7 @@ export class Runtime {
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
+            ...(this.side ? { sideOf: this.side.of } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
         };
@@ -2615,6 +2619,7 @@ export class Runtime {
         this.placeAgent(this.model.provider);
         this.agent = new Agent({
             session: this.session,
+            ...(this.side ? { context: () => this.side?.context ?? [] } : {}),
             trusted: () => this.ws.trusted,
             skills: () => this.ws.freshSkills(),
             model: this.model,
@@ -2681,6 +2686,8 @@ export class Runtime {
         if (this.session.model === undefined && this.model) this.session.setModel(modelRef(this.model));
         // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
         if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
+        // A side chat's model hears what it is with the first question (an agent made again before then too).
+        if (this.side && !this.session.messageCount) this.agent.addReminder(SIDE_CHAT_REMINDER);
         this.leftIn = undefined;
     }
 
@@ -4169,7 +4176,7 @@ export class Runtime {
         if (!trimmed && !attachments?.length) return { queued: false };
         this.toolState.wakes?.resume();
         // These answer here and send nothing to the model, so what's attached would be lost: the message stays in the box.
-        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust)(?=\s|$)/i)?.[1]?.toLowerCase();
+        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust|btw)(?=\s|$)/i)?.[1]?.toLowerCase();
         if (bare) throw new RpcError(`/${bare} doesn't take attachments. Send them in a message of their own.`, "no_attachments");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
@@ -4181,6 +4188,12 @@ export class Runtime {
             if (this.nativeGoalCommand(trimmed, goal[1] ?? "")) return { queued: false };
         } else if (goal && !(this.busy && parseGoalCommand(goal[1] ?? "").kind === "set")) {
             await this.goalCommand(goal[1] ?? "", attachments);
+            return { queued: false };
+        }
+        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here.
+        const btw = literal || this.side ? undefined : trimmed.match(/^\/btw(?:\s+([\s\S]*))?$/i);
+        if (btw) {
+            await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
         if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
@@ -5607,6 +5620,18 @@ export class Runtime {
     }
     get guest(): boolean {
         return this.lentTo !== undefined;
+    }
+
+    /** A side chat's: whose it is, and that session's conversation as it sees it (src/agent/side-chat.ts). */
+    side?: SideChatOrigin;
+    /** This session's side chat, while it has one open. */
+    sideChat?: string;
+
+    /** The side chat's state, as its parent shows it (its tab's dot): undefined once it's gone. */
+    sideChatChanged(id: string | undefined, status?: SessionStatus) {
+        this.sideChat = id;
+        const now = id ? { id, ...(status && status !== "idle" ? { status } : {}) } : undefined;
+        if (JSON.stringify(now) !== JSON.stringify(this.view.state.sideChat)) this.setState({ sideChat: now });
     }
     /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
     guestSession?: { id: string; title: string };

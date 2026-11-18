@@ -123,6 +123,8 @@ interface Opts {
     /** A wake queue, as the TUI and the app give a session. */
     wakes?: InstanceType<typeof WakeQueue>;
     skills?: () => import("../src/agent/skills").Skill[];
+    /** A side chat's: another session's conversation, sent before this one's (AgentOptions.context). */
+    context?: () => readonly import("../src/providers/types").Message[];
 }
 
 async function makeAgent(o: Opts) {
@@ -144,6 +146,7 @@ async function makeAgent(o: Opts) {
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
         ...(o.skills ? { skills: o.skills } : {}),
+        ...(o.context ? { context: o.context } : {}),
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -489,6 +492,23 @@ describe("Claude Code backend", () => {
         await run("pick");
         expect(seen).toEqual(["Which color?"]);
         expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedInput: { answers: { "Which color?": "Blue" } } });
+    });
+
+    test("a side chat on Claude Code joins with the other session's conversation, once", async () => {
+        const context = [
+            { role: "user" as const, content: [{ type: "text" as const, text: "rename the auth module" }] },
+            { role: "assistant" as const, content: [{ type: "text" as const, text: "Renamed it to identity." }] },
+        ];
+        const { run } = await makeAgent({ provider: "claude-code", context: () => context });
+        await run("why that name?");
+        const first = userTexts().at(-1)!;
+        expect(first).toContain("<conversation-so-far>");
+        expect(first).toContain("rename the auth module");
+        expect(first).toContain("Renamed it to identity.");
+        expect(first.endsWith("why that name?")).toBe(true);
+        // Its CLI has it from then on: not sent again.
+        await run("and before?");
+        expect(userTexts().at(-1)).not.toContain("rename the auth module");
     });
 
     test("ExitPlanMode: approving the plan switches the mode, here and in Claude Code", async () => {

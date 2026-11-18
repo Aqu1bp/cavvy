@@ -19,7 +19,7 @@ import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
@@ -120,7 +120,8 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { attachmentsDir, checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { sideChatCut, sideChatDir, sideChatsDir } from "../agent/side-chat";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
@@ -462,6 +463,8 @@ export class Engine {
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
+        // Side chats left by a server that stopped: discarded with it.
+        rmSync(sideChatsDir(), { recursive: true, force: true });
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
@@ -517,7 +520,8 @@ export class Engine {
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;
         } else this.idleNow(rt.id);
-        if (!this.working || this.stopping) return;
+        // A side chat isn't carried on after a restart: it's gone with the server.
+        if (!this.working || this.stopping || rt.side) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
     }
@@ -655,6 +659,8 @@ export class Engine {
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
+        // A side chat is shown in its parent's panel: its tab says it's waiting, not a notification.
+        if (rt.side) return this.sessionChanged(rt);
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
@@ -670,6 +676,8 @@ export class Engine {
         keepAwake.set(rt, rt.status === "running");
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
+        // A side chat isn't listed: its parent's tab shows how it is.
+        if (rt.side) return this.runtimes.get(rt.side.of)?.sideChatChanged(rt.id, rt.status);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
         if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
@@ -1009,7 +1017,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1090,8 +1098,9 @@ export class Engine {
     /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
     peerHost(): PeerHost {
         return {
-            live: () => this.runtimes.values(),
-            get: (id) => this.runtimes.get(id),
+            // Side chats aren't sessions other agents reach.
+            live: () => [...this.runtimes.values()].filter((rt) => !rt.side),
+            get: (id) => (this.runtimes.get(id)?.side ? undefined : this.runtimes.get(id)),
             open: async (id) => {
                 if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
                 while (this.closing.has(id)) await this.afterClosing(id);
@@ -1201,6 +1210,62 @@ export class Engine {
         rt.forkedFrom(notes);
         this.sessionChanged(rt);
         return rt;
+    }
+
+    /**
+     * The session's side chat (src/agent/side-chat.ts), opened now if it has none, with `text` sent to it. It's given
+     * the session's conversation as it is now (a turn under way, up to its last step), works in its folder with its
+     * model, accounts and speed, read-only (plan mode), and isn't listed.
+     */
+    async openSideChat(parent: Runtime, text?: string): Promise<Runtime> {
+        if (parent.side) throw new RpcError("A side chat can't have a side chat of its own.", "invalid");
+        if (parent.guest) throw new RpcError("This session can't have a side chat.", "invalid");
+        let rt = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (!rt) {
+            // Read for it if the parent doesn't hold them (a long agent CLI session), and let go of again there: the side
+            // chat holds the one copy. Otherwise the parent's own, shared.
+            const held = !parent.session.historyDigest;
+            const all = parent.session.messages;
+            const context = all.slice(0, sideChatCut(all));
+            if (!held) parent.session.letGoOfMessages();
+            const id = newSessionId();
+            const dir = sideChatDir(id);
+            mkdirSync(dir, { recursive: true, mode: 0o700 });
+            const session = new Session({ id, cwd: parent.session.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: parent.session.meta.system }, { file: join(dir, `${id}.jsonl`) });
+            for (const provider of ["claude-code", "codex"]) session.setAccount(provider, parent.session.accountId(provider));
+            if (parent.model) session.setModel(modelRef(parent.model));
+            if (parent.session.fastMode !== undefined) session.setFastMode(parent.session.fastMode);
+            if (parent.session.workdir) session.setWorkdir(parent.session.workdir);
+            session.setTitle("Side chat");
+            try {
+                rt = new Runtime(this, parent.ws, session, { mode: "plan", resumed: false, side: { of: parent.id, context } });
+            } catch (e) {
+                session.release();
+                rmSync(dir, { recursive: true, force: true });
+                throw e;
+            }
+            this.runtimes.set(id, rt);
+            await rt.ready.catch(() => undefined);
+            if (parent.effort) rt.setEffort(parent.effort);
+            parent.sideChatChanged(id, rt.status);
+        }
+        if (text?.trim()) await rt.send(text.trim());
+        return rt;
+    }
+
+    /** A side chat closed: its turn stopped, its runtime let go of, its files removed. Its parent's tab goes. */
+    async discardSideChat(rt: Runtime): Promise<void> {
+        if (!rt.side) return;
+        const parent = this.runtimes.get(rt.side.of);
+        if (parent?.sideChat === rt.id) parent.sideChatChanged(undefined);
+        for (const c of this.clients) if (c.subs.delete(rt.id)) c.send({ type: "sessions.remove", id: rt.id });
+        if (this.runtimes.get(rt.id) === rt) {
+            rt.interrupt();
+            await this.unload(rt);
+        }
+        rmSync(sideChatDir(rt.id), { recursive: true, force: true });
+        // What was attached to its messages, saved in the project.
+        rmSync(join(attachmentsDir(rt.ws.cwd), rt.id), { recursive: true, force: true });
     }
 
     /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Cavvy. */
@@ -1343,6 +1408,9 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // A side chat stays as long as its parent is open (its panel shows it again), and goes with it.
+        if (rt.side && this.runtimes.has(rt.side.of)) return;
+        if (rt.side) return void this.discardSideChat(rt);
         // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
         // while a window shows its simulator.
         if (rt.guest && rt.simulator.watched) return this.guestLater(rt);
@@ -1356,6 +1424,9 @@ export class Engine {
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
         if (rt.guest) this.guestGone(rt);
+        // Its side chat goes with it.
+        const side = rt.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
+        if (side) void this.discardSideChat(side);
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -2494,6 +2565,7 @@ export class Engine {
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
+            { name: "btw", description: "Ask about this session in a side chat, without adding to it", args: "<question>", noAttachments: true },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all> | restart]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
@@ -2762,8 +2834,8 @@ export class Engine {
                     await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
                     clearTimeout(timer);
                 }
-                // Search can open a session beyond the sidebar list window.
-                client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
+                // Search can open a session beyond the sidebar list window. A side chat isn't listed.
+                if (!rt.side) client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
                 // Open in this window before its connection dropped: only what it missed, when that's all still here.
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
@@ -2836,6 +2908,16 @@ export class Engine {
                 this.runtimes.get(id)?.browser.unwatch(client);
                 this.runtimes.get(id)?.simulator.unwatch(client);
                 this.unloadIfUnused(id);
+                return null;
+            }
+            case "session.sideChat": {
+                const rt = await this.openSideChat(this.runtime(p.id), typeof p.text === "string" ? p.text : undefined);
+                return { id: rt.id };
+            }
+            case "session.closeSideChat": {
+                const parent = this.runtimes.get(str(p.id, "id"));
+                const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+                if (side) await this.discardSideChat(side);
                 return null;
             }
             case "session.shown": {
