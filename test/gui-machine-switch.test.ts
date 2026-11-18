@@ -8,3 +8,18 @@ test("switching to a session on another machine opens it in the same page, and n
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 }, 60_000);
+
+// Home in a folder on another machine: its worktrees are that machine's, listed, made and removed over the
+// connection to it (rpcFor), and the one picked opens there.
+test("Home's worktree picker asks the machine Home is on", async () => {
+    const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
+    const picker = await read("WorktreePicker.tsx");
+    expect(picker).toContain('rpcFor(undefined).call("projects.worktrees"');
+    expect(picker).toContain("openProject(w.path, true)");
+    const dialogs = await read("WorktreeDialogs.tsx");
+    // Each dialog's `rpc` is Home's machine's; none is the window's own.
+    expect(dialogs.split("const rpc = rpcFor(undefined);").length).toBe(3);
+    expect(dialogs).not.toMatch(/import \{[^}]*\brpc\b[^}]*\} from "\.\.\/state\/app"/);
+    expect(dialogs).not.toMatch(/openProject\([^,)]*\)/);
+    expect(await read("Home.tsx")).toContain("<Show when={app.homeCwd && info()?.git}>");
+});
