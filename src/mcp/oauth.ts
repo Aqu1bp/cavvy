@@ -332,6 +332,20 @@ export interface SignInOptions {
 const PAGE = (title: string, body: string) =>
     `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h2>${title}</h2><p>${body}</p></body>`;
 
+/**
+ * Sign-ins waiting for their page's answer, by the `state` each made up. The page ends on the machine with the
+ * browser; when that isn't this one (a session on a server), that machine's Cavvy brings the answer here
+ * (deliverCallback) instead of the browser reaching this machine's listener.
+ */
+const waiting = new Map<string, (req: Request) => Response>();
+
+/** The answer a sign-in's page ended with (`query`, as the browser was sent back with), given to the sign-in waiting for it: how it took it (an HTTP status), or undefined when none waits for it. */
+export function deliverCallback(query: string): number | undefined {
+    const state = new URLSearchParams(query).get("state");
+    const answer = state ? waiting.get(state) : undefined;
+    return answer?.(new Request(`http://127.0.0.1/callback?${query}`)).status;
+}
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
@@ -413,6 +427,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         throw new McpError(`couldn't listen on 127.0.0.1:${fixedPort ?? 0} for the sign-in (${(e as Error).message})${fixedPort ? "; free that port or change oauth.callbackPort" : ""}`);
     }
     try {
+        waiting.set(state, answer);
         const redirect = `http://127.0.0.1:${server.port}/callback`;
         let client: Entry["client"];
         if (oauth.clientId) {
@@ -456,6 +471,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
             s.servers![keyOf(name, url)] = { url, issuer: meta.issuer, tokenEndpoint: meta.token_endpoint, resource, client: oauth.clientId ? { client_id: client.client_id, redirect_uri: redirect, auth_method: client.auth_method } : client, tokens };
         });
     } finally {
+        waiting.delete(state);
         // Not forced: the browser still gets its page.
         void server.stop();
     }

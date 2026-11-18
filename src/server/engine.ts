@@ -25,7 +25,7 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
-import { APP_VERSION, cavvyHome, paths } from "../config/paths";
+import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
@@ -36,6 +36,7 @@ import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
+import { deliverCallback } from "../mcp/oauth";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
@@ -581,6 +582,7 @@ export class Engine {
         this.stopping = true;
         // First: a call a server's session waits for here is told this machine went away, not answered by its end.
         this.serverLinks?.stopWatching();
+        for (const c of [...this.mcpCallbacks.values()]) c.stop();
         this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
@@ -1426,6 +1428,58 @@ export class Engine {
 
     /** Ports of a server brought here for a window's sign-in card (servers.forward): closed with the card, or with the window. */
     private forwards = new Map<string, { opening: Promise<{ close(): void }>; clients: Set<EngineClient> }>();
+
+    /** The ports this machine answers on for MCP sign-ins of sessions on its servers (mcpCallback), each until its sign-in ends or its time is up. */
+    private mcpCallbacks = new Map<number, { stop(): void }>();
+    /**
+     * An MCP sign-in on server `name` ends in the browser here, on a port of this machine its link (`url`) names.
+     * Nothing of the server's is brought here: this machine answers `/callback` on that port itself, hands what it
+     * was sent to the server's Cavvy, and says in its own words how that went. For a few minutes, on the user's
+     * click in a window.
+     */
+    private async mcpCallback(client: EngineClient, name: string, url: string): Promise<null> {
+        if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+        if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+        let back: URL | undefined;
+        try {
+            back = new URL(new URL(url).searchParams.get("redirect_uri") ?? "");
+        } catch {
+            back = undefined;
+        }
+        const port = Number(back?.port);
+        if (!back || back.protocol !== "http:" || back.hostname !== "127.0.0.1" || back.pathname !== "/callback" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new RpcError("That sign-in doesn't end on this computer.", "invalid");
+        const link = (await this.servers()).connectedServers().get(name);
+        if (!link) throw new RpcError(`${name} isn't connected right now.`, "failed");
+        const page = (title: string, body: string) => new Response(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h2>${title}</h2><p>${body}</p></body>`, { headers: { "Content-Type": "text/html; charset=utf-8", Connection: "close" } });
+        this.mcpCallbacks.get(port)?.stop();
+        let server: ReturnType<typeof Bun.serve>;
+        try {
+            server = Bun.serve({
+                hostname: "127.0.0.1",
+                port,
+                fetch: async (req) => {
+                    const q = new URL(req.url);
+                    if (req.method !== "GET" || q.pathname !== "/callback") return new Response("Not found", { status: 404, headers: { Connection: "close" } });
+                    const r = (await link.ask("mcp.callback", { query: q.search.slice(1, 4001) }, 15_000).catch(() => undefined)) as { status?: unknown } | undefined;
+                    if (r?.status !== 200) return page("Sign-in didn't finish", `Go back to ${APP_TITLE} and start it again.`);
+                    // Done: nothing more is answered here.
+                    setTimeout(stop, 1000);
+                    return page("Signed in", `You can close this tab and go back to ${APP_TITLE}.`);
+                },
+            });
+        } catch {
+            throw new RpcError(`Port ${port} is in use on this computer, so the sign-in can't finish here. Close what's using it, then try again.`, "failed");
+        }
+        const timer = setTimeout(() => stop(), 5 * 60_000);
+        const stop = () => {
+            clearTimeout(timer);
+            if (this.mcpCallbacks.get(port) === entry) this.mcpCallbacks.delete(port);
+            void server.stop();
+        };
+        const entry = { stop };
+        this.mcpCallbacks.set(port, entry);
+        return null;
+    }
 
     private unforward(client: EngineClient, key: string) {
         const f = this.forwards.get(key);
@@ -3422,6 +3476,10 @@ export class Engine {
             case "servers.restore":
                 (await this.servers(client)).restore(str(p.name, "name"));
                 return null;
+            case "mcp.callback":
+                return { status: deliverCallback(str(p.query, "query").slice(0, 4000)) ?? 404 };
+            case "servers.mcpCallback":
+                return this.mcpCallback(client, str(p.name, "name"), str(p.url, "url"));
             case "servers.forward": {
                 if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
                 const entry = (await import("../servers/store")).getServer(str(p.name, "name"));

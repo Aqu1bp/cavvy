@@ -339,6 +339,53 @@ describe("OAuth", () => {
         });
     }
 
+    test("a sign-in on a server ends in the browser on the user's computer: its Cavvy answers the page's call and hands it to the server's", async () => {
+        const { deliverCallback } = await import("../src/mcp/oauth");
+        const { Engine } = await import("../src/server/engine");
+        const f = startOAuthMcpServer();
+        stops.push(f.stop);
+        let link = "";
+        // The sign-in, as it runs on the server.
+        const done = signIn("s", { url: f.url }, { open: (u) => void (link = u) });
+        while (!link) await Bun.sleep(5);
+        // Where the authorization server sends the browser back: 127.0.0.1 on the machine the browser is on.
+        const back = new URL((await fetch(link, { redirect: "manual" })).headers.get("location")!);
+        // This computer's Cavvy, connected to that server. (Both are this process here, so this computer listens on
+        // another port than the server's own listener holds.)
+        const engine = new Engine({});
+        const client = { subs: new Set<string>(), send() {} };
+        engine.clients.add(client as never);
+        const asked: string[] = [];
+        (engine as any).serverLinks = { stopWatching() {}, connectedServers: () => new Map([["box", { ask: async (m: string, p: { query: string }) => (asked.push(m), { status: deliverCallback(p.query) ?? 404 }) }]]) };
+        const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
+        const port = probe.port;
+        await probe.stop(true);
+        const here = new URL(link);
+        here.searchParams.set("redirect_uri", `http://127.0.0.1:${port}/callback`);
+        const call = (params: object) => engine.handle(client as never, "servers.mcpCallback" as never, params as never);
+        try {
+            // Only a page that ends on this computer, on a port of its own, for a server that's connected.
+            for (const bad of ["https://as.example/authorize?redirect_uri=http%3A%2F%2Fevil.example%2Fcallback", "https://as.example/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A80%2Fcallback", "https://as.example/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fother", "not a link"]) await expect(call({ name: "box", url: bad })).rejects.toThrow("doesn't end on this computer");
+            await expect(call({ name: "lab", url: here.href })).rejects.toThrow("lab isn't connected");
+            await call({ name: "box", url: here.href });
+            // Nothing but the page's own call is answered, and one that no sign-in waits for isn't taken.
+            expect((await fetch(`http://127.0.0.1:${port}/`)).status).toBe(404);
+            expect(await (await fetch(`http://127.0.0.1:${port}/callback?state=forged&code=x`)).text()).toContain("didn't finish");
+            expect(hasOAuthTokens("s", { url: f.url })).toBe(false);
+            // The browser, sent back: this computer's words, the server's sign-in finished.
+            const page = await (await fetch(`http://127.0.0.1:${port}/callback${back.search}`)).text();
+            expect(page).toContain("Signed in");
+            await done;
+            expect(hasOAuthTokens("s", { url: f.url })).toBe(true);
+            expect(new Set(asked)).toEqual(new Set(["mcp.callback"]));
+            // Over: no sign-in waits for that answer any more.
+            expect(deliverCallback(back.search.slice(1))).toBeUndefined();
+        } finally {
+            (engine as any).serverLinks = undefined;
+            await engine.stop();
+        }
+    });
+
     test("an expired token is refreshed before it's sent; a token the server stops taking is refreshed on its 401", async () => {
         const f = startOAuthMcpServer();
         stops.push(f.stop);
