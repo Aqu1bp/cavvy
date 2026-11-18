@@ -3,6 +3,7 @@ import { FileText, FileX, File as FileIcon, Image as ImageIcon, MessageSquareTex
 import { extensionOf, formatSize, previewNow, previewOf, tintOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 import { setViewedImage } from "../state/ui";
+import { Markdown } from "./blocks/Markdown";
 
 /** Under this (its longer side, in pixels) an image is too small to make out in a chip: its name is shown instead. */
 const TINY = 24;
@@ -140,7 +141,10 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                     )}
                 </For>
             </div>
-            <Show when={shown()}>{(t) => <pre class="attachment-preview mono">{t().text.length > 100_000 ? `${t().text.slice(0, 100_000)}\n… (${plural(t().lines, "line")} in all)` : t().text}</pre>}</Show>
+            <Show when={shown()}>
+                {/* A side chat's answer reads as it did there, not as the Markdown it was written in. */}
+                {(t) => (t().from === "side-chat" ? <div class="attachment-preview prose"><Markdown text={t().text} class="small" /></div> : <pre class="attachment-preview mono">{t().text.length > 100_000 ? `${t().text.slice(0, 100_000)}\n… (${plural(t().lines, "line")} in all)` : t().text}</pre>)}
+            </Show>
             <Show when={p.blocked}>
                 <div class="attachments-note">{p.blocked}</div>
             </Show>

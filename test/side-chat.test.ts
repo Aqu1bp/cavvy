@@ -83,11 +83,35 @@ describe("a side chat", () => {
         const again = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
         expect(again.id).toBe(sideId);
 
-        // Closed: gone, files and all; the parent's tab goes.
+        // Closed: the parent's tab goes at once; Undo brings it back as it was.
         await engine.handle(c, "session.closeSideChat", { id });
-        expect(engine.runtimes.has(sideId)).toBe(false);
-        expect(existsSync(sideChatDir(sideId))).toBe(false);
         expect(rt.snapshot().state.sideChat).toBeUndefined();
+        expect(await engine.handle(c, "session.reopenSideChat", { id })).toEqual({ id: sideId });
+        expect(rt.snapshot().state.sideChat?.id).toBe(sideId);
+        expect(side.session.messages.length).toBeGreaterThanOrEqual(2);
+
+        // Closed again and a new one opened: the old one is gone, files and all, and can't come back.
+        await engine.handle(c, "session.closeSideChat", { id });
+        const fresh = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+        expect(fresh.id).not.toBe(sideId);
+        await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
+        await engine.handle(c, "session.closeSideChat", { id });
+        await expect(engine.handle(c, "session.reopenSideChat", { id: "nope" })).rejects.toThrow();
+    });
+
+    test("closed, it's discarded once Undo's while has passed, and its status no longer reaches the tab", async () => {
+        const { engine, c, id, rt } = await parentWithTurn("hello there");
+        (engine as unknown as { o: { sideChatUndoMs?: number } }).o.sideChatUndoMs = 150;
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id, text: "pause" })) as { id: string };
+        const side = engine.runtimes.get(sideId)!;
+        await until(() => side.busy);
+        await engine.handle(c, "session.closeSideChat", { id });
+        // Stopped as it closed: what that changes doesn't put it back in the tab.
+        await until(() => !side.busy);
+        expect(rt.snapshot().state.sideChat).toBeUndefined();
+        await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
+        expect(rt.snapshot().state.sideChat).toBeUndefined();
+        await expect(engine.handle(c, "session.reopenSideChat", { id })).rejects.toThrow("gone");
     });
 
     test("/btw opens it with the question, at once, even while the session works", async () => {

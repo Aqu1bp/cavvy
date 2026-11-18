@@ -157,6 +157,8 @@ export interface EngineOptions {
     unloadAfterMs?: number;
     /** For tests: GUEST_IDLE_MS. */
     guestIdleMs?: number;
+    /** For tests: SIDE_CHAT_UNDO_MS. */
+    sideChatUndoMs?: number;
     /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
     terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
@@ -197,6 +199,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
+/** How long a closed side chat can be brought back (the toast's Undo, which waits while it's pointed at). */
+const SIDE_CHAT_UNDO_MS = 60_000;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long without a turn running before the server hands memory back (idleNow). */
@@ -443,6 +447,8 @@ export class Engine {
     /** Folders whose configuration the user chose not to trust (this run). */
     private declined = new Set<string>();
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Side chats closed a moment ago, by their parent's id: kept for Undo (closeSideChat). */
+    private closedSideChats = new Map<string, { rt: Runtime; timer: ReturnType<typeof setTimeout> }>();
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
@@ -616,6 +622,7 @@ export class Engine {
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
+        for (const closed of this.closedSideChats.values()) clearTimeout(closed.timer);
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         keepAwake.releaseAll(this.runtimes.values());
         await terminalsStopped;
@@ -724,7 +731,11 @@ export class Engine {
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // A side chat isn't listed: its parent's tab shows how it is.
-        if (rt.side) return this.runtimes.get(rt.side.of)?.sideChatChanged(rt.id, rt.status);
+        // Not one closed a moment ago (closeSideChat), kept for Undo: it's out of the tab.
+        if (rt.side) {
+            const parent = this.runtimes.get(rt.side.of);
+            return parent?.sideChat === rt.id ? parent.sideChatChanged(rt.id, rt.status) : undefined;
+        }
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
         if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
@@ -1273,6 +1284,8 @@ export class Engine {
         if (parent.guest) throw new RpcError("This session can't have a side chat.", "invalid");
         let rt = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
         if (!rt) {
+            // A new one: the one closed a moment ago can't be brought back any more.
+            this.dropClosedSideChat(parent.id);
             // Read for it if the parent doesn't hold them (a long agent CLI session), and let go of again there: the side
             // chat holds the one copy. Otherwise the parent's own, shared.
             const held = !parent.session.historyDigest;
@@ -1303,6 +1316,40 @@ export class Engine {
         }
         if (text?.trim()) await rt.send(text.trim());
         return rt;
+    }
+
+    /**
+     * The session's side chat closed: out of its tab at once, its turn stopped. Kept for a while, so Undo can bring it
+     * back as it was (reopenSideChat), then discarded; at once if the session gets a new one, closes or is archived.
+     */
+    closeSideChat(parent: Runtime) {
+        const side = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (!side) return;
+        this.dropClosedSideChat(parent.id);
+        parent.sideChatChanged(undefined);
+        side.interrupt();
+        const timer = setTimeout(() => this.dropClosedSideChat(parent.id), this.o.sideChatUndoMs ?? SIDE_CHAT_UNDO_MS);
+        timer.unref?.();
+        this.closedSideChats.set(parent.id, { rt: side, timer });
+    }
+
+    /** The side chat closed a moment ago, back in its tab. */
+    reopenSideChat(parent: Runtime): string {
+        const closed = this.closedSideChats.get(parent.id);
+        if (!closed || parent.sideChat || this.runtimes.get(closed.rt.id) !== closed.rt) throw new RpcError("That side chat is gone.", "not_found");
+        clearTimeout(closed.timer);
+        this.closedSideChats.delete(parent.id);
+        parent.sideChatChanged(closed.rt.id, closed.rt.status);
+        return closed.rt.id;
+    }
+
+    /** The side chat closed a moment ago, discarded now. */
+    private dropClosedSideChat(parentId: string) {
+        const closed = this.closedSideChats.get(parentId);
+        if (!closed) return;
+        clearTimeout(closed.timer);
+        this.closedSideChats.delete(parentId);
+        void this.discardSideChat(closed.rt);
     }
 
     /** A side chat closed: its turn stopped, its runtime let go of, its files removed. Its parent's tab goes. */
@@ -1476,9 +1523,10 @@ export class Engine {
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
         if (rt.guest) this.guestGone(rt);
-        // Its side chat goes with it.
+        // Its side chat goes with it, and one closed a moment ago.
         const side = rt.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
         if (side) void this.discardSideChat(side);
+        this.dropClosedSideChat(id);
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -1655,6 +1703,7 @@ export class Engine {
         const parent = key === "archived" && on ? this.runtimes.get(id) : undefined;
         const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
         if (side) void this.discardSideChat(side);
+        if (parent) this.dropClosedSideChat(id);
         this.upsertRow(id, { [key]: on });
     }
 
@@ -3274,10 +3323,11 @@ export class Engine {
             }
             case "session.closeSideChat": {
                 const parent = this.runtimes.get(str(p.id, "id"));
-                const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
-                if (side) await this.discardSideChat(side);
+                if (parent) this.closeSideChat(parent);
                 return null;
             }
+            case "session.reopenSideChat":
+                return { id: this.reopenSideChat(this.runtime(p.id)) };
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
                 // Opened: it no longer says it woke.

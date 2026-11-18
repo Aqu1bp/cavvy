@@ -5,7 +5,8 @@
 // own model and mode (read-only to start). It takes no commands or shell
 // lines. With none open, the composer asks one. Bring back attaches its last
 // answer, or what's selected in it, to the session's message as a chip.
-// Closing it discards it. Loaded when the tab is first shown.
+// Closing it discards it, after a while in which Undo brings it back. Loaded
+// when the tab is first shown.
 
 import "../styles/side-chat.css";
 import { CornerDownLeft, X } from "lucide-solid";
@@ -13,7 +14,7 @@ import { createEffect, createResource, createSignal, on, onCleanup, onMount, Sho
 import { lastAnswer } from "../lib/side-chat";
 import { columnSteps, PANE_NARROW } from "../lib/layout";
 import { sideChatText, type Attachment } from "../lib/attachments";
-import { awayMachine, openSession, reportError, rpcFor, type SessionHandle } from "../state/app";
+import { awayMachine, openSession, reportError, rpcFor, toast, type SessionHandle } from "../state/app";
 import { send } from "../state/actions";
 import { setComposerAdd } from "../state/ui";
 import { asideFocused, PaneContext, setAsideFocused, showAside } from "../state/split";
@@ -142,7 +143,15 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
     // Opened (asked from the session's box with /btw, or here): the next question is written here.
     createEffect(on(() => Boolean(h()), (shown) => shown && requestAnimationFrame(() => stage?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus())));
 
-    const close = () => void rpcFor(p.parent.id).call("session.closeSideChat", { id: p.parent.id }).catch(reportError);
+    /** Closed at once; Undo brings it back as it was, for a while (the server keeps it: Engine.closeSideChat). */
+    const close = () => {
+        const rpc = rpcFor(p.parent.id);
+        const id = p.parent.id;
+        void rpc.call("session.closeSideChat", { id }).then(
+            () => toast("Side chat closed", "info", { label: "Undo", run: () => rpc.call("session.reopenSideChat", { id }).then(() => undefined, reportError) }),
+            reportError,
+        );
+    };
     const answer = () => lastAnswer(h()?.view.turns ?? []);
     /** What's selected in its conversation, else its last answer, attached to the session's message. */
     const bringBack = () => {
