@@ -46,7 +46,7 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 
 ### What the sandbox doesn't cover
 
-- Changes inside the workspace itself. That's why deletions are reviewed. Git is the undo for shell changes; `/rewind` restores only what the edit tools changed.
+- Changes inside the workspace itself. That's why deletions are reviewed. In a trusted Git project `/rewind` restores what shell commands changed too ([Rewinding files](git.md#rewinding-files)); elsewhere Git is the undo for shell changes, and `/rewind` restores only what the edit tools changed.
 - Code a sandboxed command leaves behind runs with your full access when something unsandboxed runs it later. That includes scripts, `package.json` scripts on `npm install`, `.husky/` hooks, and a nested repo or submodule with its own git config when git runs inside it unsandboxed (your own `git status` in a terminal recurses into submodules).
 - Which commands need the network is a guess from the command text. One that fails in the sandbox is retried with the hosts it needs, or outside the sandbox, after review.
 - A listed host is open to the whole command. The proxy decides on the host name the client asks for and doesn't look inside TLS, so a host that fronts others (a CDN) reaches those too, and anything a listed host accepts (an upload, say) can carry data out. Tools that ignore the proxy variables (plain ssh, most database drivers) get no network at all.
