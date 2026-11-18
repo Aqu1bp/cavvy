@@ -2050,7 +2050,9 @@ export class Engine {
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             const title = await lentTitle(session.title);
-            const rt = await this.createSession(folder, { unlisted: true });
+            // In Manual whatever this machine's default: its calls were asked about where they were made (runLent), and
+            // Plan would refuse them.
+            const rt = await this.createSession(folder, { unlisted: true, mode: "default" });
             rt.guestOf = name;
             rt.guestSession = { id: session.id, title };
             rt.lastLent = Date.now();

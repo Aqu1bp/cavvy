@@ -103,7 +103,7 @@ A server has no iOS simulators. Your Mac has, and while the desktop app is open 
 
 It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand.
 
-A call is asked about once, in that session, under its own permission mode, as any of its tools: in Bypass it runs, in Auto it runs without asking, and in Manual starting or acting on a device asks first in its chat. Your Mac doesn't ask again. What it still keeps:
+A call is asked about once, in that session, under its own permission mode, as any of its tools: in Bypass it runs, in Auto it goes through that session's Auto check, and in Manual starting or acting on a device asks first in its chat. Your Mac doesn't ask again. What it still keeps:
 
 - Its deny rules apply, and `open_url` won't open a `file:` address there for a server.
 - One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.

@@ -503,6 +503,15 @@ test("a call is never asked about here, whatever this machine's mode; its deny r
     const free = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
     expect([free.text.includes("declined"), ran.slice(before).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
     expect(told(session)?.asks ?? []).toEqual([]);
+    // Nor when this machine starts its sessions in Plan, which would refuse it.
+    await here.call("settings.update", { patch: { defaultMode: "plan" } });
+    try {
+        const planned = ran.length;
+        const ok = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, "20261113-000000-ffffff");
+        expect([ok.text.includes("plan"), ran.slice(planned).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
+    } finally {
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
+    }
     // A rule of this machine's that denies it is still this machine's to keep.
     const file = join(iso.home, "settings.json");
     const was = readFileSync(file, "utf8");

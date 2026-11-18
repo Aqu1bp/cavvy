@@ -3556,7 +3556,7 @@ export class Agent {
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
         // Lent to another machine: asked about there, under its session's mode (runLent). Past a deny, it runs.
-        if (lent) return { tool, input, sandbox, auto: "allowed on the machine that called it" };
+        if (lent) return { tool, input, sandbox };
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
         if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
 
