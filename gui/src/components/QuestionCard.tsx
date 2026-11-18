@@ -27,6 +27,8 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
     const blocked = createMemo(() => blockedBy(attached(), true, readsImages()));
     const typed = () => other().trim();
     const hasAnswer = () => Boolean(picked().length || typed() || attached().length);
+    /** Something written or attached goes with the answer: a pick (a click or its number) is then made, shown, and sent with Answer, not at once. */
+    const reviewing = () => Boolean(typed() || attached().length);
 
     /** Skipped (undefined), or answered with what's attached; if it doesn't go through, the card keeps it all. */
     const submit = async (answers: string[] | undefined) => {
@@ -38,7 +40,8 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
     };
     const answer = () => submit([...picked(), ...(typed() ? [typed()] : [])]);
     const toggle = (label: string) => {
-        if (!p.it.multi) return void submit([label]);
+        if (!p.it.multi && !reviewing()) return void submit([label]);
+        if (!p.it.multi) return void setPicked((l) => (l[0] === label ? [] : [label]));
         setPicked((l) => (l.includes(label) ? l.filter((x) => x !== label) : [...l, label]));
     };
     const addFiles = async (files: FileList | File[]) => {
@@ -90,13 +93,13 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
-            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : reviewing() ? "Pick one, then Answer" : "Pick one, or type your own answer"} />
             <Show when={p.it.options.length}>
                 <div class="itab-body">
                     <div class="q-options">
                         <For each={p.it.options}>
                             {(o, i) => (
-                                <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} disabled={busy()} onClick={() => toggle(o.label)}>
+                                <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} aria-pressed={p.it.multi || reviewing() ? picked().includes(o.label) : undefined} disabled={busy()} onClick={() => toggle(o.label)}>
                                     <kbd>{i() + 1}</kbd>
                                     <span class="q-text">
                                         <span class="q-label">{o.label}</span>
@@ -166,7 +169,7 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
                 </div>
             </Show>
             <div class="itab-actions ask-row">
-                <Show when={p.it.multi || typed() || attached().length}>
+                <Show when={p.it.multi || reviewing() || picked().length}>
                     <button class="pbtn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
                         Answer
                     </button>

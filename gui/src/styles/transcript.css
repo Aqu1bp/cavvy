@@ -1393,6 +1393,18 @@
     min-width: 0;
 }
 
+/* A question's answer, after it: the part to read, so a step brighter; each gives way, the answer at most to half. */
+.run-a {
+    max-width: 55%;
+    min-width: 0;
+    color: var(--fg-2);
+}
+
+.run-a::before {
+    content: "· ";
+    color: var(--fg-4);
+}
+
 .run-t code {
     font: 0.893rem var(--font-mono);
 }

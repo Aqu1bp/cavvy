@@ -144,6 +144,9 @@ function Inline(p: { text: string }) {
 // ---------------------------------------------------------------------------
 // A run of work in a turn: everything between two things the model said.
 
+/** A question the user answered: its images are what they attached, not what it looked at, and its answer is worth a look. */
+const answered = (t: ToolBlock) => t.name === "AskUserQuestion" && t.status === "ok" && Boolean(t.summary);
+
 /** One finished call, said as itself: what a command is for, the file an edit changed, else its verb and what it acted on. */
 function oneCall(t: ToolBlock): string {
     if (t.status === "denied" || t.status === "error" || t.agent) return summarize([t]);
@@ -188,7 +191,12 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     /** Its one step is an image read, and the image is all there is to see: the line opens the viewer, not a card. */
     const pictured = createMemo(() => {
         const only = done().length === 1 && tools().length === 1 && !p.items.some((it) => it.kind !== "activity") ? done()[0]! : undefined;
-        return only?.imageKeys?.length && !only.diff && only.status === "ok" ? only : undefined;
+        return only?.imageKeys?.length && !only.diff && only.status === "ok" && !answered(only) ? only : undefined;
+    });
+    /** Its one step is a question answered: what was answered and attached, after the question (the row opens to both in full). */
+    const answer = createMemo(() => {
+        const only = done().length === 1 ? done()[0]! : undefined;
+        return only && answered(only) ? only.summary : undefined;
     });
     return (
         <div class={`run ${lined() && open() && !pictured() ? "open" : ""} ${looked().length ? "looked" : ""}`}>
@@ -202,6 +210,7 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
                     <span class="run-t truncate">
                         <Inline text={title()} />
                     </span>
+                    <Show when={answer()}>{(a) => <span class="run-a truncate">{a()}</span>}</Show>
                     <Show when={stats().added || stats().removed}>
                         <span class="stat">
                             <Counts added={stats().added} removed={stats().removed} />
@@ -594,7 +603,7 @@ function ToolRowContent(p: ToolRowProps) {
     const [open, setOpen] = createSignal(false);
     const folds = useContext(CardFoldsContext);
     /** What it brought is an image, and the image is all there is to see: its row opens the viewer, not itself. */
-    const pictured = () => Boolean(p.tool.imageKeys?.length) && !p.tool.diff && !p.also?.length;
+    const pictured = () => Boolean(p.tool.imageKeys?.length) && !p.tool.diff && !p.also?.length && !answered(p.tool);
     createEffect(() => { if (p.detailsOnly) setOpen(true); });
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
@@ -664,7 +673,8 @@ function ToolRowContent(p: ToolRowProps) {
                     </span>
                 </button>
                 {/* What it brought, in place of its result's words (the file itself may be one the session can't open). */}
-                <Show when={pictured()} fallback={<Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>}>
+                {/* An answer's images are what was attached to it: there too. */}
+                <Show when={pictured() || (answered(p.tool) && p.tool.imageKeys?.length)} fallback={<Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>}>
                     <span class="tool-thumbs">
                         <For each={p.tool.imageKeys!.slice(0, 3)}>{(_, i) => <ToolImage tool={p.tool} index={i()} />}</For>
                     </span>
