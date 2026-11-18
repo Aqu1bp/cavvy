@@ -433,7 +433,13 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         throw new McpError(`couldn't listen on 127.0.0.1:${fixedPort ?? 0} for the sign-in (${(e as Error).message})${fixedPort ? "; free that port or change oauth.callbackPort" : ""}`);
     }
     try {
-        waiting.set(state, (req) => (answer(req), taken));
+        // Each answer by itself: only the one whose code is taken is a sign-in, and none is waited for after it.
+        waiting.set(state, (req) => {
+            if (taken) return false;
+            answer(req);
+            if (taken) waiting.delete(state);
+            return taken;
+        });
         const redirect = `http://127.0.0.1:${server.port}/callback`;
         let client: Entry["client"];
         if (oauth.clientId) {

@@ -356,7 +356,7 @@ describe("OAuth", () => {
         const client = { subs: new Set<string>(), send() {} };
         engine.clients.add(client as never);
         const asked: string[] = [];
-        (engine as any).serverLinks = { stopWatching() {}, connectedServers: () => new Map([["box", { ask: async (m: string, p: { query: string }) => (asked.push(p.query), (await server.handle(client as never, m as never, p as never)) as object) }], ["old", { ask: () => Promise.reject(new Error("Unknown method")) }]]) };
+        (engine as any).serverLinks = { stopWatching() {}, connectedServers: () => new Map([["box", { ask: async (m: string, p: { query: string }) => (asked.push(p.query), (await server.handle(client as never, m as never, p as never)) as object) }], ["old", { ask: () => Promise.reject(new Error("Unknown method mcp.callback")) }], ["busy", { ask: () => Promise.reject(new Error("timed out")) }]]) };
         // The server's own Cavvy (this process too).
         const server = new Engine({ away: true });
         const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
@@ -371,6 +371,8 @@ describe("OAuth", () => {
             await expect(call({ name: "lab", url: here.href })).rejects.toThrow("lab isn't connected");
             // A Cavvy there that can't take the answer says so before the browser is opened.
             await expect(call({ name: "old", url: here.href })).rejects.toThrow("too old to finish this sign-in");
+            // One that didn't answer isn't told to update.
+            await expect(call({ name: "busy", url: here.href })).rejects.toThrow("busy didn't answer");
             await call({ name: "box", url: here.href });
             // Nothing but the page's own call is answered, and one that no sign-in waits for isn't taken.
             expect((await fetch(`http://127.0.0.1:${port}/`)).status).toBe(404);
@@ -382,6 +384,8 @@ describe("OAuth", () => {
             // The browser, sent back: this computer's words, the server's sign-in finished.
             const page = await (await fetch(`http://127.0.0.1:${port}/callback${back.search}`)).text();
             expect(page).toContain("Signed in");
+            // The same answer again (a reloaded tab) isn't another sign-in.
+            expect(deliverCallback(back.search.slice(1))).toBeFalsy();
             await done;
             expect(hasOAuthTokens("s", { url: f.url })).toBe(true);
             // Over: no sign-in waits for that answer any more, and this computer no longer listens for it.

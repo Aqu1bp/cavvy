@@ -1432,6 +1432,8 @@ export class Engine {
 
     /** The ports this machine answers on for MCP sign-ins of sessions on its servers (mcpCallback), each until its sign-in ends or its time is up. */
     private mcpCallbacks = new Map<number, { client: EngineClient; stop(): void }>();
+    /** The latest sign-in to ask for each port (mcpCallback), while its server is asked whether it can take the answer. */
+    private mcpAsked = new Map<number, object>();
     /**
      * An MCP sign-in on server `name` ends in the browser here, on a port of this machine its link (`url`) names.
      * Nothing of the server's is brought here: this machine answers `/callback` on that port itself, hands what it
@@ -1454,10 +1456,15 @@ export class Engine {
         const server = (await this.servers()).connectedServers().get(name);
         if (!server) throw new RpcError(`${name} isn't connected right now.`, "failed");
         // A Cavvy there that can't take the answer: said now, not after the user has signed in in the browser.
-        const able = await server.ask("mcp.callback", { query: "" }, 15_000).then((r) => typeof (r as { status?: unknown } | null)?.status === "number", () => false);
-        if (!able) throw new RpcError(`Cavvy on ${name} is too old to finish this sign-in. Update it: ${APP_NAME} servers update ${name}`, "failed");
-        // The window went, or this Cavvy is stopping, meanwhile.
+        // The latest asked for a port is the one that gets it, whichever server answers first.
+        const asked = {};
+        this.mcpAsked.set(port, asked);
+        const able = await server.ask("mcp.callback", { query: "" }, 15_000).then((r) => typeof (r as { status?: unknown } | null)?.status === "number", (e: Error) => (/unknown method/i.test(e.message) ? false : e));
+        if (able === false) throw new RpcError(`Cavvy on ${name} is too old to finish this sign-in. Update it: ${APP_NAME} servers update ${name}`, "failed");
+        if (able !== true) throw new RpcError(`${name} didn't answer. Try again.`, "failed");
+        // The window went, this Cavvy is stopping, or another sign-in asked for the port, meanwhile.
         if (!this.clients.has(client) || this.stopping) throw new RpcError("Disconnected", "disconnected");
+        if (this.mcpAsked.get(port) !== asked) throw new RpcError("Another sign-in started on this port. Start this one again.", "failed");
         const page = (title: string, body: string, status = 200) => new Response(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h2>${title}</h2><p>${body}</p></body>`, { status, headers: { "Content-Type": "text/html; charset=utf-8", Connection: "close" } });
         const failed = () => page("Sign-in didn't finish", `Go back to ${APP_TITLE} and start it again.`, 400);
         // The same sign-in started again takes the place of the one before it on its port.
