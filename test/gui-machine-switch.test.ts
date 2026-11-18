@@ -21,6 +21,7 @@ test("a server session's sign-in port, plan folder and Finder reveal follow its 
     for (const f of ["RightPanel.tsx", "ReviewPane.tsx", "PlanDialogs.tsx"]) expect(await read(`components/${f}`)).not.toContain("canReveal");
     // Where a plan is saved is chosen among its machine's folders.
     expect(await read("components/PlanDialogs.tsx")).toContain("setFolderPickerOpen({ then, link: rpcFor(p.sessionId), ...o })");
+});
 
 // Home in a folder on another machine: its worktrees are that machine's, listed, made and removed over the
 // connection to it (rpcFor), and the one picked opens there.
