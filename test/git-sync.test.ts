@@ -170,3 +170,27 @@ test("git's reasons, briefly", () => {
     expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("Untracked x, y, z and 1 more would be overwritten. Move or remove them first.");
     expect(gitReason("fatal: 'feature' is already used by worktree at '/tmp/wt'\n")).toBe("'feature' is already used by worktree at '/tmp/wt'");
 });
+
+test("engine: switching waits for the folder's sessions, and the header's branch follows", async () => {
+    const { Engine } = await import("../src/server/engine");
+    const { mine } = setup();
+    git(mine, "branch", "other");
+    const engine = new Engine({ listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client);
+    try {
+        const snap = await engine.handle(client, "session.create", { cwd: mine });
+        const rt = engine.runtimes.get(snap.state.id)!;
+        await rt.ready;
+        rt.busy = true;
+        await expect(engine.handle(client, "git.switch", { cwd: mine, branch: "other" })).rejects.toMatchObject({ code: "busy" });
+        // Fetching changes neither HEAD nor files: not held up by a working session.
+        expect(await engine.handle(client, "git.fetch", { cwd: mine })).toMatchObject({ remote: "origin", branch: "main" });
+        rt.busy = false;
+        expect(await engine.handle(client, "git.switch", { cwd: mine, branch: "other" })).toEqual({ branch: "other" });
+        expect(rt.view.state.branch).toBe("other");
+        expect(await engine.handle(client, "git.sync", { cwd: mine })).toEqual({ detached: false, branch: "other" });
+    } finally {
+        await engine.stop();
+    }
+});
