@@ -38,10 +38,13 @@ function corpus(): string[] {
 
 test.skipIf(!chrome)("the text Find counts is the text a browser shows for the same reply", async () => {
     const profile = mkdtempSync(join(tmpdir(), "cavvy-find-text-"));
-    const browser = Bun.spawn([chrome!, "--headless", "--no-first-run", ...(process.getuid?.() === 0 || process.env.CI ? ["--no-sandbox"] : []), `--user-data-dir=${profile}`, "--remote-debugging-port=0"], { stdout: "ignore", stderr: "ignore" });
+    const log = join(tmpdir(), `${profile.split("/").pop()}.log`);
+    const browser = Bun.spawn([chrome!, "--headless", "--no-first-run", ...(process.getuid?.() === 0 || process.env.CI ? ["--no-sandbox"] : []), `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--enable-logging=stderr"], { stdout: "ignore", stderr: Bun.file(log) });
     try {
         let port: string | undefined;
-        for (let i = 0; i < 300 && !port; i++) { port = /^(\d+)\n/.exec(await Bun.file(join(profile, "DevToolsActivePort")).text().catch(() => ""))?.[1]; await sleep(100); }
+        for (let i = 0; i < 300 && !port && browser.exitCode === null; i++) { port = /^(\d+)\n/.exec(await Bun.file(join(profile, "DevToolsActivePort")).text().catch(() => ""))?.[1]; await sleep(100); }
+        // Not up (runs 434, 435): what Chrome said, rather than a fetch of no address.
+        if (!port) throw new Error(`Chrome didn't open DevTools (exited: ${browser.exitCode ?? browser.signalCode ?? "no"}). It said:\n${(await Bun.file(log).text().catch(() => "")).trim().split("\n").filter((l) => /:(ERROR|FATAL):/.test(l) && !/dbus|crashpad/.test(l)).slice(-15).join("\n")}`);
         const version = (await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.json())) as { webSocketDebuggerUrl: string };
         const ws = new WebSocket(version.webSocketDebuggerUrl);
         await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
@@ -64,5 +67,6 @@ test.skipIf(!chrome)("the text Find counts is the text a browser shows for the s
         browser.kill();
         await browser.exited;
         rmSync(profile, { recursive: true, force: true });
+        rmSync(log, { force: true });
     }
 }, 60_000);
