@@ -297,21 +297,19 @@ export class Session {
     }
     /** Where its file was read to, if it doesn't write to it: its messages read later are read to there. */
     private readTo?: number;
-    /** Those pushed while its messages weren't read (push): the same objects once they are, not copies read back. */
-    private pushedUnread: Message[] = [];
 
     /** Read from its file, as reading all of it makes them. */
     private readMessages() {
-        const count = this.digest?.count;
-        const pushed = this.pushedUnread;
+        const d = this.digest;
         // As the file has them: no repair of its own (this session made its own when it was read, or is making it).
         // Read first: a read that fails leaves the session as it was. One that doesn't write reads what it read then (a
         // peer's look at a session another process is writing to): not what's been written since.
         const inner = Session.read(this.file, false, true, false, this.persist ? undefined : this.readTo);
         const read = inner.loadedMessages;
         this.digest = undefined;
-        this.pushedUnread = [];
-        if (read.length === count && pushed.length) read.splice(read.length - pushed.length, pushed.length, ...pushed);
+        // Its last turn's as the same objects, not copies read back: what's running holds those (a steer it may take
+        // back, images a model refused). Those before are read back: kept, every one pushed was kept.
+        if (d && read.length === d.count) read.splice(d.from, d.tail.length, ...d.tail);
         this.loadedMessages = read;
         // Its lines, for the runtime opening it in this same task (readSegments), as a whole read leaves them.
         const lines = inner.takeLoadedLines();
@@ -323,12 +321,13 @@ export class Session {
     /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
     private digestible = false;
     /**
-     * Its messages, read whole to build its turns (a first open), let go of now that those are built: a digest in their
-     * place, as a session opened from its checkpoint has, and they're read again from its file when they're asked for.
-     * Only where that checkpoint would have one (they're most of it) and the file has all of them (it writes to it).
+     * Its messages, let go of now that its turns are built and stored: a digest in their place, as a session opened from
+     * its checkpoint has, and they're read again from its file when they're asked for. Only where the file has all of
+     * them (it writes to it), and where that checkpoint would have one (they're most of it) or `cli`: an agent CLI's
+     * session, whose turns read none of them (its CLI has the conversation), read or not.
      */
-    letGoOfMessages(): boolean {
-        if (!this.persist || !this.digestible || this.digest || this.loadedLines || this.pushedUnread.length) return false;
+    letGoOfMessages(cli = false): boolean {
+        if (!this.persist || !(this.digestible || cli) || this.digest || this.loadedLines) return false;
         this.digest = digestOf(this.loadedMessages);
         this.loadedMessages = [];
         return true;
@@ -603,7 +602,6 @@ export class Session {
         if (this.digest) {
             if (this.write({ t: "msg", m })) {
                 this.digest = digestWith(this.digest, m);
-                this.pushedUnread.push(m);
                 return m;
             }
             this.messages.push(m);

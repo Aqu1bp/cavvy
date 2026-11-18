@@ -868,6 +868,8 @@ export class Runtime {
         this.goalLive = true;
         // The model's found on PATH, and what waits for this (a first turn, saved schedules) works with what's on it.
         this.ready = this.track(pathSettling ? pathSettling.then(() => (this.closed ? undefined : this.initModel())) : this.initModel());
+        // Opened from its store (its turns are there already), on its CLI: what it read of its messages isn't kept.
+        void this.ready.then(() => this.letGoOfHistory(), () => undefined);
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
         const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
@@ -1060,7 +1062,19 @@ export class Runtime {
             // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
             // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
             if (!this.abort) this.session.letGoOfMessages();
+            this.letGoOfHistory();
         }, 0);
+    }
+
+    /**
+     * An agent CLI's session whose turns are in its store: its messages let go of while nothing runs (Session.letGoOfMessages),
+     * a turn's end, a long session's turns stored, an open from its store. Its CLI has the conversation: a turn reads
+     * none of them, and what does (rewind, fork, a model switch) reads them again from its file. Kept, a live session's
+     * held all it was sent, an @-mentioned file's copy each time (15.8 MB of a real run's heap, 4 sessions, 75 min).
+     */
+    private letGoOfHistory() {
+        if (this.closed || this.abort || this.busy || this.storing || !this.store || !isAgentBackend(this.client)) return;
+        this.session.letGoOfMessages(true);
     }
 
     /** Kept here as its head only: its blocks are in the store. */
@@ -4471,6 +4485,7 @@ export class Runtime {
         this.schedules.poke();
         // Nothing followed it: from here the conversation is idle.
         if (!this.busy && !this.closed) this.idleCompact.arm();
+        this.letGoOfHistory();
     }
 
     /**
