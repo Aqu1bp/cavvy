@@ -3047,7 +3047,8 @@ export class Runtime {
         this.closeOpen();
         const turnId = this.turnId;
         if (!turnId) return;
-        let texts = msg.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
+        // Redacted as each streamed piece was: an agent CLI's message isn't (a secret variable it printed, say).
+        let texts = msg.content.filter((p) => p.type === "text").map((p) => redact(p.text ?? ""));
         if (this.continuationText) {
             this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix + texts.join("") }, turnId);
             texts = [];

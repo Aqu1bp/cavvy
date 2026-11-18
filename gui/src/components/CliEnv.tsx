@@ -1,5 +1,5 @@
 import "../styles/cli-env.css";
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, Index, Show } from "solid-js";
 import { Lock, LockOpen, Plus, X } from "lucide-solid";
 import type { AgentEnvVar, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
@@ -31,8 +31,11 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
     const add = () => p.onChange([...p.rows, { key: next++, name: "", value: "", secret: false, saved: false }]);
     return (
         <div class="env-editor">
-            <For each={p.rows}>
-                {(r) => (
+            {/* By position, so a row's inputs (and the focus) stay as it's typed into. */}
+            <Index each={p.rows}>
+                {(row) => {
+                    const r = (): EnvRow => row();
+                    return (
                     <div class="env-row">
                         <input
                             class="input mono env-name"
@@ -40,40 +43,41 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                             placeholder="NAME"
                             spellcheck={false}
                             autocapitalize="off"
-                            value={r.name}
+                            value={r().name}
                             disabled={p.disabled}
-                            onInput={(e) => set(r.key, { name: e.currentTarget.value })}
+                            onInput={(e) => set(r().key, { name: e.currentTarget.value })}
                         />
                         <input
                             class="input mono env-value"
-                            aria-label={`Value of ${r.name || "the variable"}`}
-                            type={r.secret ? "password" : "text"}
+                            aria-label={`Value of ${r().name || "the variable"}`}
+                            type={r().secret ? "password" : "text"}
                             autocomplete="off"
                             spellcheck={false}
-                            placeholder={r.secret && r.saved ? "Saved" : "value"}
-                            value={r.value}
+                            placeholder={r().secret && r().saved ? "Saved" : "value"}
+                            value={r().value}
                             disabled={p.disabled}
-                            onInput={(e) => set(r.key, { value: e.currentTarget.value })}
+                            onInput={(e) => set(r().key, { value: e.currentTarget.value })}
                         />
                         <button
                             type="button"
                             class="hb sm env-lock"
-                            classList={{ on: r.secret }}
-                            aria-pressed={r.secret}
-                            aria-label={`Secret: ${r.name || "this variable"}`}
-                            title={r.secret ? "Secret: hidden once saved" : "Make secret"}
+                            classList={{ on: r().secret }}
+                            aria-pressed={r().secret}
+                            aria-label={`Secret: ${r().name || "this variable"}`}
+                            title={r().secret ? "Secret: hidden once saved" : "Make secret"}
                             disabled={p.disabled}
                             // A saved secret made plain needs its value typed again: it's never sent back.
-                            onClick={() => set(r.key, { secret: !r.secret, ...(r.secret ? { saved: false } : {}) })}
+                            onClick={() => set(r().key, { secret: !r().secret, ...(r().secret ? { saved: false } : {}) })}
                         >
-                            {r.secret ? <Lock size={14} /> : <LockOpen size={14} />}
+                            {r().secret ? <Lock size={14} /> : <LockOpen size={14} />}
                         </button>
-                        <button type="button" class="hb sm" aria-label={`Remove ${r.name || "this variable"}`} disabled={p.disabled} onClick={() => p.onChange(p.rows.filter((x) => x.key !== r.key))}>
+                        <button type="button" class="hb sm" aria-label={`Remove ${r().name || "this variable"}`} disabled={p.disabled} onClick={() => p.onChange(p.rows.filter((x) => x.key !== r().key))}>
                             <X size={14} />
                         </button>
                     </div>
-                )}
-            </For>
+                    );
+                }}
+            </Index>
             <button type="button" class="btn ghost sm env-add" disabled={p.disabled} onClick={add}>
                 <Plus size={13} />
                 Add variable

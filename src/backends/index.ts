@@ -1,6 +1,7 @@
 // Agent backends: which program runs each one.
 
 import { accountEnv } from "../providers/accounts";
+import { loadAgentSecrets } from "../providers/agent-env";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
 import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
@@ -67,6 +68,7 @@ export async function checkAgentPlan(providerId: string, signal?: AbortSignal, a
 async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
     const def = agentCli(providerId);
     if (!def) throw new Error(`${providerId} isn't an agent CLI`);
+    await loadAgentSecrets(providerId);
     // An ACP agent has its default sign-in only, and no plan limits to report.
     if (def.protocol === "acp") return { status: await acpStatus(providerId, signal) };
     if (def.protocol === "agy-stream-json") return { status: await agyStatus(providerId, signal) };
