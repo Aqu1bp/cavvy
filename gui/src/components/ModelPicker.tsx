@@ -639,7 +639,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                         </button>
                     </div>
                     {/* Whose models are listed: the favourites or one provider's, as plain words, each whole: more than a row
-                        holds wrap to another. At the row's end, the listed provider's account, where it's a subscription with accounts. */}
+                        holds wrap to another (a name longer than a row is cut, and whole on hover). At the row's end, the listed provider's account, where it's a subscription with accounts. */}
                     <div class="mp-bar">
                         <div class="mp-filters" ref={filtersEl} role="tablist" aria-label="Providers">
                             <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
@@ -653,7 +653,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                         role="tab"
                                         aria-selected={filter() === g.provider}
                                         aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
-                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : undefined}
+                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : g.providerName}
                                         onClick={(e) => (show(g.provider), e.detail && input?.focus())}
                                     >
                                         <ProviderIcon id={g.provider} name={g.providerName} size={14} />
