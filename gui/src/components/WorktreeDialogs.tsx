@@ -304,7 +304,8 @@ export interface RemoveWorktreeRequest {
 }
 
 export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClose: () => void }) {
-    const w = p.request.worktree;
+    // Read now: once the dialog is closed, what it was opened with can't be (the picker's Show has let go of it).
+    const { worktree: w, cwd, main } = p.request;
     const rpc = rpcFor(undefined);
     const on = homeOn();
     const [busy, setBusy] = createSignal(false);
@@ -326,14 +327,15 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
         try {
             if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
             if (!open) return;
-            const r = await rpc.call("projects.removeWorktree", { path: p.request.cwd, worktree: w.path, deleteIgnored });
+            const r = await rpc.call("projects.removeWorktree", { path: cwd, worktree: w.path, deleteIgnored });
             if (!r.removed) return setIgnored({ names: r.ignored, total: r.total, confirm: r.confirm });
             setBusy(false);
             p.onClose();
             toast(`Removed worktree ${tildify(w.path, app.hello?.homeDir)}`, "success");
             // Asked rather than compared: the new chat may have reached it through a symlink.
             const here = homeOn() === on && app.homeCwd;
-            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(p.request.main, true);
+            // Still there once it's answered: the user may have gone elsewhere meanwhile.
+            if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists && homeOn() === on && app.homeCwd === here) await openProject(main, true);
         } catch (e) {
             setError(errorOf(e));
         } finally {
@@ -359,7 +361,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                         <AlertTriangle size={14} />
                         <span>{m().message}</span>
                         <Show when={m().code === "needs_trust"}>
-                            <button class="btn secondary sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? p.request.cwd)}>
+                            <button class="btn secondary sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? cwd)}>
                                 Trust and remove
                             </button>
                         </Show>

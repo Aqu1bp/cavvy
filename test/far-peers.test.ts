@@ -139,3 +139,22 @@ test("a Bypass default that isn't turned on here holds another machine's calls a
     expect(lendingMode(bypass, "/tmp", false)).toBe("default");
     expect(lendingMode({ permissions: { defaultMode: "auto" } } as never, "/tmp", false)).toBe("auto");
 });
+
+test("what's read of another machine's session names it as it's asked for; a CLI's early limit warning says the share used", async () => {
+    const { homeFarPeers } = await import("../src/server/far-peers");
+    const box = { ask: async () => ({ text: "Session b2 “Fix it”: idle, last active 2m ago. Folder: /srv/app.\n…", title: "Fix it", turns: 1 }) };
+    expect((await homeFarPeers(() => new Map([["box", box]])).read("box/b2"))!.text).toStartWith("Session box/b2 “Fix it”: idle");
+    const { nearLimitWords } = await import("../src/backends/limits");
+    expect(nearLimitWords(53, "weekly ")).toBe("53% of the weekly usage limit used.");
+    expect(nearLimitWords(91, "weekly ")).toBe("close to the weekly usage limit.");
+    expect(nearLimitWords(undefined, "")).toBe("close to the usage limit.");
+});
+
+test("the worktree a removal leaves Home in is read before the dialog closes", async () => {
+    const src = await Bun.file(new URL("../gui/src/components/WorktreeDialogs.tsx", import.meta.url)).text();
+    const remove = src.slice(src.indexOf("export function RemoveWorktreeDialog"));
+    // Its request is the picker's, gone once the dialog is closed: nothing reads it after that.
+    expect(remove).toContain("const { worktree: w, cwd, main } = p.request;");
+    expect(remove.split("p.request").length).toBe(2);
+    expect(remove).toContain("homeOn() === on && app.homeCwd === here) await openProject(main, true);");
+});

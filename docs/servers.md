@@ -105,7 +105,7 @@ A server has no iOS simulators. Your Mac has, and while the desktop app is open 
 
 It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand.
 
-A call is asked about once, in that session, under the stricter of its own permission mode and your Mac's default mode (Plan on your Mac counts as Manual): Bypass is for what runs on the server. With your Mac in Auto, a session there in Bypass or Auto goes through its Auto check; in Manual, starting or acting on a device asks first in its chat. Your Mac doesn't ask again. What it still keeps:
+A call is asked about once, in that session, under the stricter of its own permission mode and your Mac's default mode (Plan on your Mac counts as Manual): Bypass is for what runs on the server. With your Mac in Auto, a session there in Bypass or Auto goes through its Auto check; in Manual, starting or acting on a device asks first in its chat. (A Claude Code or Codex session's Simulator calls skip the Auto check, as they do on the Mac itself: see `simulator.md`.) Your Mac doesn't ask again. What it still keeps:
 
 - Its deny rules apply, and `open_url` won't open a `file:` address there for a server.
 - A server running an older Cavvy can't use it until it's updated (`cavvy servers update <name>`).

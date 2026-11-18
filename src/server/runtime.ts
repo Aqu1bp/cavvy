@@ -28,7 +28,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, loadScopeChecked, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -5624,7 +5624,15 @@ export class Runtime {
         try {
             // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't
             // be read just now, or is blank, is being written: it isn't one with fewer rules, and nothing is taken from it.
-            if (!this.ws.reloadReadable()) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
+            // One that isn't valid stays so until the user mends it: said, so the model doesn't call again and again
+            // (each call asks its user first).
+            if (!this.ws.reloadReadable())
+                return {
+                    text: loadScopeChecked("user", this.ws.cwd).unreadable
+                        ? "Cavvy on your Mac can't use its settings file as it is (it can't be read, or isn't valid). Nothing a server asks runs there until that's fixed. Tell the user, and don't call this again until they have."
+                        : "Cavvy on your Mac couldn't read its settings just now. Call it again.",
+                    isError: true,
+                };
             return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;
