@@ -2025,11 +2025,6 @@ export class Engine {
         const opening = this.guestFor(name, call.session);
         if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
         const rt = await opening;
-        // Under this machine's mode as it is now: the session here was made under the one it had then. Bypass only
-        // while it's still allowed here, as for a session that starts now.
-        const set = this.defaultMode(rt.ws);
-        const mode = set === "bypassPermissions" && !rt.bypassAllowed() ? "default" : set;
-        if (rt.mode !== mode) rt.setMode(mode, { fromAgent: true });
         // What the session there is called now, for what the user is told of it.
         const title = await lentTitle(call.session.title);
         if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
@@ -2055,7 +2050,9 @@ export class Engine {
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             const title = await lentTitle(session.title);
-            const rt = await this.createSession(folder, { unlisted: true });
+            // In Manual whatever this machine's default: its calls were asked about where they were made (runLent), and
+            // Plan would refuse them.
+            const rt = await this.createSession(folder, { unlisted: true, mode: "default" });
             rt.guestOf = name;
             rt.guestSession = { id: session.id, title };
             rt.lastLent = Date.now();
