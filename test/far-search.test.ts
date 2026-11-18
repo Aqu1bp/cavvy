@@ -104,6 +104,12 @@ test("a window on the user's computer lists and restores what was deleted on its
     const deleted = await read("RecentlyDeleted.tsx");
     expect(deleted).toContain('on ? rpc.call("servers.relay", { name: on, method: "session.restore", params: { id } }) : rpc.call("session.restore", { id })');
     expect(deleted).toContain("s.machine && restoredFrom(s.id, s.machine)");
-    // Plugins are the window's own machine's: a folder on another machine isn't sent to it as a project of its own.
-    expect(await read("Plugins.tsx")).toContain("const cwd = () => (awayMachine(app.activeId) !== undefined || awayUnopened(app.activeId) ? undefined : app.homeCwd);");
+    // Plugins are the window's own machine's, or a server's picked in the panel: listed from and done to that one,
+    // with the folder in view only when it's on it.
+    const plugins = await read("Plugins.tsx");
+    expect(plugins).toContain("const from = { link: on ? await linkFor(on) : rpc, cwd: folderOn(on) };");
+    expect(plugins).toContain('const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);');
+    expect(plugins).toContain("return (its ?? \"\") === on ? app.homeCwd : undefined;");
+    // No call about plugins goes anywhere but where the rows came from (a maker's logo aside).
+    expect(plugins.split("rpc.call(").length).toBe(3);
 });

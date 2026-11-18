@@ -7,7 +7,8 @@
 import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, awayMachine, awayUnopened, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, linkFor, machineOf, reportError, rpc, toast } from "../state/app";
+import { machine as windowMachine, os } from "../lib/platform";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -92,22 +93,58 @@ export function Plugins() {
     /** The details dialog, one object per opening: an install started in one closes only that one. */
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
-    // These are this window's machine's plugins. The folder in view counts (its project's own) only when it's on
-    // that machine: another machine's folder names nothing here.
-    const cwd = () => (awayMachine(app.activeId) !== undefined || awayUnopened(app.activeId) ? undefined : app.homeCwd);
+    /**
+     * Whose plugins these are: the window's own machine's, or a server's picked here ("": the window's own). Not the
+     * session's in view: that changes under Settings, and what's listed and what's done must be one machine's.
+     */
+    const [where, setWhere] = createSignal("");
+    /** The user's servers, to pick from (in a window on this computer; a window on a server has its own only). */
+    const [servers, setServers] = createSignal<string[]>([]);
+    /** Where the rows shown came from: what's done to one is done there, in the folder it was listed for. */
+    let origin: { link: typeof rpc; cwd?: string } | undefined;
+    let asked = 0;
+    /** The folder in view, when it's on that machine: its project's own plugins count there, and nowhere else. */
+    const folderOn = (on: string) => {
+        const id = app.activeId;
+        const its = awayMachine(id) ?? (awayUnopened(id) ? (machineOf(id!) ?? "") : undefined);
+        return (its ?? "") === on ? app.homeCwd : undefined;
+    };
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
+        const mine = ++asked;
+        const on = where();
         try {
-            setInfo(await rpc.call("plugins.list", { cwd: cwd() }));
+            // The window's own Cavvy, or that server's, reached first.
+            const from = { link: on ? await linkFor(on) : rpc, cwd: folderOn(on) };
+            const got = await from.link.call("plugins.list", { cwd: from.cwd });
+            // Another machine was picked meanwhile: its list is on its way.
+            if (mine !== asked) return;
+            origin = from;
+            setInfo(got);
         } catch (e) {
+            if (mine !== asked) return;
+            // Nothing of the machine shown before stays under this one's name.
+            origin = undefined;
+            setInfo(undefined);
             reportError(e);
         } finally {
-            setLoading(false);
+            if (mine === asked) setLoading(false);
         }
     };
+    const pick = (on: string) => {
+        if (on === where() || busy()) return;
+        setWhere(on);
+        setDetails(undefined);
+        setConfirm(undefined);
+        origin = undefined;
+        setInfo(undefined);
+        setLoading(true);
+        void load();
+    };
     onMount(() => {
+        if (!windowMachine) void rpc.call("servers.list", {}).then((r) => setServers(r.servers.map((s) => s.name)), () => undefined);
         void load().then(() => {
             const i = info();
             // First visit with nothing installed: show what there is to install.
@@ -116,11 +153,12 @@ export function Plugins() {
     });
 
     const act: Act = async (key, params, done) => {
-        if (busy()) return;
+        const from = origin;
+        if (busy() || !from) return;
         setBusy(key);
         try {
-            const r = await rpc.call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
-            setInfo(r);
+            const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);
+            if (origin === from) setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
         } catch (e) {
@@ -186,6 +224,11 @@ export function Plugins() {
             </ConfirmDialog>
             <Show when={details()} keyed>
                 {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
+            </Show>
+            <Show when={servers().length}>
+                <div class="pg-bar">
+                    <Segmented label="Machine" size="sm" value={where()} onChange={pick} options={[{ value: "", label: os === "macos" ? "This Mac" : "This computer" }, ...servers().map((s) => ({ value: s, label: s }))]} />
+                </div>
             </Show>
             <div class="pg-bar">
                 <Segmented
@@ -281,7 +324,7 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on this computer, so install only from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on {where() || "this computer"}, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
