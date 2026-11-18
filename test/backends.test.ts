@@ -204,6 +204,8 @@ describe("agent providers", () => {
         const argv = starts()[0].argv as string[];
         for (const f of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) expect(argv).toContain(f);
         expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+        // Without the CLI's own telemetry and update requests.
+        expect(starts()[0].quiet).toBe("1");
     });
 
     test("Codex answers a one-off in an ephemeral read-only thread with no shell", async () => {
@@ -274,6 +276,17 @@ describe("agent providers", () => {
         expect(codex.models[0]!.effortLevels).toEqual(["low", "high"]);
         expect(codex.models[0]!.fastModeTier).toBe("priority");
         expect(codex.models[1]!.supportsFastMode).toBe(false);
+    });
+
+    test("lists asked for at once share one CLI: the window and the server asking as it starts made two", async () => {
+        const lists = () => starts().filter((s) => s.argv.includes("--no-session-persistence") && !s.argv.includes("--disable-slash-commands")).length;
+        const before = lists();
+        const gone = new AbortController();
+        const [a, b, c] = await Promise.allSettled([listAllModels({ refresh: true }), listAllModels({ refresh: true }), listAllModels({ refresh: true, signal: gone.signal }).finally(() => {}), Promise.resolve(gone.abort())]);
+        // One Claude Code list for the three; the one that stopped waiting didn't stop the others'.
+        expect(lists() - before).toBe(1);
+        expect(c.status).toBe("fulfilled");
+        for (const r of [a, b]) expect(r.status === "fulfilled" && r.value.find((l) => l.provider.id === "claude-code")?.status).toBe("ok");
     });
 
     test("the startup trust check lists the project config of the CLIs that are on, skills and agents included", () => {

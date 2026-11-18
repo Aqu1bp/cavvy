@@ -11,7 +11,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "paths": { "@shared/*": ["./src/server/*"] }
   },
   "include": ["src", "examples"]
 }

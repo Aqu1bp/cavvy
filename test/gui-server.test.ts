@@ -11,6 +11,7 @@ import { FAKE, isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
+const { slimEdits } = await import("../src/server/runtime");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -2157,7 +2158,9 @@ describe("forking", () => {
         const c = await client();
         const { id, dir } = await threeTurns(c);
         const [first, demo] = prompted(c.view(id));
-        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, text: "demo", index: demo!.prompt!.index, turn: demo!.id, ...p });
+        // As shown now: a compaction below takes the shown turn's prompt index away (the turn patched in place).
+        const shown = { text: "demo", index: demo!.prompt!.index, turn: demo!.id };
+        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, ...shown, ...p });
         await expect(fork({ id: "20200101-000000-abcdef" })).rejects.toThrow(/isn't open/);
         await expect(fork({ index: "3" })).rejects.toThrow(/must be an integer/);
         await expect(fork({ index: 1.5 })).rejects.toThrow(/must be an integer/);
@@ -2177,6 +2180,18 @@ describe("forking", () => {
         expect(sessionFiles(dir)).toEqual([id]);
         c.close();
     }, 45_000);
+
+    test("a fork answers with the turns the window asked for, and the earlier ones on request", async () => {
+        const c = await client();
+        const { id } = await threeTurns(c);
+        const third = prompted(c.view(id))[2]!;
+        const snap = await c.call<SessionSnapshot>("session.fork", { id, index: third.prompt!.index, text: "third prompt", turn: third.id, last: 1 });
+        expect(snap.turns.filter((t) => t.prompt).map((t) => t.prompt!.text)).toEqual(["third prompt"]);
+        expect(snap.earlier).toBe(2);
+        const all = await c.call<{ turns: Turn[] }>("session.turns", { id: snap.state.id, before: snap.turns[0]!.id, all: true });
+        expect(all.turns.filter((t) => t.prompt).map((t) => t.prompt!.text)).toEqual(["first prompt", "demo"]);
+        c.close();
+    }, 30_000);
 
     test("the running turn can't be forked; an earlier, finished one can", async () => {
         const c = await client();
@@ -3045,13 +3060,20 @@ describe("reopening a Claude Code session", () => {
             const c2 = new Client(TOKEN, {}, restarted.port);
             await c2.opened();
             const snap = await c2.call<SessionSnapshot>("session.open", { id });
+            // A finished turn's thoughts come without their text: each as the window asks for it, opened.
+            for (const t of snap.turns) {
+                for (const [i, b] of t.blocks.entries()) {
+                    if (b.t === "thinking" && b.omitted) t.blocks[i] = await c2.call<Block>("session.block", { id, turnId: t.id, blockId: b.id });
+                }
+            }
             c2.close();
             return snap;
         } finally {
             await restarted.stop();
         }
     }
-    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, b.input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
+    // Its input as a window is sent it whole (an edit's change once, in its diff: runtime.ts slimEdits).
+    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, (slimEdits([structuredClone(b)])[0] as ToolBlock).input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
 
     test("its turns come back as they were shown: the steps, the sub-agents and what they did, the mode, model and context", async () => {
         try {

@@ -13,6 +13,10 @@ export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefine
 /** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
 export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
+/** A prompt to preselect when the rewind dialog opens (from a message's rewind button). Here, not in the dialog, which
+ * is loaded when first opened. */
+const [rewindAt, setRewindAt] = createSignal<number | undefined>();
+export const rewindTarget = { get: rewindAt, set: setRewindAt };
 /**
  * An image the viewer can show. `full`: the whole image, as a URL that's cheap
  * to set (an object URL, or a small data: URL), or as base64 it makes an object

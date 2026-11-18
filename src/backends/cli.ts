@@ -3,7 +3,7 @@
 // and talking newline-delimited JSON over its stdin/stdout.
 
 import { existsSync, statSync } from "fs";
-import { isAbsolute } from "path";
+import { delimiter, isAbsolute, join } from "path";
 import { homedir } from "os";
 import type { Subprocess } from "bun";
 import { childEnv } from "../util/env";
@@ -36,15 +36,19 @@ function cliOf(id: string): CliInfo {
     return def.cli;
 }
 
-/** The CLI's path: the one saved with /login (`path`), or the first on PATH. */
+/**
+ * The CLI's path: the one saved with /login (`path`), or the first on PATH, then in ~/.local/bin (where Claude Code's
+ * installer puts it, and setup installs it: a Mac app started from the Dock doesn't have it on PATH).
+ */
 export function findCli(providerId: string, cli: CliInfo): string | undefined {
+    const PATH = [process.env.PATH, join(homedir(), ".local", "bin")].filter(Boolean).join(delimiter);
     const configured = readAgentConfig(providerId)?.path;
     if (configured) {
         const p = configured.startsWith("~/") ? homedir() + configured.slice(1) : configured;
         if (isAbsolute(p)) return existsSync(p) && statSync(p).isFile() ? p : undefined;
-        return Bun.which(p, { PATH: process.env.PATH ?? "" }) ?? undefined;
+        return Bun.which(p, { PATH }) ?? undefined;
     }
-    return Bun.which(cli.command, { PATH: process.env.PATH ?? "" }) ?? undefined;
+    return Bun.which(cli.command, { PATH }) ?? undefined;
 }
 
 export function requireCli(providerId: string, cli: CliInfo): string {

@@ -119,7 +119,7 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
         session.setModel(o.model);
         const ui = new UiLog(session.path, session.meta.id, false);
         for (const t of transcript.turns) {
-            const index = session.messages.length;
+            const index = session.messageCount;
             session.push({ role: "user", content: [{ type: "text", text: t.prompt }], meta: { kind: t.command ? "command" : "prompt", imported: true } });
             if (t.at) ui.write({ t: "turn", seg: 0, index, at: t.at, ...(t.end ? { end: t.end } : {}), status: "done" });
             // Laid out as Agent.recordBackendTurn stores a backend's turn: the reply, then what it did.
@@ -133,7 +133,7 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
             if (content.length) session.push({ role: "assistant", content, provider: entry.source, model: modelId, stopReason: "end_turn" });
         }
         // The CLI has seen all of it: the next turn resumes its session with just the new prompt.
-        session.setBackendSession(entry.source, entry.id, session.messages.length, accountPlace(entry.source));
+        session.setBackendSession(entry.source, entry.id, session.messageCount, accountPlace(entry.source));
         // Dedup must only see the import once all messages and the resume id are saved.
         session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
     } catch (e) {

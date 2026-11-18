@@ -5,11 +5,14 @@
 //
 //   bun desktop-electron/bench-stream.ts --label before [--app <packaged executable>] [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
 //
+// On Linux, under xvfb-run: CPU time, memory by RSS and the traces; no instruction counts, footprint or WindowServer.
+//
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
-// streaming fast, sampled each second (does the cost grow with the reply?).
+// streaming fast, sampled each second (does the cost grow with the reply?); a terminal flood, in Cavvy's terminal and
+// (on a Mac) in Terminal.app (--only terminalFlood,terminalAppFlood [--flood-mb 200]).
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
@@ -58,6 +61,18 @@ async function rpcTo(port: number, token: string) {
 /** Cumulative CPU seconds of each pid (ps's TIME: user + system). */
 function cpuTimes(pids: number[]): Map<number, number> {
     const out = new Map<number, number>();
+    // Linux: /proc's clock ticks (10 ms), not ps's whole seconds.
+    if (!MAC) {
+        for (const pid of pids) {
+            try {
+                const f = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ");
+                out.set(pid, (Number(f[11]) + Number(f[12])) / 100);
+            } catch {
+                // gone
+            }
+        }
+        return out;
+    }
     const r = Bun.spawnSync(["ps", "-o", "pid=,time=", "-p", pids.join(",")]);
     for (const line of r.stdout.toString().trim().split("\n")) {
         const [pid, t] = line.trim().split(/\s+/);
@@ -70,8 +85,11 @@ function cpuTimes(pids: number[]): Map<number, number> {
 }
 
 /** Instructions a process has retired (macOS's proc_pid_rusage, RUSAGE_INFO_V4: ri_instructions, after a 16-byte uuid). */
-const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+const MAC = process.platform === "darwin";
+const libproc = MAC ? dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } }) : undefined;
+/** Elsewhere (Linux, run under xvfb-run): not counted, CPU time and the traces only. */
 function instructions(pid: number): number {
+    if (!libproc) return NaN;
     const buf = new BigUint64Array(64);
     return libproc.symbols.proc_pid_rusage(pid, 4, ptr(buf)) === 0 ? Number(buf[2 + 29]) : NaN;
 }
@@ -87,6 +105,7 @@ function rss(roles: [number, string][]): Record<string, number> {
 
 /** macOS's footprint (MB, Activity Monitor's Memory) by role: dirty and compressed memory, not shared or purgeable pages. */
 function footprint(roles: [number, string][]): Record<string, number> {
+    if (!MAC) return {};
     const want = roles.filter(([, role]) => role !== "WindowServer" && !role.startsWith("utility:tracing"));
     const r = Bun.spawnSync(["footprint", "-f", "bytes", ...want.flatMap(([p]) => ["-p", String(p)])]);
     const bytes = new Map<number, number>();
@@ -178,7 +197,7 @@ try {
 
     // ---- The app (a development build, or with --app a packaged one), its main process's Node inspector on 9345.
     const exe = arg("--app");
-    app = Bun.spawn([...(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")]), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), ...(exe ? [] : [join(repo, "desktop-electron")])], {
+    app = Bun.spawn([...(exe ? [exe] : [join(repo, MAC ? "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" : "desktop-electron/node_modules/electron/dist/electron")]), ...(MAC ? [] : ["--no-sandbox"]), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), ...(exe ? [] : [join(repo, "desktop-electron")])], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9346", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
@@ -193,7 +212,7 @@ try {
     const js = async (expression: string) => (await page.cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, 30_000)).result?.result?.value;
     const mainTarget = ((await fetch("http://127.0.0.1:9345/json/list").then((r) => r.json(), () => [])) as { webSocketDebuggerUrl: string }[])[0];
     const main = mainTarget ? await connect(mainTarget.webSocketDebuggerUrl) : undefined;
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
     // Experiments: --css <rules> added to the page; --reduced-motion as macOS's Reduce motion setting.
     if (arg("--css")) await js(`(() => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(arg("--css"))}; document.head.append(s); })()`);
     if (args.includes("--reduced-motion")) await page.cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
@@ -291,7 +310,7 @@ try {
      * One stretch: CPU by role over `seconds` (nothing of ours attached meanwhile), memory at its end, then 3 s of both
      * JS profiles and a trace for where the time goes. `perSecond` also samples each second.
      */
-    const phase = async (name: string, seconds: number, opts: { perSecond?: string } = {}) => {
+    const phase = async (name: string, seconds: number, opts: { perSecond?: string; hidden?: boolean } = {}) => {
         if (only && !only.includes(name)) return;
         const roles = await pids();
         await js(`(() => { window.__hiddenAt = []; window.__onVis = () => document.visibilityState !== 'visible' && __hiddenAt.push(performance.now()); document.addEventListener('visibilitychange', __onVis); })()`);
@@ -334,7 +353,7 @@ try {
         measuring = false;
         const heap = await js(`(() => { const m = performance.memory; return m ? { usedMB: Math.round(m.usedJSHeapSize / 1048576), totalMB: Math.round(m.totalJSHeapSize / 1048576) } : null; })()`);
         // What's animating: by animation (CSS name, or a script's), its element and its state.
-        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript [data-turn]').length, farTurns: document.querySelectorAll('.transcript [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, busyTurns: document.querySelectorAll('.turn[aria-busy="true"]').length, layered: [...document.querySelectorAll('.transcript .turn')].filter((t) => getComputedStyle(t).willChange === 'transform').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
+        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length, farTurns: document.querySelectorAll('.transcript:not([data-parked] *) [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, busyTurns: document.querySelectorAll('.turn[aria-busy="true"]').length, layered: [...document.querySelectorAll('.transcript:not([data-parked] *) .turn')].filter((t) => getComputedStyle(t).willChange === 'transform').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
         const wsKB = Math.round((wsBytes - b0) / 1024 / wall), wsN = Math.round((wsFrames - f0) / wall);
         // With --shot <dir>: what the window showed, to check a change looks the same.
         if (arg("--shot")) {
@@ -377,7 +396,7 @@ try {
             heap,
             dom,
             wsKBPerSecond: wsKB,
-            ...(visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
+            ...(opts.hidden ? (visibleAtStart === "visible" ? { invalid: "window still visible" } : {}) : visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
             wsFramesPerSecond: wsN,
             trace: summarizeTrace(events, uiPid, 3),
             ...(series.length ? { series } : {}),
@@ -403,6 +422,36 @@ try {
     if (want("waitingOnScreen")) {
         await show(short);
         await streamWhile([[short, "hangforever"]], () => phase("waitingOnScreen", SECONDS));
+    }
+
+    // The same with the window visible but another app in front (on a Mac, Finder): what still draws without the focus.
+    if (want("waitingUnfocused") && main) {
+        await show(short);
+        const win = (expression: string) => main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows().find((w) => w.isVisible()); ${expression}; return !!w; })()`, returnByValue: true });
+        await streamWhile([[short, "hangforever"]], async () => {
+            if (MAC) Bun.spawnSync(["open", "-a", "Finder"]);
+            else await win("w?.blur()");
+            await sleep(2000);
+            const focus = await js(`({ page: document.hasFocus(), decorOff: document.documentElement.hasAttribute('data-decor-off'), loopsOff: document.documentElement.hasAttribute('data-loops-off') })`);
+            await phase("waitingUnfocused", SECONDS);
+            report.phases.waitingUnfocused.focus = focus;
+            await win(MAC ? "app.focus({ steal: true }); w?.focus()" : "w?.focus()");
+            await sleep(1000);
+        });
+    }
+
+    // The same with the window hidden, then minimized: nothing of it on screen, so nothing should draw.
+    for (const [name, away, back] of [["waitingHidden", "w?.hide()", "w?.show()"], ["waitingMinimized", "w?.minimize()", "w?.restore()"]] as const) {
+        if (!want(name) || !main) continue;
+        await show(short);
+        const win = (expression: string) => main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getTitle() !== "DevTools"); ${expression}; return !!w; })()`, returnByValue: true });
+        await streamWhile([[short, "hangforever"]], async () => {
+            await win(away);
+            await sleep(2000);
+            await phase(name, SECONDS, { hidden: true });
+            await win(MAC ? `${back}; app.focus({ steal: true }); w?.focus()` : `${back}; w?.focus()`);
+            await sleep(1500);
+        });
     }
 
     // Idle, the long session on screen.
@@ -446,19 +495,102 @@ try {
     }
     // A 40 KB reply at about 400 tokens a second, on screen: each second's cost, with the reply's length so far.
     await show(long);
-    if (want("growth")) await streamWhile([[long, "perfstream text 30 400"]], () => phase("growth", 24, { perSecond: `[...document.querySelectorAll('.transcript [data-turn]')].at(-1)?.textContent?.length ?? 0` }));
+    if (want("growth")) await streamWhile([[long, "perfstream text 30 400"]], () => phase("growth", 24, { perSecond: `[...document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]')].at(-1)?.textContent?.length ?? 0` }));
     // With --mounted 40,200,480: a reply streaming in the long session with that many of its turns drawn ("Show
     // earlier" clicked until they are), followed at the end ("Latest").
     for (const n of (arg("--mounted") ?? "").split(",").filter(Boolean).map(Number)) {
         await show(long);
-        for (let i = 0; i < 40 && (await js(`document.querySelectorAll('.transcript [data-turn]').length`)) < n; i++) {
-            if (!(await js(`(() => { const b = document.querySelector('.transcript .earlier'); b?.click(); return !!b; })()`))) break;
+        for (let i = 0; i < 40 && (await js(`document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length`)) < n; i++) {
+            if (!(await js(`(() => { const b = document.querySelector('.transcript:not([data-parked] *) .earlier'); b?.click(); return !!b; })()`))) break;
             await sleep(1000);
         }
         await js(`document.querySelector('.jump')?.click()`);
         await sleep(3000);
         await streamWhile([[long, text]], () => phase(`textLong@${n}`, SECONDS));
     }
+    // A terminal flood (B. Terminal flood): the same 200 MB of `yes` in Cavvy's terminal, then (on a Mac) in Terminal.app,
+    // each counted from the command's start to its end: the app drawing it and WindowServer, not `yes` or the shell.
+    const FLOOD_MB = Number(arg("--flood-mb") ?? 200);
+    const FLOOD = `yes 'flood line of output, 0123456789 abcdefghijklmnopqrstuvwxyz' | head -c ${FLOOD_MB}000000`;
+    const flooding = () => Bun.spawnSync(["pgrep", "-f", "flood line of output"]).stdout.toString().trim().length > 0;
+    /** CPU (%) and instructions (M/s) by role, and the seconds, from now until `done`. */
+    const until = async (roles: Map<number, string>, done: () => boolean) => {
+        const t0 = performance.now();
+        const c0 = cpuTimes([...roles.keys()]);
+        const i0 = new Map([...roles.keys()].map((pid) => [pid, instructions(pid)]));
+        while (!done() && performance.now() - t0 < 600_000) await sleep(100);
+        const ran = (performance.now() - t0) / 1000;
+        // And what drawing its last screens costs after the command's done: both apps the same 3 s.
+        await sleep(3000);
+        const wall = (performance.now() - t0) / 1000;
+        const c1 = cpuTimes([...roles.keys()]);
+        const cpuSeconds: Record<string, number> = {};
+        const instructionsM: Record<string, number> = {};
+        for (const [pid, role] of roles) {
+            cpuSeconds[role] = Math.round(((cpuSeconds[role] ?? 0) + (c1.get(pid) ?? 0) - (c0.get(pid) ?? 0)) * 100) / 100;
+            if (role !== "WindowServer") instructionsM[role] = Math.round((instructionsM[role] ?? 0) + (instructions(pid) - (i0.get(pid) ?? NaN)) / 1e6);
+        }
+        return { seconds: Math.round(ran * 10) / 10, countedSeconds: Math.round(wall * 10) / 10, mb: FLOOD_MB, cpuSeconds, instructionsM };
+    };
+    if (want("terminalFlood")) {
+        await show(short);
+        await js(`document.querySelector('button[aria-label="Toggle terminal"]')?.click()`);
+        for (let i = 0; i < 100 && !(await js(`!!document.querySelector('.xterm-helper-textarea')`)); i++) await sleep(100);
+        await sleep(1500);
+        await js(`document.querySelector('.xterm-helper-textarea')?.focus()`);
+        await page.cdp("Input.insertText", { text: FLOOD });
+        const roles = await pids();
+        let started = false;
+        const done = () => (flooding() ? ((started = true), false) : started);
+        await page.cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+        await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        // Over when the command is, and the window has drawn what it was sent (its last bytes reach it after).
+        const r = await until(roles, done);
+        report.phases.terminalFlood = r;
+        console.error(`terminalFlood: ${JSON.stringify(r)}`);
+        await sleep(1500);
+        await js(`document.querySelector('button[aria-label="Toggle terminal"]')?.click()`);
+        await sleep(1500);
+    }
+    if (MAC && want("terminalAppFlood")) {
+        // Bounded: until Terminal may be controlled (System Settings, Privacy & Security, Automation), macOS holds the
+        // script on a prompt, and the phase is skipped rather than waited on.
+        const osa = (script: string) => {
+            const r = Bun.spawnSync(["osascript", "-e", script], { timeout: 20_000 });
+            return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
+        };
+        const windows = () => osa(`tell application "Terminal" to get id of every window`)?.split(/,\s*/).filter(Boolean);
+        const before = windows();
+        if (!before) {
+            report.phases.terminalAppFlood = { skipped: "Terminal.app didn't answer: allow controlling it under Privacy & Security, Automation" };
+            console.error("terminalAppFlood: skipped, Terminal.app didn't answer");
+        } else {
+            osa(`tell application "Terminal" to activate`);
+            await sleep(2000);
+            const roles = new Map<number, string>();
+            for (const pid of Bun.spawnSync(["pgrep", "-x", "Terminal"]).stdout.toString().trim().split("\n").filter(Boolean)) roles.set(Number(pid), "terminalApp");
+            const ws = Bun.spawnSync(["pgrep", "-x", "WindowServer"]).stdout.toString().trim();
+            if (ws) roles.set(Number(ws), "WindowServer");
+            let started = false;
+            let failed = false;
+            const done = () => failed || (flooding() ? ((started = true), false) : started);
+            const run = until(roles, done);
+            if (osa(`tell application "Terminal" to do script "${FLOOD.replace(/"/g, '\\"')}"`) === undefined) failed = true;
+            const r = await run;
+            // Only the window this opened is closed: never one of the person's own.
+            const opened = (windows() ?? []).filter((id) => !before.includes(id));
+            if (failed || !started) {
+                report.phases.terminalAppFlood = { skipped: "the command didn't start in Terminal.app" };
+                console.error("terminalAppFlood: skipped, the command didn't start");
+            } else {
+                report.phases.terminalAppFlood = { ...r, note: "Terminal.app, the same command in a window of its own; Cavvy idle behind it" };
+                console.error(`terminalAppFlood: ${JSON.stringify(r)}`);
+            }
+            await sleep(1000);
+            if (opened.length === 1) osa(`tell application "Terminal" to close window id ${Number(opened[0])} saving no`);
+        }
+    }
+
     // Memory once it's all over and settled.
     await sleep(5000);
     report.memoryAfterMB = rss([...(await pids())]);

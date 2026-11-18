@@ -54,6 +54,10 @@ export function firstShown(heights: Heights, shown: number, atEnd: boolean, scre
 
 /** On a turn far from the view (Transcript): it skips layout and paint until it comes near. */
 export const FAR = "data-far";
+/** A turn of a page going in a few at a time, built but not laid out until the page is all in (Transcript.tsx). */
+export const STAGED = "data-staged";
+/** Put in again skipped at a remembered size: what it brings in starts already over (transcript.css; work-rendering's rows too). */
+export const AGAIN = "data-work-again";
 
 export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number; row?: number; rowOffset?: number };
 export type TranscriptPosition = {
@@ -61,6 +65,8 @@ export type TranscriptPosition = {
     top: number;
     anchor?: ScrollAnchor;
     openWork: string[];
+    /** Turns asked for ("Show earlier") still going in as it was left: shown again, at least as many. */
+    shown?: number;
     /** The same turns as keys that find them again in the session read in anew (placedAgain); set by keyed(). */
     keys?: { anchor?: TurnKey; part?: number; work: TurnKey[] };
 };
@@ -149,7 +155,7 @@ export function placedAgain(turns: readonly KeyTurn[], p: TranscriptPosition): T
         const { part: _p, partOffset: _o, row: _r, rowOffset: _ro, ...rest } = anchor;
         anchor = rest;
     }
-    return { bottom: p.bottom, top: p.top, anchor, openWork };
+    return { bottom: p.bottom, top: p.top, anchor, openWork, ...(p.shown !== undefined ? { shown: p.shown } : {}) };
 }
 
 /** In-memory only: revisiting a session refreshes its place in the LRU. */
@@ -179,7 +185,7 @@ export const transcriptPositions = positionCache();
 export function restoredShown(ids: string[], saved?: TranscriptPosition) {
     const index = !saved?.bottom && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
     const needed = index < 0 ? 0 : Math.ceil((ids.length - index) / TURN_PAGE) * TURN_PAGE;
-    return Math.max(TURN_PAGE, needed);
+    return Math.max(TURN_PAGE, needed, Math.min(ids.length, saved?.shown ?? 0));
 }
 
 /** The first of `n` items in order whose bottom (`bottomOf(i)`, growing with i) is below `top`; `n` if none is. */

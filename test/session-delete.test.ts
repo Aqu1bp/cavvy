@@ -59,6 +59,8 @@ async function setup(cwd = createDemoProject(tempDir("cavvy-del-proj-"), { git: 
         ui: join(dir, "ui", `${id}.jsonl`),
         history: join(dir, "file-history", id),
         queue: join(dir, "queue", `${id}.json`),
+        turns: join(dir, "turns", `${id}.jsonl`),
+        turnsIndex: join(dir, "turns", `${id}.json`),
     };
     if (!existsSync(f.ui)) {
         mkdirSync(dirname(f.ui), { recursive: true, mode: 0o700 });
@@ -111,14 +113,18 @@ describe("session.delete", () => {
             // Messages that were waiting when it was last open.
             mkdirSync(dirname(f.queue), { recursive: true, mode: 0o700 });
             writeFileSync(f.queue, '{"v":1,"items":[{"text":"later","mode":"queue"}]}', { mode: 0o600 });
+            // Its turn store, as a long session's is once it's been let go of.
+            mkdirSync(dirname(f.turns), { recursive: true, mode: 0o700 });
+            writeFileSync(f.turns, '{"id":"t1"}\n', { mode: 0o600 });
+            writeFileSync(f.turnsIndex, '{"v":0}', { mode: 0o600 });
             await engine.handle(c, "session.pin", { id, pinned: true });
             await engine.handle(c, "session.archive", { id, archived: true });
-            const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), queue: readFileSync(f.queue), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
+            const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), queue: readFileSync(f.queue), turns: readFileSync(f.turns), turnsIndex: readFileSync(f.turnsIndex), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
             const before = { status: git(cwd, "status", "--porcelain"), readme: readFileSync(join(cwd, "README.md")) };
             expect(existsSync(f.lock)).toBe(true);
 
             await engine.handle(c, "session.delete", { id });
-            for (const p of [f.file, f.lock, f.ui, f.history, f.queue]) expect(gone(p)).toBe(true);
+            for (const p of [f.file, f.lock, f.ui, f.history, f.queue, f.turns, f.turnsIndex]) expect(gone(p)).toBe(true);
             expect(engine.runtimes.has(id)).toBe(false);
             expect(store().pinned ?? []).not.toContain(id);
             expect(store().archived ?? []).not.toContain(id);
@@ -133,6 +139,8 @@ describe("session.delete", () => {
             expect(readFileSync(f.file)).toEqual(bytes.file);
             expect(readFileSync(f.ui)).toEqual(bytes.ui);
             expect(readFileSync(f.queue)).toEqual(bytes.queue);
+            expect(readFileSync(f.turns)).toEqual(bytes.turns);
+            expect(readFileSync(f.turnsIndex)).toEqual(bytes.turnsIndex);
             expect(readFileSync(join(f.history, "index.jsonl"))).toEqual(bytes.index);
             expect(readFileSync(join(f.history, "blobs", "abc"))).toEqual(bytes.blob);
             expect([mode(f.file), mode(f.ui), mode(f.history)]).toEqual([0o600, 0o600, 0o700]);

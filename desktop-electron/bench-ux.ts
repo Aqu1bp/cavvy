@@ -80,7 +80,7 @@ try {
         // Resolves at the first painted frame where cond() holds.
         window.__uxWait = (cond, timeout) => new Promise((res) => { const t0 = performance.now(); (function check() { let ok = false; try { ok = !!cond(); } catch {} if (ok) requestAnimationFrame(() => res(performance.now())); else if (performance.now() - t0 > (timeout || 15000)) res(-1); else requestAnimationFrame(check); })(); });
     })()`;
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 1500) throw new Error("no composer"); await sleep(10); }
     report.startupInteractiveMs = Math.round(performance.now() - spawnedAt);
     // ---- Data, through the app's own server, as a person's sessions are made (one made through another server stays
     // open there, locked, and this app couldn't open it).
@@ -173,12 +173,12 @@ try {
     };
     // The session's own button in the sidebar (a row's title, or a card), never its Pin or More.
     const row = (id: string) => `document.querySelector('[data-session-row="${id}"] .slim-hit, [data-session-row="${id}"] .card-hit, [data-session-id="${id}"] .slim-hit')`;
-    const turnCount = `document.querySelectorAll('.transcript [data-turn]').length`;
-    const scroller = `document.querySelector('.transcript')`;
+    const turnCount = `document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length`;
+    const scroller = `document.querySelector('.transcript:not([data-parked] *)')`;
 
     // A session is seen when its title heads the window and its last turn is on screen; complete when all its turns are in.
     const titled = (id: string) => `document.querySelector('.ttl-h')?.textContent?.trim() === ${JSON.stringify(titles[id] ?? "")}`;
-    const seen = (id: string) => `${titled(id)} && (() => { const t = [...document.querySelectorAll('.transcript [data-turn]')].at(-1); if (!t) return false; const r = t.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight; })()`;
+    const seen = (id: string) => `${titled(id)} && (() => { const t = [...document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]')].at(-1); if (!t) return false; const r = t.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight; })()`;
     // The transcript shows its last 40 turns (TURN_PAGE) until the reader scrolls up for more.
     const complete = (id: string) => `${titled(id)} && ${turnCount} >= ${Math.min(40, turnsRun.get(id) ?? 1)}`;
     /** Where the UI's main thread spent a stretch: self time by function (a CPU profile, sampled every 0.1 ms). */
@@ -241,17 +241,17 @@ try {
     await measure("jumpToEnd", () => js(`(${scroller}.scrollTop = ${scroller}.scrollHeight, 0)`), `${scroller}.scrollTop > 0`, 900);
     // The last folded turn's "Worked for", brought to the middle of the conversation (clear of the title bar and the
     // composer floating over its end), clicked where nothing covers it.
-    const foldTurn = (await js(`(() => { const b = [...document.querySelectorAll('.transcript .fold.worked[aria-expanded="false"]')].at(-1); b?.scrollIntoView({ block: 'center' }); return b?.closest('[data-turn]')?.dataset.turn ?? null; })()`)) as string | null;
+    const foldTurn = (await js(`(() => { const b = [...document.querySelectorAll('.transcript:not([data-parked] *) .fold.worked[aria-expanded="false"]')].at(-1); b?.scrollIntoView({ block: 'center' }); return b?.closest('[data-turn]')?.dataset.turn ?? null; })()`)) as string | null;
     await sleep(400);
     const foldBtn = `document.querySelector('[data-turn="${foldTurn}"] .fold.worked')`;
     report.unfoldTarget = await js(`(() => { const b = ${foldBtn}; if (!b) return null; const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + Math.min(r.height / 2, 14)); return { top: Math.round(r.top), covered: !b.contains(hit), hit: hit?.className?.toString().slice(0, 60) ?? null }; })()`);
     await measure("unfoldTurnWork", () => click(foldBtn), `${foldBtn}?.getAttribute('aria-expanded') === 'true'`);
     // Typing into its composer.
-    await js(`document.querySelector('textarea[aria-label="Message"]').focus()`);
+    await js(`document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)').focus()`);
     const typedAt = await js(`performance.now()`);
     for (const ch of "how does the session store work") { await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch }); await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: ch }); await sleep(40); }
     report.interactions.typeInLongSession = await js(`(() => { const ev = __ux.events.filter((e) => e.start >= ${typedAt} && (e.name === 'keydown' || e.name === 'keypress' || e.name === 'input' || e.name === 'keyup')); const fr = __ux.frames.filter((x) => x >= ${typedAt}); const gaps = fr.slice(1).map((x, i) => x - fr[i]); return { slowKeys: ev.length, worstKeyMs: Math.max(0, ...ev.map((e) => e.ms)), maxFrameMs: Math.round(Math.max(0, ...gaps)), droppedFrames: gaps.filter((g) => g > 25).length }; })()`);
-    await js(`(() => { const t = document.querySelector('textarea[aria-label="Message"]'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
+    await js(`(() => { const t = document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
 
     // Switching sessions: to one not open in the window yet, back to one that is, to a short one.
     await open("switchToOtherLongSession", long2);
@@ -290,7 +290,7 @@ try {
     await measure("closeTerminal", () => click(`document.querySelector('button[aria-label="Toggle terminal"]')`), `!document.querySelector('.xterm')?.getClientRects().length || document.querySelector('.app')?.dataset.term === 'off'`);
 
     // A new session.
-    await measure("newSession", () => click(`document.querySelector('button[aria-label="New session"]')`), `${turnCount} === 0 && document.querySelector('textarea[aria-label="Message"]')`);
+    await measure("newSession", () => click(`document.querySelector('button[aria-label="New session"]')`), `${turnCount} === 0 && document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`);
 
     report.loafSupported = !(await js(`__ux.loafError || null`));
     report.eventTimingSupported = !(await js(`__ux.eventError || null`));

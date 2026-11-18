@@ -1,7 +1,7 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
-import { MarkdownRenderer } from "../../lib/markdown";
-import { createReveal, DrawnAgain } from "../../lib/reveal";
+import { createEffect, createMemo, createRenderEffect, createSignal, For, Index, Match, onCleanup, Switch, untrack, useContext, type Accessor } from "solid-js";
+import { MarkdownRenderer, type Segment } from "../../lib/markdown";
+import { BuiltFromEnd, createReveal, DrawnAgain } from "../../lib/reveal";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -132,18 +132,92 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         );
     });
     onCleanup(() => clearTimeout(timer));
+    const segment = (s: Accessor<Segment>) => {
+        const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
+        const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
+        return <Switch>
+            <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
+            <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} />}</Match>
+        </Switch>;
+    };
+    // A long finished reply in a session opened at its end: its end first (in view), and what's above it after, a step
+    // at a time (BuiltFromEnd). Built whole at once, a 60 KB reply was 6,451 elements, 6,401 of them above the view:
+    // most of a switch's 67-83 ms on a Mac. Those above go in by the block, kept as they are (<For>) as more come in
+    // above them; those from `cut` on are as any reply's (<Index>).
+    const built = useContext(BuiltFromEnd);
+    const cut = untrack(() => (built.fromEnd() && !live() ? endOf(segments(), BUILT_AT_ONCE) : 0));
+    const [above, setAbove] = createSignal(cut);
+    if (cut) {
+        // A step a frame (about 4 ms of building at most), so what's above is in within a few frames: done in the page's
+        // idle time, a Mac had it in only after 2 s (idle periods came seldom), and a reader who scrolled up meanwhile
+        // had the rest put in at once under their wheel.
+        let frame: number | undefined;
+        const step = (now?: number) => {
+            frame = undefined;
+            // The frame's budget is shared by every reply building at once; a step isn't begun that it wouldn't fit.
+            if (now === undefined || building.frame !== now) Object.assign(building, { frame: now, from: performance.now() });
+            else if (performance.now() - building.from + building.step > FRAME_BUSY_MS) {
+                frame = requestAnimationFrame(step);
+                return;
+            }
+            do {
+                const began = performance.now();
+                const at = built.whole() ? 0 : endOf(segments().slice(0, untrack(above)), BUILT_A_STEP);
+                // The first block in so far stays where it's seen (the end, while it's followed).
+                built.keep(root?.firstElementChild, () => setAbove(at));
+                building.step = performance.now() - began;
+            } while (untrack(above) && performance.now() - building.from + building.step <= FRAME_BUSY_MS);
+            if (untrack(above)) frame = requestAnimationFrame(step);
+        };
+        // Not in the frame that first shows it: its first step's layout would be that frame's (a switch to a session
+        // ending in a 60 KB reply: its longest task 43.7 -> 71.3 ms on a Mac). From the frame after.
+        // And a task between: what's waiting once that frame is painted (a key, a click) goes before the next frame's
+        // step, rather than after it (Chromium runs a frame that's due first).
+        let task: ReturnType<typeof setTimeout> | undefined;
+        frame = requestAnimationFrame(() => {
+            frame = undefined;
+            task = setTimeout(() => {
+                task = undefined;
+                frame = requestAnimationFrame(step);
+            }, 0);
+        });
+        onCleanup(() => clearTimeout(task));
+        onCleanup(() => {
+            if (frame !== undefined) cancelAnimationFrame(frame);
+        });
+        createEffect(() => {
+            if (built.whole() && untrack(above)) built.keep(root?.firstElementChild, () => setAbove(0));
+        });
+        // Images in what's come in since are loaded with it.
+        createEffect(() => {
+            above();
+            const id = p.sessionId;
+            const load = id ? images() : undefined;
+            if (id && root && load && imagesReady(id)) loadImages(root, load);
+        });
+    }
     return (
         <div ref={root} class={`md ${live() ? "streaming" : ""} ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
-            <Index each={segments()}>
-                {(s, i) => {
-                    const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
-                    const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
-                    return <Switch>
-                        <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} />}</Match>
-                    </Switch>;
-                }}
-            </Index>
+            {cut ? <For each={segments().slice(above(), cut)}>{(s) => segment(() => s)}</For> : null}
+            <Index each={cut ? segments().slice(cut) : segments()}>{(s) => segment(s)}</Index>
         </div>
     );
+}
+
+/** What's built of a long reply first (its HTML and code, in characters), and of what's above it at each step after. */
+const BUILT_AT_ONCE = 6_000;
+const BUILT_A_STEP = 3_000;
+/** Building in a frame stops once it's taken this long (ms): a step is about 3-6 ms (measured, headless). */
+const FRAME_BUSY_MS = 4;
+/** The frame being built in (its requestAnimationFrame time), since when, and how long the last step took. */
+const building = { frame: -1, from: 0, step: 0 };
+/** Where the last `chars` characters of blocks start, in `segs` (0: all of it, as it's no more than that, or hardly more). */
+function endOf(segs: readonly Segment[], chars: number): number {
+    let n = 0;
+    for (let i = segs.length - 1; i >= 0; i--) {
+        const s = segs[i]!;
+        n += s.kind === "html" ? s.html.length : s.code.length;
+        if (n >= chars) return i > 1 ? i : 0;
+    }
+    return 0;
 }

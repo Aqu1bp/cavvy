@@ -22,6 +22,18 @@ import { offStep, onStep, STEP_MS } from "./stream-clock";
  */
 export const DrawnAgain = createContext<() => boolean>(() => false);
 
+/**
+ * `fromEnd`: true while a transcript draws a session it opens at its end (its first frame), with nothing to find in it
+ * at once: a long finished reply then builds its end first, what's in view, and the rest, above it, a step at a time
+ * after (components/blocks/Markdown.tsx). `whole`: true once something needs all of it (Find, a jump to a message, the reader leaving the end).
+ * `keep`: `el` stays where it's seen while `put` puts in what goes above it (the reader scrolled up meanwhile).
+ */
+export const BuiltFromEnd = createContext<{ fromEnd: () => boolean; whole: () => boolean; keep: (el: Element | null | undefined, put: () => void) => void }>({
+    fromEnd: () => false,
+    whole: () => true,
+    keep: (_el, put) => put(),
+});
+
 /** How far behind the stream the text runs at least: what has arrived is out this long after the last of it came. */
 export const LAG_MS = 90;
 /**
@@ -35,10 +47,15 @@ export function lagFor(gap: number | undefined): number {
     return Math.min(MAX_LAG_MS, Math.max(LAG_MS, gap ?? 0));
 }
 
-/** The gap between arrivals, smoothed: one long wait (a tool) counts as no more than twice the most lag. */
+/**
+ * The gap between arrivals, smoothed: one long wait (a tool) counts as no more than twice the most lag. Longer gaps are
+ * taken up quickly, shorter ones slowly: a stream held to go in fewer messages (another machine's) comes in a few close
+ * ones as the reply starts, then far apart, and runs out of words between them until the gap has caught up.
+ */
 export function nextGap(gap: number | undefined, sample: number): number {
     const s = Math.min(sample, MAX_LAG_MS * 2);
-    return gap === undefined ? s : gap * 0.7 + s * 0.3;
+    if (gap === undefined) return s;
+    return s > gap ? gap * 0.3 + s * 0.7 : gap * 0.7 + s * 0.3;
 }
 /** The slowest pace, so the last words don't crawl in. */
 const MIN_CHARS_PER_SECOND = 90;

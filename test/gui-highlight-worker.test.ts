@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 function client(Worker: any) {
     const source = readFileSync(new URL("../gui/src/lib/highlight.ts", import.meta.url), "utf8").replace(/export /g, "").replace('new URL("./highlight-worker.ts", import.meta.url)', '"worker.js"');
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
-    return new Function("Worker", `${js}; return { highlight, highlightLines, highlightLineStream, warmUp };`)(Worker);
+    return new Function("Worker", `${js}; return { highlight, highlighted, highlightLines, highlightLineStream, warmUp };`)(Worker);
 }
 
 test("highlight client shares a worker, correlates out-of-order responses, bounds payloads and retries failures", async () => {
@@ -43,6 +43,36 @@ test("highlight client shares a worker, correlates out-of-order responses, bound
     expect(await client(undefined).highlight("readable", "ts")).toBeUndefined();
 });
 
+test("a finished block's HTML is kept to be drawn at once next time, most recently used kept longest, within a size", async () => {
+    const posted: any[] = [];
+    class FakeWorker {
+        onmessage?: (event: any) => void;
+        postMessage(message: any) { posted.push(message); queueMicrotask(() => this.onmessage?.({ data: { id: message.id, result: message.code.startsWith("whole!") ? `<b>${message.code.repeat(4)}</b>` : message.code.startsWith("whole") ? `<b>${message.code}</b>` : `<b>${message.code.slice(0, 8)}</b>` } })); }
+        terminate() {}
+    }
+    const c = client(FakeWorker);
+    expect(c.highlighted("const a = 1", "ts")).toBeUndefined();
+    expect(await c.highlight("const a = 1", "ts")).toBe("<b>const a </b>");
+    expect(c.highlighted("const a = 1", "ts")).toBe("<b>const a </b>");
+    // Another language, or no language: not the same block.
+    expect(c.highlighted("const a = 1", "js")).toBeUndefined();
+    expect(c.highlighted("const a = 1", undefined)).toBeUndefined();
+    // Bounded by the HTML kept: the oldest go first, one used lately stays.
+    const big = (i: number) => `whole${i}`.padEnd(200_000, "x");
+    for (let i = 0; i < 12; i++) {
+        await c.highlight(big(i), "ts");
+        c.highlighted("const a = 1", "ts");
+    }
+    expect(c.highlighted(big(0), "ts")).toBeUndefined();
+    expect(c.highlighted(big(11), "ts")).toBeDefined();
+    expect(c.highlighted("const a = 1", "ts")).toBeDefined();
+    // Too large to keep (its HTML over half of what's kept): asked of the worker each time.
+    const whole = "whole!".padEnd(190_000, "y");
+    expect(await c.highlight(whole, "ts")).toBe(`<b>${whole.repeat(4)}</b>`);
+    expect(c.highlighted(whole, "ts")).toBeUndefined();
+    expect(posted.length).toBe(14);
+});
+
 test("actual Shiki worker produces HTML and diff lines while the UI event loop remains responsive", async () => {
     const worker = new Worker(new URL("../gui/src/lib/highlight-worker.ts", import.meta.url).href, { type: "module" });
     let sequence = 0;
@@ -61,10 +91,15 @@ test("actual Shiki worker produces HTML and diff lines while the UI event loop r
         expect(response.error).toBeUndefined();
         expect(response.result).toContain("value1999");
         expect(response.result).toContain("<span");
+        // Colored by classes the spans share, not a style on each (each is parsed and kept for its span alone).
+        expect(response.result).toContain('class="sk-keyword"');
+        expect(response.result).not.toContain("style=");
         expect(ticks).toBeGreaterThan(0);
         console.log(JSON.stringify({ highlightChars: code.length, elapsedMs: performance.now() - start, uiTicks: ticks }));
         const lines = await send("lines", "const x = 1;\nconst y = 2;");
         expect(lines.result).toHaveLength(2);
+        expect(lines.result.join("")).toContain('class="sk-keyword"');
+        expect(lines.result.join("")).not.toContain("style=");
     } finally { worker.terminate(); }
 }, 15_000);
 

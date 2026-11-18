@@ -848,7 +848,7 @@ export class Agent {
             compactions++;
             if (estimateTokens(this.session.messages) < before) return true;
             // A message kept after the summary may be what's too big.
-            const last = this.session.messages.at(-1);
+            const last = this.session.lastMessage;
             if (last?.role === "user" && last.meta?.kind !== "summary") return true;
             unshrinkable = true;
             return false;
@@ -1196,6 +1196,11 @@ export class Agent {
         return { texts, context, attachments, ...(transaction ? { transaction } : {}) };
     }
 
+    /** The folder's first snapshot taken now, ahead of the first prompt, which would wait for it (TurnSnapshots.warm). */
+    warmSnapshots() {
+        if (!this.o.isSubagent && this.o.trusted?.()) void this.turnSnapshots?.warm()?.catch(() => undefined);
+    }
+
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
         // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
         const history = this.o.isSubagent ? undefined : this.state.fileHistory;
@@ -1256,7 +1261,7 @@ export class Agent {
         const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
         // Not running, or its prompt isn't in yet (then nothing of the turn is).
         if (!this.running || !this.prompted) return stopping;
-        const last = this.session.messages.at(-1);
+        const last = this.session.lastMessage;
         if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
         const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
         if (!calls.length) {
@@ -1411,7 +1416,7 @@ export class Agent {
         const cost = costOf(usage, this.model);
         this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         this.contextTokens = promptTokens(usage) + usage.outputTokens;
-        this.lastUsageTotal = this.session.messages.length;
+        this.lastUsageTotal = this.session.messageCount;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
@@ -1441,7 +1446,7 @@ export class Agent {
 
     /** Estimated tokens in the next request. */
     estimatedContext(): number {
-        const since = this.session.messages.slice(this.lastUsageTotal);
+        const since = this.session.messagesSince(this.lastUsageTotal);
         if (!this.contextTokens) return estimateTokens(this.session.messages) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
         return this.contextTokens + estimateTokens(since);
     }
@@ -1450,13 +1455,13 @@ export class Agent {
         const s = this.o.settings();
         if (s.autoCompact === false) return false;
         // Keep a cut-off answer verbatim until it finishes; real overflows still compact reactively.
-        const last = this.session.messages.at(-1);
+        const last = this.session.lastMessage;
         if (last?.role === "user" && last.meta?.kind === "continuation") return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        return this.session.messages.length > 4 && this.estimatedContext() > cavvyCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
+        return this.session.messageCount > 4 && this.estimatedContext() > cavvyCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
     }
 
     /** Room for the answer below the window (compact-at.ts). */
@@ -2242,7 +2247,8 @@ export class Agent {
      * they'd go twice.
      */
     private missedMessages(promptIndex: number, resume?: { synced: number }): Message[] {
-        const all = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
+        const from = resume ? resume.synced : 0;
+        const all = this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from));
         const has = (t: string) => all.some((x) => x.role === "user" && !x.meta?.resends && ((x.content[0]?.type === "text" && x.content[0].text === t) || textOf(x) === t));
         return all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has)));
     }
@@ -2383,7 +2389,7 @@ export class Agent {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         const place = this.backendPlace(provider);
-        let promptIndex = this.session.messages.length - 1;
+        let promptIndex = this.session.messageCount - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
         /** What drainQueued handed over that came from wakes, not the user. */
@@ -2444,7 +2450,7 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens, window) => this.recordBackendContext(tokens, window),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messageCount, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
@@ -2748,7 +2754,7 @@ export class Agent {
                     const media = notes.flatMap((n) => [...n.images, ...n.documents]);
                     ({ images: promptImages, documents: promptDocuments } = forBackend(media, readsPdf(this.model)));
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }, ...media], meta: { kind: "reminder" } });
-                    promptIndex = this.session.messages.length - 1;
+                    promptIndex = this.session.messageCount - 1;
                     this.syncBackend(provider, 1);
                     continue;
                 }
@@ -2817,7 +2823,7 @@ export class Agent {
     private syncBackend(provider: string, pending = 0) {
         const b = this.session.backends.get(provider);
         // Until the native fork answers with its own id, the shared source has seen no new messages.
-        if (b && !b.fork) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
+        if (b && !b.fork) this.session.setBackendSession(provider, b.id, this.session.messageCount - pending);
     }
 
     /**
@@ -3031,7 +3037,7 @@ export class Agent {
         if (o.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.noteCache(usage, this.backendRequestAt ?? Date.now());
-        this.lastUsageTotal = this.session.messages.length;
+        this.lastUsageTotal = this.session.messageCount;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
@@ -3762,7 +3768,7 @@ export class Agent {
     requestContext(): Pick<ReviewContext, "requests" | "summary"> {
         const requests: string[] = [];
         let summary: string | undefined;
-        for (let i = this.session.messages.length - 1; i >= 0; i--) {
+        for (let i = this.session.messageCount - 1; i >= 0; i--) {
             const m = this.session.messages[i]!;
             if (m.role !== "user") continue;
             const kind = m.meta?.kind;

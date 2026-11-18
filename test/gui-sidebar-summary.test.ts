@@ -26,7 +26,7 @@ function fixture() {
     };
     const rt = Object.assign(Object.create(Runtime.prototype), {
         engine, session, ws: { cwd: session.meta.cwd }, view, busy: true,
-        lastActive: 100, turnId: "first", pending: new Map(), schedules: { poke() {} },
+        lastActive: 100, turnId: "first", pending: new Map(), schedules: { poke() {} }, stepsDirty: new Map(), agentsDirty: new Map(), outbox: [],
         op: (op: SessionOp) => applyOp(view, op),
     });
     const summaries: SessionSummary[] = [];
@@ -103,6 +103,28 @@ describe("sidebar summaries", () => {
         expect(engine.summaryOf(rt).turnStartedAt).toBeUndefined();
         await engine.stop();
     });
+    test("each list holds its newest, however many sessions are in the other", async () => {
+        const engine = new Engine({ listModels: async () => [] });
+        const client = { subs: new Set<string>(), send: () => {} };
+        engine.clients.add(client as never);
+        const cwd = tempDir();
+        // Newer than any other test's, a minute apart; the eight newest archived.
+        const made = Array.from({ length: 12 }, (_, i) => {
+            const s = Session.create(cwd);
+            s.push({ role: "user", content: [{ type: "text", text: `session ${i}` }] });
+            const at = new Date(Date.now() + (i + 60) * 60_000);
+            utimesSync(s.path, at, at);
+            return s.meta.id;
+        });
+        for (const id of made.slice(4)) await engine.handle(client as never, "session.archive", { id, archived: true });
+        expect(engine.listSessions(3).map((s) => s.id)).toEqual([made[3], made[2], made[1]]);
+        expect(engine.listSessions(3, true).map((s) => s.id)).toEqual([made[11], made[10], made[9]]);
+        await engine.handle(client as never, "session.archive", { id: made[11], archived: false });
+        expect(engine.listSessions(2).map((s) => s.id)).toEqual([made[11], made[3]]);
+        expect(engine.listSessions(1, true)[0]).toMatchObject({ id: made[10], archived: true });
+        await engine.stop();
+    });
+
     test("waiting sessions survive the server list limit; opening an old result supplies its summary", async () => {
         const { engine, rt, view, summaries } = fixture();
         engine.runtimes.set(rt.id, rt);

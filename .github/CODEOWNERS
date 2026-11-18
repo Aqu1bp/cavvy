@@ -6,4 +6,5 @@
 /test/perf-gui.test.ts @Aqu1bp
 /test/helpers/perf-budget.ts @Aqu1bp
 /scripts/perf-budgets.ts @Aqu1bp
+/scripts/perf-idle.ts @Aqu1bp
 /.github/CODEOWNERS @Aqu1bp

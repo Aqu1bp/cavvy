@@ -70,11 +70,11 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             e.stopPropagation();
             return;
         }
-        // The palette and find are the global shortcuts allowed through: App decides what they do (find does
-        // nothing under Settings, where the page's own find would search the conversation it covers). Close
+        // The palette, find and Settings are the global shortcuts allowed through: App decides what they do (find
+        // does nothing under Settings, where the page's own find would search the conversation it covers). Close
         // first so focus restoration cannot later land in a stale menu.
         const global = actionOf(e, ["Global"]);
-        if (global === "app:commandPalette" || global === "app:find") {
+        if (global === "app:commandPalette" || global === "app:find" || global === "app:settings") {
             behavior.close();
             return;
         }

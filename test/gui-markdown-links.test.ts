@@ -251,3 +251,44 @@ describe("images", () => {
         expect(render("![](shots/a.png:12)").html).toContain(`data-image-file="shots/a.png"`);
     });
 });
+
+// A finished reply shown again (another view of it: a session switched back to) starts from how it was rendered.
+describe("a reply shown again", () => {
+    test("is the same blocks, and keeps its file links, as known now", () => {
+        const text = "First, see src/server/engine.ts:12.\n\nThen src/later.ts, a file not known yet.\n\n```ts\nconst a = 1;\n```";
+        const one = render(text);
+        const again = render(text);
+        expect(again.html).toBe(one.html);
+        expect(again.segs.every((s, i) => s === one.segs[i])).toBe(true);
+        expect(again.pending).toEqual(one.pending);
+        expect(again.r.paths).toEqual(one.r.paths);
+        // Shown with no session (no lookup): no links. Then in a session again: its links all the same.
+        expect(render(text, null).html).not.toContain("data-file");
+        expect(render(text).html).toContain(`data-file="${ROOT}/src/server/engine.ts"`);
+        // A path known since: its block is rendered again with the link, the others are as they were.
+        const known = render(text, (p) => (p === "src/later.ts" ? `${ROOT}/src/later.ts` : lookup(p)));
+        expect(known.html).toContain(`data-file="${ROOT}/src/later.ts"`);
+        expect(known.segs[0]).toBe(one.segs[0]);
+        expect(known.segs[1]).not.toBe(one.segs[1]);
+    });
+
+    test("a path in a line still being written becomes a link when it's known, the line whole", () => {
+        // The line's words are rendered as they come (markdown.ts appendLine); the answer arriving renders it again.
+        const text = "Kept under src/later.ts and nothing in it is lost when the window goes, or when it";
+        const later = (p: string) => (p === "src/later.ts" ? `${ROOT}/src/later.ts` : lookup(p));
+        const r = new MarkdownRenderer();
+        for (let i = 1; i <= text.length; i++) r.segments(text.slice(0, i), true, lookup);
+        const html = (segs: ReturnType<typeof r.segments>) => segs.map((s) => (s.kind === "html" ? s.html : "")).join("");
+        const again = html(r.segments(text, true, later));
+        expect(again).toBe(html(new MarkdownRenderer().segments(text, true, later)));
+        expect(again).toContain(`data-file="${ROOT}/src/later.ts"`);
+    });
+
+    test("while it's still being written, it's rendered as it comes", () => {
+        const text = "Being written: src/server/engine.ts and more";
+        const done = render(text);
+        const r = new MarkdownRenderer();
+        const live = r.segments(text, true, lookup);
+        expect(live[0]).not.toBe(done.segs[0]);
+    });
+});

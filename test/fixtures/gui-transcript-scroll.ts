@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
+import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
-import { finishEntrances } from "../../gui/src/lib/entrances";
+import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
-import { DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, DrawnAgain } from "../../gui/src/lib/reveal";
+import { KeyedList } from "../../gui/src/lib/keyed-list";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
 // at the DOM boundary let these regressions run without listening on a socket.
@@ -30,6 +31,11 @@ const mutate = () => mutations.forEach((fn) => fn());
 /** Window listeners (a pointer's lift); pointerUp() lifts it. */
 const lifts = new Map<string, Set<() => void>>();
 const pointerUp = () => [...(lifts.get("pointerup") ?? [])].forEach((fn) => fn());
+/** The page's own: a press (on `target`), a key with nothing focused (its target the body). */
+const windowEvent = (type: string, e: Record<string, unknown>) => [...(lifts.get(type) ?? [])].forEach((fn) => (fn as (e: unknown) => void)({ ...e }));
+const body = { tag: "body" };
+/** Whether this conversation's pane is the one shown (not parked under another). */
+let paneFocused = true;
 let restoredOpen = false;
 let root = node("root");
 let top = 0;
@@ -49,7 +55,7 @@ let revealingNow = false;
 /** Words came out a moment ago (lib/reveal.ts wordsFlowing(): a signal, as there, so what waits for the words to stop hears it). */
 const [flowingNow, setFlowingNow] = solid.createSignal(true);
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-staged"] !== undefined ? 0 : n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -109,6 +115,7 @@ const decorate = (n: Node): any => Object.assign(n, {
     addEventListener: (type: string, fn: (e: any) => void) => { (n as any).listeners[type] = fn; },
     removeEventListener: (type: string) => { delete (n as any).listeners[type]; },
     removeAttribute: (name: string) => { delete n.props[name]; },
+    setAttribute: (name: string, value: string) => { n.props[name] = value; },
     toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
 const elements = (n?: Node) => (n?.children ?? []).filter((c) => c.tag !== "#text");
@@ -142,16 +149,24 @@ let loadMore: (h: any, how: any) => Promise<boolean> = async () => false;
 let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undefined;
 /** state/app.ts onRenew: what each mounted conversation does when its session comes again, by session id. */
 const renews = new Map<string, () => (() => void) | void>();
+/** state/app.ts onReset: what each mounted conversation does once its turns are replaced (a rewind), by session id. */
+const resets = new Map<string, () => void>();
 /** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
 const workOpen = new Map<string, boolean>();
+/** What the conversation let go of (state/app.ts forgetEarlier): how many turns it kept each time. */
+const forgets: number[] = [];
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
+    forgetEarlier: (_h: any, keep: number) => void forgets.push(keep),
+    loadTurn: async () => {},
+    rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
+    onReset: (h: any, fn: () => void) => (resets.set(h.id, fn), () => resets.delete(h.id)),
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, DrawnAgain,
+    AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, BuiltFromEnd, KeyedList,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
@@ -175,6 +190,12 @@ const scope = {
         // Its callback stays with it, as in WebKit, where an observer with a root outlives disconnect().
         disconnect() { io.targets.clear(); }
     },
+    // The far turns' observer (lib/settling-observer.ts), as a plain one: when it lets go of its targets is its own test's.
+    settlingObserver: (cb: (entries: any[]) => void, options: any) => {
+        io.cb = cb;
+        io.options = options;
+        return { observe: (target: Node) => io.targets.add(target), unobserve: (target: Node) => io.targets.delete(target), disconnect: () => io.targets.clear(), wake() {} };
+    },
     ResizeObserver: class {
         constructor(private cb: () => void) {}
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
@@ -182,14 +203,14 @@ const scope = {
     },
     observeWorkRendering: () => () => {},
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold, usePane: () => ({ focused: () => paneFocused, parked: () => !paneFocused, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }), shellLayout: () => ({ inspector: { open: false, mode: "dock", width: 360 } }),
     takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
     setTimeout(fn: () => void) { tasks.push(fn); return 0; },
     // What's at a point of the view: the row of the column laid out there.
-    document: { elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
+    document: { body, elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
     HTMLElement: { [Symbol.hasInstance]: (x: any) => !!x?.props },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
@@ -320,6 +341,9 @@ try {
     const before = turn("turn-5").getBoundingClientRect().top;
     button("earlier").props.onClick();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "paging including button removal preserves the old turn");
+    // The rest of the page goes in a few at a time, each above the place read: it stays put.
+    settle();
+    assert.equal(turn("turn-5").getBoundingClientRect().top, before, "and stays put as the rest of the page goes in");
     resize();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "resize does not fight the paging correction");
     scroller().props.onScroll();
@@ -757,15 +781,25 @@ try {
     assert.deepEqual(io.options, { root: scroller(), rootMargin: "100% 0px" }, "for whether it's within a screen of the view");
     scroll(0);
     button("earlier").props.onClick();
+    assert.ok(io.targets.size < 80, "a page shown earlier goes in a few turns at a time, not in one frame");
+    settle();
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
     // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
     // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
     const ended: string[] = [];
-    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
-    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
-    report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    // The page's animations, asked for once for all of them (lib/entrances.ts): two in turn-12, one in a turn in view.
+    const animation = (name: string, iterations: number, target: unknown) => ({ effect: { target, getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    const twelve = turn("turn-12") as any;
+    twelve.contains ??= (t: unknown) => all(twelve).includes(t as never);
+    const hadDocument = (globalThis as any).document;
+    (globalThis as any).document = { getAnimations: () => [animation("fade", 1, twelve), animation("spin", Infinity, twelve), animation("in-view", 1, turn("turn-50"))] };
+    try {
+        report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    } finally {
+        (globalThis as any).document = hadDocument;
+    }
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
     assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
@@ -789,6 +823,23 @@ try {
     io.cb!([{ target: stray, isIntersecting: false }]);
     assert.equal(stray.props[FAR], undefined, "and the observer's callback, which may outlive it, no longer reaches the conversation");
 
+    // Read far up, then rewound (its turns replaced, fewer of them): the end of what's left is drawn, not held back as
+    // the turns far below the place read were.
+    {
+        const [rewTurns, setRewTurns] = solid.createSignal(turns(400));
+        const rewound = { id: "rewound", view: { state: {}, get turns() { return rewTurns(); } } };
+        dispose(); dispose = mount(rewound);
+        for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+        assert.ok(turn("turn-0") && !turn("turn-120"), "read up, those far below held back");
+        setRewTurns(turns(100));
+        resets.get("rewound")?.();
+        flush();
+        assert.ok(turn("turn-99"), "rewound, the last turn left is drawn in the next frame");
+        settle();
+        assert.ok(turn("turn-99"));
+        dispose();
+    }
+
     // A long conversation, all shown: a scroll event measures a few turns to find where it's read (they're in order),
     // following the end it measures none, and an anchor is found by its id, not by searching the column.
     const [manyTurns] = solid.createSignal(turns(400));
@@ -797,18 +848,20 @@ try {
     turnRects = 0; scroller().props.onScroll();
     assert.equal(turnRects, 0, "following the end, a scroll measures no turn");
     scroll(0);
-    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
-    assert.equal(articles().length, 400);
-    turnRects = 0; scroll(60000);
-    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "read from turn-300");
-    assert.ok(turnRects <= 12, `a scroll measures a few of the 400 turns, not each one before where it's read (${turnRects})`);
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+    // Read up there, three pages are drawn: those far below are held back (Transcript.tsx DRAWN_MAX).
+    assert.equal(articles().length, 120, "read 9 pages up: three pages drawn, not all 400");
+    assert.ok(turn("turn-0") && !turn("turn-120"), "the first three pages");
+    turnRects = 0; scroll(20000);
+    assert.equal(turn("turn-100").getBoundingClientRect().top, 0, "read from turn-100");
+    assert.ok(turnRects <= 12, `a scroll measures a few of the turns drawn, not each one before where it's read (${turnRects})`);
     turnSearches = 0; partShift += 12; resize(); partShift -= 12; resize();
     assert.equal(turnSearches, 0, "the anchor is found by its id");
     // Opened again, it shows the pages down from where it was read, not all it had shown...
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
-    assert.equal(articles().length, 120, "reopened, it shows the pages down from where it was read");
-    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "at the same place");
+    assert.ok(articles().length <= 120 && turn("turn-100") && !turn("turn-399"), `reopened, it shows the pages around where it was read, not down to the end (${articles().length})`);
+    assert.equal(turn("turn-100").getBoundingClientRect().top, 0, "at the same place");
     // Opened again there, "Latest" before the turns below the place read are all in goes to the real end at once,
     // not through them a few at a time.
     dispose(); dispose = mount(b);
@@ -822,6 +875,140 @@ try {
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
+    // Read all the way up, then back at the end: a while after, what's above its first page goes, from the page and from
+    // what the window holds (forgetEarlier), not while a reply comes.
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+    assert.equal(articles().length, 120);
+    // Read down to the last drawn: the next page held below goes in, the place read staying where it is; further down,
+    // a page above goes as one goes in below.
+    const lastDrawn = () => Number(articles().at(-1)!.props["data-turn"].slice(5));
+    const downToLast = () => { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); settle(); };
+    downToLast();
+    assert.equal(lastDrawn(), 159, "a page more below");
+    assert.ok(turn("turn-0"), "nothing above gone yet");
+    downToLast();
+    assert.equal(lastDrawn(), 199, "and another");
+    assert.ok(!turn("turn-39") && turn("turn-40"), "a page above gone as it went in");
+    assert.ok(articles().length <= 160, `no more than four pages drawn (${articles().length})`);
+    for (let i = 0; i < 20 && lastDrawn() < 399; i++) downToLast();
+    assert.equal(lastDrawn(), 399, "read down, the end comes");
+    assert.equal(turn("turn-100"), undefined, "and what's far above goes");
+    for (let i = 0; i < 12 && button("earlier"); i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+    forgets.length = 0;
+    settle();
+    assert.deepEqual(forgets, [], "read up there: kept");
+    button("jump").props.onClick();
+    settle(); scroller().props.onScroll(); settle();
+    assert.deepEqual(forgets, [40], "back at the end a while: let go of, but for its first page");
+    assert.equal(articles().length, 40);
+    assert.ok(turn("turn-399"), "the end still there");
+    // Find showing a turn far above what's drawn: a page around it, not every turn down to it; the rest after, a few a frame.
+    setFindShown(true);
+    findProps.show("turn-10");
+    assert.ok(turn("turn-10"), "the turn found is drawn");
+    assert.ok(articles().length <= 40, `a page around it, not all ${400 - 10} turns down to it (${articles().length})`);
+    assert.equal(turn("turn-399"), undefined, "those far below go in after");
+    for (let i = 0; i < 4; i++) settle();
+    assert.ok(articles().length > 40, "and they do");
+    // Each from a fresh session read 9 pages up (turn-0 to turn-119 drawn, those below held back).
+    const readUp = (id: string) => {
+        dispose();
+        const h = { id, view: { state: {}, get turns() { return manyTurns(); } } };
+        dispose = mount(h);
+        for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+        assert.equal(articles().length, 120);
+        return h;
+    };
+    // Find showing a turn among those held: a page around it, and not the pages read up through put back above it.
+    readUp("held-find");
+    findProps.show("turn-300");
+    settle(); settle();
+    assert.ok(turn("turn-300"), "the turn found is drawn");
+    assert.ok(articles().length <= 120, `a jump into the turns held below draws no more than three pages (${articles().length})`);
+    assert.equal(turn("turn-100"), undefined, "the pages read up through aren't put back above it");
+    for (let i = 0; i < 20 && lastDrawn() < 399; i++) downToLast();
+    assert.equal(lastDrawn(), 399, "read down from it, the end comes");
+    assert.ok(articles().length <= 160, `and no more than four pages are drawn (${articles().length})`);
+    // Just below what's drawn: no more than a page goes in at once.
+    readUp("held-near");
+    findProps.show("turn-150");
+    assert.ok(articles().length <= 120 + 41, `a turn just below what's drawn puts in no more than a page at once (${articles().length})`);
+    settle();
+    assert.ok(turn("turn-150"), "the turn found is drawn");
+    // The place read stays where it is as the page below it goes in.
+    readUp("held-read");
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    const readTurn = articles().at(-1)!.props["data-turn"], readTop = turn(readTurn).getBoundingClientRect().top;
+    settle();
+    assert.equal(turn(readTurn).getBoundingClientRect().top, readTop, "the turn read doesn't move as the page below it goes in");
+    // End, or ⌘↓, goes to the end, as before turns were held below, not a page more each time.
+    readUp("held-end");
+    scroller().props.onKeyDown({ key: "End" });
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "End shows the last turn");
+    assert.ok(articles().length <= 40, `and only the end's page (${articles().length})`);
+    assert.equal(button("jump"), undefined, "following the end");
+    // A click in the conversation focuses nothing: End comes to the page, and goes to the end the same.
+    readUp("held-page-end");
+    windowEvent("pointerdown", { target: turn("turn-60") });
+    windowEvent("keydown", { key: "End", target: body });
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "End pressed with nothing focused shows the last turn");
+    assert.ok(articles().length <= 40, `and only the end's page (${articles().length})`);
+    // Not while it's parked under another conversation: that one is what End is for.
+    readUp("held-parked");
+    windowEvent("pointerdown", { target: turn("turn-60") });
+    paneFocused = false;
+    windowEvent("keydown", { key: "End", target: body });
+    paneFocused = true;
+    settle();
+    assert.equal(lastDrawn(), 119, "a parked conversation stays where it was read");
+    // Just after a jump near the end, with its last turns still going in: End goes to the end, not to what's drawn.
+    readUp("held-late");
+    findProps.show("turn-310");
+    flush(); tasks.splice(0).forEach((fn) => fn());
+    scroller().props.onKeyDown({ key: "End" });
+    flush(); tasks.splice(0).forEach((fn) => fn());
+    assert.ok(turn("turn-399"), "End while the end's turns are going in shows the last turn");
+    // Find's next hit while the turns below the last are going in: a few go in each frame, not all of them at once.
+    readUp("held-next");
+    findProps.show("turn-150");
+    for (let i = 0; i < 3; i++) { flush(); tasks.splice(0).forEach((fn) => fn()); }
+    const drawnBefore = articles().length;
+    findProps.show("turn-155");
+    assert.ok(turn("turn-155"), "the next hit is drawn");
+    assert.ok(articles().length - drawnBefore <= 4, `and no more than a few turns go in with it (${articles().length - drawnBefore})`);
+    settle();
+    assert.ok(articles().length <= 160, `nor more than four pages after (${articles().length})`);
+    readUp("held-cmd-down");
+    scroller().props.onKeyDown({ key: "ArrowDown", metaKey: true });
+    settle();
+    assert.ok(turn("turn-399"), "⌘↓ too");
+    // The scrollbar dragged to the bottom, too; a drag of the conversation itself (a finger) only reads on.
+    readUp("held-bar");
+    scroller().props.onPointerDown({ target: scroller() });
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    pointerUp();
+    settle(); scroller().props.onScroll();
+    assert.ok(turn("turn-399"), "the scrollbar dragged to the bottom shows the last turn");
+    readUp("held-drag");
+    scroller().props.onPointerDown({ target: turn("turn-60") });
+    { const s = scroller() as any; scroll(s.scrollHeight - s.clientHeight); }
+    pointerUp();
+    settle();
+    assert.equal(lastDrawn(), 159, "the conversation dragged to the bottom reads on a page");
+    // Reopened read up, then Latest: only the end's page goes in, not every page from the place read down to the end.
+    const reopened = readUp("held-reopen");
+    scroll(20000);
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(reopened);
+    settle(); settle();
+    button("jump").props.onClick();
+    assert.ok(turn("turn-399"), "Latest shows the last turn");
+    assert.ok(articles().length <= 40 + 40, `Latest after a reopen puts in the end's page, not the turns down to it (${articles().length})`);
+    settle(); scroller().props.onScroll();
+    assert.ok(articles().length <= 40, `and only the end's page stays (${articles().length})`);
+    setFindShown(false);
     dispose();
 
     // A conversation that fits (nothing to scroll): a wheel up there scrolls nothing, so it stops nothing, and the
@@ -1008,13 +1195,15 @@ for (const mode of ["prose", "tool"] as const) {
         assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
         assert.equal(workOpen.get("turn-20"), true, "its work log open, as it was");
         assert.equal(workOpen.get("turn-22"), false, "not the one that has its old id");
-        // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
+        // Find open, and a reconnect comes with fewer turns than it had: no turns are asked for. Those the window
+        // hasn't are searched where they are (FindBar's `elsewhere`, session.find), and brought in as it steps to them.
         const more: unknown[] = [];
         loadMore = async (_h, how) => (more.push(how), true);
         setFindShown(true);
         assert.deepEqual(more, [], "all there: nothing to ask for");
         setEarlier(3);
-        assert.deepEqual(more, [{ all: true }], "find counts every turn again");
+        assert.deepEqual(more, [], "find asks for no turns: it counts those it hasn't where they are");
+        assert.equal(findProps.earlier(), 3, "find knows how many it hasn't");
         setFindShown(false);
     } finally { dispose(); loadTo = () => undefined; loadMore = async () => false; }
 

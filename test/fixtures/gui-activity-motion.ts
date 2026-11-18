@@ -13,8 +13,10 @@ import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
 import * as turnPlaces from "../../gui/src/lib/turn-places";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
+import * as cards from "../../gui/src/lib/cards";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
-import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { linesOf } from "../../gui/src/lib/code-metrics";
 import { applyOp } from "../../src/server/timeline";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -33,6 +35,9 @@ const row = (root: Node, id: string) => {
 };
 const liveLineOf = (root: Node) => all(root).find((n) => has(n, "live-line"));
 
+/** The turns a TurnView asked for whole (loadTurn: one sent with its work folded). */
+const turnLoads: string[] = [];
+
 /** `busy` false: a turn left running (no live line), whose calls under way are rows like the others. */
 function setup(blocks: any[], expanded = true, agents: any[] = [], session?: string, busy = true) {
     const [view, setView] = createStore<any>({ state: { id: "session", busy, interactions: [], shells: [] }, turns: [{ id: "turn", status: "running", startedAt: 1000, blocks }], agents });
@@ -42,9 +47,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
+        ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, ...cards, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
-        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
+        handleFor: () => ({ view }), loadTurn: (_h: unknown, id: string) => { turnLoads.push(id); return Promise.resolve(); }, stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
         Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); solid.createRenderEffect(() => n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" ")); return n; },
@@ -269,7 +274,7 @@ test("thinking lookahead stays linear", () => {
     const blocks = new Proxy([tool("a"), ...Array.from({ length: n }, (_, i) => ({ t: "thinking", id: `t${i}`, text: "thought" })), tool("b")], {
         get(target, key, receiver) { if (/^\d+$/.test(String(key))) accesses++; return Reflect.get(target, key, receiver); },
     });
-    const group = component(activity, "groupBlocks", {});
+    const group = component(activity, "groupBlocks", { ...cards });
     const result = group(blocks);
     expect(result).toHaveLength(1);
     expect(result[0].steps).toHaveLength(n + 2);
@@ -296,7 +301,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     let mounts = 0, highlights = 0, trailed = 0;
     const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++,
+        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++, linesOf,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
         highlightMore: async (_writing: number, lines: string) => { highlights++; highlighted.push(lines); return "highlighted\n"; },
         newWriting: () => 1, endWriting() {}, growing: (el: Node) => (html: string) => { el.props.innerHTML = html; },
@@ -304,7 +309,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
     const painted: { html: string; live: boolean }[] = [];
     const Markdown = component(source("blocks/Markdown"), "Markdown", {
-        RenderBoundary: boundary(), MarkdownRenderer, createReveal, DrawnAgain,
+        RenderBoundary: boundary(), MarkdownRenderer, createReveal, DrawnAgain, BuiltFromEnd,
         paint: (el: Node, html: string, live: boolean) => { el.props.innerHTML = html; painted.push({ html, live }); },
         CodeBlock: (p: any) => { mounts++; return Code(p); },
     });
@@ -766,4 +771,43 @@ test("with tool activity set to open, a command card starts open", () => {
         expect(head(row(h.root, "cmd")).props["aria-expanded"]).toBe(true);
         expect(text(row(h.root, "cmd"))).toContain("kiwi output");
     } finally { h.dispose(); }
+});
+
+test("a turn sent with its work folded shows its rows as it's opened, asks for it whole, and fills them in as it comes", () => {
+    turnLoads.length = 0;
+    const h = setup([command("c", "ok")], false, [], undefined, false);
+    try {
+        h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000, folded: true })));
+        const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
+        const work = () => all(h.root).find((n) => has(n, "worklog"));
+        // Folded: "Worked for", nothing asked for.
+        expect(worked().props["aria-expanded"]).toBe(false);
+        expect(turnLoads).toEqual([]);
+        // Opened: asked for, and its rows drawn at once (not a moment of nothing under "Worked for").
+        worked().props.onClick({ currentTarget: worked() });
+        expect(worked().props["aria-expanded"]).toBe(true);
+        expect(turnLoads).toEqual(["turn"]);
+        expect(work()).toBeDefined();
+        const drawnRow = row(h.root, "c");
+        // Whole: the same row, filled in.
+        h.setView(produce((v: any) => { v.turns[0].blocks = [{ ...command("c", "ok"), output: "all done" }]; delete v.turns[0].folded; }));
+        expect(row(h.root, "c")).toBe(drawnRow);
+        expect(turnLoads).toEqual(["turn"]);
+    } finally {
+        h.dispose();
+    }
+});
+
+test("a turn sent whole isn't asked for again as its work is opened", () => {
+    turnLoads.length = 0;
+    const h = setup([command("c", "ok")], false, [], undefined, false);
+    try {
+        h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000 })));
+        const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
+        worked().props.onClick({ currentTarget: worked() });
+        expect(all(h.root).some((n) => has(n, "worklog"))).toBe(true);
+        expect(turnLoads).toEqual([]);
+    } finally {
+        h.dispose();
+    }
 });

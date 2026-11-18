@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, indexHasCrlf, removeWhere, render } = await import("../src/server/git-changes");
+const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, indexHasCrlf, removeWhere, render, statClean } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -23,6 +23,9 @@ function repo(files: Record<string, string | Buffer> = {}): string {
     const dir = join(realpathSync(iso.home), `repo-${n++}`);
     mkdirSync(dir);
     git(dir, "init", "-q", "-b", "main");
+    // Git's defaults, whatever the machine's own config says: which stat data counts changes what's trusted.
+    git(dir, "config", "core.checkStat", "default");
+    git(dir, "config", "core.trustCtime", "true");
     for (const [path, body] of Object.entries(files)) write(dir, path, body);
     git(dir, "add", "-A");
     git(dir, "commit", "-q", "--allow-empty", "-m", "Initial commit");
@@ -46,6 +49,73 @@ function indexState(dir: string, status = true) {
 const summary = (r: { files: { path: string; change: string; added: number; removed: number }[] }) => r.files.map((f) => `${f.change} ${f.path} +${f.added} -${f.removed}`);
 
 describe("git changes", () => {
+    // Past the listing's limit, files git says changed, with nothing to convert them, are read only if listed: the
+    // listing and its count are what reading them all gave.
+    test("over the listing's limit: each listed file's diff, a count of the rest, and changes back or of mode alone", async () => {
+        const files: Record<string, string> = { ".gitattributes": "t*.txt text\n" };
+        for (let i = 0; i < 330; i++) files[`f${String(i).padStart(3, "0")}.txt`] = `a\nb ${i}\nc\n`;
+        for (let i = 0; i < 5; i++) files[`t${i}.txt`] = "x\ny\n";
+        const dir = repo(files);
+        for (let i = 0; i < 330; i++) {
+            const f = `f${String(i).padStart(3, "0")}.txt`;
+            if (i === 3) chmodSync(join(dir, f), 0o755);
+            else if (i === 4) write(dir, f, `a\nb ${i}\nc\n`);
+            else write(dir, f, `a\nB ${i}\nc\nd\n`);
+        }
+        // Line endings alone, where git converts them: no change.
+        for (let i = 0; i < 5; i++) write(dir, `t${i}.txt`, "x\r\ny\r\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files).toHaveLength(300);
+        expect(r.more).toBe(29);
+        expect(summary(r).slice(0, 5)).toEqual(["modified f000.txt +2 -1", "modified f001.txt +2 -1", "modified f002.txt +2 -1", "modified f003.txt +0 -0", "modified f005.txt +2 -1"]);
+        expect(r.files[3]!.note).toBe("Mode changed 100644 → 100755");
+        expect(r.files.at(-1)!.path).toBe("f300.txt");
+    });
+
+    // Files that change between `git status` and their read: listed ones are read, and one back as it was drops out (the
+    // next moves up), one gone is deleted, one now a link is a type change; an unlisted one is never read, so it's
+    // counted as git said (reading it would drop it from the count).
+    test("over the listing's limit: listed files are read after git status, the rest are counted unread", async () => {
+        const files: Record<string, string> = {};
+        const name = (i: number) => `f${String(i).padStart(3, "0")}.txt`;
+        for (let i = 0; i < 330; i++) files[name(i)] = `a\nb ${i}\nc\n`;
+        const dir = repo(files);
+        // Whatever the machine's own config says: either would have every file read.
+        git(dir, "config", "core.autocrlf", "false");
+        git(dir, "config", "core.attributesFile", "/dev/null");
+        for (let i = 0; i < 330; i++) write(dir, name(i), `a\nB ${i}\nc\n`);
+        const after = () => {
+            write(dir, name(10), `a\nb 10\nc\n`);
+            rmSync(join(dir, name(11)));
+            rmSync(join(dir, name(12)));
+            symlinkSync("elsewhere", join(dir, name(12)));
+            write(dir, name(320), `a\nb 320\nc\n`);
+        };
+        const spawn = Bun.spawn;
+        let fired = false;
+        (Bun as { spawn: unknown }).spawn = (argv: string[], o: never) => {
+            const p = spawn(argv, o);
+            if (!fired && argv.includes("status")) {
+                fired = true;
+                void p.exited.then(after);
+            }
+            return p;
+        };
+        let r: Awaited<ReturnType<typeof gitChanges>>;
+        try {
+            r = await gitChanges(dir, { scope: "uncommitted" });
+        } finally {
+            (Bun as { spawn: unknown }).spawn = spawn;
+        }
+        expect(fired).toBe(true);
+        expect(r.files).toHaveLength(300);
+        expect(r.more).toBe(29);
+        expect(r.files.some((f) => f.path === name(10))).toBe(false);
+        expect(summary(r).slice(9, 12)).toEqual(["modified f009.txt +1 -1", "deleted f011.txt +0 -3", `typechange ${name(12)} +1 -3`]);
+        expect(r.files[11]!.kind).toBe("link");
+        expect(summary(r).at(-1)).toBe("modified f300.txt +1 -1");
+    });
+
     test("modified, staged, deleted and untracked files, with awkward names", async () => {
         const dir = repo({ "a.txt": "one\ntwo\n", "gone.txt": "bye\n", "with space.txt": "x\n", "-dash.txt": "d\n", "ünï.txt": "u\n", "img.bin": Buffer.from([0, 1, 2, 3]) });
         write(dir, "a.txt", "one\nTWO\nthree\n");
@@ -109,11 +179,29 @@ describe("git changes", () => {
         expect(r.files).toEqual([]);
     });
 
+    test("only what git's stat data says may differ is read, unless git can't be asked without running a program", async () => {
+        const dir = repo({ "a.txt": "aaaa\n", "b.txt": "same\n" });
+        git(dir, "config", "core.trustctime", "false");
+        const old = new Date("2020-01-01T00:00:00Z");
+        for (const f of ["a.txt", "b.txt"]) utimesSync(join(dir, f), old, old);
+        git(dir, "update-index", "-q", "--refresh");
+        // Rewritten in place, its size and mtime kept: git's stat data says it's as it was, so `git status` doesn't look.
+        writeFileSync(join(dir, "a.txt"), "AAAA\n");
+        utimesSync(join(dir, "a.txt"), old, old);
+        write(dir, "b.txt", "changed\n");
+        expect(summary(await gitChanges(dir, { scope: "uncommitted" }))).toEqual(["modified b.txt +1 -1"]);
+        // A config file the repository includes could define a filter after it was checked: every file is read.
+        git(dir, "config", "include.path", "missing.config");
+        expect(summary(await gitChanges(dir, { scope: "uncommitted" }))).toEqual(["modified a.txt +1 -1", "modified b.txt +1 -1"]);
+    });
+
     test("an exact rename is one entry", async () => {
         const dir = repo({ "old.txt": "content\nhere\n" });
         renameSync(join(dir, "old.txt"), join(dir, "new.txt"));
         const r = await gitChanges(dir, { scope: "uncommitted" });
         expect(r.files.map((f) => [f.change, f.path, f.from])).toEqual([["renamed", "new.txt", "old.txt"]]);
+        // Its diff says what its heading doesn't (that names where it was).
+        expect(r.files[0]!.note).toBe("Contents unchanged");
     });
 
     test("a mode change is a change, and its note says so", async () => {
@@ -674,6 +762,26 @@ describe("branch scope", () => {
     });
 });
 
+describe("trusting the index's stat data", () => {
+    const S = 1_000_000_000n;
+    const entry = { ctime: [100n, 5n] as [bigint, bigint], mtime: [100n, 5n] as [bigint, bigint], ino: 7n, uid: 1n, gid: 1n, size: 10n };
+    const stat = (mtimeNs: bigint) => ({ size: 10n, mtimeNs, ctimeNs: mtimeNs, ino: 7n, uid: 1n, gid: 1n }) as never;
+    const full = { trustCtime: true, minimal: false };
+    const minimal = { trustCtime: true, minimal: true };
+
+    test("an entry older than the index is trusted while its stat matches", () => {
+        expect(statClean(stat(100n * S + 5n), entry, 100n * S + 9n, full)).toBe(true);
+        expect(statClean(stat(100n * S + 6n), entry, 100n * S + 9n, full)).toBe(false);
+        expect(statClean(stat(100n * S + 5n), entry, 100n * S + 3n, full)).toBe(false);
+    });
+
+    test("comparing whole seconds, an entry from the index's own second is racy", () => {
+        // A same-size rewrite later in that second has the same stat.
+        expect(statClean(stat(100n * S + 6n), entry, 100n * S + 9n, minimal)).toBe(false);
+        expect(statClean(stat(100n * S + 6n), entry, 101n * S, minimal)).toBe(true);
+    });
+});
+
 describe("files git converts on check-in", () => {
     /** The Git LFS shape: the blob holds the clean form, the disk the smudged one. */
     function filtered() {
@@ -820,6 +928,34 @@ describe("outside a repository", () => {
 });
 
 describe("repository config never runs a program", () => {
+    test("nor does asking git what differs, with commits since a branch's base", async () => {
+        const marks = tempDir("cavvy-marks-");
+        const dir = repo({ "a.txt": "one\n", "b.txt": "two\n" });
+        git(dir, "branch", "-q", "base");
+        write(dir, "a.txt", "one more\n");
+        git(dir, "commit", "-qam", "Second");
+        write(dir, ".gitattributes", "* filter=evil diff=evil\n");
+        const touch = (name: string) => `touch ${join(marks, name)}; cat`;
+        git(dir, "config", "filter.evil.clean", touch("clean"));
+        git(dir, "config", "filter.evil.smudge", touch("smudge"));
+        git(dir, "config", "filter.evil.process", `touch ${join(marks, "process")}; false`);
+        git(dir, "config", "filter.evil.required", "true");
+        git(dir, "config", "diff.evil.textconv", touch("textconv"));
+        writeFileSync(join(marks, "ext.sh"), `#!/bin/sh\ntouch ${join(marks, "external")}\n`);
+        chmodSync(join(marks, "ext.sh"), 0o755);
+        git(dir, "config", "diff.external", join(marks, "ext.sh"));
+        git(dir, "config", "core.fsmonitor", `touch ${join(marks, "fsmonitor")}; false`);
+        write(dir, "b.txt", "two!\n");
+        const marked = () => Bun.spawnSync(["ls", marks]).stdout.toString().split("\n").filter((f) => f && f !== "ext.sh");
+
+        const r = await gitChanges(dir, { scope: "branch", base: "base" });
+        expect(marked()).toEqual([]);
+        expect(r.files.map((f) => f.path)).toEqual(["a.txt", "b.txt", ".gitattributes"]);
+        // Control: plain git does run them, so the test would notice.
+        Bun.spawnSync(["git", "diff", "base"], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+        expect(marked().length).toBeGreaterThan(0);
+    });
+
     test("in a partial clone, a missing old blob is never fetched", async () => {
         const src = repo({ "f.txt": "v1\n" });
         write(src, "f.txt", "v2\n");

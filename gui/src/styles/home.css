@@ -8,7 +8,8 @@
     position: absolute;
     inset: 0;
     overflow-y: auto;
-    overscroll-behavior: contain;
+    /* No overscroll-behavior: with it, Chromium gives Home a layer the size of the column even while nothing
+       overflows, and the title bar over it another the size of the window (about 5 MB at 2x). */
     scrollbar-width: thin;
 }
 

@@ -20,6 +20,7 @@
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
 //   "first message"  says what the user's first message was, and how many they've sent
 //   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
+//   "finishat T"     a short answer when the clock reaches T (ms since the epoch): sessions finishing at once
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
@@ -798,7 +799,12 @@ export function startMockLlm(o: MockOptions = {}) {
             else if (/for a permission popup/.test(system)) step = { text: "" };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
-            else if (/\bpause\b/i.test(prompt)) {
+            else if (/\bfinishat (\d+)\b/.test(prompt)) {
+                // Finishes when the clock reaches that time (ms since the epoch): many sessions finishing at once.
+                await Bun.sleep(Math.max(0, Number(/\bfinishat (\d+)\b/.exec(prompt)![1]) - Date.now()));
+                // In one piece: the turn ends then, not as the text trickles in.
+                step = { text: "Done at the time asked.", rate: { bytes: 1000, ms: 0 } };
+            } else if (/\bpause\b/i.test(prompt)) {
                 await Bun.sleep(400);
                 step = { text: "Done waiting." };
             } else if (/\bemptyreply\b/i.test(prompt)) step = {};

@@ -13,7 +13,7 @@ const iso = isolate();
 const fake = fakeSsh();
 const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase, printable, offeredHostKey, trustHostKey, ownKnownHosts } = await import("../src/servers/ssh");
 const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile, desktopIdFile } = await import("../src/servers/store");
-const { compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
+const { bytecodeFor, compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
 const { planCopy, portableMcpEntry, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
@@ -209,6 +209,9 @@ describe("the command line ssh gets", () => {
             const tunnel = sshTunnelArgv(entry, 5001, 6001);
             expect(tunnel.slice(-6)).toEqual(["-N", "-T", "-L", "127.0.0.1:5001:127.0.0.1:6001", "--", "dev@box.example"]);
             expect(tunnel).toContain("ExitOnForwardFailure=yes");
+            // What the window is sent goes compressed (a command's output, which ssh runs for Cavvy, doesn't need it).
+            expect(tunnel).toContain("Compression=yes");
+            expect(argv).not.toContain("Compression=yes");
             expect(tunnel).not.toContain("ClearAllForwardings=yes");
             // Whatever the user's config would run there, the command is Cavvy's.
             expect(opts).toContain("RemoteCommand=none");
@@ -337,6 +340,11 @@ describe("which build is newer", () => {
         expect(readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
         // And the one a release's builds are made with.
         expect(readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
+    });
+
+    test("compiled to bytecode only by the server's own Bun, which is the only one that reads it", () => {
+        expect(bytecodeFor(process.execPath)).toEqual(Bun.version === SERVER_BUN ? ["--bytecode"] : []);
+        expect(bytecodeFor(join(tempDir("bun"), "no-bun-here"))).toEqual([]);
     });
 });
 

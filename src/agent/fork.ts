@@ -10,12 +10,15 @@
 // thread/fork) and goes on with the copy; the shared one itself is never
 // continued again, so neither sees what the other says after the fork.
 
-import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { chmod, open, rename, unlink } from "fs/promises";
 import { dirname, join } from "path";
 import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
-import { textOf, type Message } from "../providers/types";
+import { textOf, type Message, type UserMessage } from "../providers/types";
+import { eachLine } from "../util/lines";
 import { redact } from "../util/redact";
+import { nextSlice } from "../util/slices";
 import { hold, letGo, newSessionId, placeFields, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
 
 /**
@@ -72,9 +75,7 @@ export function forkTitle(title: string): string {
 /** Unlike a rewind, a fork can branch from imported prompts without changing the imported original. */
 export function forkTargets(messages: Message[]): { index: number; text: string; checkpoint?: number }[] {
     return messages.flatMap((m, index) => {
-        if (m.role !== "user") return [];
-        const kind = m.meta?.kind ?? "prompt";
-        if (kind !== "prompt" && kind !== "command") return [];
+        if (!isForkTarget(m)) return [];
         const first = m.content.find((p) => p.type === "text" && !/^<system-reminder>/.test(p.text));
         const text = (m.meta?.display ?? (first?.type === "text" ? first.text : "")).replace(REMINDERS, "").trim();
         return [{ index, text, checkpoint: m.meta?.checkpoint }];
@@ -83,7 +84,15 @@ export function forkTargets(messages: Message[]): { index: number; text: string;
 
 /** Where a fork from the turn of the prompt at `index` ends: before the next prompt (or at the end of the history). */
 export function forkCut(messages: Message[], index: number): number {
-    return forkTargets(messages).find((t) => t.index > index)?.index ?? messages.length;
+    for (let i = index + 1; i < messages.length; i++) if (isForkTarget(messages[i])) return i;
+    return messages.length;
+}
+
+/** A prompt a fork can be made at (forkTargets). */
+export function isForkTarget(m: Message | undefined): m is UserMessage {
+    if (m?.role !== "user") return false;
+    const kind = m.meta?.kind ?? "prompt";
+    return kind === "prompt" || kind === "command";
 }
 
 /**
@@ -115,13 +124,68 @@ export interface ForkOptions {
 
 function parse(file: string): Line[] {
     const lines: Line[] = [];
-    for (const raw of readFileSync(file, "utf-8").split("\n")) {
-        if (!raw.trim()) continue;
+    // A line at a time: a session of any size, never all of it as one string.
+    eachLine(file, (raw) => {
+        if (!raw.trim()) return;
         try {
             lines.push(JSON.parse(raw) as Line);
         } catch {
             // a torn line, which load() skips too
         }
+    });
+    return lines;
+}
+
+/**
+ * The original's records (forkSessionSoon), read a slice at a time so that nothing else waits on it: a 100,000-item
+ * session's file is 132 MB, 0.25 s to parse. What's written to it meanwhile is read with the rest.
+ */
+export async function readForkSource(file: string): Promise<Line[]> {
+    const lines: Line[] = [];
+    const fh = await open(file, "r");
+    try {
+        const chunk = Buffer.allocUnsafe(1024 * 1024);
+        // What follows a slice's last newline, kept as bytes (a slice can end inside a character), in pieces: one line
+        // longer than many slices isn't copied again for each.
+        let rest: Buffer[] = [];
+        let pos = 0;
+        let since = performance.now();
+        for (;;) {
+            const { bytesRead } = await fh.read(chunk, 0, chunk.length, pos);
+            if (bytesRead <= 0) break;
+            pos += bytesRead;
+            // Split at a newline (a byte that's never inside a multi-byte character).
+            const buf = chunk.subarray(0, bytesRead);
+            const nl = buf.lastIndexOf(10);
+            if (nl < 0) {
+                rest.push(Buffer.from(buf));
+                continue;
+            }
+            const text = Buffer.concat([...rest, buf.subarray(0, nl)]).toString("utf-8");
+            rest = [Buffer.from(buf.subarray(nl + 1))];
+            for (const raw of text.split("\n")) {
+                if (!raw.trim()) continue;
+                try {
+                    lines.push(JSON.parse(raw) as Line);
+                } catch {
+                    // a torn line, which load() skips too
+                }
+            }
+            if (performance.now() - since > 8) {
+                await nextSlice();
+                since = performance.now();
+            }
+        }
+        const last = Buffer.concat(rest).toString("utf-8");
+        if (last.trim()) {
+            try {
+                lines.push(JSON.parse(last) as Line);
+            } catch {
+                // a torn last line
+            }
+        }
+    } finally {
+        await fh.close();
     }
     return lines;
 }
@@ -210,44 +274,7 @@ function firstPrompt(lines: Line[]): string | undefined {
  * can't be made.
  */
 export function forkSession(original: Session, o: ForkOptions): Session {
-    if (!original.persisted || !existsSync(original.path)) throw new Error("This session hasn't been saved yet, so there's nothing to fork.");
-    if (!Number.isInteger(o.cut) || o.cut < 1 || o.cut > original.messages.length) throw new Error("That point isn't in this conversation.");
-    const source = parse(original.path);
-    const copied = recordsUpTo(source, o.cut).filter((l) => COPIED[l.t]);
-    copied.push(...refusals(original.messages.slice(0, o.cut)));
-    // Import provenance is written after the imported messages. An earlier
-    // cut still needs its timeline banner, without claiming the CLI session.
-    if (!copied.some((l) => l.t === "import") && copied.some((l) => l.t === "msg" && l.m.role === "user" && l.m.meta?.imported)) {
-        const imported = source.find((l) => l.t === "import");
-        if (imported) copied.push(imported);
-    }
-    // What's saved must be what the original has (a write it couldn't make, say), as written: redacted.
-    if (redactedJson(historyOf(copied)) !== redactedJson(original.messages.slice(0, o.cut))) throw new Error("The saved conversation doesn't match this session's, so it can't be forked.");
-
-    const id = newSessionId();
-    const file = join(dirname(original.path), `${id}.jsonl`);
-    const shown = oneLine(o.title ?? original.title ?? firstPrompt(copied) ?? "") || "(untitled)";
-    let at = Date.now();
-    for (const m of original.messages.slice(0, o.cut)) if (m.role === "user" && m.meta?.checkpoint !== undefined) at = Math.max(at, m.meta.checkpoint + 1);
-    const forkOf: ForkOrigin = { id: original.meta.id, title: shown, messages: o.cut, at };
-    // A backend session that saw past the cut has things the fork mustn't know. One is shared
-    // only once the original has saved that it won't continue it in place (a crash right after
-    // the fork is written mustn't let it), so marked before the fork exists.
-    const shared = o.shareBackends === false ? [] : [...original.backends].filter(([p, b]) => b.synced <= o.cut && original.markBackendForked(p));
-    // The threads parked for other accounts' places (#413) as well, so the fork goes back to them as the original would.
-    const parked = o.shareBackends === false ? [] : original.parkedBackends().filter((p) => p.session.synced <= o.cut && original.markParkedForked(p));
-    const model = o.model ?? original.model;
-    const lines: Line[] = [
-        { t: "meta", id, cwd: original.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
-        ...copied.map((l) => l.t === "import" ? { ...l, inherited: true as const } : l),
-        { t: "title", title: forkTitle(shown) },
-        ...(model ? [{ t: "model" as const, model }] : []),
-        ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
-        ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), ...placeFields(original.backendPlace(provider)) })),
-        ...parked.map((p) => ({ t: "parked" as const, provider: p.provider, id: p.session.id, synced: p.session.synced, fork: true, ...(p.session.unsent ? { unsent: p.session.unsent } : {}), folder: p.place.folder, ...(p.place.history ? { history: p.place.history } : {}) })),
-    ];
-
+    const { file, lines } = forkLines(original, o);
     // Claimed before it exists, so no other process opens it half way.
     hold(file);
     const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -269,4 +296,89 @@ export function forkSession(original: Session, o: ForkOptions): Session {
     } finally {
         letGo(file);
     }
+}
+
+/**
+ * forkSession, written a slice at a time: what the fork is (its records, the backend sessions it shares) is settled
+ * at once, from `o.source` (readForkSource) and the original as it is now; then it's written while the server gets
+ * on (a 100,000-item session's copy, redacted again, took 0.35 s). `keep` puts back the lines the fork was just
+ * loaded from, for the task it's called in (Session.keepLoadedLines): its runtime doesn't read the file again.
+ */
+export async function forkSessionSoon(original: Session, o: ForkOptions & { source: Line[]; id?: string; createdAt?: number }): Promise<{ session: Session; keep: () => void }> {
+    const { file, lines } = forkLines(original, o);
+    hold(file);
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    let fh: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+        fh = await open(tmp, "wx", 0o600);
+        let since = performance.now();
+        let chunk: string[] = [];
+        for (const l of lines) {
+            chunk.push(redactedJson(l) + "\n");
+            if (performance.now() - since < 8) continue;
+            await fh.write(chunk.join(""));
+            chunk = [];
+            await nextSlice();
+            since = performance.now();
+        }
+        if (chunk.length) await fh.write(chunk.join(""));
+        await fh.close();
+        fh = undefined;
+        await chmod(tmp, 0o600);
+        await rename(tmp, file);
+    } catch (e) {
+        await fh?.close().catch(() => undefined);
+        await unlink(tmp).catch(() => undefined);
+        letGo(file);
+        throw e;
+    }
+    try {
+        const session = Session.load(file);
+        return { session, keep: session.keepLoadedLines() };
+    } finally {
+        letGo(file);
+    }
+}
+
+/** What the fork of `original` is: its file's name and its records, checked against the original's history; the backend sessions it shares marked as such in the original. */
+function forkLines(original: Session, o: ForkOptions & { source?: Line[]; id?: string; createdAt?: number }): { file: string; lines: Line[] } {
+    if (!original.persisted || !existsSync(original.path)) throw new Error("This session hasn't been saved yet, so there's nothing to fork.");
+    if (!Number.isInteger(o.cut) || o.cut < 1 || o.cut > original.messages.length) throw new Error("That point isn't in this conversation.");
+    const source = o.source ?? parse(original.path);
+    const copied = recordsUpTo(source, o.cut).filter((l) => COPIED[l.t]);
+    copied.push(...refusals(original.messages.slice(0, o.cut)));
+    // Import provenance is written after the imported messages. An earlier
+    // cut still needs its timeline banner, without claiming the CLI session.
+    if (!copied.some((l) => l.t === "import") && copied.some((l) => l.t === "msg" && l.m.role === "user" && l.m.meta?.imported)) {
+        const imported = source.find((l) => l.t === "import");
+        if (imported) copied.push(imported);
+    }
+    // What's saved must be what the original has (a write it couldn't make, say), as written: redacted.
+    if (redactedJson(historyOf(copied)) !== redactedJson(original.messages.slice(0, o.cut))) throw new Error("The saved conversation doesn't match this session's, so it can't be forked.");
+
+    const id = o.id ?? newSessionId();
+    const file = join(dirname(original.path), `${id}.jsonl`);
+    const shown = oneLine(o.title ?? original.title ?? firstPrompt(copied) ?? "") || "(untitled)";
+    let at = Date.now();
+    for (const m of original.messages.slice(0, o.cut)) if (m.role === "user" && m.meta?.checkpoint !== undefined) at = Math.max(at, m.meta.checkpoint + 1);
+    const forkOf: ForkOrigin = { id: original.meta.id, title: shown, messages: o.cut, at };
+    // A backend session that saw past the cut has things the fork mustn't know. One is shared
+    // only once the original has saved that it won't continue it in place (a crash right after
+    // the fork is written mustn't let it), so marked before the fork exists.
+    const shared = o.shareBackends === false ? [] : [...original.backends].filter(([p, b]) => b.synced <= o.cut && original.markBackendForked(p));
+    // The threads parked for other accounts' places (#413) as well, so the fork goes back to them as the original would.
+    const parked = o.shareBackends === false ? [] : original.parkedBackends().filter((p) => p.session.synced <= o.cut && original.markParkedForked(p));
+    const model = o.model ?? original.model;
+    const lines: Line[] = [
+        { t: "meta", id, cwd: original.meta.cwd, createdAt: o.createdAt ?? Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
+        ...copied.map((l) => l.t === "import" ? { ...l, inherited: true as const } : l),
+        { t: "title", title: forkTitle(shown) },
+        ...(model ? [{ t: "model" as const, model }] : []),
+        ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
+        ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), ...placeFields(original.backendPlace(provider)) })),
+        ...parked.map((p) => ({ t: "parked" as const, provider: p.provider, id: p.session.id, synced: p.session.synced, fork: true, ...(p.session.unsent ? { unsent: p.session.unsent } : {}), folder: p.place.folder, ...(p.place.history ? { history: p.place.history } : {}) })),
+    ];
+
+    return { file, lines };
 }

@@ -7,6 +7,8 @@
 html {
     font-size: calc(14px * var(--font-scale));
     -webkit-text-size-adjust: 100%;
+    /* The page never bounces (body's doesn't reach the page), so a view that scrolls needn't stop its scroll here. */
+    overscroll-behavior: none;
 }
 
 html,
@@ -221,8 +223,8 @@ h3 {
 }
 
 ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: var(--scrollbar-w);
+    height: var(--scrollbar-w);
 }
 
 ::-webkit-scrollbar-thumb {
@@ -284,6 +286,23 @@ h3 {
 
 /* ---- Motion ---- */
 
+/* Looping motion runs only where it can be seen, and the decorative only while Cavvy has the focus (lib/loops.ts). Each
+   endless animation's play state is one of these. */
+:root {
+    --loops: running;
+    --decor: running;
+}
+
+:root[data-decor-off] {
+    --decor: paused;
+}
+
+:root[data-loops-off],
+[data-loop-out] {
+    --loops: paused;
+    --decor: paused;
+}
+
 @keyframes spin {
     to {
         transform: rotate(360deg);
@@ -300,6 +319,7 @@ h3 {
 
 .spinner {
     animation: spin 0.8s steps(16) infinite;
+    animation-play-state: var(--loops);
 }
 
 @keyframes pulse {
@@ -310,6 +330,7 @@ h3 {
 
 .pulse {
     animation: pulse 1.4s steps(14) infinite;
+    animation-play-state: var(--loops);
 }
 
 /* A continuous compositor animation. Text stays readable without repainting
@@ -322,6 +343,7 @@ h3 {
 .shimmer {
     color: var(--fg-2);
     animation: shimmer 2.2s steps(22) infinite;
+    animation-play-state: var(--decor);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -365,6 +387,7 @@ h3 {
     }
     .spinner {
         animation: spin 1.6s steps(32) infinite !important;
+        animation-play-state: var(--loops) !important;
     }
 }
 
@@ -894,7 +917,9 @@ svg.lucide {
    body starts inside the strip: so the body's own box is a hole, which holds its rows wherever they show. */
 .app.electron::before {
     content: "";
-    position: fixed;
+    /* Not fixed: a fixed strip made what's drawn after it a window-sized layer of its own (div.win). .app fills
+       the window and doesn't scroll, so it's in the same place. */
+    position: absolute;
     inset: 0 0 auto 0;
     /* No lower than the title bar's end: compact density's is shorter. */
     height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));

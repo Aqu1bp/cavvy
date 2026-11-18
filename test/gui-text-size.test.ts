@@ -93,7 +93,9 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["sidebar.css", ".resize-handle", "width", "6px"],
     ["overlays.css", ".find-bar.glass", "top", "58px"],
     ["overlays.css", ".find-bar.glass", "height", "38px"],
-    ["base.css", "::-webkit-scrollbar", "width", "10px"],
+    // The scrollbar's width is a token: the title bar stops short of it (shell.css), and the fade leaves it out (stage.css).
+    ["tokens.css", ":root", "--scrollbar-w", "10px"],
+    ["base.css", "::-webkit-scrollbar", "width", "var(--scrollbar-w)"],
 ];
 
 for (const [file, selector, property, value] of FRAME) {
@@ -110,7 +112,8 @@ const FRAME_RULES: Record<string, RegExp> = {
     "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.insp-lead \.(hb|has-wait(::after)?)|\.cap( \.sep)?)$/,
     // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
     // Full screen with the sidebar hidden: the title bar's buttons and the rows after them clear the traffic lights.
-    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|insp-t|rv-h|br-bar|sim-bar))$/,
+    // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).
+    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|insp-t|rv-h|br-bar|sim-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,

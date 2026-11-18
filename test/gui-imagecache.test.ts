@@ -34,6 +34,19 @@ describe("ImageCache", () => {
         await c.get("b", load("b"));
         expect(asked).toEqual(["a", "b", "c", "b"]);
     });
+
+    test("peeking asks for nothing and keeps the order", async () => {
+        const c = new ImageCache(2);
+        const asked: string[] = [];
+        const load = (k: string) => () => (asked.push(k), Promise.resolve([k]));
+        expect(c.peek("a")).toBeUndefined();
+        await c.get("a", load("a"));
+        await c.get("b", load("b"));
+        expect(await c.peek("a")).toEqual(["a"]);
+        await c.get("c", load("c")); // still drops a: peeking didn't make it recent
+        expect(c.peek("a")).toBeUndefined();
+        expect(asked).toEqual(["a", "b", "c"]);
+    });
 });
 
 describe("what makes an image the same image", () => {

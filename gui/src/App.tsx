@@ -1,5 +1,6 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { watchCodeMetrics } from "./lib/code-metrics";
+import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
@@ -21,21 +22,14 @@ import { Header, RailButtons } from "./components/Header";
 import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
-import { ReviewPane } from "./components/ReviewPane";
-import { TerminalPanel } from "./components/TerminalPanel";
-import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
+import { preloadTerminal, TerminalPanel } from "./components/TerminalPanel";
+import { openFind, terminalOpen, setTerminalOpen, mcpOpen, planDialog, commitRequest, rewindOpen, archiveRequest } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsNav, SettingsPage } from "./components/Settings";
-import { RewindDialog } from "./components/RewindDialog";
-import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
-import { PlanDialogs } from "./components/PlanDialogs";
-import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
-import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
@@ -163,6 +157,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         if (saved) setInspectorWidth(saved);
     } catch { /* private mode: the default width */ }
     onMount(() => {
+        onCleanup(watchCodeMetrics());
         const resized = () => setWin(size());
         window.addEventListener("resize", resized);
         onCleanup(() => window.removeEventListener("resize", resized));
@@ -278,7 +273,48 @@ function Reconnecting() {
     );
 }
 
+/**
+ * Settings and what only it shows (plugins, usage, accounts): a chunk of their own, not loaded before anything is on
+ * screen. Fetched once the window is idle after it opens (App), so opening Settings is as quick as when it came with it.
+ */
+const settingsModule = () => import("./components/Settings");
+const SettingsNav = lazy(() => settingsModule().then((m) => ({ default: m.SettingsNav })));
+const SettingsPage = lazy(() => settingsModule().then((m) => ({ default: m.SettingsPage })));
+/** The diff reader: shown when a diff is opened, not with the window. */
+const reviewModule = () => import("./components/ReviewPane");
+const ReviewPane = lazy(() => reviewModule().then((m) => ({ default: m.ReviewPane })));
+/** Dialogs opened now and then (MCP servers, a plan): chunks of their own, fetched at idle like Settings. */
+const mcpModule = () => import("./components/McpDialog");
+const McpDialog = lazy(() => mcpModule().then((m) => ({ default: m.McpDialog })));
+const planModule = () => import("./components/PlanDialogs");
+const PlanDialogs = lazy(() => planModule().then((m) => ({ default: m.PlanDialogs })));
+const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) => ({ default: m.ArchiveDialog })));
+const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
+const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+
 export function App() {
+    // Settings', the diff reader's and the terminal's chunks, once nothing more pressing is left to do after the window opened:
+    // there by the time either is first opened.
+    onMount(() => {
+        const fetch = () => {
+            // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, CommitDialog, RewindDialog, ArchiveDialog]) void c.preload().catch(() => undefined);
+            void preloadTerminal().catch(() => undefined);
+        };
+        if (typeof requestIdleCallback === "function") {
+            const idle = requestIdleCallback(fetch, { timeout: 4000 });
+            onCleanup(() => cancelIdleCallback(idle));
+        } else {
+            const t = setTimeout(fetch, 2000);
+            onCleanup(() => clearTimeout(t));
+        }
+    });
+    // Put in the first time each opens, and kept (to close as it closes).
+    const mcpShown = createMemo<boolean>((was) => was || Boolean(mcpOpen()), false);
+    const planShown = createMemo<boolean>((was) => was || Boolean(planDialog()), false);
+    const rewindShown = createMemo<boolean>((was) => was || Boolean(rewindOpen()), false);
+    const archiveShown = createMemo<boolean>((was) => was || Boolean(archiveRequest()), false);
+    const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -300,8 +336,12 @@ export function App() {
     const stage = () => shown()?.h;
     /** Another session is opening while the last one is held on the stage (shown). */
     const holding = () => !split() && Boolean(stage() && stage() !== active());
-    /** The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's. */
-    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding();
+    /**
+     * The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's.
+     * Not once it's here and "Opening session…" never showed: that's only to be kept up its least time (state/app.ts),
+     * and in between the stage would be let go of and made again (the session left with it, not kept: Panes.tsx).
+     */
+    const openingScreen = () => !split() && app.opening !== undefined && app.opening.id === app.activeId && !holding() && (app.opening.visible || !active());
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
     // Another session: its own view, not the last one's sub-agent or review. Between a split's two, each one's own
@@ -602,15 +642,15 @@ export function App() {
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
             <CommandPalette />
-            <RewindDialog />
-            <McpDialog />
+            <Show when={rewindShown()}><RewindDialog /></Show>
+            <Show when={mcpShown()}><McpDialog /></Show>
             <FolderPicker />
             <TrustDialog />
-            <PlanDialogs />
-            <ArchiveDialog />
+            <Show when={planShown()}><PlanDialogs /></Show>
+            <Show when={archiveShown()}><ArchiveDialog /></Show>
             <RecentlyDeleted />
             <RunSheet />
-            <CommitDialog />
+            <Show when={commitShown()}><CommitDialog /></Show>
             <ImageViewer />
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}

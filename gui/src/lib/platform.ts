@@ -26,6 +26,8 @@ export interface ElectronBridge {
     /** The person is back in the window (a press or focus of theirs there): no page is theirs any more. */
     browserBack(seen: number): void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
+    /** Whether the window can be seen (not minimized or hidden) and has the focus, each time either changes. */
+    onWindowState?(fn: (s: { seen: boolean; focused: boolean }) => void): () => void;
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;

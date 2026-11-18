@@ -65,6 +65,8 @@
     --panel-w: 280px;
     --review-w: 720px;
     --column-w: calc(736 * var(--sp));
+    /* The scrollbars' width (base.css). */
+    --scrollbar-w: 10px;
     --header-h: 52px;
     /* One centre line across the top of the window, from its top edge: the
        traffic lights (desktop/src-tauri/tauri.conf.json, trafficLightPosition),
@@ -122,6 +124,19 @@
     --shiki-token-punctuation: var(--fg-2);
     --shiki-token-link: var(--syn-type);
 }
+/* Highlighted code's tokens (highlight-core.ts tokenClass): classes, shared, not a style on each span. */
+.sk-foreground { color: var(--shiki-foreground); }
+.sk-keyword { color: var(--shiki-token-keyword); }
+.sk-string { color: var(--shiki-token-string); }
+.sk-string-expression { color: var(--shiki-token-string-expression); }
+.sk-comment { color: var(--shiki-token-comment); }
+.sk-function { color: var(--shiki-token-function); }
+.sk-constant { color: var(--shiki-token-constant); }
+.sk-parameter { color: var(--shiki-token-parameter); }
+.sk-punctuation { color: var(--shiki-token-punctuation); }
+.sk-link { color: var(--shiki-token-link); }
+.sk-i { font-style: italic; }
+.sk-b { font-weight: 600; }
 
 /* ---- Light ------------------------------------------------------------ */
 :root,
@@ -187,6 +202,8 @@
     --accent-ink: #ffffff;
 
     --ok: #0b5a30;
+    /* A session at work, as a word: fixed whatever accent is picked. */
+    --working: #1d4fc4;
     --warn: #734300;
     --warn-bg: rgba(255, 179, 64, 0.16);
     --danger: #9b1c16;
@@ -281,6 +298,7 @@
     --accent-ink: #ffffff;
 
     --ok: #74de9d;
+    --working: #8eaefc;
     --warn: #ffc15c;
     --warn-bg: rgba(255, 179, 64, 0.13);
     --danger: #ffb0aa;

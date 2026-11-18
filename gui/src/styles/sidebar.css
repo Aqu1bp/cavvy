@@ -566,15 +566,7 @@
     flex: none;
 }
 
-/* Finished, and you haven't looked. */
-.sidebar .unread-dot {
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-}
-
-/* Needs you. */
+/* Needs you: by a heading, sessions under it wait on you. */
 .sidebar .wait-dot {
     width: calc(8 * var(--sp));
     height: calc(8 * var(--sp));
@@ -584,27 +576,21 @@
     flex: none;
 }
 
-.sidebar .err-dot {
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    border-radius: 50%;
-    background: var(--danger);
+/* How a row is doing, at its end, in place of its time (RowEnd). Still: a word that only changes by the minute. */
+.sidebar .when.working {
+    color: var(--working);
 }
 
-/* Working: a ring, turning. */
-.sidebar .spin-ring {
-    display: inline-block;
-    width: calc(11 * var(--sp));
-    height: calc(11 * var(--sp));
-    border-radius: 50%;
-    border: 1.5px solid color-mix(in srgb, var(--rail-fg) 26%, transparent);
-    border-top-color: var(--rail-fg);
-    animation: spin 0.9s steps(18) infinite;
+.sidebar .when.done {
+    color: var(--ok);
 }
 
-/* Words coming out say it's working: this would have the window drawn again for no news (lib/reveal.ts). */
-[data-flowing] .sidebar .cur .spin-ring {
-    animation: none;
+.sidebar .when.stopped {
+    color: var(--danger);
+}
+
+.sidebar .when.waiting {
+    color: var(--warn);
 }
 
 .sidebar .lead-pin {

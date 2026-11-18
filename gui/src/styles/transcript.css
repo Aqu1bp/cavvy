@@ -224,10 +224,29 @@
     content-visibility: auto;
 }
 
+/* A turn of a page going in a few at a time ("Show earlier", Transcript.tsx): built, not laid out until the page is
+   all in, then shown with it at once. */
+.turn[data-staged] {
+    display: none;
+}
+
 /* Measured tool rows and Markdown blocks, including those inside one large active turn.
    work-rendering.ts supplies their natural size, preserving their layout and mounted state. */
 [data-work-far] {
     content-visibility: auto;
+}
+
+/* A row put in again at the size it had (work-rendering.ts): drawn first wherever it's read from, often in view at once.
+   What it brings in (a step rising in) came in long ago: its one-time animations start already over, in that first
+   frame. Endless ones (a shimmer) only start at another point in their loop. */
+:is([data-work-again], [data-work-again] *) {
+    animation-delay: -60s !important;
+}
+/* What the reader sets going in one all the same plays: the mark on a turn found from ⌘K, a card's tools on hover, what
+   closes. */
+.turn.flash,
+[data-work-again] :is(.cmd-tools, .tcard-tools, .leaving) {
+    animation-delay: 0s !important;
 }
 
 /* A turn a steer ended: the next one carries straight on, so they sit close. */
@@ -493,6 +512,15 @@
     object-fit: contain;
 }
 
+/* Its place while it comes, at its shape. */
+.prompt-image.wait {
+    cursor: default;
+}
+
+.prompt-image.sized img {
+    width: 100%;
+}
+
 .prompt-image:hover img {
     opacity: 0.88;
 }
@@ -585,6 +613,10 @@
     padding-right: 0;
     background: none;
     font-size: 0.929rem;
+}
+
+/* Come in as the turn it ends finishes, not each time a finished one is built. */
+.acts-h.worked.arrived {
     animation: fade 220ms var(--ease);
 }
 
@@ -712,34 +744,35 @@
     color: color-mix(in srgb, var(--fg-2) 64%, transparent);
 }
 
-.shim-win {
+/* Each step's light is a copy of the label under the window where the light is then, shown for its 50 ms: opacity alone,
+   which the compositor draws without the page. A moving light would have the page look at everything content-visibility
+   skips, on every step, as long as a session runs. */
+.lights {
     position: absolute;
     inset: 0;
-    overflow: hidden;
     pointer-events: none;
-    -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-    mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-    animation: shim-win 2.4s steps(24) infinite;
 }
 
-.shim-hi {
-    display: block;
+.lights > span {
+    --o: calc(var(--k) * 200% / 24 - 100%);
+    position: absolute;
+    inset: 0;
     color: var(--fg);
-    animation: shim-hi 2.4s steps(24) infinite;
+    opacity: 0;
+    -webkit-mask-image: linear-gradient(90deg, transparent var(--o), #000 calc(var(--o) + 50%), transparent calc(var(--o) + 100%));
+    mask-image: linear-gradient(90deg, transparent var(--o), #000 calc(var(--o) + 50%), transparent calc(var(--o) + 100%));
+    animation: light-step 2.4s steps(1) infinite;
+    animation-play-state: var(--decor);
+    animation-delay: calc(var(--k) * 50ms - 2400ms) !important;
 }
 
-@keyframes shim-win {
-    0% { transform: translateX(-100%); }
-    50%, 100% { transform: translateX(100%); }
-}
-
-@keyframes shim-hi {
-    0% { transform: translateX(100%); }
-    50%, 100% { transform: translateX(-100%); }
+@keyframes light-step {
+    0% { opacity: 1; }
+    2.08333%, 100% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .shim-win { display: none; }
+    .lights { display: none; }
     .layer .lbl.shim { color: var(--fg-2); }
 }
 
@@ -1794,6 +1827,12 @@
 
 .tool-thumb:hover {
     transform: scale(1.06);
+}
+
+/* Its place while it comes: nothing to see, nothing beside it moves when it's there. */
+.tool-thumb.wait {
+    box-shadow: none;
+    cursor: default;
 }
 
 .tool-thumb img {
@@ -2980,6 +3019,18 @@
 .code-body code {
     font-family: inherit;
     white-space: pre;
+}
+
+/* A finished reply's code: one out of sight isn't styled or laid out, at its size (its lines, each a line high) till it
+   comes near: a long reply's code is most of what it is. Exactly the size it's drawn at, wide or not: the conversation
+   keeps the reader's place itself, and a block above them drawn at another size would move what they read. So where
+   scrollbars take room (--hbar, lib/code-metrics.ts) there's always one under the lines (its track is clear), in what
+   was the padding below them. */
+.md .code:not(.writing, .bare) > pre.code-body {
+    overflow-x: scroll;
+    padding-bottom: max(0px, calc(12 * var(--sp)) - var(--hbar, 0px));
+    content-visibility: auto;
+    /* Its size, set on it (CodeBlock.tsx): its lines, each --code-line high (lib/code-metrics.ts). */
 }
 
 /* While it's being written, a box for each finished line: the line being typed is laid out on its own, not the block with it. */

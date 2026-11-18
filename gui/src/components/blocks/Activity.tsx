@@ -4,7 +4,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // suite"), which opens into a card with a row per call, which opens into the
 // call's details.
 
-import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
+import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -42,11 +42,11 @@ import { short, summarize } from "../../lib/run-summary";
 import { backgroundOf } from "../../lib/background";
 import { agentProvider, agentStep } from "../../lib/agent-marks";
 import { now } from "../../lib/clock";
-import { app, handleFor, reportError, rpc } from "../../state/app";
+import { app, handleFor, loadBlock, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
-import { imagesReady, toolImage } from "../../state/images";
+import { imagesReady, toolImage, toolThumb } from "../../state/images";
 import { CopyButton, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
@@ -54,13 +54,13 @@ import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
+import { cardOf, EDIT_TOOLS, type Card } from "../../lib/cards";
 
 export type Item =
     | { kind: "block"; block: Block }
     | { kind: "activity"; id: string; tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; card?: Card };
 
 /** A call shown as its own card rather than a line in a group: an edit (its diff), a command (its output), or a plan (PlanCard). */
-export type Card = "edit" | "command" | "plan";
 
 /**
  * Fold runs of tool calls (and the thinking between them) into activity groups.
@@ -102,16 +102,6 @@ export function groupBlocks(blocks: Block[]): Item[] {
     return out;
 }
 
-const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
-
-/** Whether a call gets a card of its own (sub-agents keep their own row). */
-export function cardOf(t: ToolBlock): Card | undefined {
-    if (t.agent) return undefined;
-    if (EDIT_TOOLS.has(t.name)) return "edit";
-    if (t.name === "Bash") return "command";
-    if (t.name === "ExitPlanMode") return "plan";
-    return undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Icons and summaries (the words are lib/tool-words.ts's)
@@ -300,12 +290,18 @@ export function ActivityGroup(p: GroupProps) {
  */
 export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const [open, setOpen] = createSignal(false);
+    // A finished turn's thought comes without its text (ThinkingBlock.omitted): asked for as the pointer comes to it,
+    // so it's there by the click, or as it's opened.
+    const folds = useCardFolds();
+    const fetch = () => {
+        if (p.block.omitted && folds.sessionId) void loadBlock(folds.sessionId, p.block.id);
+    };
     const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
             <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
-                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
                     <ChevronRight size={14} class="chev" />
                     <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
                 </button>
@@ -701,15 +697,47 @@ function viewToolImages(sessionId: string | undefined, t: ToolBlock, index: numb
     });
 }
 
-/** An image a call's result brought (what the model looked at), as a thumbnail that opens the viewer. Nothing while it's fetched, or once it's gone. */
+/** Thumbnails waiting to come near the view, each with what asks for it then. */
+const farThumbs = new WeakMap<Element, () => void>();
+let thumbsSeen: IntersectionObserver | undefined;
+/** `then` once `el` is within 300 px of the view (at once without an observer); the returned function stops waiting. */
+function whenNear(el: Element, then: () => void): () => void {
+    if (typeof IntersectionObserver === "undefined") return then(), () => {};
+    thumbsSeen ??= new IntersectionObserver(
+        (entries) => {
+            for (const e of entries) {
+                if (!e.isIntersecting) continue;
+                const near = farThumbs.get(e.target);
+                farThumbs.delete(e.target);
+                thumbsSeen!.unobserve(e.target);
+                near?.();
+            }
+        },
+        { rootMargin: "300px" },
+    );
+    farThumbs.set(el, then);
+    thumbsSeen.observe(el);
+    return () => {
+        farThumbs.delete(el);
+        thumbsSeen?.unobserve(el);
+    };
+}
+
+/**
+ * An image a call's result brought (what the model looked at), as a thumbnail that opens the viewer. Asked for as it
+ * comes near the view, its place kept meanwhile; nothing once it's gone.
+ */
 function ToolImage(p: { tool: ToolBlock; index: number }) {
     const folds = useContext(CardFoldsContext);
+    const [near, setNear] = createSignal(false);
+    let place: HTMLSpanElement | undefined;
+    onMount(() => place && onCleanup(whenNear(place, () => setNear(true))));
     const [img] = createResource(
-        () => (folds.sessionId && imagesReady(folds.sessionId) ? p.tool.imageKeys?.[p.index] : undefined),
-        (key) => toolImage(folds.sessionId!, key).catch(() => undefined),
+        () => (near() && folds.sessionId && imagesReady(folds.sessionId) ? p.tool.imageKeys?.[p.index] : undefined),
+        (key) => toolThumb(folds.sessionId!, key).catch(() => null),
     );
     return (
-        <Show when={img()}>
+        <Show when={img()} fallback={<Show when={img() !== null}>{<span ref={place} class="tool-thumb wait" aria-hidden="true" />}</Show>}>
             {(i) => (
                 <button
                     class="tool-thumb"
@@ -721,7 +749,7 @@ function ToolImage(p: { tool: ToolBlock; index: number }) {
                         viewToolImages(folds.sessionId, p.tool, p.index, e.currentTarget);
                     }}
                 >
-                    <img src={i().thumb} alt="" />
+                    <img src={i()} alt="" />
                 </button>
             )}
         </Show>

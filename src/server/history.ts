@@ -6,7 +6,8 @@
 
 import { imageKey } from "./tool-images";
 import { createHash } from "crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { chmod, mkdir, open, rename, unlink } from "fs/promises";
 import { dirname, join } from "path";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
@@ -16,7 +17,9 @@ import { attachedPrompt } from "./attachments";
 import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, EffortLevel, FileDiff, NoticeBlock, NoticeData, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
-import { addNotice, noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
+import { addNotice, noticesUpTo, savingRetry, turnNotice, type TurnNotice } from "../agent/session";
+import { eachLine, linesFromEnd } from "../util/lines";
+import { nextSlice } from "../util/slices";
 import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
@@ -54,26 +57,68 @@ export interface Segment {
     imported?: { source: string; startedAt?: number; omitted: number };
 }
 
-/** Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. */
-export function readSegments(file: string): Segment[] {
-    const segments: Segment[] = [{ messages: [] }];
-    let text: string;
+type SegmentLine = { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
+
+/**
+ * Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. `session`: the
+ * session just loaded from it, whose lines are used when it still has them (Session.takeLoadedLines), so the file
+ * isn't read and parsed a second time.
+ */
+export function readSegments(file: string, session?: { takeLoadedLines(): readonly object[] | undefined }): Segment[] {
+    const loaded = session?.takeLoadedLines();
+    if (loaded) return segmentsOf(loaded as readonly SegmentLine[]);
+    const lines: SegmentLine[] = [];
     try {
-        text = readFileSync(file, "utf-8");
+        // A line at a time: a session of any size, never all of it as one string.
+        eachLine(file, (raw) => {
+            if (!raw) return;
+            try {
+                lines.push(JSON.parse(raw));
+            } catch {
+                // a torn line
+            }
+        });
     } catch {
-        return segments;
+        return [{ messages: [] }];
     }
-    for (const raw of text.split("\n")) {
-        if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
-        try {
-            l = JSON.parse(raw);
-        } catch {
-            continue;
-        }
+    return segmentsOf(lines);
+}
+
+/**
+ * A segment whose messages are taken from their lines when they're first read: a long session's lines are parsed as
+ * they're needed (Session.read), and a first open builds its last segment's turns first (Runtime), the rest after.
+ */
+function lazySegment(): Segment & { lines: SegmentLine[] } {
+    let messages: Message[] | undefined;
+    /** Lines not read into its messages yet: those since it was last read included (a rewind reads it, then more come). */
+    let pending: SegmentLine[] = [];
+    const seg = {
+        get messages(): Message[] {
+            messages ??= [];
+            if (pending.length) {
+                // A line whose message isn't to be had (torn) isn't one.
+                for (const l of pending) if (l.m) messages.push(l.m);
+                pending = [];
+            }
+            return messages;
+        },
+        set messages(m: Message[]) {
+            messages = m;
+            pending = [];
+        },
+    } as Segment & { lines: SegmentLine[] };
+    // Not one of its fields: a segment read from lines is the same as one built whole (compared, serialized).
+    Object.defineProperty(seg, "lines", { get: () => pending, enumerable: false });
+    return seg;
+}
+
+function segmentsOf(lines: readonly SegmentLine[]): Segment[] {
+    const segments: (Segment & { lines: SegmentLine[] })[] = [lazySegment()];
+    for (const l of lines) {
         const cur = segments[segments.length - 1]!;
-        if (l.t === "msg" && l.m) cur.messages.push(l.m);
-        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}), messages: [] });
+        // Not read yet (its message parsed only if it is: lazySegment).
+        if (l.t === "msg") cur.lines.push(l);
+        else if (l.t === "compact") segments.push(Object.assign(lazySegment(), { summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}) }));
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
@@ -127,15 +172,31 @@ export type UiRecord =
     | { t: "blocks"; seg: number; index: number; blocks: Block[]; prompt?: string }
     | { t: "agent"; agent: AgentRun; id?: undefined };
 
-/** A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there). */
+/**
+ * A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there).
+ * Looked for from the end: what's written is nearly always the newest step, and a long turn has thousands.
+ */
 function place(blocks: Block[], b: Block, after: string | null | undefined) {
-    const i = blocks.findIndex((x) => x.id === b.id);
+    const i = blocks.findLastIndex((x) => x.id === b.id);
     if (i >= 0) {
         blocks[i] = b;
         return;
     }
-    const j = after === null ? 0 : after === undefined ? -1 : blocks.findIndex((x) => x.id === after) + 1;
+    const j = after === null ? 0 : after === undefined ? -1 : blocks.findLastIndex((x) => x.id === after) + 1;
     blocks.splice(after === null || j > 0 ? j : blocks.length, 0, b);
+}
+
+/** The GUI's log of the session in `sessionFile` (UiLog). */
+export function uiLogFile(sessionFile: string, id: string): string {
+    return join(dirname(sessionFile), "ui", `${id}.jsonl`);
+}
+
+/** A light UiLog, as kept with a turn store: its state, and the turn that started last (what cutOffPrompt reads). */
+export interface UiLight {
+    state: UiState;
+    lastStarted?: string;
+    last?: Extract<UiRecord, { t: "turn" }>;
+    created: boolean;
 }
 
 export class UiLog {
@@ -153,31 +214,211 @@ export class UiLog {
     private created = false;
     /** Its session was let go of: another process may be keeping this log now. */
     private closed = false;
+    /** Records a write failed for (a full disk), in order: written before the next, tried again meanwhile. */
+    private waiting: UiRecord[] = [];
+    /** An append failed, maybe half way: the next starts on a line of its own (a torn line is skipped when read). */
+    private torn = false;
+    private retry?: ReturnType<typeof setTimeout>;
 
-    constructor(sessionFile: string, id: string, readExisting = true) {
-        this.file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
+    /**
+     * `light`: only what the session needs while it runs (its turns' records and its state), not every step, tool
+     * record and sub-agent it ever logged, which only building its turns again needs (full()): opened from its turn
+     * store (turn-store.ts), a session doesn't build them, and a long one's log is hundreds of megabytes of them.
+     */
+    constructor(sessionFile: string, id: string, readExisting = true, private light = false) {
+        this.file = uiLogFile(sessionFile, id);
         if (readExisting) this.read();
     }
 
-    private read() {
-        let text: string;
-        try {
-            text = readFileSync(this.file, "utf-8");
-            this.created = true;
-        } catch {
-            return;
+    /** The file this log is in. */
+    get path(): string {
+        return this.file;
+    }
+
+    /** Only what the session runs on from now (its turns built and stored: turn-store.ts), the rest let go of. */
+    lighten() {
+        if (this.light) return;
+        this.light = true;
+        this.tools.clear();
+        this.steps.clear();
+        this.agents.clear();
+        this.evicted.clear();
+    }
+
+    /** What a light log is (lightState): kept with a turn store, to open from without reading the log again. */
+    lightState(): UiLight {
+        const last = this.lastStarted === undefined ? undefined : this.turns.get(this.lastStarted);
+        return { state: this.state, ...(this.lastStarted !== undefined && last ? { lastStarted: this.lastStarted, last } : {}), created: this.created };
+    }
+
+    /** Light, as `l` says it was: the log unchanged since (turn-store.ts checks), so it isn't read. */
+    restore(l: UiLight) {
+        this.light = true;
+        this.state = { ...l.state };
+        this.turns.clear();
+        if (l.lastStarted !== undefined && l.last) {
+            this.lastStarted = l.lastStarted;
+            this.turns.set(l.lastStarted, l.last);
         }
-        for (const raw of text.split("\n")) {
-            if (!raw) continue;
+        this.created = l.created;
+    }
+
+    /** All of it, steps and all (light, it had only its turns' records): to build the session's turns again. */
+    full(): this {
+        if (!this.light) return this;
+        this.light = false;
+        this.tools.clear();
+        this.turns.clear();
+        this.steps.clear();
+        this.agents.clear();
+        this.evicted.clear();
+        this.state = {};
+        this.lastStarted = undefined;
+        this.read();
+        return this;
+    }
+
+    /**
+     * Only its end: back to where the turn at `key` ("seg:index") last started, and its latest state. What building
+     * that turn and the ones after needs (their steps, tool records and sub-agents are logged as they happen, so after
+     * it): a long session's log is hundreds of megabytes (171 for 100,000 items). False when that turn isn't in it.
+     */
+    readTail(key: string): boolean {
+        const lines: string[] = [];
+        let found = false;
+        let stated = false;
+        try {
+            linesFromEnd(this.file, (raw) => {
+                if (!raw) return true;
+                const isState = raw.startsWith('{"t":"state"');
+                // Past the turn: only its latest state, if it's not been read yet.
+                if (found) {
+                    if (!isState) return true;
+                    lines.push(raw);
+                    return false;
+                }
+                lines.push(raw);
+                if (isState) stated = true;
+                if (raw.startsWith('{"t":"turn"')) {
+                    try {
+                        const r = JSON.parse(raw) as Extract<UiRecord, { t: "turn" }>;
+                        found = `${r.seg}:${r.index}` === key && r.end === undefined && r.status === undefined && r.prompt === undefined;
+                    } catch {
+                        // torn line
+                    }
+                }
+                return !(found && stated);
+            });
+        } catch {
+            return false;
+        }
+        if (!found) return false;
+        for (let i = lines.length - 1; i >= 0; i--) {
             try {
-                this.apply(JSON.parse(raw) as UiRecord);
+                this.apply(JSON.parse(lines[i]!) as UiRecord);
             } catch {
                 // torn line
             }
         }
+        this.created = true;
+        return true;
+    }
+
+    /** All of it, now (after readTail found too little). */
+    readAll() {
+        this.light = false;
+        this.tools.clear();
+        this.turns.clear();
+        this.steps.clear();
+        this.agents.clear();
+        this.evicted.clear();
+        this.state = {};
+        this.lastStarted = undefined;
+        this.read();
+    }
+
+    /**
+     * All of it read again (after readTail), a slice at a time, into a log of its own, then taken for this one's: what's
+     * written meanwhile is in the file, read with the rest (the last of it read and taken in the same task).
+     */
+    async readAllSoon(): Promise<void> {
+        // (Not read now: it's read here, a slice at a time.)
+        const all = new UiLog(this.file, "", false);
+        all.file = this.file;
+        let fd: number;
+        try {
+            fd = openSync(this.file, "r");
+        } catch {
+            return;
+        }
+        try {
+            const chunk = Buffer.allocUnsafe(1024 * 1024);
+            let rest: Buffer = Buffer.alloc(0);
+            let pos = 0;
+            let since = performance.now();
+            for (;;) {
+                const n = readSync(fd, chunk, 0, chunk.length, pos);
+                if (n <= 0) break;
+                pos += n;
+                const buf = rest.length ? Buffer.concat([rest, chunk.subarray(0, n)]) : chunk.subarray(0, n);
+                const nl = buf.lastIndexOf(10);
+                if (nl < 0) {
+                    rest = Buffer.from(buf);
+                    continue;
+                }
+                for (const raw of buf.subarray(0, nl).toString("utf-8").split("\n")) {
+                    if (!raw) continue;
+                    try {
+                        all.apply(JSON.parse(raw) as UiRecord);
+                    } catch {
+                        // torn line
+                    }
+                }
+                rest = Buffer.from(buf.subarray(nl + 1));
+                // More to read: the rest of the server gets on meanwhile. (At the end, none: it's taken now.)
+                if (performance.now() - since > 8 && pos < fstatSync(fd).size) {
+                    await nextSlice();
+                    since = performance.now();
+                    // Let go of meanwhile (its session closed): read no more of it.
+                    if (this.closed) return;
+                }
+            }
+        } finally {
+            closeSync(fd);
+        }
+        if (this.closed) return;
+        this.tools = all.tools;
+        this.turns = all.turns;
+        this.steps = all.steps;
+        this.agents = all.agents;
+        this.evicted = all.evicted;
+        this.state = all.state;
+        this.lastStarted = all.lastStarted;
+        this.light = false;
+    }
+
+    private read() {
+        try {
+            // A line at a time: a log of any size (one past 2 GiB, read as one string, failed: the session showed none of
+            // its steps). Light, a step's or a sub-agent's line isn't parsed at all.
+            eachLine(this.file, (raw) => {
+                if (!raw) return;
+                if (this.light && (raw.startsWith('{"t":"step"') || raw.startsWith('{"t":"tool"') || raw.startsWith('{"t":"agent"') || raw.startsWith('{"t":"blocks"'))) return;
+                try {
+                    this.apply(JSON.parse(raw) as UiRecord);
+                } catch {
+                    // torn line
+                }
+            });
+            this.created = true;
+        } catch {
+            // None yet.
+        }
     }
 
     private apply(r: UiRecord) {
+        // Light: what's written of steps, tools and sub-agents goes to the file, not into memory (full() reads it back).
+        if (this.light && (r.t === "step" || r.t === "tool" || r.t === "agent" || r.t === "blocks")) return;
         if (r.t === "tool") this.tools.set(r.id, { ...this.tools.get(r.id), ...r });
         else if (r.t === "turn") {
             const k = `${r.seg}:${r.index}`;
@@ -241,15 +482,26 @@ export class UiLog {
         return r?.blocks.length && (r.prompt === undefined || r.prompt === promptKey(prompt)) ? r.blocks : undefined;
     }
 
-    /** Nothing more is written (the session is being let go of, like Session.release). */
+    /** Nothing more is written (the session is being let go of, like Session.release): what waited, if it can be now. */
     close() {
+        if (this.waiting.length) this.write();
+        if (this.retry) clearTimeout(this.retry);
+        this.retry = undefined;
         this.closed = true;
     }
 
-    /** Best effort, like the transcript itself; redacted like everything written to disk. */
-    write(r: UiRecord) {
+    /**
+     * Redacted like everything written to disk. Where it fails (a full disk), the session keeps working: what wasn't
+     * written goes before the next record, in order and none twice, and is tried again meanwhile (Session.write too).
+     */
+    write(r?: UiRecord) {
         if (this.closed) return;
-        this.apply(r);
+        if (r) {
+            this.apply(r);
+            this.waiting.push(r);
+        }
+        if (!this.waiting.length) return;
+        let saved = 0;
         try {
             if (!this.created) {
                 mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -259,46 +511,57 @@ export class UiLog {
                 }
                 this.created = true;
             }
-            appendFileSync(this.file, redactedJson(r) + "\n");
+            for (; saved < this.waiting.length; saved++) {
+                appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(this.waiting[saved]!) + "\n");
+                this.torn = false;
+            }
+            this.waiting = [];
+            if (this.retry) clearTimeout(this.retry);
+            this.retry = undefined;
         } catch {
-            // the session keeps working without it
+            this.waiting.splice(0, saved);
+            this.torn = true;
+            if (this.retry) clearTimeout(this.retry);
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.write();
+            }, savingRetry.ms);
+            this.retry.unref?.();
         }
     }
+}
+
+/**
+ * A session's log read whole, a slice at a time (readAllSoon): the server gets on meanwhile. Undefined when it has
+ * none. For a fork (forkUiLog), read before it's made: a 100,000-item Claude Code session's is 189 MB, 1.2 s to read.
+ */
+export async function readUiLogSoon(sessionFile: string, id: string): Promise<UiLog | undefined> {
+    const log = new UiLog(sessionFile, id, false);
+    if (!existsSync(log.path)) return undefined;
+    await log.readAllSoon();
+    return log;
 }
 
 /**
  * A fork's log, from the original's: what its copied turns need (tool rows'
  * summaries and diffs, turn times). The fork's segments are the original's up
  * to the cut, so records keep their keys. Written in one go, before the fork
- * is opened.
+ * is opened. `o.source`: the original's log, read already (readUiLogSoon);
+ * `o.segments`: the fork's, read already.
+ *
+ * Laid out as a log written as the turns ran: each turn's start, its steps and
+ * tools, then its end, and a state last. Opening the fork reads it from its
+ * end, back to its last turns' starts (UiLog.readTail): with each turn's
+ * record whole and every tool at the end, it read all of it (0.6 s for a
+ * 100,000-item Claude Code session's fork, each time it was opened).
  */
-export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }) {
-    const source = new UiLog(from.file, from.id);
-    const segments = readSegments(to.file);
-    const calls = new Set<string>();
-    const records: UiRecord[] = [];
-    for (const [si, seg] of segments.entries()) {
-        for (const [index, m] of seg.messages.entries()) {
-            if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
-            const turn = source.turn(si, index);
-            // The same index can belong to a different prompt after a rewind.
-            if (turn && (turn.prompt === undefined || (m.role === "user" && turn.prompt === promptKey(m)))) records.push(turn);
-            if (m.role !== "user") continue;
-            const blocks = source.shown(si, index, m);
-            if (!blocks) continue;
-            records.push({ t: "blocks", seg: si, index, prompt: promptKey(m), blocks });
-            for (const b of blocks) if (b.t === "tool") calls.add(b.id);
-        }
-    }
-    for (const id of calls) {
-        const tool = source.tools.get(id);
-        if (tool) records.push(tool);
-    }
-    // State, pending turns and delegated runs belong to the original. Only
-    // its completed timeline is inherited; the fork gets its own live state.
-    const out = records.map((r) => redactedJson(r));
+export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }, o: { source?: UiLog | null; segments?: Segment[] } = {}) {
+    const source = o.source === undefined ? new UiLog(from.file, from.id) : o.source;
+    // None to fork (an original that never had one, or lost it).
+    if (!source) return;
+    const out = [...forkUiLines(source, o.segments ?? readSegments(to.file))];
     if (!out.length) return;
-    const file = join(dirname(to.file), "ui", `${to.id}.jsonl`);
+    const file = uiLogFile(to.file, to.id);
     const tmp = `${file}.${process.pid}.tmp`;
     try {
         mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -313,6 +576,100 @@ export function forkUiLog(from: { file: string; id: string }, to: { file: string
             // never made
         }
     }
+}
+
+/**
+ * forkUiLog, a slice at a time, and written while the server gets on: a 100,000-item Claude Code session's fork has
+ * 189 MB of it, which held the server 1.4 s made and written at once.
+ */
+export async function forkUiLogSoon(to: { file: string; id: string }, source: UiLog, segments: Segment[]): Promise<void> {
+    const file = uiLogFile(to.file, to.id);
+    const tmp = `${file}.${process.pid}.tmp`;
+    let fh: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+        let chunk: string[] = [];
+        let size = 0;
+        let since = performance.now();
+        for (const line of forkUiLines(source, segments)) {
+            chunk.push(line);
+            size += line.length;
+            if (size < 4 * 1024 * 1024 && performance.now() - since < 8) continue;
+            if (!fh) {
+                await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+                fh = await open(tmp, "w", 0o600);
+            }
+            await fh.write(chunk.join("\n") + "\n");
+            chunk = [];
+            size = 0;
+            await nextSlice();
+            since = performance.now();
+        }
+        if (!fh && !chunk.length) return;
+        if (!fh) {
+            await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+            fh = await open(tmp, "w", 0o600);
+        }
+        if (chunk.length) await fh.write(chunk.join("\n") + "\n");
+        await fh.close();
+        fh = undefined;
+        await chmod(tmp, 0o600);
+        await rename(tmp, file);
+    } catch {
+        // The timeline is rebuilt without it (derived summaries, no timings).
+        await fh?.close().catch(() => undefined);
+        await unlink(tmp).catch(() => undefined);
+    }
+}
+
+/**
+ * A fork's log, line by line (forkUiLog): those of its turns' records in `source` (keyed by segment and index, the
+ * original's up to the cut), each redacted again as it's written.
+ *
+ * Laid out as a log written as the turns ran: each turn's start, its steps and tools, then its end, and a state last.
+ * Opening the fork reads it from its end, back to its last turns' starts (UiLog.readTail): with each turn's record
+ * whole and every tool at the end, it read all of it (0.6 s for a 100,000-item Claude Code session's fork, each time
+ * it was opened).
+ */
+function* forkUiLines(source: UiLog, segments: Segment[]): Generator<string> {
+    let calls = new Set<string>();
+    /** The turn whose steps and tools are being written: its end goes after them. */
+    let current: Extract<UiRecord, { t: "turn" }> | undefined;
+    let any = false;
+    function* close() {
+        for (const id of calls) {
+            const tool = source.tools.get(id);
+            if (tool) yield redactedJson(tool);
+        }
+        calls = new Set();
+        if (current && (current.end !== undefined || current.status !== undefined || current.prompt !== undefined)) yield redactedJson(current);
+        current = undefined;
+    }
+    for (const [si, seg] of segments.entries()) {
+        for (const [index, m] of seg.messages.entries()) {
+            const turn = source.turn(si, index);
+            // The same index can belong to a different prompt after a rewind.
+            if (turn && (turn.prompt === undefined || (m.role === "user" && turn.prompt === promptKey(m)))) {
+                yield* close();
+                // Its start, as it was written: what reading from the end stops at.
+                yield redactedJson({ t: "turn", seg: turn.seg, index: turn.index, at: turn.at });
+                current = turn;
+                any = true;
+            }
+            if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
+            if (m.role !== "user") continue;
+            const blocks = source.shown(si, index, m);
+            if (!blocks) continue;
+            yield redactedJson({ t: "blocks", seg: si, index, prompt: promptKey(m), blocks });
+            any = true;
+            for (const b of blocks) if (b.t === "tool") calls.add(b.id);
+        }
+    }
+    for (const id of calls) if (source.tools.has(id)) any = true;
+    yield* close();
+    // State, pending turns and delegated runs belong to the original. Only
+    // its completed timeline is inherited; the fork gets its own live state.
+    // (One with nothing in it: reading from the end stops at the first state it finds.)
+    if (any) yield redactedJson({ t: "state" });
 }
 
 // ---------------------------------------------------------------------------
@@ -461,15 +818,15 @@ const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.
  * or died before the turn could say. Not when the history went on after it
  * (in a terminal, which keeps no log), was rewound past it, or compacted.
  */
-export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notices: TurnNotice[] = []): number | undefined {
+export function cutOffPrompt(ui: UiLog, seg: number, messages: readonly Message[], notices: TurnNotice[] = [], base = 0): number | undefined {
     const rec = ui.lastStarted ? ui.turns.get(ui.lastStarted) : undefined;
-    if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
-    const prompt = messages[rec.index];
-    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
+    if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined || rec.index < base) return undefined;
+    const prompt = messages[rec.index - base];
+    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index - base + 1).some(startsTurn)) return undefined;
     // Another prompt there (that one was rewound in a terminal, this one sent there).
     if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
     // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
-    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
+    const wentOn = (from: number) => messages.slice(from - base).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
     if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
@@ -530,6 +887,18 @@ export interface ReplayInput {
     ui: UiLog;
     meta: (call: ToolCallPart) => ToolMeta;
     newId: () => string;
+    /**
+     * The segment `segments[0]` is (they're the last ones: those before are built already), and that its compaction's
+     * turn is among those (it isn't made again). A segment a compaction kept a prompt in can't be the first given.
+     */
+    from?: { segment: number; marked: boolean };
+    /**
+     * Only the current segment's messages from `start` (a prompt: its turn starts there) to before `end` (another),
+     * with the notices they end: a part of its turns, as building them all makes them (Runtime: a long session's
+     * latest built first, the rest after, a part at a time). Starting past its first message, its compaction's and
+     * import's turns aren't among them.
+     */
+    range?: { start: number; end?: number };
 }
 
 /** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
@@ -546,10 +915,23 @@ export function liveNotice(id: string, level: NoticeBlock["level"], message: str
 
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
+    // Asked of every reply: once per provider, not a look at the providers file each time (a third of opening a long
+    // session went there).
+    const backends = new Map<string, boolean>();
+    const isBackend = (provider: string) => {
+        let b = backends.get(provider);
+        if (b === undefined) backends.set(provider, (b = getProvider(provider)?.kind === "agent"));
+        return b;
+    };
     const last = o.segments[o.segments.length - 1];
     const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, kept: last?.kept, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
-    segs.forEach((seg, si) => {
-        const archived = si < segs.length - 1;
+    const first = o.from?.segment ?? 0;
+    segs.forEach((seg, i) => {
+        const si = first + i;
+        const archived = i < segs.length - 1;
+        // A part of the current segment (range): its messages from `start` to `end`, and the notices of those turns.
+        const part = i === segs.length - 1 ? o.range : undefined;
+        const midway = (part?.start ?? 0) > 0;
         let turn: Turn | undefined;
         const tools = new Map<string, ToolBlock>();
         const start = (prompt: Turn["prompt"], at?: number, index?: number) => {
@@ -560,20 +942,21 @@ export function replay(o: ReplayInput): Turn[] {
         };
         // A turn no prompt started (a reply carrying on after a compaction) still has its place.
         const ensure = (index: number) => turn ?? start(undefined, undefined, index);
-        if (si > 0) {
+        if (si > 0 && !(i === 0 && o.from?.marked) && !midway) {
             // Before any prompt of its segment: what a search finds there leads here.
             const t = start(undefined, undefined, -1);
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false, ...(seg.idle ? { idle: true } : {}) });
             turn = undefined;
         }
-        if (seg.imported) {
+        if (seg.imported && !midway) {
             const t = start(undefined);
             t.imported = true;
             t.blocks.push({ t: "imported", id: o.newId(), source: getProvider(seg.imported.source)?.name ?? seg.imported.source, startedAt: seg.imported.startedAt, omitted: seg.imported.omitted });
             turn = undefined;
         }
         // Notices go to the turn they ended: the one before the message that came next.
-        const notices = [...(seg.notices ?? [])].sort((a, b) => a.index - b.index);
+        // (One at a message's index ends the turn before that message: the part before's.)
+        const notices = [...(seg.notices ?? [])].filter((n) => !part || ((!midway || n.index > part.start) && (part.end === undefined || n.index <= part.end))).sort((a, b) => a.index - b.index);
         const noticesBefore = (index: number) => {
             while (notices.length && notices[0]!.index <= index) {
                 const n = notices.shift()!;
@@ -595,9 +978,10 @@ export function replay(o: ReplayInput): Turn[] {
         const shown = new Set<Turn>();
         let answerBlock: Extract<Block, { t: "text" }> | undefined;
         // A prompt the next compaction kept is shown once, where it went on (after the summary).
-        const moved = segs[si + 1]?.kept ? seg.messages.length - 1 : -1;
-        const before = si > 0 && seg.kept ? segs[si - 1]!.messages.length - 1 : -1;
+        const moved = segs[i + 1]?.kept ? seg.messages.length - 1 : -1;
+        const before = i > 0 && seg.kept ? segs[i - 1]!.messages.length - 1 : -1;
         seg.messages.forEach((m, index) => {
+            if (part && (index < part.start || (part.end !== undefined && index >= part.end))) return;
             noticesBefore(index);
             if (index === moved && m.role === "user") return;
             if (m.role === "user") {
@@ -654,7 +1038,7 @@ export function replay(o: ReplayInput): Turn[] {
                 return;
             }
             const t = ensure(index);
-            const backend = getProvider(m.provider ?? "")?.kind === "agent";
+            const backend = isBackend(m.provider ?? "");
             if (backend && shown.has(t)) return;
             const previous = seg.messages[index - 1];
             const continuing = previous?.role === "user" && previous.meta?.kind === "continuation";

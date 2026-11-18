@@ -3,7 +3,7 @@
 // a Solid store's produce(), so only what changed re-renders). Pure: no Bun,
 // Node or DOM imports.
 
-import type { AgentRun, Block, PlanLimits, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
+import type { AgentRun, AgentsMore, Block, PlanLimits, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
 
 export interface SessionView {
     state: SessionState;
@@ -11,6 +11,13 @@ export interface SessionView {
     agents: AgentRun[];
     /** In a window: turns before `turns` it hasn't been sent yet (SessionSnapshot.earlier). The server's has them all. */
     earlier?: number;
+    /** In a window: sub-agents it hasn't been sent (SessionSnapshot.agentsMore). */
+    agentsMore?: AgentsMore;
+    /**
+     * In a window: turns it hasn't been sent after the turn `after` (one of `turns`), before the next it has. A page
+     * fetched around a turn far up (a jump to it), not every turn down to those it had (SessionTurnsPage.skipped).
+     */
+    gap?: { after: string; count: number };
 }
 
 /** A sub-agent's activity keeps this many blocks (the rest are counted in `dropped`). */
@@ -141,8 +148,10 @@ export function applyOp(view: SessionView, op: SessionOp): void {
         }
         case "reset":
             view.turns = op.turns;
-            if (view.earlier) view.earlier = 0;
+            if (view.gap) view.gap = undefined;
+            if (view.earlier || op.earlier) view.earlier = op.earlier ?? 0;
             if (op.agents) view.agents = op.agents;
+            if (op.agents && (view.agentsMore || op.agentsMore)) view.agentsMore = op.agentsMore;
             return;
         case "agent": {
             const i = view.agents.findIndex((a) => a.id === op.agent.id);
@@ -258,3 +267,15 @@ export function coalesce(ops: SessionOp[]): SessionOp[] {
 export function isTool(b: Block | undefined): b is ToolBlock {
     return b?.t === "tool";
 }
+
+/**
+ * A running call's progress as the windows keep it: its last PROGRESS_LIMIT characters (timeline.ts applyOp), the same
+ * whatever came before them, so only those are sent. Sent whole, 50 MB of output was 5.6 MB to each window, in pieces
+ * of up to 612 KB that took it 22-37 ms each to read (headless). Cut after it's redacted: never through a secret.
+ */
+export function lastProgress(op: SessionOp): SessionOp {
+    // One more than is kept: what it's appended to is then cut where the whole would have been (tail: at a line).
+    if ((op.op === "append" || op.op === "agent.append") && op.field === "progress" && op.text.length > PROGRESS_LIMIT + 1) return { ...op, text: op.text.slice(-(PROGRESS_LIMIT + 1)) };
+    return op;
+}
+

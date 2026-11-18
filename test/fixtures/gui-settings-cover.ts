@@ -20,7 +20,7 @@ test("opening and leaving Settings keeps the session view, rail and inspector mo
         RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
         prefs: { sidebar: true, panel: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), document: { activeElement: composer }, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
         railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 740, h: 860 }, inspector: { open: true, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
-        settingsTab, following: () => false, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+        settingsTab, following: () => false, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
         ...Object.fromEntries(tags.map((tag) => [tag, () => { mounts[tag] = (mounts[tag] ?? 0) + 1; return node(tag); }])),
         ...noSplit, Panes: singlePane((tag) => { mounts[tag] = (mounts[tag] ?? 0) + 1; return node(tag); }),
     });
@@ -66,7 +66,7 @@ test("a menu of the covered session opened while Settings is up (a shortcut, say
     let closes = 0;
     const doc = { addEventListener() {}, removeEventListener() {} };
     const Popover = component(source, "Popover", {
-        settingsTab: tab, document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined, sp: (n: number) => n,
+        settingsTab: tab, usePane: () => ({ parked: () => false }), document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined, sp: (n: number) => n,
         renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
     });
     const covered = { closest: (sel: string) => (sel.includes(".settings-page") ? null : covered) };
@@ -99,7 +99,7 @@ test("⌘F under Settings does nothing: neither the conversation's find nor the 
         window: { addEventListener: (type: string, fn: (e: any) => void) => type === "keydown" && keys.push(fn), removeEventListener() {} },
         actionOf: (e: any) => (e.key === "f" && e.metaKey ? "app:find" : undefined), openFind: () => { finds++; }, blocked: () => false, railOpen: () => false,
         railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 740, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
-        settingsTab, following: () => false, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+        settingsTab, following: () => false, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
         ...Object.fromEntries(tags.map((tag) => [tag, () => node(tag)])),
         ...noSplit, Panes: singlePane(),
     });

@@ -15,6 +15,7 @@ const { registerSecret, unregisterSecret, knownSecrets } = await import("../src/
 const { SecretStore } = await import("../src/agent/secrets");
 const { Engine } = await import("../src/server/engine");
 const { writeImportedSession } = await import("../src/server/cli-import");
+const { noteSessionWrite } = await import("../src/agent/session-writes");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
 import type { UserMessage } from "../src/providers/types";
 
@@ -70,6 +71,85 @@ describe("searching session files", () => {
         appendFileSync(a.file, JSON.stringify(prompt("a later word: zephyr")) + "\n");
         expect(await warmSearch()).toBe(1);
         expect((await searchSessions("zephyr")).hits.map((h) => h.id)).toEqual([a.id]);
+    });
+
+    // Typed into, searches don't look at each of thousands of files again at every keystroke (search.ts LIST_FRESH_MS):
+    // what's new or being written to is still found at once.
+    test("a session made, or written to, just after a search is found by the next one at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-many-"), "proj");
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("quokka")).hits).toEqual([]);
+        const made = write([prompt("a quokka appears"), reply("ok")], { cwd });
+        expect((await searchSessions("quokka")).hits.map((h) => h.id)).toEqual([made.id]);
+        appendFileSync(made.file, JSON.stringify(prompt("and then a wombat")) + "\n");
+        expect((await searchSessions("wombat")).hits.map((h) => h.id)).toEqual([made.id]);
+    });
+
+    test("an old session another program wrote to is found a search later, the listing renewed after a search", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-relist-"), "proj");
+        const old = write([prompt("the oldest one"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("quetzalcoatl")).hits).toEqual([]);
+        await Bun.sleep(1100);
+        appendFileSync(old.file, JSON.stringify(reply("a quetzalcoatl")) + "\n");
+        // Answered from the listing it had (renewed after, for the next search).
+        await searchSessions("quetzalcoatl");
+        await Bun.sleep(50);
+        expect((await searchSessions("quetzalcoatl")).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
+    test("an old session open here, written to just after a search, is found by the next one at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-open-"), "proj");
+        const old = write([prompt("the oldest session"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits).toEqual([]);
+        appendFileSync(old.file, JSON.stringify(reply("a platypus")) + "\n");
+        expect((await searchSessions("platypus", { open: new Set([old.id]) })).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
+    test("an old session this server wrote to and let go of is found by the next search at once", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-written-"), "proj");
+        const old = write([prompt("the oldest session"), reply("ok")], { cwd, age: 500 });
+        for (let i = 0; i < 70; i++) write([prompt(`filler session ${i}`), reply("ok")], { cwd, age: 100 + i });
+        expect((await searchSessions("echidna")).hits).toEqual([]);
+        // Written by a Session of this process (not open any more: no `open`).
+        appendFileSync(old.file, JSON.stringify(reply("an echidna")) + "\n");
+        noteSessionWrite(old.file);
+        expect((await searchSessions("echidna")).hits.map((h) => h.id)).toEqual([old.id]);
+    });
+
+    // Each session's runs of three characters (search.ts gramsOf) let a search skip those that can't have it: never one
+    // that does, in any case or script.
+    test("what a session says is found, whatever the case or script; what none says isn't", async () => {
+        clearSearchCache();
+        let seed = 11;
+        const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+        const alphabet = "abcdefghijKLMNOPQRstuvwxyz éüßÇ日本語ẞ-_.:/";
+        const word = (n: number) => Array.from({ length: n }, () => alphabet[Math.floor(rnd() * alphabet.length)]).join("");
+        const cwd = join(tempDir("cavvy-search-grams-"), "proj");
+        const said: { id: string; text: string }[] = [];
+        for (let i = 0; i < 25; i++) {
+            const texts = [word(20 + Math.floor(rnd() * 200)), word(5 + Math.floor(rnd() * 50))];
+            const s = write([prompt(texts[0]!), reply(texts[1]!)], { cwd, age: 50 + i });
+            said.push(...texts.map((text) => ({ id: s.id, text })));
+        }
+        for (let k = 0; k < 60; k++) {
+            const { id, text } = said[Math.floor(rnd() * said.length)]!;
+            const len = 2 + Math.floor(rnd() * 7);
+            if (text.length < len) continue;
+            const at = Math.floor(rnd() * (text.length - len));
+            const q = text.slice(at, at + len);
+            if (!q.trim()) continue;
+            // Case flipped where it keeps its length (ß's upper case is two letters, which isn't the same text).
+            const flipped = rnd() < 0.5 ? q.replace(/[a-z]/g, (c) => c.toUpperCase()) : q.replace(/[A-Z]/g, (c) => c.toLowerCase());
+            const hits = (await searchSessions(flipped, { limit: 200 })).hits.map((h) => h.id);
+            expect(hits).toContain(id);
+        }
+        expect((await searchSessions("qqqzzzxxx", { limit: 200 })).hits).toEqual([]);
     });
 
     test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
@@ -575,6 +655,27 @@ describe("searching session files", () => {
         expect((await searchSessions("kilo marker", { limit: 5 })).hits).toHaveLength(5);
     });
 
+    test("typing on, a search looks only where the query so far was found, and finds what a search from scratch would", async () => {
+        clearSearchCache();
+        const cwd = join(tempDir("cavvy-search-typing-"), "proj");
+        for (const text of ["an apple a day", "apricot jam", "a grape", "pineapple chunks", "map of the app"]) write([prompt(text), reply("ok")], { cwd });
+        const ids = (r: { hits: { id: string; seg: number; index: number }[] }) => r.hits.map((h) => `${h.id}@${h.seg}:${h.index}`);
+        // Each keystroke a search, as the palette asks.
+        const typed: string[][] = [];
+        for (const q of ["ap", "app", "appl", "apple", "applex"]) typed.push(ids(await searchSessions(q)));
+        const fresh: string[][] = [];
+        for (const q of ["ap", "app", "appl", "apple", "applex"]) {
+            clearSearchCache();
+            fresh.push(ids(await searchSessions(q)));
+        }
+        expect(typed).toEqual(fresh);
+        expect(typed[3]).toHaveLength(2);
+        // A session written between keystrokes is looked in too (the files aren't as they were).
+        await searchSessions("appl");
+        const later = write([prompt("apple pie"), reply("ok")], { cwd });
+        expect((await searchSessions("apple")).hits.map((h) => h.id)).toContain(later.id);
+    });
+
     test("a session changed since it was read is read again", async () => {
         const s = write([prompt("lima first words"), reply("ok")]);
         expect((await searchSessions("lima later words")).hits).toHaveLength(0);
@@ -824,6 +925,42 @@ describe("speed", () => {
     }, 60_000);
 });
 
+describe("a session file that grows", () => {
+    const budgetMs = 60_000;
+    const strip = (r: { hits: SessionSearchResult[] }) => r.hits.map(({ snippet, seg, index, role, title }) => ({ snippet, seg, index, role, title }));
+    test("is read again only from where its last read ended, and finds what's the same as a whole read would", async () => {
+        clearSearchCache();
+        const filler = "a long answer about the build ".repeat(400);
+        const s = write([prompt("growing session opens"), ...Array.from({ length: 200 }, (_, i) => reply(`${filler} ${i}`))]);
+        const include = (id: string) => id === s.id;
+        expect((await searchSessions("growing session", { include, budgetMs })).hits).toHaveLength(1);
+        // Grown since: with a budget far below the whole file, the new lines are read and nothing else.
+        appendFileSync(s.file, [prompt("zebra crossing two"), reply("zebra answer")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        const grown = await searchSessions("zebra", { include, budgetMs, budgetBytes: 4096 });
+        expect(grown.partial).toBe(false);
+        expect(grown.hits.map((h) => h.role)).toEqual(["user", "assistant"]);
+        // A rewind, a withdrawal and a compaction later: what's found is what a read of the whole file finds.
+        appendFileSync(s.file, [prompt("zebra three"), { t: "rewind", count: 202 }, prompt("zebra four"), reply("after"), { t: "withdraw", index: 202 }, { t: "compact", summary: "so far" }, prompt("zebra five")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        const resumed = await searchSessions("zebra", { include, budgetMs, budgetBytes: 4096 });
+        expect(resumed.partial).toBe(false);
+        clearSearchCache();
+        const whole = await searchSessions("zebra", { include, budgetMs });
+        expect(strip(resumed)).toEqual(strip(whole));
+        expect(whole.hits.length).toBeGreaterThan(1);
+    });
+
+    test("written over rather than grown, it's read whole again", async () => {
+        clearSearchCache();
+        const s = write([prompt("first version says kestrel"), reply("ok")]);
+        const include = (id: string) => id === s.id;
+        expect((await searchSessions("kestrel", { include, budgetMs })).hits).toHaveLength(1);
+        // Same path, longer, different from the start: nothing of the old reading is kept.
+        writeFileSync(s.file, [{ t: "meta", id: s.id, cwd: s.cwd, createdAt: 0, version: "1" }, prompt("second version says osprey, and it is longer than the first one was"), reply("ok")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        expect((await searchSessions("kestrel", { include, budgetMs })).hits).toHaveLength(0);
+        expect((await searchSessions("osprey", { include, budgetMs })).hits).toHaveLength(1);
+    });
+});
+
 describe("listing a big project folder", () => {
     test("yields and checks for a newer search every so many files, and a budget spent listing is partial", async () => {
         const cwd = join(tempDir("cavvy-search-big-"), "big");
@@ -844,7 +981,9 @@ describe("listing a big project folder", () => {
         // A newer search while it lists: it stops there.
         let n = 0;
         expect(await searchSessions("whiskey", { stale: () => ++n > folders + 5, budgetMs })).toMatchObject({ hits: [], stale: true });
-        // No time left once it's listed: partial, even though no session was looked at.
+        // No time left once it's listed: partial, even though no session was looked at. Listed anew (a search just
+        // after another reuses its listing).
+        clearSearchCache();
         const late = await searchSessions("whiskey", { include: () => false, budgetMs: 0 });
         expect(late.partial).toBe(true);
     }, 60_000);

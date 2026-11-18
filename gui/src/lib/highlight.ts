@@ -49,8 +49,45 @@ function request(kind: HighlightRequest["kind"], code?: string, lang?: string, p
     });
 }
 
+/**
+ * Finished blocks' HTML, by their code, most recently used last: a block shown again (its session switched back to) is
+ * drawn colored in its first frame, rather than plain and then colored a task later, with the page laid out again. Keyed
+ * by the code as the block has it, not a copy: the session's turns hold that text anyway. Kept to DONE_CHARS of HTML
+ * (about 2 MB: HTML runs about 12 times its code, so some hundred blocks of a screen or so); a block whose HTML is over
+ * half of that isn't kept.
+ */
+const done = new Map<string, { lang: string; html: string }>();
+let doneChars = 0;
+const DONE_CHARS = 1_000_000;
+
+/** The HTML `highlight` gave for this code in this language, if it's still kept: at once, without the worker. */
+export function highlighted(code: string, lang: string | undefined): string | undefined {
+    const kept = done.get(code);
+    if (!lang || kept?.lang !== lang) return undefined;
+    // Used now: last to go.
+    done.delete(code);
+    done.set(code, kept);
+    return kept.html;
+}
+
+function keep(code: string, lang: string, html: string) {
+    if (html.length > DONE_CHARS / 2) return;
+    const had = done.get(code);
+    if (had) doneChars -= had.html.length;
+    done.delete(code);
+    done.set(code, { lang, html });
+    doneChars += html.length;
+    for (const [k, v] of done) {
+        if (doneChars <= DONE_CHARS) break;
+        done.delete(k);
+        doneChars -= v.html.length;
+    }
+}
+
 export async function highlight(code: string, lang: string | undefined): Promise<string | undefined> {
-    return await request("html", code, lang) as string | undefined;
+    const html = await request("html", code, lang) as string | undefined;
+    if (html !== undefined && lang) keep(code, lang, html);
+    return html;
 }
 
 let writings = 0;

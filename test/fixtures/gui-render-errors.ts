@@ -9,11 +9,14 @@ import * as toolWords from "../../gui/src/lib/tool-words";
 import * as liveLine from "../../gui/src/lib/live-line";
 import * as runSummary from "../../gui/src/lib/run-summary";
 import * as notices from "../../gui/src/lib/notices";
-import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { BuiltFromEnd, createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
+import { offStep, onStep } from "../../gui/src/lib/stream-clock";
 import * as diffWindow from "../../gui/src/lib/diff-window";
 import { oneSided } from "../../gui/src/lib/review-stack";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
+import * as cards from "../../gui/src/lib/cards";
+import { linesOf } from "../../gui/src/lib/code-metrics";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -84,9 +87,9 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
         const Widget = component(source(file), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
-            ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
+            ...format, ...toolWords, ...liveLine, ...runSummary, ...notices, ...cards, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
-            onMount() {}, highlight: async () => undefined, createReveal, DrawnAgain, paint() {}, oneSided,
+            onMount() {}, highlight: async () => undefined, highlighted: () => undefined, linesOf, createReveal, DrawnAgain, BuiltFromEnd, onStep, offStep, paint() {}, oneSided,
             groupBlocks: () => { throw Error("bad turn"); },
         });
         const View = component('export function View() { return <><Widget {...props} /><button>still usable</button></>; }', "View", { Widget, props: props[kind] });
@@ -113,7 +116,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlight = async () => { if (fail) throw Error(secret); return undefined; };
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            highlight, highlightLines: highlight, highlightLineStream: streamOf(highlight), langOf: () => "ts", escapeHtml: (s: string) => s,
+            highlight, highlighted: () => undefined, linesOf, highlightLines: highlight, highlightLineStream: streamOf(highlight), langOf: () => "ts", escapeHtml: (s: string) => s,
             ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
@@ -154,7 +157,7 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
-            railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+            railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
             ...noSplit, Panes: singlePane(),
         });
@@ -240,7 +243,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlighting = retryingHighlighter();
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s, growing: (el: any) => (html: string) => { el.props.innerHTML = html; },
+            ...highlighting, highlighted: () => undefined, linesOf, langOf: () => "typescript", escapeHtml: (s: string) => s, growing: (el: any) => (html: string) => { el.props.innerHTML = html; },
             ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {

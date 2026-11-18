@@ -5,6 +5,7 @@
 import { createEffect, createRoot, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { setNativeTheme } from "../lib/platform";
+import { noteCodeMetrics } from "../lib/code-metrics";
 import { scaled } from "../lib/text-size";
 import { appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Appearance, type Prefs } from "./prefs-core";
 
@@ -43,6 +44,8 @@ createRoot(() => {
     createEffect(() => {
         const next = appearanceOf(prefs, systemDark());
         showAppearance(document.documentElement, next, shown);
+        // A code block's line is another height at another text size (lib/code-metrics.ts).
+        if (shown && next.style["--font-scale"] !== shown.style["--font-scale"]) noteCodeMetrics();
         if (next.theme !== shown?.theme) void setNativeTheme(next.theme);
         shown = next;
     });

@@ -362,7 +362,8 @@ function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | un
         app: { conn: "open" }, rpc: {},
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
-        Popover: tagged("Popover"), NewWorktreeDialog: tagged("NewWorktreeDialog"), RemoveWorktreeDialog: tagged("RemoveWorktreeDialog"),
+        // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
+        Popover: tagged("Popover"), lazy: (load: () => Promise<unknown>) => tagged(/default: m\.(\w+)/.exec(String(load))?.[1] ?? "Lazy"),
     }) as (p: { cwd: string; branch?: string }) => Element;
     return { tree: WorktreePicker({ cwd, branch: "main" }), opened };
 }
@@ -412,7 +413,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: Date.now() + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
         reportError: stub, rpc: {}, toast: stub,
-        contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
+        contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         now: () => Date.now(), limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",

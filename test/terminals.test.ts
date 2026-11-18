@@ -4,7 +4,7 @@ import { parseTabs, restoreTabs } from "../gui/src/lib/terminal";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
-const { Terminals, terminalEnv, terminalSize } = await import("../src/server/terminals");
+const { Terminals, terminalEnv, terminalSize, cleanCut, cleanCutBefore, advanceEscape } = await import("../src/server/terminals");
 import type { ServerEvent } from "../src/server/protocol";
 
 // A plain shell with an empty home: none of the user's own startup files run. Named, not /bin/sh
@@ -36,6 +36,46 @@ function client(window?: string) {
     return { events, window, send: (event: ServerEvent) => events.push(event), output: () => data().map((e) => e.data).join(""), pos: () => data().at(-1)?.pos };
 }
 const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+describe("where output may be cut", () => {
+    // The character-at-a-time versions these replaced: the same answers, on any output.
+    type State = Parameters<typeof cleanCut>[2];
+    const slowCut = (text: string, from: number, state: State = "ground") => {
+        if (from === 0 && state === "ground") return { at: 0, state };
+        const line = text.indexOf("\n", from);
+        const target = from > 0 && line !== -1 && line - from < 4096 ? line + 1 : from;
+        for (let at = 0; at < text.length; at++) {
+            if (at >= target && state === "ground" && !/[\uDC00-\uDFFF]/.test(text[at]!)) return { at, state };
+            state = advanceEscape(state!, text[at]!);
+        }
+        return { at: text.length, state };
+    };
+    const slowBefore = (text: string, limit: number, state: State = "ground") => {
+        let last = -1;
+        for (let at = 0; at <= limit && at <= text.length; at++) {
+            if (state === "ground" && !(at < text.length && /[\uDC00-\uDFFF]/.test(text[at]!))) last = at;
+            if (at < text.length) state = advanceEscape(state!, text[at]!);
+        }
+        return last;
+    };
+    test("the same places as reading it a character at a time, on any mix of text, escapes and control strings", () => {
+        const pieces = ["a", "word ", "\n", "\r\n", "😀", "\x1b[31m", "\x1b[0m", "\x1b]0;title\x07", "\x1b]8;;http://x\x1b\\", "\x1bP1$r\x1b\\", "\x9b1m", "\x9d2;t\x9c", "\x90q\x9c", "\x18", "\x1a", "\x1b", "[", "\x9f", "\x98", "\x9e", "\uDC00", "\uD83D", "~", "@"];
+        let seed = 7;
+        const rnd = (n: number) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) % n);
+        for (let round = 0; round < 3000; round++) {
+            let text = "";
+            const n = 1 + rnd(60);
+            for (let i = 0; i < n; i++) text += pieces[rnd(pieces.length)]!;
+            if (rnd(4) === 0) text += "x".repeat(rnd(5000));
+            for (const state of ["ground", "escape", "csi", "osc", "string"] as const) {
+                const at = rnd(text.length + 1);
+                expect(cleanCut(text, at, state)).toEqual(slowCut(text, at, state));
+                expect(cleanCutBefore(text, at, state)).toBe(slowBefore(text, at, state));
+                expect(cleanCutBefore(text, text.length + 3, state)).toBe(slowBefore(text, text.length + 3, state));
+            }
+        }
+    });
+});
 
 describe("embedded terminals", () => {
     test("large pastes preserve Unicode across RPC boundaries", async () => {

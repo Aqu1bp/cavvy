@@ -8,6 +8,7 @@
 import { closeSync, lstatSync, openSync, readdirSync, readSync } from "fs";
 import { basename, dirname, join } from "path";
 import { paths } from "../config/paths";
+import { sessionWriteCount, writtenAfter } from "../agent/session-writes";
 import type { Message } from "../providers/types";
 import { redact, redactionVersion } from "../util/redact";
 import { promptText, STEERING, withoutActionsNote } from "./history";
@@ -21,6 +22,8 @@ const MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** A message's text beyond this isn't searched. */
 const MAX_TEXT = 256 * 1024;
 const MSG_PREFIX = '{"t":"msg"';
+/** How much of a file before where its reading ended is kept, to tell later that it's only grown since. */
+const TAIL_BYTES = 256;
 const WANTED = /^\{"t":"(msg|meta|title|compact|rewind|withdraw)"/;
 
 /** Hits from one session, at most (a session that says the word often doesn't fill the list). */
@@ -37,6 +40,71 @@ export const SEARCH_LIMITS = {
     /** Turn times kept across queries, in records (and one for each log). */
     cacheTurnTimes: 200_000,
 };
+
+/**
+ * A session's runs of three characters, each a bit in a set about four times as many bits as its text has characters
+ * (a run that hashes to an unset bit isn't in it; one that's set may be). A search for something with a run none of
+ * its messages has skips it without looking through them: with 10,000 sessions, one for a word found nowhere read 20
+ * million characters, every one of them, at the first keystroke that had it.
+ */
+const GRAM_BITS_PER_CHAR = 4;
+const GRAM_MIN_BITS = 1 << 9;
+const GRAM_MAX_BITS = 1 << 20;
+const gram = (a: number, b: number, c: number) => (Math.imul(a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca77) ^ Math.imul(c, 0xc2b2ae3d)) >>> 0;
+/**
+ * Its pairs of characters, each a bit of PAIR_BITS, for what's searched before it's three characters long (the second
+ * key typed). Without them, two characters found nowhere looked through every session (10,000 sessions: 37-46 ms of
+ * that keystroke's search, measured). A long session sets most of them, and is looked through, as before. 512 bytes a
+ * session read: 10,000 sessions read kept 6.6 MB more than without them (50.9 vs 44.3 MB, measured), counted in the
+ * cache's size like the rest.
+ */
+const PAIR_BITS = 4096;
+const pair = (a: number, b: number) => (Math.imul(a, 0x27d4eb2f) ^ Math.imul(b, 0x165667b1)) >>> 20;
+/**
+ * `entries`' runs. `had`, the set of a session read before and grown since (`added`, its entries since): only those are
+ * worked out, into a copy of it, while the set's size stays what the whole would have. A message gone since leaves its
+ * runs set: that only costs looking through the session when a search has one.
+ */
+function gramsOf(entries: readonly Entry[], had?: { grams: Uint32Array; pairs?: Uint32Array; added: readonly Entry[] }): { grams: Uint32Array; pairs: Uint32Array } {
+    const chars = entries.reduce((n, e) => n + e.folded.length, 0);
+    let bits = GRAM_MIN_BITS;
+    while (bits < chars * GRAM_BITS_PER_CHAR && bits < GRAM_MAX_BITS) bits <<= 1;
+    const grow = had && had.pairs && had.grams.length === bits >>> 5;
+    const set = grow ? had.grams.slice() : new Uint32Array(bits >>> 5);
+    const pairs = grow ? had.pairs!.slice() : new Uint32Array(PAIR_BITS >>> 5);
+    const mask = bits - 1;
+    for (const e of grow ? had.added : entries) {
+        const t = e.folded;
+        for (let i = 0; i + 1 < t.length; i++) {
+            const a = t.charCodeAt(i);
+            const b = t.charCodeAt(i + 1);
+            const p = pair(a, b);
+            pairs[p >>> 5]! |= 1 << (p & 31);
+            if (i + 2 >= t.length) continue;
+            const h = gram(a, b, t.charCodeAt(i + 2)) & mask;
+            set[h >>> 5]! |= 1 << (h & 31);
+        }
+    }
+    return { grams: set, pairs };
+}
+/** The query's runs of three characters, or for two characters their pair (one character: every session is looked through). */
+function gramsOfQuery(fq: string): { grams: number[]; pair?: number } {
+    const grams: number[] = [];
+    for (let i = 0; i + 2 < fq.length; i++) grams.push(gram(fq.charCodeAt(i), fq.charCodeAt(i + 1), fq.charCodeAt(i + 2)));
+    return fq.length === 2 ? { grams, pair: pair(fq.charCodeAt(0), fq.charCodeAt(1)) } : { grams };
+}
+/** Whether `doc` may have all of them (false: it can't). */
+function mayHave(doc: Doc, wanted: { grams: readonly number[]; pair?: number }): boolean {
+    if (wanted.pair !== undefined && doc.pairs && !(doc.pairs[wanted.pair >>> 5]! & (1 << (wanted.pair & 31)))) return false;
+    const set = doc.grams;
+    if (!set || !wanted.grams.length) return true;
+    const mask = set.length * 32 - 1;
+    for (const w of wanted.grams) {
+        const h = w & mask;
+        if (!(set[h >>> 5]! & (1 << (h & 31)))) return false;
+    }
+    return true;
+}
 
 /** Rough cost, in characters, of what's kept besides the text itself. */
 const ENTRY_COST = 64;
@@ -64,6 +132,16 @@ interface Doc {
     starts: { seg: number; index: number }[];
     /** All it keeps, in characters (see SEARCH_LIMITS.cacheChars). */
     chars: number;
+    /** Which runs of three characters its messages have (gramsOf): a search for something it can't have skips it. */
+    grams?: Uint32Array;
+    /** Which pairs of characters its messages have (gramsOf). */
+    pairs?: Uint32Array;
+    /**
+     * Where its reading ended, for the next read of the file once it's grown (a session being written to grows all
+     * the time, and searching while ten stream read each of them whole on every keystroke): from there, if what's
+     * just before is still what was read. None when the file didn't end with a whole line.
+     */
+    resume?: { at: number; ino: number; tail: string; seg: number; count: number; first?: string; titleLine?: string };
 }
 
 interface TurnTimes {
@@ -79,6 +157,8 @@ let cachedChars = 0;
 let cachedTimes = 0;
 
 export function clearSearchCache() {
+    listing = undefined;
+    lastScan = undefined;
     docs.clear();
     times.clear();
     cachedChars = 0;
@@ -109,6 +189,17 @@ class Control {
         private readonly budgetMs: number,
         private readonly budgetBytes: number,
     ) {}
+
+    /**
+     * As tick, without a wait when it's not yet time to let others run: a boolean then, else tick's promise. Searching
+     * thousands of sessions already read, a wait at each was a third of a search for a word found nowhere.
+     */
+    check(): boolean | Promise<boolean> {
+        if (Date.now() - this.lastYield > 8) return this.tick();
+        if (this.stale()) this.stopped = "stale";
+        else if (Date.now() - this.start > this.budgetMs || this.bytes > this.budgetBytes) this.stopped = "budget";
+        return !this.stopped;
+    }
 
     /** Lets other requests run now and then; false once this search should stop. */
     async tick(): Promise<boolean> {
@@ -165,7 +256,7 @@ class WholeJson {
  * MAX_LINE_BYTES, with whether it was still whole JSON). Other lines are
  * skipped as they're read. False when the search stopped halfway.
  */
-async function scanLines(file: string, want: (prefix: string) => boolean, fn: (prefix: string, line: string | undefined, whole: boolean) => void, ctl: Control): Promise<boolean> {
+async function scanLines(file: string, want: (prefix: string) => boolean, fn: (prefix: string, line: string | undefined, whole: boolean) => void, ctl: Control, from = 0, ended?: { at: number; torn: boolean }): Promise<boolean> {
     const fd = openSync(file, "r");
     try {
         const chunk = Buffer.alloc(CHUNK_BYTES);
@@ -189,7 +280,9 @@ async function scanLines(file: string, want: (prefix: string) => boolean, fn: (p
             over = undefined;
         };
         let chunks = 0;
-        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
+        // Where the last line read to its newline ends: a later read of the file, grown since, goes on from there.
+        let lineEnd = from;
+        for (let pos = from, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
             ctl.bytes += n;
             if (++chunks % 8 === 0 && !(await ctl.tick())) return false;
             const c = chunk.subarray(0, n);
@@ -210,10 +303,13 @@ async function scanLines(file: string, want: (prefix: string) => boolean, fn: (p
                 if (nl < 0) break;
                 emit();
                 start = nl + 1;
+                lineEnd = pos + start;
             }
         }
         // A last line without its newline still counts if it's whole, as readSegments has it.
-        if (len || over) emit();
+        const torn = Boolean(len || over);
+        if (torn) emit();
+        if (ended) Object.assign(ended, { at: lineEnd, torn });
         return true;
     } finally {
         closeSync(fd);
@@ -269,11 +365,17 @@ function messageText(m: Message, clean = (text: string) => text): { role: "user"
 }
 
 /** A session file as search sees it: its messages' text, placed the way replay places them (compactions, rewinds). */
-async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control): Promise<Doc | undefined> {
-    const doc: Doc = { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
-    let seg = 0;
-    let count = 0;
-    let first: string | undefined;
+async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control, ino = 0, had?: Doc): Promise<Doc | undefined> {
+    const from = had && had.redaction === redactionVersion() && had.resume && had.resume.ino === ino && size >= had.resume.at && tailAt(file, had.resume.at) === had.resume.tail ? had.resume : undefined;
+    const doc: Doc = from && had
+        ? { size, mtimeMs, redaction: had.redaction, cwd: had.cwd, title: from.titleLine, entries: [...had.entries], starts: [...had.starts], chars: 0 }
+        : { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
+    let seg = from?.seg ?? 0;
+    let count = from?.count ?? 0;
+    let first: string | undefined = from?.first;
+    /** Entries read this time, after those kept from `had`. */
+    const added: Entry[] = [];
+    const ended = { at: 0, torn: false };
     const done = await scanLines(
         file,
         (prefix) => WANTED.test(prefix),
@@ -297,7 +399,9 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                     // replay's trimming/reminder removal or our size cap.
                     const text = found && clip(displayText(messageText(l.m, redact)!.text));
                     if (found && text) {
-                        doc.entries.push({ seg, index: count, role: found.role, text, folded: foldCase(clip(found.text)) });
+                        const entry: Entry = { seg, index: count, role: found.role, text, folded: foldCase(clip(found.text)) };
+                        doc.entries.push(entry);
+                        added.push(entry);
                         if (found.role === "user" && first === undefined && seg === 0) first = text;
                     }
                 } catch {
@@ -331,11 +435,30 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
             }
         },
         ctl,
+        from?.at ?? 0,
+        ended,
     );
     if (!done) return undefined;
+    if (!ended.torn && ino) doc.resume = { at: ended.at, ino, tail: tailAt(file, ended.at), seg, count, first, titleLine: doc.title };
     if (!doc.title) doc.title = first ?? doc.entries.find((e) => e.role === "user")?.text;
-    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0);
+    const found = gramsOf(doc.entries, from && had?.grams ? { grams: had.grams, pairs: had.pairs, added } : undefined);
+    doc.grams = found.grams;
+    doc.pairs = found.pairs;
+    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0) + (doc.grams.length + doc.pairs.length) * 2;
     return doc;
+}
+
+/** What's just before `at` in the file (what a read that ended there last saw), to tell it's the same file grown. */
+function tailAt(file: string, at: number): string {
+    const n = Math.min(TAIL_BYTES, at);
+    if (!n) return "";
+    const fd = openSync(file, "r");
+    try {
+        const b = Buffer.alloc(n);
+        return b.subarray(0, readSync(fd, b, 0, n, at - n)).toString("latin1");
+    } finally {
+        closeSync(fd);
+    }
 }
 
 function remember(file: string, doc: Doc) {
@@ -462,12 +585,113 @@ export interface SearchOptions {
     stale?: () => boolean;
     budgetMs?: number;
     budgetBytes?: number;
+    /** Sessions this server has open, by id: each may be written to at any time, however old it is (sessionFiles). */
+    open?: ReadonlySet<string>;
 }
 
 /** Every session file, newest first; undefined when the search stopped while listing them. */
-async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; size: number; mtimeMs: number }[] | undefined> {
+type Listed = { id: string; file: string; size: number; mtimeMs: number; ino: number };
+
+/** The session files as last listed: the same list again while none has changed (lastScan holds to it). */
+let listing: Listed[] | undefined;
+/** When the files were last listed whole, and each project folder's mtime then (a file put in or taken out changes it). */
+let listedAt = -Infinity;
+/** Session writes as of the listing (session-writes.ts): those after it are looked at again. */
+let listedWrites = 0;
+let folders: Map<string, number> | undefined;
+/**
+ * Typed into, a search a keystroke: only the newest RECENT files and those of sessions open here are looked at again
+ * (what's being written to is among them), not each one of thousands (10,000 sessions: 23 of a search's 26 ms). Listed
+ * whole more than this long ago, it's listed whole again after the search, for the next: one older than those, written
+ * to meanwhile by another process, is seen a search later. Listed whole in the search instead, a keystroke a second
+ * or so after the last paid for it (25-41 ms of the palette's, with 10,000 sessions, measured).
+ */
+const LIST_FRESH_MS = 1000;
+/** The whole listing under way after a search, if any. */
+let relisting: Promise<unknown> | undefined;
+const RECENT = 64;
+
+function foldersAsListed(): boolean {
+    if (!folders) return false;
+    try {
+        const root = paths.projectsDir();
+        const dirs = readdirSync(root);
+        if (dirs.length !== folders.size) return false;
+        for (const d of dirs) if (stampOf(join(root, d)) !== folders.get(d)) return false;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** A project folder's mtime as listed; -1 for an entry that isn't a plain one (a link), so each is counted. */
+function stampOf(path: string): number {
+    return plainStat(path)?.mtimeMs ?? -1;
+}
+
+/** The session files, newest first. The list from before when every one is as it was then. */
+async function sessionFiles(ctl: Control, open?: ReadonlySet<string>): Promise<Listed[] | undefined> {
+    const was = listing;
+    if (was && foldersAsListed()) {
+        if (performance.now() - listedAt >= LIST_FRESH_MS) relistSoon();
+        let changed = false;
+        // And those this process wrote to since, wherever they were (one written to and let go of since).
+        const writes = sessionWriteCount();
+        const written = writtenAfter(listedWrites);
+        listedWrites = writes;
+        const now = was.map((f, i) => {
+            if (i >= RECENT && !open?.has(f.id) && !written?.has(f.file)) return f;
+            let st;
+            try {
+                st = plainStat(f.file);
+            } catch {
+                // Gone since (taken out without its folder's time changing): as a whole listing would, it isn't there.
+            }
+            if (st && st.size === f.size && st.mtimeMs === f.mtimeMs && st.ino === f.ino) return f;
+            changed = true;
+            return st?.isFile() ? { ...f, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino } : undefined;
+        });
+        if (!changed) return was;
+        listing = now.filter((f): f is Listed => f !== undefined).sort((x, y) => y.mtimeMs - x.mtimeMs);
+        return listing;
+    }
+    return relist(ctl);
+}
+
+/** Every session file, listed whole: the listing from now on (the same array where nothing changed). */
+async function relist(ctl: Control): Promise<Listed[] | undefined> {
+    const was = listing;
+    const writes = sessionWriteCount();
+    const files = await listSessionFiles(ctl);
+    if (!files) return undefined;
+    listedAt = performance.now();
+    // As of its start: what was written as it went is looked at again (no harm if it was in it).
+    listedWrites = writes;
+    if (was && was.length === files.length && files.every((f, i) => f.file === was[i]!.file && f.size === was[i]!.size && f.mtimeMs === was[i]!.mtimeMs && f.ino === was[i]!.ino)) return was;
+    listing = files;
+    return files;
+}
+
+/** Searches under way: a relisting waits for them to be answered, not slowing one that yields as it goes. */
+let searching = 0;
+let relistWanted = false;
+/** Listed whole once the searches under way are answered, letting others run as it goes. */
+function relistSoon() {
+    if (relisting) return;
+    if (searching) {
+        relistWanted = true;
+        return;
+    }
+    relistWanted = false;
+    relisting = new Promise((r) => setTimeout(r, 0))
+        .then(() => relist(new Control(() => false, SEARCH_LIMITS.budgetMs, SEARCH_LIMITS.budgetBytes)))
+        .catch(() => undefined)
+        .finally(() => (relisting = undefined));
+}
+
+async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
     const root = paths.projectsDir();
-    const out: { id: string; file: string; size: number; mtimeMs: number }[] = [];
+    const out: { id: string; file: string; size: number; mtimeMs: number; ino: number }[] = [];
     let dirs: string[];
     try {
         dirs = readdirSync(root);
@@ -475,12 +699,15 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
         return out;
     }
     let seen = 0;
+    const stamps = new Map<string, number>();
     for (const d of dirs) {
         if (!(await ctl.tick())) return undefined;
         const dir = join(root, d);
         let names: string[];
         try {
-            if (!plainStat(dir)?.isDirectory()) continue;
+            const st = plainStat(dir);
+            stamps.set(d, st?.mtimeMs ?? -1);
+            if (!st?.isDirectory()) continue;
             names = readdirSync(dir);
         } catch {
             continue;
@@ -492,7 +719,7 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
             const file = join(dir, f);
             try {
                 const st = plainStat(file);
-                if (st?.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs });
+                if (st?.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino });
             } catch {
                 // vanished or unreadable
             }
@@ -500,7 +727,9 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
     }
     out.sort((x, y) => y.mtimeMs - x.mtimeMs);
     // The budget may have run out while listing: then nothing after it counts as whole.
-    return (await ctl.tick()) ? out : undefined;
+    if (!(await ctl.tick())) return undefined;
+    folders = stamps;
+    return out;
 }
 
 /**
@@ -518,7 +747,7 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
         if (had && had.size === f.size && had.mtimeMs === f.mtimeMs && had.redaction === redaction) continue;
         let doc: Doc | undefined;
         try {
-            doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
+            doc = await readDoc(f.file, f.size, f.mtimeMs, ctl, f.ino, docs.get(f.file));
         } catch {
             continue; // vanished or unreadable
         }
@@ -534,7 +763,23 @@ export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<num
  * first, at most PER_SESSION from one session. Stops early, with what it has
  * (`partial`), when the budget runs out; with nothing (`stale`) when replaced.
  */
+/**
+ * The last search that went through every session (none stopped it, nor its limit): what it was, in which listing
+ * (the same while no file has changed: sessionFiles), and the sessions it was found in. A query that has it in it can
+ * only be in those (typing on: each keystroke a search, and each went through all of them again).
+ */
+let lastScan: { fq: string; files: Listed[]; redaction: number; found: Set<string> } | undefined;
+
 export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
+    searching++;
+    try {
+        return await searchNow(query, o);
+    } finally {
+        if (--searching === 0 && relistWanted) relistSoon();
+    }
+}
+
+async function searchNow(query: string, o: SearchOptions): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
     const fq = foldCase(query);
     const redaction = redactionVersion();
@@ -542,14 +787,26 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
     const ctl = new Control(outdated, o.budgetMs ?? SEARCH_LIMITS.budgetMs, o.budgetBytes ?? SEARCH_LIMITS.budgetBytes);
     const hits: SearchHit[] = [];
     if (!fq) return { hits, partial: false, stale: false };
-    for (const f of (await sessionFiles(ctl)) ?? []) {
-        if (hits.length >= limit) break;
+    const files = (await sessionFiles(ctl, o.open)) ?? [];
+    // Typed on from a query whose search went through every session: only those it was found in can have this one.
+    const narrowed = !o.include && lastScan?.files === files && lastScan.redaction === redaction && fq.includes(lastScan.fq) ? lastScan.found : undefined;
+    // Each session it's found in, while it's gone through all of them (a search stopped at `limit` hasn't).
+    const found = new Set<string>();
+    const wanted = gramsOfQuery(fq);
+    let whole = true;
+    for (const f of files) {
+        if (hits.length >= limit) {
+            whole = false;
+            break;
+        }
+        if (narrowed && !narrowed.has(f.file)) continue;
         if (o.include && !o.include(f.id)) continue;
-        if (!(await ctl.tick())) break;
+        const go = ctl.check();
+        if (!(go === true || (go !== false && (await go)))) break;
         let doc = docs.get(f.file);
         if (!doc || doc.size !== f.size || doc.mtimeMs !== f.mtimeMs || doc.redaction !== redactionVersion()) {
             try {
-                doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
+                doc = await readDoc(f.file, f.size, f.mtimeMs, ctl, f.ino, docs.get(f.file));
             } catch {
                 continue; // vanished or unreadable
             }
@@ -557,16 +814,18 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
             remember(f.file, doc);
         }
         if (!doc.cwd) continue;
-        const found: { e: Entry; at: number }[] = [];
+        if (!mayHave(doc, wanted)) continue;
+        const inDoc: { e: Entry; at: number }[] = [];
         for (const e of doc.entries) {
             const at = e.folded.indexOf(fq);
             if (at < 0) continue;
-            found.push({ e, at });
-            if (found.length >= PER_SESSION) break;
+            inDoc.push({ e, at });
+            if (inDoc.length >= PER_SESSION) break;
         }
-        if (!found.length) continue;
+        if (!inDoc.length) continue;
+        found.add(f.file);
         const turns = await turnTimes(f.file, f.id, ctl);
-        for (const { e, at } of found) {
+        for (const { e, at } of inDoc) {
             if (hits.length >= limit) break;
             // The turn it's in: the last start at or before it (not one a rewind took away), and
             // when that started: the latest record for its place, as UiLog has it (a rewind reuses places).
@@ -592,5 +851,6 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
     // Registration can happen at any yield, even after an earlier hit was built.
     // Never return snippets assembled under the old secret registry.
     const stale = ctl.stopped === "stale" || outdated();
+    if (whole && !ctl.stopped && !stale && !o.include) lastScan = { fq, files, redaction, found };
     return { hits: stale ? [] : hits, partial: stale || Boolean(ctl.stopped), stale };
 }

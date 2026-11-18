@@ -18,8 +18,9 @@ import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
-import { beforeFork, forkCut, forkTargets } from "../agent/fork";
+import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
+import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
+import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -80,11 +81,13 @@ import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-wo
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type Segment, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
+    AgentsMore,
+    DiffHunk,
     BackgroundTaskInfo,
     Block,
     ChangesInfo,
@@ -108,6 +111,7 @@ import type {
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
+    SessionResumed,
     SessionTurnsPage,
     SessionState,
     WorkingIn,
@@ -119,8 +123,8 @@ import type {
     NoticeData,
     StoppedTask,
 } from "./protocol";
-import type { PeerBlock } from "./protocol";
-import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
+import type { PeerBlock, SessionFindMatch } from "./protocol";
+import { applyOp, coalesce, findBlock, findTurn, lastProgress, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
@@ -128,15 +132,227 @@ import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 import { MAX_RESTART_RESUMES } from "./working";
+import { findBefore, type FindCache } from "./find";
+import { nextSlice } from "../util/slices";
+import { cardOf } from "../../gui/src/lib/cards";
+import { agentHeadOf, headOf, TurnStore, type StoredAgent, type StoredTurn } from "./turn-store";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
 export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
-/** How often streamed output goes out to the GUI. */
+/**
+ * What a window is sent of a session's sub-agents with `turns`, the turns it's sent: those of these turns, and any still
+ * running, whole; the others as the list of them shows them (AgentRun.partial), their steps, instructions and report
+ * left to come with their turns or on their own. A long Claude Code session opened with every sub-agent it ever ran:
+ * 73 of the 75 MB it sent. `all`: every turn is sent, so every sub-agent is whole.
+ */
+export function agentsFor(agents: readonly AgentRun[], turns: readonly Turn[], all: boolean, whole: (a: AgentRun) => AgentRun = (a) => a, folded?: ReadonlySet<string>): { agents: AgentRun[]; more?: AgentsMore } {
+    const ids = new Set(turns.map((t) => t.id));
+    const sent: AgentRun[] = [];
+    const more: AgentsMore = { count: 0, failed: 0 };
+    for (const a of agents) {
+        if (a.status === "running" || a.status === "waiting") sent.push(sentAgent(whole(a)));
+        // Of a turn sent with its work folded: its row is in that work, and comes whole with the turn (session.turn).
+        else if (folded?.has(a.turnId)) sent.push(listedAgent(a));
+        else if (all || ids.has(a.turnId)) sent.push(sentAgent(whole(a)));
+        // One a background task is (its row is the task's): as its list shows it.
+        else if (a.taskId) sent.push(listedAgent(a));
+        // The rest only counted: its Finished fold asks for them (session.agentList). Every one of them listed was
+        // most of what a long Claude Code session sent as it opened (232 of 576 KB at 30,000 items).
+        else {
+            more.count++;
+            if (a.status === "failed") more.failed++;
+        }
+    }
+    return { agents: sent, ...(more.count ? { more } : {}) };
+}
+
+/** What an edit's input says that its diff shows too: the text it wrote, and what it replaced with what. */
+const EDIT_CONTENT = ["content", "old_string", "new_string", "edits", "new_source"];
+
+/**
+ * Blocks as a window is sent them whole (a turn it opens with or pages in, a sub-agent): an edit whose change is in
+ * its diff without the same change again in its input. Its card shows the diff, and its input only when there's no
+ * diff (gui/src/components/blocks/Activity.tsx EditCard). A whole file written was sent twice: a heavy session's turn
+ * of 1 MB had 223 KB of it. Changes the blocks given: a copy's.
+ */
+/**
+ * A finished turn's thoughts without their text, as a window is sent the turn whole: a thought's row shows how long it
+ * took, and its text only opened (gui/src/components/blocks/Activity.tsx Thinking), which asks for it (session.block).
+ * Find doesn't search them. 159 of the 414 KB a heavy session sent as it opened. Changes the blocks given: a copy's.
+ */
+export function omitThinking(blocks: Block[]): Block[] {
+    for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]!;
+        if (b.t === "thinking" && b.text) blocks[i] = { ...b, text: "", omitted: true };
+    }
+    return blocks;
+}
+
+/** The ids of those of these turns sent folded. */
+function foldedIds(turns: readonly Turn[]): Set<string> | undefined {
+    const ids = turns.filter((t) => t.folded).map((t) => t.id);
+    return ids.length ? new Set(ids) : undefined;
+}
+
+/** Longer than this, an input's value or a tool's output isn't sent with folded work (it's read opened). */
+const FOLDED_KEEPS = 200;
+
+/**
+ * A finished turn's work as a window that folds it is sent it (session.open's `fold`): what's shown with it folded and
+ * no more. Its plans (a card outside the work), each call's name, status, summary and short values, an output that short
+ * (a command still running in the background says so in it: TurnView stoppedText), a diff's counts and its first change
+ * (the changes card says where each file changed). What its rows show opened comes with the turn whole (session.turn),
+ * as its work is shown. Changes the blocks given: a copy's. Whether it left anything out.
+ */
+export function foldWork(blocks: Block[]): boolean {
+    let left = false;
+    for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]!;
+        if (b.t !== "tool" || cardOf(b) === "plan") continue;
+        const t = { ...b };
+        if (t.output !== undefined && t.output.length > FOLDED_KEEPS) delete t.output;
+        if (t.progress !== undefined) delete t.progress;
+        if (t.diagnostics !== undefined) delete t.diagnostics;
+        if (t.input) {
+            const input: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(t.input)) if ((typeof v === "string" ? v.length : JSON.stringify(v)?.length ?? 0) <= FOLDED_KEEPS) input[k] = v;
+            t.input = input;
+        }
+        if (t.diff?.hunks.length) t.diff = { ...t.diff, hunks: firstChange(t.diff.hunks) };
+        if (JSON.stringify(t).length < JSON.stringify(b).length) {
+            blocks[i] = t;
+            left = true;
+        }
+    }
+    return left;
+}
+
+/** A diff's hunks up to its first changed line (where firstChangedLine finds it). */
+function firstChange(hunks: DiffHunk[]): DiffHunk[] {
+    for (const h of hunks) {
+        const i = h.lines.findIndex((l) => l.t !== "ctx");
+        if (i >= 0) return [{ ...h, lines: h.lines.slice(0, i + 1) }];
+    }
+    return [];
+}
+
+/** A copy of a sub-agent whole, as a window is sent it. */
+function sentAgent(a: AgentRun): AgentRun {
+    const c = structuredClone(a);
+    slimEdits(c.blocks);
+    return c;
+}
+
+export function slimEdits(blocks: Block[]): Block[] {
+    for (const b of blocks) {
+        if (b.t !== "tool" || !b.diff || !b.input || cardOf(b) !== "edit") continue;
+        if (!EDIT_CONTENT.some((k) => k in b.input!)) continue;
+        const input = { ...b.input };
+        for (const k of EDIT_CONTENT) delete input[k];
+        b.input = input;
+    }
+    return blocks;
+}
+
+/** A sub-agent as its row in the Agents list shows it, without its steps, instructions and report (AgentRun.partial). */
+export function listedAgent(a: AgentRun): AgentRun {
+    const { blocks: _b, prompt: _p, report: _r, ...listed } = a;
+    return { ...structuredClone(listed), blocks: [], partial: true as const };
+}
+
+/**
+ * `sliceMs`: how long putting turns in the store (storeOlderSoon) works before it lets the server get on with the rest.
+ * (Tests set it to 0: a turn at a time.)
+ */
+export const turnStoring = { sliceMs: 8 };
+/** And the rest a part of about this many messages at a time (buildHead). */
+const HEAD_PART = 500;
+
+/** Where each prompt of `messages` is (a user's message a turn starts at), before `end`. */
+function promptIndices(messages: readonly Message[], end = messages.length): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < end; i++) {
+        const m = messages[i]!;
+        if (m.role === "user" && (m.meta?.kind ?? "prompt") === "prompt") out.push(i);
+    }
+    return out;
+}
+
+/** Where the last `n` prompts start, when there are more than `n` (else undefined: it's built whole). */
+function lastPromptsFrom(messages: readonly Message[], n: number): number | undefined {
+    const at = promptIndices(messages);
+    return at.length > n ? at[at.length - n] : undefined;
+}
+
+/** The first turn's prompt among `messages` (replay starts one at each of these kinds), as firstPrompt gives it. */
+function firstPromptIn(messages: readonly Message[]): string | undefined {
+    for (const m of messages) {
+        if (m.role !== "user") continue;
+        const kind = m.meta?.kind ?? "prompt";
+        if (kind === "prompt" || kind === "command" || kind === "wake") return reviewGist(promptText(m));
+    }
+    return undefined;
+}
+
+/** How many prompts come before `end`. */
+function promptsBefore(messages: readonly Message[], end: number): number {
+    return promptIndices(messages, end).length;
+}
+
+/** `tailFirst`: a compacted session opened the first time has its last segment's turns built first (tests turn it off). */
+export const turnBuilding: { tailFirst: boolean; tailPrompts: number; held?: Promise<unknown> } = {
+    tailFirst: true,
+    /** A one-segment session built from its logs, with more prompts than this: those last ones' turns built first (tailAt). */
+    tailPrompts: 100,
+    /** Tests: the earlier turns (buildHead, buildEarlier) aren't begun until this settles. */
+    held: undefined,
+};
+/**
+ * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
+ * (a slice at a time, 2.4 s for that session on an M5) when Find is used after. (Tests set it low.)
+ */
+export const findKeeping = { ms: 2 * 60_000 };
+
+/**
+ * A long session keeps its latest this many turns built (beyond them, each only as its head: turn-store.ts): the one
+ * under way and those a change most likely reaches. Any other is read from the store when it's sent.
+ */
+const KEEP_BUILT = 20;
+/** And this many more changed since (a late tool result, a sub-agent finishing in an earlier turn). */
+const EXTRA_BUILT = 50;
+/**
+ * `turns`: a session opened from its store reads this many of its last turns' heads (TurnStore.read), what a window
+ * opens with at most (gui/src/state/app.ts OPEN_TURNS); the rest as they're asked for (readStored). (Tests set it low.)
+ */
+export const storedFirst = { turns: 100 };
+/** What of the first prompt the index keeps: titles take 120 characters of it, and every open reads it. */
+const FIRST_KEPT = 4000;
+
+/**
+ * How much of what was last sent each session keeps for a window whose connection dropped (Runtime.resume), about: past
+ * this, a snapshot is as small (a window opens with 64 KB of turns: gui/src/state/app.ts OPEN_BYTES).
+ */
+const RESUME_BYTES = 64 * 1024;
+/** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
+const RESET_TURNS = 100;
+/** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
 const FLUSH_MS = 24;
+
 /** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
 const HIDDEN_FLUSH_MS = 500;
+
+/**
+ * How soon an op must be out: text can wait a little (more where no window shows it), anything else hardly, and what
+ * the person waits for (a question for them, a turn starting or ending, one stopped by Esc) not at all, going with what
+ * else the same task sends.
+ */
+export function opDelay(o: SessionOp, shown: () => boolean): number {
+    if ((o.op === "state" && ("interactions" in o.patch || "status" in o.patch)) || (o.op === "turn.patch" && "status" in o.patch) || o.op === "turn") return 0;
+    if (o.op === "append" || o.op === "agent.append") return shown() ? FLUSH_MS : HIDDEN_FLUSH_MS;
+    return FLUSH_MS;
+}
 /** A tool call still under way is written to the UI log this often at most (its end at once): ops come every flush. */
 const LIVE_STEP_MS = 2000;
 
@@ -303,10 +519,15 @@ export class Runtime {
 
     private view: SessionView;
     private batch = 0;
+    /** This runtime's own, so a window's numbers (batch) are known to be its: a session read in again starts over. */
+    readonly epoch = crypto.randomUUID().slice(0, 8);
+    /** The latest batches sent, up to RESUME_BYTES of them (about), for a window that missed them (resume). */
+    private sentLately: { seq: number; ops: SessionOp[]; bytes: number }[] = [];
+    private sentLatelyBytes = 0;
     private outbox: SessionOp[] = [];
     private flushTimer?: ReturnType<typeof setTimeout>;
-    /** The timer's one that can wait (HIDDEN_FLUSH_MS). */
-    private flushWaits = false;
+    /** When the waiting ops go out (performance.now()): the soonest any of them needs to. */
+    private flushDue = 0;
     private abort?: AbortController;
     private queued: Queued[] = [];
     private queueSeq = 0;
@@ -346,6 +567,44 @@ export class Runtime {
     /** Plan requests answered by taking the plan to another session. */
     private handoffs = new Set<string>();
     private ui: UiLog;
+    /** A long session's turn store (turn-store.ts): its turns beyond the latest, kept there and not here. */
+    private store?: TurnStore;
+    /** Where each turn is in the store, as last put there. */
+    private storedAt = new WeakMap<Turn, { at: number; len: number }>();
+    /** Turns built that aren't among the latest (asked for since: a page, a change), oldest first. */
+    private built = new Set<Turn>();
+    /** Turns changed since they were last put in the store. */
+    private changed = new WeakSet<Turn>();
+    /**
+     * Turns before this one (beyond the latest) have been let go of or are in `built`: trimBuilt looks only from here
+     * on, at those that left the latest since.
+     */
+    private trimmedTo = 0;
+    /** storeOlderSoon is putting the turns in the store (the latest call's, by number): meanwhile trimBuilt leaves them to it. */
+    private storing = false;
+    private storingRun = 0;
+    /** The same for sub-agents: where each is whole in the store, those kept here as their head, those changed since. */
+    private agentAt = new WeakMap<AgentRun, { at: number; len: number }>();
+    private agentHeads = new WeakSet<AgentRun>();
+    private agentChanged = new WeakSet<AgentRun>();
+    /** A first open's turns before its latest segment's, while they're built (buildEarlier), and how many there are at least. */
+    private earlierBuilt?: Promise<void>;
+    private earlierAtLeast = 0;
+    /**
+     * Opened from its store: its turns before those here, and their sub-agents, not read from it yet (readStored), and
+     * how many of those sub-agents failed (a window counts the ones it isn't sent: agentsMore).
+     */
+    private unread?: { turns: number; agents: number; failed: number };
+    /** Meanwhile, the first prompt (firstPrompt), as the store has it, and each sub-agent's place among those of the store. */
+    private storedFirst?: string;
+    private agentPlace = new WeakMap<AgentRun, number>();
+    /** Find calls so far (find): an earlier one still working stops. */
+    private finding = 0;
+    /** What Find searches in each turn, worked out (find.ts), while it's being used: let go of findKeeping.ms after. */
+    private findCache: FindCache = new WeakMap();
+    private findForget?: ReturnType<typeof setTimeout>;
+    /** Notices shown and not kept (notice()): building the turns again leaves them out, and so does the store. */
+    private liveOnly = new Set<string>();
     /** Compactions so far: the transcript segment new prompts belong to. */
     private segment = 0;
     private ids = 0;
@@ -442,7 +701,20 @@ export class Runtime {
             if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
             else session.setFastMode(Boolean(ws.settings.fastMode));
         }
-        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
+        // A long session opened before, with its logs as they were left: its turns are in its store, and its GUI log
+        // is read for what the session needs while it runs, not for every step it logged.
+        const store = opts.resumed ? TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]) : undefined;
+        let stored = store?.read(Math.max(storedFirst.turns, KEEP_BUILT));
+        // Built from its logs, one segment long (a Claude Code session never compacts here) and long: its last prompts'
+        // turns first, from the end of its GUI log (UiLog.readTail), and the rest after (buildHead). Read whole, that log
+        // held a 100,000-item session's first open 0.8 s (171 MB).
+        let tailAt = opts.resumed && !stored && turnBuilding.tailFirst && session.segments === 1 ? lastPromptsFrom(session.messages, turnBuilding.tailPrompts) : undefined;
+        this.ui = new UiLog(session.path, session.meta.id, opts.resumed && !stored && tailAt === undefined, Boolean(stored));
+        if (stored) this.ui.restore(stored.ui);
+        else if (tailAt !== undefined && !this.ui.readTail(`0:${tailAt}`)) {
+            this.ui.readAll();
+            tailAt = undefined;
+        }
         // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
         const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
         this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
@@ -491,14 +763,84 @@ export class Runtime {
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
-        if (opts.resumed) resetToolState(this.toolState, session.messages);
+        if (opts.resumed) {
+            const digest = session.historyDigest;
+            if (digest) resetToolStateTo(this.toolState, digestToolState(digest));
+            else resetToolState(this.toolState, session.messages);
+        }
 
-        const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
-        this.segment = segments.length - 1;
+        // Its turns from its store: only how many segments there are (their messages aren't read: Session.read).
+        let segments = !opts.resumed ? [{ messages: [] }] : stored ? undefined : readSegments(session.path, session);
+        this.segment = segments ? segments.length - 1 : session.segments - 1;
         // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
-        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
-        const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
-        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+        // Its turns are built again then (the store has it running).
+        const started = this.ui.lastStarted ? this.ui.turns.get(this.ui.lastStarted) : undefined;
+        // Its messages only where a turn of this segment started and never ended (cutOffPrompt), and none was prompted
+        // after it (a digest's tail starts at its last prompt): otherwise there's nothing to look at, and they're not read.
+        const open = started && started.seg === this.segment && started.end === undefined && started.status === undefined;
+        const digest = session.historyDigest;
+        const since = opts.resumed && open && !(digest && started.index < digest.from) ? session.messagesFrom(started.index) : undefined;
+        if (since && cutOffPrompt(this.ui, this.segment, since.messages, session.notices, since.at) !== undefined) {
+            session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
+            if (stored) store!.close();
+            stored = undefined;
+            this.ui.full();
+        }
+        // Its latest turns from the store, built: what a window is sent, and what the session goes on from. One that
+        // can't be read (cut short, damaged: TurnStore.get) is let go of, and the session built from its logs instead.
+        let latest: Turn[] | undefined;
+        if (stored) {
+            try {
+                latest = stored.heads.slice(-KEEP_BUILT).map(({ at, len }) => store!.get<Turn>(at, len));
+            } catch {
+                store!.close();
+                stored = undefined;
+                this.ui.full();
+            }
+        }
+        if (stored) {
+            this.store = store;
+            this.ids = Math.max(this.ids, stored.ids);
+            const turns = stored.heads.map((x) => this.storedTurn(x));
+            const agents = stored.agents.map((x) => this.storedAgent(x));
+            this.view = { state: this.initialState(), turns, agents };
+            // Its earlier turns are read from the store as they're asked for (readStored).
+            if (stored.earlier) {
+                this.unread = stored.earlier;
+                this.storedFirst = stored.first;
+            }
+            // The latest, built: what a window is sent, and what the session goes on from. (Sub-agents, when they change.)
+            turns.slice(-KEEP_BUILT).forEach((t, i) => Object.assign(t, latest![i]));
+            // The rest are heads already.
+            this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
+        } else {
+            const segs = opts.resumed ? (segments ?? readSegments(session.path)) : [];
+            // Compacted (and no compaction kept a prompt across: each segment's turns are its own): its last segment's
+            // turns built now, sent first, and the earlier ones after, a segment at a time (buildEarlier). Built all at
+            // once, a 100,000-item session's first open parsed and built every message before it answered (566 ms).
+            const tailFirst = turnBuilding.tailFirst && segs.length > 1 && !segs.some((x) => x.kept) && !session.lastCompactKept;
+            const turns = !opts.resumed ? [] : tailAt !== undefined
+                ? replay({ segments: segs, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), range: { start: tailAt } })
+                : tailFirst
+                ? replay({ segments: [segs[segs.length - 1]!], current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: segs.length - 1, marked: true } })
+                : replay({ segments: segs, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
+            this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+            if (opts.resumed && tailAt !== undefined) {
+                // At least a turn for each prompt before these.
+                this.earlierAtLeast = promptsBefore(session.messages, tailAt);
+                // Named after its first prompt meanwhile, not the first of these.
+                this.storedFirst = firstPromptIn(session.messages);
+                this.earlierBuilt = this.buildHead(segs, tailAt);
+            } else if (tailFirst) {
+                // At least each later segment's compaction (a turn of its own) comes before these.
+                this.earlierAtLeast = segs.length - 1;
+                this.storedFirst = segs.slice(0, -1).map((x) => firstPromptIn(x.messages)).find((x) => x !== undefined);
+                this.earlierBuilt = this.buildEarlier(segs);
+            }
+            // After the window is sent them, a slice at a time: put in the store before, they held its first open back
+            // (220 ms of a 30,000-item session's).
+            else if (opts.resumed && turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(session.path, session.meta.id, [session.path, uiLogFile(session.path, session.meta.id)]));
+        }
         // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
         // held for an account, until one is picked: #410).
         if (opts.resumed) {
@@ -580,12 +922,352 @@ export class Runtime {
 
     /** The first prompt, for sessions without a title. */
     firstPrompt(): string | undefined {
+        // Its first turns not read from its store (yet, or ever: its index couldn't be read): the store says.
+        if (this.storedFirst !== undefined) return this.storedFirst;
         const text = this.view.turns.find((t) => t.prompt)?.prompt?.text;
         return text === undefined ? undefined : reviewGist(text);
     }
 
     private newId(): string {
         return `b${(++this.ids).toString(36)}`;
+    }
+
+    // -----------------------------------------------------------------------
+    // The turn store (turn-store.ts): a long session's turns beyond its latest are there, each kept here as its head
+    // (blocks: none), and built again when asked for.
+
+    /**
+     * Its turns beyond the latest (as they were just built: all of them) put in `store` and let go of here, a slice of
+     * turnStoring.sliceMs at a time from the next task on, so what's built now is sent first and nothing else waits for it. Until
+     * each is, it's here built, as it was. (Meanwhile trimBuilt left them be: it let go of them all at once as a new
+     * turn came, the model's notice as a Claude Code session of 100,000 items opened, and held the server 1.1 s.)
+     */
+    /** A turn of its store couldn't be read (TurnStore.get): it's built from its logs next time it's opened. */
+    get storeDamaged(): boolean {
+        return Boolean(this.store?.damaged);
+    }
+
+    /** A turn as its store's index has it: its head, its blocks in the store. */
+    private storedTurn({ head, at, len }: StoredTurn): Turn {
+        const t = { ...head, blocks: [] } as Turn;
+        this.storedAt.set(t, { at, len });
+        return t;
+    }
+
+    private storedAgent({ head, at, len, i }: StoredAgent): AgentRun {
+        const a = { ...head, blocks: [] } as AgentRun;
+        if (at !== undefined && len !== undefined) {
+            this.agentAt.set(a, { at, len });
+            this.agentHeads.add(a);
+        }
+        if (i !== undefined) this.agentPlace.set(a, i);
+        return a;
+    }
+
+    /**
+     * Up to `count` more of the turns before those here that an open from the store didn't read (unread), put before
+     * them, and their sub-agents among the others in the order the store has them. Thrown when the store's index
+     * can't be read: those turns aren't here then (the session is built from its logs next time it's opened).
+     */
+    private readStored(count = Infinity) {
+        const unread = this.unread;
+        if (!unread || count <= 0) return;
+        let got: ReturnType<TurnStore["readEarlier"]>;
+        try {
+            got = this.store!.readEarlier(count);
+        } catch {
+            this.unread = undefined;
+            throw new RpcError("Couldn't load earlier turns.", "damaged");
+        }
+        const turns = got.heads.map((x) => this.storedTurn(x));
+        this.view.turns.splice(0, 0, ...turns);
+        // What trimBuilt has looked at is as many places on.
+        this.trimmedTo += turns.length;
+        const earlier = got.agents.map((x) => this.storedAgent(x));
+        if (earlier.length) {
+            // Merged by their places in the store; those since (none) after them all.
+            const merged: AgentRun[] = [];
+            let j = 0;
+            for (const a of this.view.agents) {
+                const place = this.agentPlace.get(a);
+                while (j < earlier.length && (place === undefined || this.agentPlace.get(earlier[j]!)! < place)) merged.push(earlier[j++]!);
+                merged.push(a);
+            }
+            while (j < earlier.length) merged.push(earlier[j++]!);
+            this.view.agents.splice(0, this.view.agents.length, ...merged);
+        }
+        unread.turns -= turns.length;
+        unread.agents -= earlier.length;
+        unread.failed -= earlier.filter((a) => a.status === "failed").length;
+        if (!this.store!.partial) {
+            this.unread = undefined;
+            this.storedFirst = undefined;
+            this.agentPlace = new WeakMap();
+        }
+        // Fewer were here than the latest (turns gone since it opened): those among them now are built.
+        this.buildLatest();
+    }
+
+    private storeOlderSoon(store: TurnStore) {
+        // Another one before it (a rewind's turns put in afresh): its file let go of.
+        if (this.store && this.store !== store) this.store.close();
+        this.store = store;
+        this.storing = true;
+        const run = ++this.storingRun;
+        store.clear();
+        this.storedAt = new WeakMap();
+        this.agentAt = new WeakMap();
+        this.agentHeads = new WeakSet();
+        this.built.clear();
+        this.trimmedTo = 0;
+        setTimeout(async () => {
+            let since = performance.now();
+            // Let go of meanwhile (closed), or put in a store again (a rewind): it's done, or for whoever did that.
+            const gone = () => this.closed || this.store !== store || this.storingRun !== run;
+            const pause = async () => {
+                if (performance.now() - since <= turnStoring.sliceMs) return;
+                await nextSlice();
+                since = performance.now();
+            };
+            let turns = this.view.turns;
+            for (let i = 0; ; i++) {
+                if (gone()) return;
+                const all = this.view.turns;
+                // Other turns (a rewind's): from the first again (those let go of already are passed over).
+                if (all !== turns) {
+                    turns = all;
+                    i = 0;
+                }
+                if (i >= all.length - KEEP_BUILT) {
+                    this.trimmedTo = Math.max(0, i);
+                    break;
+                }
+                const t = all[i]!;
+                if (!this.built.has(t) && !(!t.blocks.length && this.storedAt.has(t))) this.letGo(t);
+                await pause();
+            }
+            // The sub-agents of all but the latest turns, as trimBuilt lets go of them.
+            for (let i = 0; i < this.view.agents.length; i++) {
+                if (gone()) return;
+                const a = this.view.agents[i]!;
+                if (!this.agentKept(a)) this.letGoAgent(a);
+                await pause();
+            }
+            this.storing = false;
+            this.trimBuilt();
+            // Its steps were to build them: they're built (and stored) now.
+            this.ui.lighten();
+            // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
+            // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
+            if (!this.abort) this.session.letGoOfMessages();
+        }, 0);
+    }
+
+    /** Kept here as its head only: its blocks are in the store. */
+    private headOnly(t: Turn): boolean {
+        return this.storedAt.has(t) && !t.blocks.length && !this.built.has(t) && !this.latest(t);
+    }
+
+    /** The latest turns built: one that was kept as its head comes among them when turns after it go. */
+    private buildLatest() {
+        const all = this.view.turns;
+        for (let i = Math.max(0, all.length - KEEP_BUILT); i < all.length; i++) {
+            const t = all[i]!;
+            const where = this.storedAt.get(t);
+            if (where && !t.blocks.length && !this.built.has(t)) Object.assign(t, this.store!.get(where.at, where.len));
+        }
+    }
+
+    /** Among the latest turns, which are always built. */
+    private latest(t: Turn): boolean {
+        const all = this.view.turns;
+        for (let i = all.length - 1; i >= Math.max(0, all.length - KEEP_BUILT); i--) if (all[i] === t) return true;
+        return false;
+    }
+
+    /** The turn whole: as it's here, or (kept as its head) as the store has it, without keeping it built. */
+    private whole(t: Turn): Turn {
+        if (!this.store || !this.headOnly(t)) return t;
+        const where = this.storedAt.get(t)!;
+        return this.store.get(where.at, where.len);
+    }
+
+    /** A sub-agent whole: as it's here, or (kept as its head) as the store has it. */
+    private agentFull(a: AgentRun): AgentRun {
+        if (!this.store || !this.agentHeads.has(a)) return a;
+        const where = this.agentAt.get(a)!;
+        return this.store.get<AgentRun>(where.at, where.len);
+    }
+
+    /** Built here again, to be changed. */
+    private buildAgent(a: AgentRun) {
+        if (!this.store || !this.agentHeads.has(a)) return;
+        const where = this.agentAt.get(a)!;
+        Object.assign(a, this.store.get<AgentRun>(where.at, where.len));
+        this.agentHeads.delete(a);
+    }
+
+    /** Put in the store (when changed) and kept here as its head. */
+    private letGoAgent(a: AgentRun) {
+        if (this.agentHeads.has(a)) return;
+        this.putAgent(a);
+        a.blocks = [];
+        delete a.prompt;
+        delete a.report;
+        this.agentHeads.add(a);
+    }
+
+    private putAgent(a: AgentRun) {
+        if (this.agentHeads.has(a) || (this.agentAt.has(a) && !this.agentChanged.has(a))) return;
+        this.agentAt.set(a, this.store!.put(this.kept(a)));
+        this.agentChanged.delete(a);
+    }
+
+    /** A copy of the turn whole, to send. */
+    /** `fold`: a finished turn with its work folded (foldWork), for a window that folds it. */
+    private sent(t: Turn, fold = false): Turn {
+        const w = this.whole(t);
+        const c = w === t ? structuredClone(t) : w;
+        slimEdits(c.blocks);
+        if (c.status !== "running") {
+            omitThinking(c.blocks);
+            if (fold && foldWork(c.blocks)) c.folded = true;
+        }
+        return c;
+    }
+
+    /** A turn whole, and its sub-agents (session.turn: one sent folded). */
+    turnWhole(turnId: string): { turn: Turn; agents: AgentRun[] } | null {
+        this.flush();
+        const t = findTurn(this.view, turnId);
+        if (!t) return null;
+        return { turn: this.sent(t), agents: this.view.agents.filter((a) => a.turnId === turnId).map((a) => sentAgent(this.agentFull(a))) };
+    }
+
+    /** A block of a turn whole (session.block: one sent without its thinking's text). */
+    blockWhole(turnId: string, blockId: string): Block | null {
+        this.flush();
+        const t = findTurn(this.view, turnId);
+        const b = t ? findBlock(this.whole(t), blockId) : undefined;
+        return b ? structuredClone(b) : null;
+    }
+
+    /** Built here again, to be changed (its blocks from the store); kept built a while (the most recent EXTRA_BUILT). */
+    private build(t: Turn) {
+        if (!this.store) return;
+        if (this.headOnly(t)) {
+            const where = this.storedAt.get(t)!;
+            Object.assign(t, this.store.get(where.at, where.len));
+        }
+        if (this.latest(t)) return;
+        this.built.delete(t);
+        this.built.add(t);
+        this.trimBuilt();
+    }
+
+    /** No more built than the latest KEEP_BUILT and the most recent EXTRA_BUILT asked for: the rest put in the store (when changed) and let go of. */
+    private trimBuilt() {
+        // Being put there a slice at a time (storeOlderSoon): left to it.
+        if (!this.store || this.storing) return;
+        const all = this.view.turns;
+        // Only those that left the latest since the last time: the rest were looked at then (every turn of a long
+        // session looked at again for each new one).
+        for (let i = Math.min(this.trimmedTo, Math.max(0, all.length - KEEP_BUILT)); i < all.length - KEEP_BUILT; i++) {
+            const t = all[i]!;
+            if (this.built.has(t) || (!t.blocks.length && this.storedAt.has(t))) continue;
+            this.letGo(t);
+        }
+        this.trimmedTo = Math.max(0, all.length - KEEP_BUILT);
+        for (const t of this.built) {
+            if (this.built.size <= EXTRA_BUILT) break;
+            if (this.latest(t)) this.built.delete(t);
+            else this.letGo(t);
+        }
+        // Sub-agents: those of the latest turns, and any still working, kept whole.
+        const recent = new Set<string>();
+        for (let i = Math.max(0, all.length - KEEP_BUILT); i < all.length; i++) recent.add(all[i]!.id);
+        for (const a of this.view.agents) if (!recent.has(a.turnId) && a.status !== "running" && a.status !== "waiting") this.letGoAgent(a);
+    }
+
+    /** Kept whole by trimBuilt: of one of the latest turns, or still working. */
+    private agentKept(a: AgentRun): boolean {
+        if (a.status === "running" || a.status === "waiting") return true;
+        const all = this.view.turns;
+        for (let i = all.length - 1; i >= Math.max(0, all.length - KEEP_BUILT); i--) if (all[i]!.id === a.turnId) return true;
+        return false;
+    }
+
+    /** As it's kept: without what was only shown (liveOnly), as it would be built again. */
+    private kept<T extends Turn | AgentRun>(x: T): T {
+        return this.liveOnly.size && x.blocks.some((b) => this.liveOnly.has(b.id)) ? { ...x, blocks: x.blocks.filter((b) => !this.liveOnly.has(b.id)) } : x;
+    }
+
+    /** Turns let go of with nothing kept of them (only what was shown: a notice as the session opened). */
+    private shownOnly = new WeakSet<Turn>();
+
+    private letGo(t: Turn) {
+        if (this.changed.has(t) || !this.storedAt.has(t)) {
+            const kept = this.kept(t);
+            // Only what was shown, not kept (a notice as the session opened): not in its index either (saveTurns).
+            if (!kept.blocks.length && !t.prompt && !t.archived && !t.imported) this.shownOnly.add(t);
+            else this.shownOnly.delete(t);
+            this.storedAt.set(t, this.store!.put(kept));
+            this.changed.delete(t);
+        }
+        t.blocks = [];
+        this.built.delete(t);
+    }
+
+    /** What's changed put in the store, and its index written with the logs as they are now: as the session is let go of. */
+    private async saveTurns(logs?: ReturnType<TurnStore["stamps"]>) {
+        // Not all of them here yet (buildEarlier): none stored, and it's built from its logs next time.
+        if (this.earlierBuilt) return;
+        if (!this.store) {
+            if (this.view.turns.length <= KEEP_BUILT) return;
+            this.store = TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]);
+            this.store.clear();
+        }
+        try {
+            const collect = () => {
+                const heads: StoredTurn[] = [];
+                for (const t of this.view.turns) {
+                    // Let go of holding only what was shown: left out, as it is while it's built (below).
+                    if (this.headOnly(t) && this.shownOnly.has(t)) continue;
+                    if (!this.headOnly(t)) {
+                        const kept = this.kept(t);
+                        // A turn that held only what was shown (a notice as the session opened): not built again either.
+                        if (!kept.blocks.length && !t.prompt && !t.archived && !t.imported) continue;
+                        if (this.changed.has(t) || !this.storedAt.has(t)) {
+                            this.storedAt.set(t, this.store!.put(kept));
+                            this.changed.delete(t);
+                        }
+                    }
+                    heads.push({ head: headOf(t), ...this.storedAt.get(t)! });
+                }
+                const agents = this.view.agents.map((a) => {
+                    this.putAgent(a);
+                    return { head: agentHeadOf(a), ...this.agentAt.get(a)! };
+                });
+                return { heads, agents };
+            };
+            let { heads, agents } = collect();
+            // Its earlier turns not read from the store (an open reads its last): with nothing changed, its index says
+            // it all already; else they're read, to be written with the rest.
+            if (this.unread) {
+                if (this.store.unchanged(heads.length + this.unread.turns, agents.length + this.unread.agents, this.ids, logs)) return;
+                this.readStored();
+                ({ heads, agents } = collect());
+            }
+            // Mostly versions since replaced: without them.
+            const moved = await this.store.compact([...heads, ...agents]);
+            if (moved) for (const x of [...heads, ...agents]) x.at = moved.get(x.at)!;
+            await this.store.writeIndex(heads, agents, this.ids, this.ui.lightState(), logs, this.firstPrompt()?.slice(0, FIRST_KEPT));
+        } catch {
+            // Not kept: it's built from the logs next time, as before there was a store.
+            this.store.forget();
+        } finally {
+            this.store.close();
+        }
     }
 
     settings(): Settings {
@@ -599,7 +1281,7 @@ export class Runtime {
 
     /** The model has heard from this session: a switch now is news to it. Before, it's where the session starts. */
     private get conversationStarted(): boolean {
-        return this.session.messages.length > 0 || Boolean(this.agent?.busy) || (this.agent?.delegatedTasks ?? []).some((t) => t.status === "running");
+        return this.session.messageCount > 0 || Boolean(this.agent?.busy) || (this.agent?.delegatedTasks ?? []).some((t) => t.status === "running");
     }
 
     private initialState(): SessionState {
@@ -728,7 +1410,7 @@ export class Runtime {
     resumeAfterLimit() {
         const n = this.session.notices.findLast((x) => x.level === "error" && x.limit);
         const l = n?.limit;
-        if (!n || !l || this.session.messages.slice(n.index).some((m) => m.role === "user")) throw new RpcError("No turn is waiting on a usage limit", "invalid");
+        if (!n || !l || this.session.messagesSince(n.index).some((m) => m.role === "user")) throw new RpcError("No turn is waiting on a usage limit", "invalid");
         if (this.model?.provider !== l.provider || this.session.accountId(l.provider) !== l.accountId) throw new RpcError("The session is on another account or model now", "invalid");
         if (l.resetsAt === undefined) throw new RpcError("When the limit resets isn't known: send a message once it has", "invalid");
         const why = this.schedules.resumeAfter(l.resetsAt);
@@ -758,14 +1440,14 @@ export class Runtime {
     /** How full the context was when the session was left, if nothing has happened to it since (in a terminal, say). */
     private lastContext(): number {
         const s = this.ui.state;
-        return s.contextTokens !== undefined && s.messages === this.session.messages.length ? s.contextTokens : 0;
+        return s.contextTokens !== undefined && s.messages === this.session.messageCount ? s.contextTokens : 0;
     }
 
     /** The log's note of the mode, effort and context, for opening the session again. Not before the session is on disk: a new one may never be. */
     private recordState(opts: { force?: boolean } = {}) {
         if (!opts.force && !existsSync(this.session.path)) return;
         const s = this.ui.state;
-        const state = { mode: this.mode, effort: this.effort, contextTokens: this.view.state.contextTokens, messages: this.session.messages.length };
+        const state = { mode: this.mode, effort: this.effort, contextTokens: this.view.state.contextTokens, messages: this.session.messageCount };
         if (s.mode === state.mode && s.effort === state.effort && s.contextTokens === state.contextTokens && s.messages === state.messages) return;
         this.ui.write({ t: "state", ...state });
     }
@@ -779,7 +1461,7 @@ export class Runtime {
     /** Which prompt the running turn's record is of, once it's in the history: one sent at its place later isn't taken for it. */
     private notePrompt() {
         const t = this.uiTurn;
-        const m = t && !t.prompt ? this.session.messages[t.index] : undefined;
+        const m = t && !t.prompt ? this.session.messageAt(t.index) : undefined;
         if (!t || m?.role !== "user") return;
         t.prompt = promptKey(m);
         this.ui.write({ t: "turn", ...t });
@@ -840,7 +1522,7 @@ export class Runtime {
         // Where its prompt went, a wake's too (it has no index: it isn't one to rewind to).
         const index = turn.pos?.index;
         // Its prompt, unless the history was compacted since (it's out of reach of rewind then).
-        const prompt = seg === this.segment && index !== undefined ? this.session.messages[index] : undefined;
+        const prompt = seg === this.segment && index !== undefined ? this.session.messageAt(index) : undefined;
         if (seg === undefined || index === undefined || prompt?.role !== "user" || !isPrompt(prompt)) return undefined;
         const at = { seg, index, prompt: promptKey(prompt) };
         this.stepsAt.set(turnId, at);
@@ -864,7 +1546,8 @@ export class Runtime {
         let logged = this.stepsLogged.get(turnId);
         if (!logged) this.stepsLogged.set(turnId, (logged = new Map()));
         for (const id of [...ids]) {
-            const i = turn.blocks.findIndex((b) => b.id === id);
+            // From the end: what changed is nearly always the newest, and a long turn has thousands of steps.
+            const i = turn.blocks.findLastIndex((b) => b.id === id);
             const b = turn.blocks[i];
             if (b && !all && (b.id === this.openText || b.id === this.openThinking || (b.t === "tool" && b.status === "streaming"))) continue;
             // Under way: each flush's progress would be serialized again (and compared); once logged, again only a while
@@ -973,23 +1656,275 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Sending ops
 
-    /** `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest). */
-    snapshot(last?: number): SessionSnapshot {
+    /**
+     * `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest);
+     * `budget`: and only as many as fit that many bytes, one at least.
+     */
+    /**
+     * What a window that had this session open up to `seq` (from this runtime: `epoch`) missed since, if it's all still
+     * here: the ops after it, and where they come to. Undefined when it isn't (too much, a session read in again):
+     * it's sent a snapshot then.
+     */
+    resume(epoch: string, seq: number): SessionResumed | undefined {
         this.flush();
-        const all = this.view.turns;
-        const from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
-        return { state: structuredClone(this.view.state), turns: structuredClone(from ? all.slice(from) : all), agents: structuredClone(this.view.agents), seq: this.batch, ...(from ? { earlier: from } : {}) };
+        if (epoch !== this.epoch || !Number.isInteger(seq) || seq < 0 || seq > this.batch) return undefined;
+        if (seq === this.batch) return { resumed: true, seq, ops: [] };
+        const at = this.sentLately.findIndex((b) => b.seq === seq + 1);
+        if (at < 0) return undefined;
+        return { resumed: true, seq: this.batch, ops: this.sentLately.slice(at).flatMap((b) => b.ops) };
+    }
+
+    snapshot(last?: number, budget?: number, fold = false, upTo?: number): SessionSnapshot {
+        this.flush();
+        // Those up to a turn (forkPreview), or all.
+        const all = upTo === undefined ? this.view.turns : this.view.turns.slice(0, upTo + 1);
+        let from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
+        // No more than fit the budget, back from the latest (what's measured is what's sent: no more than that), one at least.
+        const sent: Turn[] = [];
+        let size = 0;
+        for (let i = all.length - 1; i >= from; i--) {
+            const t = this.sent(all[i]!, fold);
+            sent.push(t);
+            if (budget === undefined || i === from) continue;
+            size += JSON.stringify(t).length;
+            if (size >= budget) {
+                from = i;
+                break;
+            }
+        }
+        sent.reverse();
+        const turns = from ? all.slice(from) : all;
+        const unread = this.unread;
+        // Up to a turn: only the sub-agents of those turns (a fork has none of the later ones').
+        const upToIds = upTo === undefined ? undefined : new Set(all.map((t) => t.id));
+        const ofThese = upToIds ? this.view.agents.filter((a) => upToIds.has(a.turnId)) : this.view.agents;
+        const { agents, more } = agentsFor(ofThese, turns, !from && !unread, (a) => this.agentFull(a), foldedIds(sent));
+        // Those before the latest segment's still being built: at least as many as there are (the window is told how many
+        // when it asks for them: session.turns). Those not read from the store yet, and their sub-agents (counted).
+        const earlier = from + (this.earlierAtLeast ?? 0) + (unread?.turns ?? 0);
+        const agentsMore = unread?.agents ? { count: (more?.count ?? 0) + unread.agents, failed: (more?.failed ?? 0) + unread.failed } : more;
+        return { state: structuredClone(this.view.state), turns: sent, agents, seq: this.batch, epoch: this.epoch, ...(earlier ? { earlier } : {}), ...(agentsMore ? { agentsMore } : {}) };
+    }
+
+    /**
+     * The turns of segments before the last, built after its own (the constructor: tailFirst), a segment a slice, and
+     * put before them; then its turns go in the store. Let go of if the session is closed, or its turns built anew (a
+     * rewind waits for these first: allTurns), meanwhile.
+     */
+    private async buildEarlier(segs: Segment[]) {
+        const last = segs.length - 1;
+        const earlier: Turn[] = [];
+        // Built anew meanwhile (other turns): these are no longer theirs.
+        const turns = this.view.turns;
+        try {
+            await turnBuilding.held;
+            for (let a = 0; a < last; a++) {
+                await nextSlice();
+                if (this.closed || this.view.turns !== turns) return;
+                // Segment `a`, and the next one's compaction, as building them all would (its own turn: archived when
+                // it's not the last segment's; that segment's other turns are built already).
+                const next = segs[a + 1]!;
+                const built = replay({ segments: [segs[a]!, { summary: next.summary, idle: next.idle, kept: next.kept, messages: [] }], current: [], currentNotices: [], ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: a, marked: a > 0 } });
+                const marker = built[built.length - 1];
+                if (marker && a + 1 < last && marker.pos?.seg === a + 1 && marker.pos.index === -1) marker.archived = true;
+                for (const t of built) earlier.push(t);
+            }
+            if (this.closed || this.view.turns !== turns) return;
+            turns.splice(0, 0, ...earlier);
+            const agents = agentsFromTurns(earlier, this.session.model, this.ui.agents);
+            const had = new Set(this.view.agents.map((a) => a.id));
+            this.view.agents.splice(0, 0, ...agents.filter((a) => !had.has(a.id)));
+            this.earlierAtLeast = 0;
+            if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        } finally {
+            this.earlierBuilt = undefined;
+            this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
+        }
+    }
+
+    /**
+     * A one-segment session's turns before its last prompts' (the constructor: tailAt), built after them: its GUI log
+     * read whole, a slice at a time (UiLog.readAllSoon), then its turns a part at a time (a prompt's turn starts each),
+     * put before the latest; then its turns go in the store. Let go of as buildEarlier's are.
+     */
+    private async buildHead(segs: Segment[], end: number) {
+        const turns = this.view.turns;
+        const messages = this.session.messages;
+        const notices = this.session.notices;
+        try {
+            await turnBuilding.held;
+            await this.ui.readAllSoon();
+            const head: Turn[] = [];
+            // Each part's sub-agents with it (a sub-agent's are of the same turn): all at once took 110-126 ms.
+            const agents: AgentRun[] = [];
+            const starts = promptIndices(messages, end);
+            for (let a = 0, k = 0; a < end; ) {
+                if (this.closed || this.view.turns !== turns) return;
+                // About PART_MESSAGES of them, to the next prompt (or the latest's first).
+                while (k < starts.length && starts[k]! <= a + HEAD_PART) k++;
+                const b = k < starts.length ? starts[k]! : end;
+                const built = replay({ segments: segs, current: messages, currentNotices: notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), range: { start: a, end: b } });
+                for (const t of built) head.push(t);
+                for (const x of agentsFromTurns(built, this.session.model, this.ui.agents)) agents.push(x);
+                a = b;
+                await nextSlice();
+            }
+            if (this.closed || this.view.turns !== turns) return;
+            turns.splice(0, 0, ...head);
+            const had = new Set(this.view.agents.map((a) => a.id));
+            this.view.agents.splice(0, 0, ...agents.filter((a) => !had.has(a.id)));
+            if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        } finally {
+            this.earlierBuilt = undefined;
+            this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
+        }
+    }
+
+    /**
+     * Every turn here (a first open builds its earlier ones after: buildEarlier; one from its store reads them as
+     * they're asked for: readStored): what's asked of turns before the latest waits for them.
+     */
+    async allTurns(): Promise<void> {
+        await this.earlierBuilt;
+        this.readStored();
+    }
+
+    /** Every turn built (buildEarlier): session.turns reads from the store only those it sends (turnsBefore). */
+    async turnsBuilt(): Promise<void> {
+        await this.earlierBuilt;
+    }
+
+    /**
+     * As snapshot, waiting for the turns before the latest segment's (buildEarlier) only if what's asked for reaches
+     * them: one asking for the last turns that fit 64 KB is answered at once.
+     */
+    async snapshotSoon(last?: number, budget?: number, fold = false): Promise<SessionSnapshot> {
+        // More asked for than an open from the store read: as many more read.
+        if (this.unread && (last === undefined || last > this.view.turns.length)) this.readStored(last === undefined ? Infinity : last - this.view.turns.length);
+        if (this.earlierBuilt) {
+            const snap = this.snapshot(last, budget, fold);
+            if ((snap.earlier ?? 0) > this.earlierAtLeast) return snap;
+            await this.allTurns();
+        }
+        return this.snapshot(last, budget, fold);
+    }
+
+    /**
+     * What a fork from the turn `turnId` shows while it's made (session.fork's `soon`): this view's turns up to it, as
+     * an open of the fork is sent them, and the state the fork starts with. Undefined when that turn isn't built here.
+     */
+    forkPreview(turnId: string, o: { id: string; title: string; named: string; createdAt: number }, last?: number, budget?: number, fold = false): SessionSnapshot | undefined {
+        const at = this.view.turns.findIndex((t) => t.id === turnId);
+        if (at < 0) return undefined;
+        const snap = this.snapshot(last, budget, fold, at);
+        const s = snap.state;
+        const { activity: _a, costUnknown: _c, queuedModes: _m, queuedWhy: _w, goal: _g, ...kept } = s;
+        // As a session starts (the constructor): what's its own (spend, work, queue, schedules) empty.
+        snap.state = {
+            ...kept,
+            id: o.id,
+            title: o.title,
+            createdAt: o.createdAt,
+            persisted: true,
+            status: "idle",
+            busy: false,
+            cost: 0,
+            costUnknown: false,
+            tokensIn: 0,
+            tokensOut: 0,
+            queued: [],
+            queueIds: [],
+            queuedAttached: [],
+            interactions: [],
+            shells: [],
+            watches: [],
+            backgroundTasks: [],
+            schedules: [],
+            forkOf: { id: s.id, title: o.named },
+        };
+        // Its own: nothing it's sent until it's made and opened (the window opens it then, session.open).
+        snap.seq = 0;
+        snap.epoch = undefined;
+        snap.making = true;
+        return snap;
+    }
+
+    /** Its folder's first snapshot taken ahead of the first prompt (Agent.warmSnapshots), once its agent is there. */
+    warmSnapshots() {
+        void this.ready.then(() => this.agent?.warmSnapshots(), () => undefined);
+    }
+
+    /** Find in the turns before `before` and in its `gap` (those the window hasn't been sent): src/server/find.ts. */
+    async find(query: string, before?: string, also?: readonly string[], gap?: { after: string; before: string }): Promise<SessionFindMatch[]> {
+        this.flush();
+        // The latest asked: one asked before it stops (the window counts only the latest).
+        const asked = ++this.finding;
+        const found = await findBefore(this.view.turns, query, {
+            before,
+            gap,
+            also: also?.length ? new Set(also) : undefined,
+            whole: (t) => this.whole(t),
+            stamped: (t) => (this.headOnly(t) ? `stored@${this.storedAt.get(t)!.at}` : undefined),
+            stale: () => asked !== this.finding || this.closed,
+            cache: this.findCache,
+        });
+        // Kept for the next query; let go of once Find hasn't been used for a while (a long session's text, all of it).
+        clearTimeout(this.findForget);
+        this.findForget = setTimeout(() => (this.findCache = new WeakMap()), findKeeping.ms);
+        this.findForget.unref?.();
+        return found ?? [];
+    }
+
+    /**
+     * Tests: what opening it set going is done (its earlier turns built, put in its store) and what Find kept is let
+     * go of now, not findKeeping.ms after: what it keeps from here is what it keeps while it's open.
+     */
+    async openDone(): Promise<void> {
+        await this.earlierBuilt;
+        while (this.storing && !this.closed) await nextSlice();
+        clearTimeout(this.findForget);
+        this.findCache = new WeakMap();
+    }
+
+    /** Every sub-agent as its row in the Agents list shows it (those a window wasn't sent: agentsFor). */
+    agentList(): AgentRun[] {
+        this.flush();
+        return this.view.agents.map(listedAgent);
+    }
+
+    /** A sub-agent whole (the window has only what its list shows of it: AgentRun.partial). */
+    agentWhole(agentId: string): AgentRun | null {
+        const a = this.view.agents.find((x) => x.id === agentId);
+        return a ? sentAgent(this.agentFull(a)) : null;
     }
 
     /**
      * Turns before `before` (session.turns), as they are now: what's been sent of them so far is in them (flushed first),
      * and what changes after goes as ops, in order after this. Undefined when the window's turns aren't this view's.
      */
-    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean }): SessionTurnsPage | undefined {
+    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean; fold?: boolean; upTo?: number; after?: string }): SessionTurnsPage | undefined {
         this.flush();
         const all = this.view.turns;
-        const at = all.findIndex((t) => t.id === before);
+        let at = all.findIndex((t) => t.id === before);
         if (at < 0) return undefined;
+        // Those not read from the store yet: as many as the page needs (back to a message or all of them: all; a gap's
+        // turns are after some that are here, so they are too).
+        if (this.unread && o.after === undefined) {
+            if (o.all || o.through) this.readStored();
+            else this.readStored(Math.max(1, Math.min(o.count ?? 40, 1000)) - at);
+            at = all.findIndex((t) => t.id === before);
+        }
+        // The turns of a gap the window has, after `after` (the last before it): the next `count` of them.
+        if (o.after !== undefined) {
+            const start = all.findIndex((t) => t.id === o.after) + 1;
+            if (start <= 0 || start > at) return undefined;
+            const end = Math.min(at, start + Math.max(1, Math.min(o.count ?? 40, 1000)));
+            return { ...this.page(all.slice(start, end), start, o.fold), skipped: at - end };
+        }
         let from = Math.max(0, at - Math.max(1, Math.min(o.count ?? 40, 1000)));
         if (o.all) from = 0;
         else if (o.through) {
@@ -1002,20 +1937,59 @@ export class Runtime {
             }
             if (holder >= 0) from = Math.min(from, holder);
         }
-        return { turns: structuredClone(all.slice(from, at)), earlier: from, seq: this.batch };
+        // Back to a turn far before those the window has: a page from it, not every turn down to them (a find at the
+        // start of a 100,000-item session sent 21.7 MB): the rest is a gap the window fills as it's read down to.
+        const end = o.upTo !== undefined && !o.all ? Math.min(at, from + Math.max(1, o.upTo)) : at;
+        return { ...this.page(all.slice(from, end), from, o.fold), ...(end < at ? { skipped: at - end } : {}) };
     }
 
-    private op(o: SessionOp) {
+    /** `turns` as they're sent, with their sub-agents: what's earlier counted (`earlier`). */
+    private page(turns: Turn[], earlier: number, fold?: boolean): SessionTurnsPage {
+        const ids = new Set(turns.map((t) => t.id));
+        const sent = turns.map((t) => this.sent(t, fold));
+        const folded = foldedIds(sent);
+        const agents = this.view.agents.filter((a) => ids.has(a.turnId)).map((a) => (folded?.has(a.turnId) ? listedAgent(a) : sentAgent(this.agentFull(a))));
+        return { turns: sent, earlier: earlier + (this.unread?.turns ?? 0), seq: this.batch, ...(agents.length ? { agents } : {}) };
+    }
+
+    /** `sent`: what the windows are sent of it, when it's not the same (a copy, not shared with the view). */
+    private op(o: SessionOp, sent?: SessionOp) {
+        // A change to a turn kept as its head (turn-store.ts) is made to it whole, and it's put in the store again.
+        const changes = "turnId" in o && this.store ? findTurn(this.view, o.turnId) : undefined;
+        if (changes) {
+            this.build(changes);
+            this.changed.add(changes);
+        }
+        // So is a change to a sub-agent's.
+        const agent = this.store && (o.op === "agent.patch" || o.op === "agent.block" || o.op === "agent.block.patch" || o.op === "agent.append") ? this.view.agents.findLast((a) => a.id === o.id) : undefined;
+        if (agent) {
+            this.buildAgent(agent);
+            this.agentChanged.add(agent);
+        }
         // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
         // only read (most ops while a reply streams), so it isn't copied.
-        applyOp(this.view, o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
+        applyOp(this.view, sent || o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
+        // One gone (the list is shorter): one that was kept as its head may be among the latest now.
+        if (o.op === "turn.remove" && this.store) {
+            this.buildLatest();
+            // The turns after it are a place earlier: the one that was where trimBuilt looks from may be before it now.
+            this.trimmedTo = Math.max(0, this.trimmedTo - 1);
+        }
+        // A turn gone by beyond the latest: let go of, once put in the store (started once a session has grown long).
+        // Not while the earlier turns are still being built (a first open's): that puts them all in the store once it's
+        // done. Started now as well, the build's would start it again from scratch, with these let go of already.
+        if (o.op === "turn" && !this.earlierBuilt) {
+            if (this.store) this.trimBuilt();
+            else if (this.view.turns.length > KEEP_BUILT + EXTRA_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        }
         this.noteStep(o);
-        this.outbox.push(o);
-        const waits = (o.op === "append" || o.op === "agent.append") && !this.engine.sessionShown(this.id);
-        if (this.flushTimer && (waits || !this.flushWaits)) return;
+        this.outbox.push(sent ?? o);
+        const delay = opDelay(o, () => this.engine.sessionShown(this.id));
+        const due = performance.now() + delay;
+        if (this.flushTimer && this.flushDue <= due) return;
         clearTimeout(this.flushTimer);
-        this.flushWaits = waits;
-        this.flushTimer = setTimeout(() => this.flush(), waits ? HIDDEN_FLUSH_MS : FLUSH_MS);
+        this.flushDue = due;
+        this.flushTimer = setTimeout(() => this.flush(), delay);
     }
 
     /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */
@@ -1069,10 +2043,16 @@ export class Runtime {
         // Into the log as it's shown (while it's being closed too, until the log is let go of).
         this.syncSteps();
         if (!this.outbox.length || this.closed) return;
-        const ops = coalesce(this.outbox);
+        const ops = coalesce(this.outbox).map(lastProgress);
         this.outbox = [];
         this.batch++;
         this.engine.sendOps(this.id, this.batch, ops);
+        // Kept a while for a window whose connection dropped (resume): text by its length, without writing it out.
+        let bytes = 0;
+        for (const o of ops) bytes += o.op === "append" || o.op === "agent.append" ? o.text.length + 80 : JSON.stringify(o).length;
+        this.sentLately.push({ seq: this.batch, ops, bytes });
+        this.sentLatelyBytes += bytes;
+        while (this.sentLatelyBytes > RESUME_BYTES && this.sentLately.length) this.sentLatelyBytes -= this.sentLately.shift()!.bytes;
     }
 
     private setStatus(status: SessionState["status"]) {
@@ -1150,7 +2130,7 @@ export class Runtime {
         this.servedModel = undefined;
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
-        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
         const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
         let line: TurnNotice | undefined;
@@ -1769,7 +2749,10 @@ export class Runtime {
     notice(text: string, level: "info" | "warn" | "error" = "info", data?: NoticeData) {
         const turn = this.currentTurn();
         this.closeOpen();
-        this.op({ op: "block", turnId: turn.id, block: liveNotice(this.newId(), level, text, data) });
+        const block = liveNotice(this.newId(), level, text, data);
+        // Shown, not kept (a backend's turn logs its steps, this among them): not in the turn store either.
+        if (!this.backendTurns.has(turn.id)) this.liveOnly.add(block.id);
+        this.op({ op: "block", turnId: turn.id, block });
     }
 
     /**
@@ -2169,6 +3152,12 @@ export class Runtime {
         const current = this.turnId;
         // Claude Code or Codex compacting its own context leaves this session's history as it is.
         if (!this.backendModel()) {
+            // Every turn's archived: those not read from the store yet too.
+            try {
+                this.readStored();
+            } catch {
+                // Not there to archive (the session is built from its logs next time).
+            }
             this.segment++;
             if (this.runStart !== undefined) this.runStart = 0;
             // The running turn's prompt went on after the summary (not a reminder the compaction kept): it's there now.
@@ -2334,10 +3323,14 @@ export class Runtime {
                 if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
-            case "notice":
+            case "notice": {
                 this.agentText.delete(id);
-                this.op({ op: "agent.block", id, block: liveNotice(this.newId(), e.level, e.message, e.data) });
+                const block = liveNotice(this.newId(), e.level, e.message, e.data);
+                const owner = this.view.agents.find((x) => x.id === id);
+                if (!owner || !this.backendTurns.has(owner.turnId)) this.liveOnly.add(block.id);
+                this.op({ op: "agent.block", id, block });
                 break;
+            }
             case "retry":
                 this.agentPatch(id, { activity: `Retrying: ${redact(e.reason)}` });
                 break;
@@ -2402,11 +3395,8 @@ export class Runtime {
     private turnSnapshotFloor?: number;
 
     private latestCheckpoint(): number | undefined {
-        for (let i = this.session.messages.length - 1; i >= 0; i--) {
-            const m = this.session.messages[i]!;
-            if (m.role === "user" && m.meta?.checkpoint !== undefined) return m.meta.checkpoint;
-        }
-        return undefined;
+        const digest = this.session.historyDigest;
+        return digest ? digest.latestCheckpoint : latestCheckpointOf(this.session.messages);
     }
 
     private snapshotId(): number | undefined {
@@ -2899,9 +3889,9 @@ export class Runtime {
         if (pending?.kind === "plan") return { id: pending.toolId ?? pending.id, text: pending.plan, at: Date.now(), interactionId: pending.id };
         const stored = this.session.plans.at(-1);
         if (stored) return stored;
-        const calls = this.session.messages.flatMap((m) => (m.role === "assistant" ? toolCallsOf(m) : [])).filter((c) => c.name === "ExitPlanMode" && typeof c.input?.plan === "string");
-        const last = calls.at(-1);
-        return last && { id: last.id, text: redact(String(last.input.plan)), at: 0 };
+        const digest = this.session.historyDigest;
+        const last = digest ? digest.plan : lastPlanCall(this.session.messages);
+        return last && { id: last.id, text: redact(last.text), at: 0 };
     }
 
     /**
@@ -3101,7 +4091,7 @@ export class Runtime {
      */
     private drainedTurn(text: string, attachments?: AttachedPart[], own = false): Turn {
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
-        const last = this.session.messages[this.session.messages.length - 1];
+        const last = this.session.lastMessage;
         const steering = !own && last?.role === "assistant" && toolCallsOf(last).length > 0;
         this.closeOpen();
         const prev = this.turnId;
@@ -3113,15 +4103,15 @@ export class Runtime {
             this.stepsLogged.delete(prev);
         }
         this.turnSnapshotFloor = this.latestCheckpoint();
-        const turn: Turn = { id: this.newId(), prompt: { text, ...attachedPrompt(attachments), ...(steering ? {} : { index: this.session.messages.length }), ...(own ? {} : { steered: true }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
+        const turn: Turn = { id: this.newId(), prompt: { text, ...attachedPrompt(attachments), ...(steering ? {} : { index: this.session.messageCount }), ...(own ? {} : { steered: true }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messageCount } };
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
         // After a finished answer they start a turn of their own: the one before can be forked now. (Claude
         // Code and Codex take them in the middle of theirs, before its answer is recorded: it's still running.)
-        if (!steering && last?.role === "assistant") this.runStart = this.session.messages.length;
+        if (!steering && last?.role === "assistant") this.runStart = this.session.messageCount;
         // Where it starts: its own prompt, or the tool results it rides along with.
-        this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
+        this.uiTurn = { seg: this.segment, index: this.session.messageCount, at: turn.startedAt! };
         this.ui.write({ t: "turn", ...this.uiTurn });
         this.worked(turn.startedAt!);
         this.engine.sessionChanged(this);
@@ -3375,7 +4365,7 @@ export class Runtime {
         this.turnStartedAt = Date.now();
         this.worked(this.turnStartedAt);
         const display = opts.display ?? text;
-        const index = this.session.messages.length;
+        const index = this.session.messageCount;
         this.turnSnapshotFloor = this.latestCheckpoint();
         // No imagesKey yet: @mentioned images join the prompt's own once mentions are expanded below.
         const attached = attachedPrompt(opts.attachments, false);
@@ -3425,6 +4415,8 @@ export class Runtime {
                 // The images as they'll be kept, mentioned ones too: what promptImages returns, so what the key is of.
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
+                // Kept beside the session as it's sent: shown again (promptImages), they're read from there.
+                if (images.length) this.keepToolImages(images as ImagePart[]);
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
             }
@@ -3901,7 +4893,7 @@ export class Runtime {
         if (!idle) await this.yieldIdleCompaction();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         if (!this.agent) throw new Error("No model is selected.");
-        if (this.session.messages.length < 2) throw new Error("Nothing to compact yet.");
+        if (this.session.messageCount < 2) throw new Error("Nothing to compact yet.");
         this.idleCompact.disarm();
         this.busy = true;
         this.idleCompacting = idle;
@@ -3953,19 +4945,34 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Forking
 
+    /** Whether the turn `id` is built here already (the window's, and those read since): forkPoint needs only it. */
+    hasTurn(id: string): boolean {
+        return this.view.turns.some((t) => t.id === id);
+    }
+
     /**
      * Where a fork from the turn of the prompt at `index` ends (session.fork),
      * checked against what the window showed: that turn (by id, which is new
      * once a rewind rebuilds the timeline) with this prompt and its text.
      */
     forkPoint(index: unknown, text: string, turnId: string): number {
+        this.canFork(index, text, turnId);
+        return Math.min(forkCut(this.session.messages, index as number), this.runStart ?? Infinity);
+    }
+
+    /**
+     * Whether a fork can be made there (forkPoint), throwing why not. `soon` (a fork shown before it's made): its
+     * messages not read for it where they aren't (35 ms, a Claude Code session of 100,000 items); making the fork
+     * checks that again, and fails as it would here.
+     */
+    canFork(index: unknown, text: string, turnId: string, soon = false) {
         if (typeof index !== "number" || !Number.isInteger(index)) throw new RpcError("index must be an integer");
-        if (!forkTargets(this.session.messages).some((t) => t.index === index)) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
+        const digest = soon ? this.session.historyDigest : undefined;
+        if (!(digest && index < digest.from) && !isForkTarget(this.session.messageAt(index))) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
         if (this.runStart !== undefined && index >= this.runStart) throw new RpcError("That turn is still running. Fork from it once it's done, or interrupt it first.", "busy");
         const shown = this.view.turns.find((t) => t.id === turnId);
         const shownIndex = shown?.imported ? shown.pos?.index : shown?.prompt?.index;
         if (!shown || shown.archived || shownIndex !== index || shown.prompt?.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
-        return Math.min(forkCut(this.session.messages, index), this.runStart ?? Infinity);
     }
 
     /** Notes that were pending at a fork's cut: they went out with the prompt there (as a rewind to it would queue them again). */
@@ -3997,7 +5004,7 @@ export class Runtime {
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
-        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messages.length, plan };
+        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messageCount, plan };
         const backends = backendsIn(this.session.messages, index);
         return {
             index,
@@ -4021,7 +5028,7 @@ export class Runtime {
         const t = this.target(index);
         const shown = this.rewindShown;
         // A turn since (one running when it was shown, say) may have changed files the plan doesn't know about.
-        if (!shown || shown.id !== planId || shown.index !== index || this.session.messages[index] !== shown.message || this.session.messages.length !== shown.count) {
+        if (!shown || shown.id !== planId || shown.index !== index || this.session.messages[index] !== shown.message || this.session.messageCount !== shown.count) {
             throw new Error("The conversation changed since this was shown; nothing was rewound. Open Rewind again.");
         }
         this.rewindShown = undefined;
@@ -4068,6 +5075,24 @@ export class Runtime {
 
     /** The timeline again from the transcript (after a rewind). */
     private rebuild() {
+        // Every step it logged, to build them from (a session opened from its store read only what it runs on).
+        this.ui.full();
+        // The turns kept as they are (rebuildSegment) are all of them, those not read from the store yet too.
+        try {
+            this.readStored();
+        } catch {
+            // All of them built from the logs instead.
+            this.store?.close();
+            this.store = undefined;
+            return this.rebuildAll();
+        }
+        if (this.rebuildSegment()) return;
+        this.rebuildAll();
+    }
+
+    private rebuildAll() {
+        // Every turn from the logs: the first prompt is theirs, whatever the store said.
+        this.storedFirst = undefined;
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
@@ -4075,14 +5100,64 @@ export class Runtime {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
             // One still working goes on being logged under its turn's new id.
             if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
-            return live ? { ...live, turnId: r.turnId } : r;
+            return live ? { ...this.agentFull(live), turnId: r.turnId } : r;
         });
         // And the ones each kept one started of its own (its call is in that one's activity), in its turn.
         for (const a of this.view.agents) {
             const up = a.parentId ? agents.find((x) => x.id === a.parentId && !x.replayed) : undefined;
-            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...a, turnId: up.turnId });
+            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...this.agentFull(a), turnId: up.turnId });
         }
-        this.op({ op: "reset", turns, agents });
+        // The windows get its last turns, and how many came before (session.turns has them), as when it opens: a long
+        // session rebuilt isn't sent whole. The turns are new: this view takes them as they are, and what's sent is a copy.
+        const from = Math.max(0, turns.length - RESET_TURNS);
+        const sent = from ? agentsFor(agents, turns.slice(from), false) : undefined;
+        this.op({ op: "reset", turns, agents }, sent ? { op: "reset", turns: structuredClone(turns.slice(from)).map((t) => ((t.blocks = slimEdits(t.blocks)), t.status !== "running" && omitThinking(t.blocks), t)), agents: sent.agents, earlier: from, ...(sent.more ? { agentsMore: sent.more } : {}) } : undefined);
+        // Built anew: a long session's store starts again with them, and keeps all but the latest.
+        if (this.store || turns.length > KEEP_BUILT) this.storeOlderSoon(this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+    }
+
+    /**
+     * Only the current segment's turns built again (a rewind doesn't reach past the last compaction): those before, up
+     * to and with its compaction's turn, kept as they are (and where they are in the store). Rebuilding all of a 30,000-
+     * item session read its whole file and stored every turn again: 320 ms. False when it can't (no compaction, or the
+     * last one kept a prompt that began before it): then all of them are.
+     */
+    private rebuildSegment(): boolean {
+        const seg = this.segment;
+        if (seg === 0 || this.session.lastCompactKept) return false;
+        const at = this.view.turns.findIndex((t) => t.pos?.seg === seg && t.pos.index === -1);
+        if (at < 0) return false;
+        const keep = this.view.turns.slice(0, at + 1);
+        const fresh = replay({ segments: [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId(), from: { segment: seg, marked: true } });
+        const kept = new Set(keep.map((t) => t.id));
+        // Sub-agents of the kept turns stay as they are; the rest as a rebuild makes them (rebuild).
+        const made = agentsFromTurns(fresh, this.model && modelRef(this.model), this.ui.agents).map((r) => {
+            const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
+            if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
+            return live ? { ...this.agentFull(live), turnId: r.turnId } : r;
+        });
+        for (const a of this.view.agents) {
+            const up = a.parentId ? made.find((x) => x.id === a.parentId && !x.replayed) : undefined;
+            if (up && !made.some((x) => x.id === a.id)) made.push({ ...this.agentFull(a), turnId: up.turnId });
+        }
+        const agents = [...this.view.agents.filter((a) => kept.has(a.turnId) && !made.some((m) => m.id === a.id)), ...made];
+        const turns = [...keep, ...fresh];
+        // The windows get its last turns, as when it opens, each whole (a kept one may be in the store).
+        const from = Math.max(0, turns.length - RESET_TURNS);
+        const shown = turns.slice(from);
+        const sent = agentsFor(agents, shown, !from, (a) => this.agentFull(a));
+        const reset: SessionOp = { op: "reset", turns: shown.map((t) => this.sent(t)), agents: sent.agents, ...(from ? { earlier: from } : {}), ...(sent.more ? { agentsMore: sent.more } : {}) };
+        this.op({ op: "reset", turns, agents }, reset);
+        if (this.store) {
+            // Those it had built that are gone: nothing to keep of them.
+            for (const t of this.built) if (!turns.includes(t)) this.built.delete(t);
+            // Fewer turns after it: one kept as its head may be among the latest now, which are built.
+            this.buildLatest();
+            // Those after the kept ones are new: looked at from there.
+            this.trimmedTo = Math.min(this.trimmedTo, keep.length);
+            this.trimBuilt();
+        } else if (turns.length > KEEP_BUILT) this.storeOlderSoon(TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path]));
+        return true;
     }
 
     /**
@@ -4296,8 +5371,21 @@ export class Runtime {
 
     /** The images of the prompt at `pos` (Turn.pos), from before a compaction too. */
     promptImages(seg: number, index: number): { mediaType: string; data: string }[] {
-        const messages = seg === this.segment ? this.session.messages : readSegments(this.session.path)[seg]?.messages;
-        const m = messages?.[index];
+        // Opened from a digest of its messages (Session.read), an earlier prompt's from where they're kept, by the keys
+        // the digest has of them; not kept yet (from before, or the terminal), each prompt's are kept as they're read.
+        if (!Number.isInteger(index) || index < 0) throw new RpcError("That prompt is no longer in the conversation.", "not_found");
+        const digest = seg === this.segment ? this.session.historyDigest : undefined;
+        const keys = digest && index < digest.from ? digest.images?.find(([i]) => i === index)?.[1] : undefined;
+        if (keys) {
+            const dir = toolImagesDir(this.session.path, this.id);
+            const kept = keys.map((k) => readKept(dir, k));
+            if (kept.every((k) => k !== undefined)) return kept as { mediaType: string; data: string }[];
+            for (const m of this.session.messages) if (m.role === "user") this.keepToolImages(m.content.filter((p): p is ImagePart => p.type === "image"));
+        }
+        // The last turn's prompt without reading the rest.
+        const m = seg === this.segment ? this.session.messageAt(index) : readSegments(this.session.path)[seg]?.messages[index];
+        // Kept for next time (a prompt sent before they were kept as it was, or from the terminal).
+        if (seg === this.segment && m?.role === "user") this.keepToolImages(m.content.filter((p): p is ImagePart => p.type === "image"));
         const pending = this.pendingPrompt;
         const parts = m?.role === "user" ? m.content : pending && pending.seg === seg && pending.index === index ? (pending.attachments ?? []) : undefined;
         if (!parts) throw new RpcError("That prompt is no longer in the conversation.", "not_found");
@@ -4333,7 +5421,21 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Background shells
 
-    private syncShells() {
+    /** What the 2 s look at the background last saw: the shells' and delegated tasks' states (see syncShells). */
+    private shellsSeen?: string;
+
+    /**
+     * The shells as the views show them, and the background list. `tick`: the 2 s look while one runs, which only has to
+     * catch what nothing announces (a shell ending, a monitor's events): with none of that changed, it stops there.
+     * In full each time, it was 12% of the server's CPU with 150 sessions each running a command (profiled).
+     */
+    private syncShells(tick = false) {
+        const seen =
+            [...this.toolState.shells.values()].map((s) => `${s.id}:${s.exitCode}:${s.monitor ? `${s.monitor.events}:${s.monitor.expiresAt}` : ""}`).join(",") +
+            "|" +
+            (this.agent?.delegatedTasks ?? []).map((t) => `${t.id}:${t.status}:${t.delivered}`).join(",");
+        if (tick && seen === this.shellsSeen) return;
+        this.shellsSeen = seen;
         const shells = [...this.toolState.shells.values()].map((s) => ({
             id: s.id,
             command: redact(s.command).slice(0, 300),
@@ -4346,7 +5448,7 @@ export class Runtime {
         if (!same) this.setState({ shells });
         this.syncBackground();
         const running = shells.some((s) => s.running);
-        if (running && !this.shellTimer) this.shellTimer = setInterval(() => this.syncShells(), 2000);
+        if (running && !this.shellTimer) this.shellTimer = setInterval(() => this.syncShells(true), 2000);
         else if (!running && this.shellTimer) {
             clearInterval(this.shellTimer);
             this.shellTimer = undefined;
@@ -4541,6 +5643,7 @@ export class Runtime {
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.shellTimer) clearInterval(this.shellTimer);
+        clearTimeout(this.findForget);
         this.flush();
         // What's still going (a turn being interrupted, sub-agents delegated past their turn) as far as it got.
         // How it ends is written too, if that's before the session is let go of.
@@ -4578,6 +5681,11 @@ export class Runtime {
             await commit;
             this.ui.close();
             this.session.release();
+            // Its turns, for the next time it's opened (turn-store.ts): written once nothing more is (letting the
+            // session go may note when it last worked). The logs as they are now, before another process can take
+            // the session up: its index isn't written if they've changed by then.
+            const logs = (this.store ?? TurnStore.of(this.session.path, this.id, [this.session.path, this.ui.path])).stamps();
+            await this.saveTurns(logs);
         }
     }
 }

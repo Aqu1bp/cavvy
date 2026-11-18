@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { app, handleFor, reportError, rpc, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -48,6 +48,9 @@ type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kin
 const fileName = (path: string) => path.replace(/\/$/, "").split("/").pop()! + (path.endsWith("/") ? "/" : "");
 /** The folder it's in, said after its name: `src/auth` of `src/auth/email.ts`; "" at the top. */
 const fileDir = (path: string) => path.replace(/\/$/, "").split("/").slice(0, -1).join("/");
+
+/** The field grows with its text in CSS (field-sizing: content, composer.css), where the engine has it. */
+const SIZED_BY_CSS = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
@@ -118,11 +121,32 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta.style.height = `${largeHeight()}px`;
             return;
         }
+        // Sized by its text in CSS where it can be (composer.css): nothing laid out here at each key. Measured there,
+        // in a frame of its own, a key's letter was drawn a frame late about half the time (headless, Event Timing).
+        if (SIZED_BY_CSS) {
+            ta.style.height = "";
+            if (atMost) setOverflows(ta.scrollHeight > ta.clientHeight + 1);
+            return;
+        }
         ta.style.height = "auto";
         // Up to the modest height composer.css gives it; past that it scrolls.
         ta.style.height = `${ta.scrollHeight}px`;
         setOverflows(ta.scrollHeight > ta.clientHeight + 1);
     };
+    /** At its modest height's cap (a ResizeObserver says): only then can more text overflow it, and is it measured. */
+    let atMost = false;
+    onMount(() => {
+        if (!SIZED_BY_CSS || !ta || typeof ResizeObserver === "undefined") return;
+        const field = ta;
+        const ro = new ResizeObserver(() => {
+            if (expanded()) return;
+            const cap = parseFloat(getComputedStyle(field).maxHeight);
+            atMost = Number.isFinite(cap) && field.offsetHeight >= cap - 1;
+            setOverflows(atMost && field.scrollHeight > field.clientHeight + 1);
+        });
+        ro.observe(field);
+        onCleanup(() => ro.disconnect());
+    });
     // What will run, in color: while the text has a /command or a $skill, a layer behind it draws the same lines with
     // them in the accent and what the command takes after it, and the textarea's own letters go clear. The caret,
     // selection, typing and spellcheck stay the textarea's.
@@ -162,7 +186,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.focus();
     };
 
-    createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
+    // Sized by CSS, a key needs nothing more unless it's at its cap (then whether it overflows, a frame later).
+    createEffect(on([draftKey, text], () => {
+        if (!SIZED_BY_CSS || atMost || expanded() || ta?.style.height) requestAnimationFrame(resize);
+    }));
     // Every change, whatever made it: typing, history, a send clearing the box.
     createEffect(() => p.onText?.(text()));
     // The modest height is a few lines of the text size, or a share of the column: either changing moves it.
@@ -181,8 +208,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             cancelAnimationFrame(frame);
         });
     });
-    // A message being written means the user is back: the server holds off compacting while idle.
-    const writing = () => Boolean(text().trim() || attachments().length);
+    // A message being written means the user is back: the server holds off compacting while idle. Told when that
+    // changes, not at each key: read through the text, it was told twice a key (61 requests for 31 keys).
+    const writing = createMemo(() => Boolean(text().trim() || attachments().length));
     createEffect(on([() => p.sessionId, writing, () => h()?.ready?.()], ([id, present, ready]) => {
         if (!id || !ready) return;
         void rpc.call("session.draft", { id, present }).catch(() => undefined);
@@ -232,8 +260,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenuDismissedFor(undefined);
         focusSoon();
     }));
-    // Back from Settings, which keeps this mounted under it: focused as when it opened.
+    // Back from Settings, which keeps this mounted under it, or shown again after being kept out of sight (Panes.tsx):
+    // focused as when it opened.
     createEffect(on(settingsTab, (tab, was) => { if (was && !tab) focusSoon(); }, { defer: true }));
+    createEffect(on(pane.parked, (parked, was) => { if (was && !parked) focusSoon(); }, { defer: true }));
     createEffect(() => {
         const selected = menuSel();
         const items = menu();
@@ -436,11 +466,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
+        // A plain message to a session that isn't working: on screen at once, the box cleared, as its turn will be; put
+        // back if the send fails.
+        const quick = !picks && sessionId && !busy() && !atts.length && !sentComments.length && !message.trimStart().startsWith("/") && !shell() ? showSending(sessionId, message) : undefined;
+        if (quick) sent();
         const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
             // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
             if (sentComments.length) reviewComments.removeSent(id, sentComments);
         } });
+        if (quick) {
+            // Answered: its turn came with the answer (it's in its place now), or none will (it went in a queue).
+            quick(Boolean(ok));
+            if (!ok) draft.putBack(submitted);
+        }
         if (ok) {
             if (picks) {
                 composerStorage.remember(submitted.key, t);
@@ -701,13 +740,18 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
     // The model (with its effort) and the permission mode, in the card's bar; and the context.
+    // Worked out once, here: a prop like `open={a() && b()}` makes a memo each time it's read, and the pickers read it
+    // from their listeners too (a click, the page's pointerdown), where nothing owns it: each was kept for good, and with
+    // it this composer and its conversation (ui/Popover.tsx).
+    const modelOpen = createMemo(() => modelPickerOpen() && pane.focused());
+    const modeOpen = createMemo(() => modePickerOpen() && pane.focused());
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen() && pane.focused()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                current={st()?.model} currentRef={app.settings.model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen() && pane.focused()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;

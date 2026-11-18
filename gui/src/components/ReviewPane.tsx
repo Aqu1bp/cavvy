@@ -18,7 +18,7 @@ import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
+import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
@@ -540,7 +540,7 @@ function FileCard(p: {
         p.onToggle(e.altKey);
     };
     return (
-        <section ref={el} class="rf" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} aria-label={p.file.path}>
+        <section ref={el} class="rf" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} style={{ "--rows": rows(), "--held": held() ? `${held()}px` : undefined }} aria-label={p.file.path}>
             <div class="rf-h" onClick={toggle}>
                 <button
                     class="tog"
@@ -584,7 +584,7 @@ function FileCard(p: {
             </div>
             <div class="rf-b">
                 <div class="rf-in" ref={body}>
-                    <Show when={drawn()} fallback={<Show when={!p.closed}>{<div class="rf-ph" style={held() ? { height: `${held()}px` } : { "--rows": rows() }} />}</Show>}>
+                    <Show when={drawn()} fallback={<Show when={!p.closed}>{<div class="rf-ph" />}</Show>}>
                         <Show
                             when={!shown().deferred}
                             fallback={
@@ -659,7 +659,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
 
     const gitScope = (): GitScope => (scope() === "cavvy" ? "uncommitted" : (scope() as GitScope));
-    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
+    const [git] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
 
     // The repository's worktrees: listed once, and again each time the view menu opens, on Refresh, and when the
     // worktree looked at fails to load, so one that's been removed falls back to the session's folder.
@@ -811,7 +811,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
 
     const refresh = () => {
-        void refetchGit();
+        // Every view of it (the header's Changes too), not this one only.
+        refreshGitChanges();
         if (away()) void refetchWorktrees();
         if (shownScope() === "cavvy") void refetchCavvy();
     };

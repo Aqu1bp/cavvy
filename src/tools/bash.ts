@@ -21,6 +21,18 @@ const MAX_OUTPUT = 30_000;
 /** Bound for the retained head and rolling tail, and for unfinished lines. */
 const MAX_KEPT = MAX_OUTPUT * 20;
 export const OUTPUT_FILE_LIMIT = 8 * 1024 * 1024;
+/** The characters a token is made of where a long line is cut (/[A-Za-z0-9_.-]/), by character code. */
+const TOKEN_CHAR = (() => {
+    const t = new Uint8Array(128);
+    for (let c = 0; c < 128; c++) t[c] = /[A-Za-z0-9_.-]/.test(String.fromCharCode(c)) ? 1 : 0;
+    return t;
+})();
+/** Where the token that `text` has at `at` starts: at or after `floor`, no further back than that is looked. */
+function tokenStart(text: string, at: number, floor = 0): number {
+    let start = at;
+    while (start > floor && TOKEN_CHAR[text.charCodeAt(start - 1)]) start--;
+    return start;
+}
 const SESSION_OUTPUT_LIMIT = 64 * 1024 * 1024;
 const SESSION_OUTPUT_FILES = 256;
 // Properties are forwarded to the underlying Map by sub-agents' trackShells proxies.
@@ -318,7 +330,12 @@ class PacedOutput {
     private owed = 0;
     private readonly buf = Buffer.allocUnsafe(PACED_CHUNK);
 
-    constructor(fds: number[]) {
+    /**
+     * `background`: what it prints is read when asked for (drain) or by a later poll, never watched as it comes, so
+     * its polls back off to PACED_IDLE_MS as soon as it's quiet, not after 2 s of quiet. Polled every PACED_POLL_MS, a command printing once a second
+     * cost 0.27 ms of CPU a second (measured: 100 of them, 27 ms/s), nearly all of it reads that found nothing.
+     */
+    constructor(fds: number[], private background = false) {
         this.streams = fds.map((fd) => new PacedStream(fd, this));
     }
 
@@ -386,7 +403,7 @@ class PacedOutput {
         this.owed = 0;
         if (!this.idle++) return void (this.immediate = setImmediate(this.poll));
         const quiet = performance.now() - this.lastData;
-        const longest = quiet < 2000 ? PACED_POLL_MS : Math.min(PACED_IDLE_MS, quiet / 25);
+        const longest = this.background ? PACED_IDLE_MS : quiet < 2000 ? PACED_POLL_MS : Math.min(PACED_IDLE_MS, quiet / 25);
         this.timer = setTimeout(this.poll, Math.min(longest, 2 ** (this.idle - 2)));
     };
 }
@@ -503,7 +520,7 @@ export interface PacedChild {
  * ordinary pipes, as before, where FIFOs can't be made or `paced` is false. `combined`:
  * both go into one, in the order the command wrote them (as a terminal shows them).
  */
-export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, o: { paced?: boolean; combined?: boolean } = {}): PacedChild {
+export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, o: { paced?: boolean; combined?: boolean; background?: boolean } = {}): PacedChild {
     const fifos = o.paced !== false ? pacedFifos(o.combined ? 1 : 2) : undefined;
     if (!fifos) {
         const child = spawn(file, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
@@ -521,7 +538,7 @@ export function spawnPaced(file: string, args: string[], options: Omit<SpawnOpti
         // The command holds them now: the streams end when it (and what it started) closes them.
         for (const f of fifos) closeSync(f.write);
     }
-    const output = new PacedOutput(fifos.map((f) => f.read));
+    const output = new PacedOutput(fifos.map((f) => f.read), o.background);
     const [stdout, stderr] = output.streams as [PacedStream, PacedStream | undefined];
     let left = 1 + output.streams.length;
     let status: [number | null, NodeJS.Signals | null] = [null, null];
@@ -649,14 +666,33 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
     let tailAnsi = ansiChunks();
     // Only the displayed ends plus secret context are needed after a line exceeds maxLine.
     const window = MAX_OUTPUT * 2 + context;
-    const appendTail = (text: string) => {
+    // The line still being read, a piece at a time: where each piece ends, and the last character before that end
+    // that no token has (-1: none yet). Where a token starts is found from them, not by stepping back through megabytes.
+    let pieceEnds: number[] = [];
+    let pieceBreaks: number[] = [];
+    const notePiece = (piece: string, from: number) => {
+        if (!keepEnds) return;
+        const b = tokenStart(piece, piece.length);
+        pieceEnds.push(from + piece.length);
+        pieceBreaks.push(b > 0 ? from + b - 1 : (pieceBreaks.at(-1) ?? -1));
+    };
+    /** Where the token at `cut` of the pending line starts. */
+    const pendingTokenStart = (cut: number) => {
+        let i = 0;
+        while (i < pieceEnds.length - 1 && pieceEnds[i]! <= cut) i++;
+        const from = i > 0 ? pieceEnds[i - 1]! : 0;
+        const start = tokenStart(pending, cut, from);
+        return start > from ? start : (i > 0 ? pieceBreaks[i - 1]! : -1) + 1;
+    };
+    /** `startOf`: where the token at a cut starts, when there's a quicker way than looking back through `text`. */
+    const appendTail = (text: string, startOf?: (cut: number) => number) => {
         const joined = longTail + text;
         const cut = Math.max(0, joined.length - window);
         if (cut) {
             // Remember whether the retained window begins inside an ANSI payload.
             tailAnsi(joined.slice(0, cut));
-            let start = cut;
-            while (start > 0 && /[A-Za-z0-9_.-]/.test(joined[start - 1]!)) start--;
+            // And whether it begins inside a secret: the token it begins in, from its start.
+            const start = startOf?.(cut) ?? tokenStart(joined, cut);
             const prefix = joined.slice(start, start + 128);
             tailTokenSecret = (start === 0 && tailTokenSecret) || redact(prefix) !== prefix;
         }
@@ -729,19 +765,26 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
             } else if (!skipping) {
                 flushRun();
                 if (!pending) order = nextOrder();
-                pending += chunk.slice(start, end);
+                const piece = chunk.slice(start, end);
+                notePiece(piece, pending.length);
+                pending += piece;
                 if (pending.length > maxLine) {
                     if (keepEnds) {
                         longHead = pending.slice(0, window);
-                        appendTail(pending);
+                        // (longTail is empty: the cut is in the pending line, as it is.)
+                        appendTail(pending, pendingTokenStart);
                         overflow(pending);
                     } else emit(overflow(pending), order);
                     pending = "";
+                    pieceEnds = [];
+                    pieceBreaks = [];
                     skipping = true;
                 } else if (nl >= 0) {
                     inspect?.(pending);
                     emit(redact(pending), order);
                     pending = "";
+                    pieceEnds = [];
+                    pieceBreaks = [];
                 }
             } else if (keepEnds) {
                 const text = chunk.slice(start, end);
@@ -1195,7 +1238,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     const [file, ...args] = shellArgv(command, ctx.sandbox);
     let spawned: PacedChild;
     try {
-        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true });
+        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true, background: true });
     } catch (e) {
         proxy?.close();
         throw e;

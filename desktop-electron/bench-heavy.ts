@@ -3,7 +3,14 @@
 // written after each part, so a crash loses only the part it stopped. Writes bench-results/bench-heavy-<label>.json.
 //
 //   bun desktop-electron/bench-heavy.ts --label new --app <…>/Cavvy.app [--only open,many,git,soak] [--sessions 5]
-//       [--turns 400] [--kb 200] [--files 100000] [--hours 3]
+//       [--turns 400] [--kb 200] [--files 100000] [--hours 3] [--churn 6]
+//
+// More parts (desktop-electron/bench-mac.ts runs them): home (the home screen left alone: memory and CPU), persession
+// (memory with 1, 5 and 15 sessions open, each after a short turn), cold100k (two 100,000-item sessions, Cavvy's own and
+// a Claude Code one, opened cold and again), scroll (frames reading the 100,000-item one up 20 pages; with cold100k).
+//
+// --churn N: in the soak, each session is archived after N turns and a new one takes its place, as a day's sessions
+// come and go; memory at the start, before any session, is what the end is held to.
 //
 // For the same with real models, bench-real.ts with five --models.
 
@@ -23,6 +30,7 @@ const SESSIONS = Number(arg("--sessions") ?? 5);
 const LARGE_TURNS = Number(arg("--turns") ?? 400), LARGE_KB = Number(arg("--kb") ?? 200);
 const FILES = Number(arg("--files") ?? 100_000);
 const HOURS = Number(arg("--hours") ?? 3);
+const CHURN = Number(arg("--churn") ?? 0);
 const repo = resolve(import.meta.dir, "..");
 const results = join(import.meta.dir, "bench-results");
 const out = join(results, `bench-heavy-${label}.json`);
@@ -33,6 +41,17 @@ const save = () => { mkdirSync(results, { recursive: true }); writeFileSync(out,
 
 // What a process has spent: see bench-reply.ts.
 const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+// CPU time: rusage's user and system times are in Mach time units, nanoseconds once scaled by the timebase.
+const timebase = (() => {
+    const tb = new Uint32Array(2);
+    dlopen("/usr/lib/libSystem.B.dylib", { mach_timebase_info: { args: [FFIType.ptr], returns: FFIType.i32 } }).symbols.mach_timebase_info(ptr(tb));
+    return tb[0]! / tb[1]!;
+})();
+function cpuNs(pid: number) {
+    const buf = new BigUint64Array(80);
+    if (libproc.symbols.proc_pid_rusage(pid, 6, ptr(buf)) !== 0) return NaN;
+    return (Number(buf[2]) + Number(buf[3])) * timebase;
+}
 function spent(pid: number) {
     const buf = new BigUint64Array(80);
     if (libproc.symbols.proc_pid_rusage(pid, 6, ptr(buf)) !== 0) return { instructions: NaN, energy: NaN };
@@ -78,7 +97,7 @@ async function launch() {
     for (let i = 0; !gui; i++) { gui = ((await fetch("http://127.0.0.1:9358/json/list").then((r) => r.json(), () => [])) as any[]).find((t) => t.url.startsWith("cavvy://app")); if (!gui) { if (i > 2000) throw new Error("no window"); await sleep(10); } }
     const page = await connect(gui.webSocketDebuggerUrl);
     const js = async (expression: string) => (await page.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })).result?.result?.value;
-    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(10); }
+    for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]:not([data-parked] *)')`)); i++) { if (i > 3000) throw new Error("no composer"); await sleep(10); }
     let server: any = {};
     for (let i = 0; !server.token; i++) { server = ((await Bun.file(metricsFile).json().catch(() => ({}))) as any).server ?? {}; if (i > 200) throw new Error("no server"); if (!server.token) await sleep(100); }
     const rpc = await connect(`ws://127.0.0.1:${server.port}/ws`, ["cavvy.v1", `auth.${server.token}`]);
@@ -142,7 +161,7 @@ async function click(a: App, id: string) {
 }
 /** Opens a session from the sidebar: how long from the click to the frame showing it, or -1 past a minute. */
 async function open(a: App, id: string) {
-    const shown = `!!document.querySelector('[data-session-row="${id}"].cur, [data-session-id="${id}"].cur, [data-session-row="${id}"] .cur') && document.querySelectorAll('.transcript [data-turn]').length > 0`;
+    const shown = `!!document.querySelector('[data-session-row="${id}"].cur, [data-session-id="${id}"].cur, [data-session-row="${id}"] .cur') && document.querySelectorAll('.transcript:not([data-parked] *) [data-turn]').length > 0`;
     const t0 = await a.js(`performance.now()`);
     await click(a, id);
     const t1 = await a.js(`new Promise((res) => { const t0 = performance.now(); (function check() { let ok = false; try { ok = ${shown}; } catch {} if (ok) requestAnimationFrame(() => res(performance.now())); else if (performance.now() - t0 > 60000) res(-1); else requestAnimationFrame(check); })(); })`);
@@ -178,6 +197,42 @@ async function stretch(a: App, ms: number) {
         joules += (y.energy - x.energy) / 1e9;
     }
     return { mips, total: Object.values(mips).reduce((x, y) => x + y, 0), joules: Math.round(joules * 10) / 10 };
+}
+/** What the app's processes spend over a stretch: CPU as a share of one core, by process and in all. */
+async function cpuOver(a: App, ms: number) {
+    const from = new Map([...a.roles].map(([role, pid]) => [role, cpuNs(pid)]));
+    const t0 = performance.now();
+    await sleep(ms);
+    const ns = (performance.now() - t0) * 1e6;
+    const cpu: Record<string, number> = {};
+    for (const [role, pid] of a.roles) cpu[role] = Math.round(((cpuNs(pid) - from.get(role)!) / ns) * 10000) / 100;
+    return { cpuPercent: Math.round(Object.values(cpu).reduce((x, y) => x + y, 0) * 100) / 100, cpu };
+}
+/**
+ * Reading a long session up from its end with the wheel, "Show earlier" at each top, for `pages` pages: each frame's
+ * interval (one over 25 ms dropped one at 120 Hz), and frames with no turn under five points down the middle of the view.
+ */
+async function scrollUp(a: App, pages: number) {
+    const tr = `document.querySelector('.transcript:not([data-parked] *)')`;
+    await a.js(`(() => { const s = window.__sc = { gaps: [], blank: 0, on: true }; let last = performance.now();
+        const f = (t) => { if (!s.on) return; s.gaps.push(t - last); last = t; const el = ${tr}; if (el) { const r = el.getBoundingClientRect();
+            if (![1, 2, 3, 4, 5].some((k) => document.elementFromPoint(r.x + r.width / 2, r.y + (r.height * k) / 6)?.closest('[data-turn]'))) s.blank++; }
+            requestAnimationFrame(f); };
+        requestAnimationFrame(f); })()`);
+    const at = await a.js(`(() => { const r = ${tr}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    let done = 0;
+    for (let i = 0; done < pages && i < pages * 400; i++) {
+        await a.page.call("Input.dispatchMouseEvent", { type: "mouseWheel", ...at, deltaX: 0, deltaY: -240, button: "none", buttons: 0 });
+        await sleep(16);
+        if (await a.js(`${tr}.scrollTop <= 0`)) {
+            const more = await a.js(`(() => { const b = ${tr}.querySelector('button.earlier:not(.later)'); if (!b || b.disabled) return false; b.click(); return true; })()`);
+            if (!more) break;
+            done++;
+            await sleep(300);
+        }
+    }
+    const r = await a.js(`(() => { const s = window.__sc; s.on = false; const g = s.gaps.slice(1); return { frames: g.length, over25: g.filter((x) => x > 25).length, over50: g.filter((x) => x > 50).length, worstMs: Math.round(Math.max(0, ...g)), blank: s.blank }; })()`);
+    return { pages: done, ...r };
 }
 /** Long frames since the last time this was asked. */
 const longFrames = async (a: App) => {
@@ -224,6 +279,69 @@ try {
     const settings = join(dir, "home", "settings.json");
     writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), permissions: { allow: ["Bash", "Edit", "Write"] } }, null, 2));
     let a = await launch();
+
+    if (parts.includes("home")) {
+        // Started, the home screen shown and nothing opened, left alone.
+        await sleep(60_000);
+        const cpu = await cpuOver(a, 60_000);
+        report.home = { memory: footprint(), ...cpu, heapMB: await heapMB(a) };
+        save();
+    }
+
+    if (parts.includes("persession")) {
+        // Sessions opened one after another, each after a short turn, the first one shown; settled at 1, 5 and 15.
+        const ids: string[] = [];
+        const at: Record<number, { memory: ReturnType<typeof footprint>; heapMB: number }> = {};
+        for (const n of [1, 5, 15]) {
+            while (ids.length < n) {
+                const id = await create(a);
+                await turn(a, id, "fastdemo burst short");
+                await open(a, id);
+                ids.push(id);
+            }
+            await open(a, ids[0]!);
+            await sleep(60_000);
+            at[n] = { memory: footprint(), heapMB: await heapMB(a) };
+            report.persession = { at };
+            save();
+        }
+        report.persession.perSessionMB = Math.round(((at[15]!.memory.total - at[1]!.memory.total) / 14) * 10) / 10;
+        save();
+    }
+
+    let big: { native: string; cli: string } | undefined;
+    if (parts.includes("cold100k")) {
+        // Written straight to disk (scripts/perf-thread.ts), as the app writes them, then the app started afresh.
+        await quit(a);
+        mkdirSync(project, { recursive: true });
+        const write = (kind: string) => {
+            const r = Bun.spawnSync(["bun", "--no-env-file", "scripts/perf-thread.ts", project, "100000", kind], { cwd: repo, env: { ...clean, CAVVY_HOME: join(dir, "home") } });
+            if (r.exitCode !== 0) throw new Error(`perf-thread ${kind}: ${r.stderr.toString().slice(-400)}`);
+            return JSON.parse(r.stdout.toString().trim().split("\n").at(-1)!).id as string;
+        };
+        big = { native: write("native"), cli: write("cli") };
+        a = await launch();
+        await sleep(5000);
+        const cold = { native: await open(a, big.native), cli: -1 };
+        await sleep(3000);
+        cold.cli = await open(a, big.cli);
+        await sleep(3000);
+        const back = { native: await open(a, big.native), cli: -1 };
+        await sleep(2000);
+        back.cli = await open(a, big.cli);
+        await sleep(2000);
+        report.cold100k = { cold, back, frames: await longFrames(a), memory: footprint() };
+        save();
+    }
+
+    if (parts.includes("scroll") && big) {
+        for (const kind of ["native", "cli"] as const) {
+            await open(a, big[kind]);
+            await sleep(3000);
+            (report.scroll ??= {})[kind] = await scrollUp(a, 20);
+            save();
+        }
+    }
 
     if (parts.includes("git")) {
         // Before the repository grows: the same turns in the small one, to set beside the large.
@@ -324,21 +442,35 @@ try {
     }
 
     if (parts.includes("soak")) {
+        await sleep(10_000);
+        const start = { memory: footprint(), heapMB: await heapMB(a) };
         const ids: string[] = [];
         for (let i = 0; i < SESSIONS; i++) ids.push(await create(a));
+        let archived = 0;
         const mix = ["fastdemo 20000 (part)", "demo", "cmdrows", "perfreply 8000 20 33", `perfbig ${LARGE_KB}`, "fastdemo burst short"];
         const until = Date.now() + HOURS * 3_600_000;
         let turns = 0, failed = 0;
         // Each works on as a person's sessions do: one turn after another, a moment between.
-        const worker = async (id: string, n: number) => {
-            for (let i = n; Date.now() < until; i++) {
-                try { await turn(a, id, mix[i % mix.length]!); turns++; } catch { failed++; }
+        const worker = async (slot: number) => {
+            for (let i = slot, done = 0; Date.now() < until; i++) {
+                try { await turn(a, ids[slot]!, mix[i % mix.length]!); turns++; } catch { failed++; }
                 await sleep(2000);
+                // Done with: archived (closed and out of the list), and a new one in its place.
+                if (CHURN && ++done % CHURN === 0 && Date.now() < until) {
+                    const old = ids[slot]!;
+                    ids[slot] = await create(a);
+                    await a.rpc.call("session.pin", { id: old, pinned: false });
+                    await a.rpc.call("session.archive", { id: old, archived: true });
+                    // And let go, as the window lets go of what it no longer shows: held here, every archived session
+                    // stayed loaded, and the end measured the bench's sessions, not the app's.
+                    await a.rpc.call("session.close", { id: old });
+                    archived++;
+                }
             }
         };
-        const workers = ids.map((id, n) => worker(id, n));
+        const workers = ids.map((_, n) => worker(n));
         const checkpoints: any[] = [];
-        report.soak = { checkpoints };
+        report.soak = { start, churn: CHURN, checkpoints };
         const started = Date.now();
         // Every session has a turn to show by now.
         await sleep(60_000);
@@ -346,7 +478,7 @@ try {
             // A person looks from one to another.
             const openMs = await open(a, ids[k % ids.length]!);
             const s = await stretch(a, 30_000);
-            checkpoints.push({ minutes: Math.round((Date.now() - started) / 60_000), turns, failed, openMs, ...s, frames: await longFrames(a), memory: footprint(), heapMB: await heapMB(a), nodes: await domNodes(a), serverFiles: openFiles(a.serverPid) });
+            checkpoints.push({ minutes: Math.round((Date.now() - started) / 60_000), turns, failed, archived, openMs, ...s, frames: await longFrames(a), memory: footprint(), heapMB: await heapMB(a), nodes: await domNodes(a), serverFiles: openFiles(a.serverPid) });
             report.soak.crashed = a.crashed();
             save();
             await sleep(Math.max(0, Math.min(270_000, until - Date.now())));
@@ -368,6 +500,8 @@ try {
             await a.js(`(() => { sessionStorage.removeItem('cavvy.navigation'); location.reload(); })()`);
             await sleep(120_000);
             report.soak.closed = { memory: footprint(), heapMB: await heapMB(a), serverFiles: openFiles(a.serverPid) };
+            // The target: back within 10% of where it started, once settled.
+            report.soak.closedOverStart = Math.round((report.soak.closed.memory.total / Math.max(1, start.memory.total) - 1) * 1000) / 10;
             save();
         }
     }

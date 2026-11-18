@@ -283,6 +283,35 @@ describe("paced pipes", () => {
         expect(Math.max(...perTurn.values())).toBeLessThanOrEqual(64 * 1024);
     }, 60_000);
 
+    test("a background command printing now and then is looked at a few times a second, and none of it is lost", async () => {
+        // Polled as a foreground command is (every 20 ms while it printed in the last 2 s), one printing a line a second
+        // cost 0.27 ms of CPU a second, nearly all reads that found nothing: 100 running, 27 ms/s.
+        const real = globalThis.setTimeout;
+        const polls = { fg: 0, bg: 0 };
+        let counting: "fg" | "bg" | undefined;
+        globalThis.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+            if (counting && fn.name === "poll") polls[counting]++;
+            return real(fn, ms, ...rest);
+        }) as typeof setTimeout;
+        try {
+            for (const kind of ["fg", "bg"] as const) {
+                const p = spawnPaced("/bin/sh", ["-c", "for i in 1 2 3 4 5 6; do echo tick $i; sleep 0.5; done"], { detached: true }, { combined: true, background: kind === "bg" });
+                let text = "";
+                p.stdout.on("data", (d: Buffer) => (text += d.toString()));
+                counting = kind;
+                await new Promise<void>((r) => p.onClose(() => r()));
+                counting = undefined;
+                expect(text.trim().split("\n")).toHaveLength(6);
+                expect(text).toContain("tick 6");
+            }
+        } finally {
+            globalThis.setTimeout = real;
+        }
+        // Three seconds each.
+        expect(polls.fg).toBeGreaterThan(60);
+        expect(polls.bg).toBeLessThan(polls.fg / 2);
+    }, 20_000);
+
     test("a command waits while its output isn't taken: only the pipe's buffer is held", async () => {
         const dir = realpathSync(tempDir("cavvy-flood-"));
         dirs.push(dir);

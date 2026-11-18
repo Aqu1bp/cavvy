@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
-import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
+import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
 import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
@@ -18,10 +18,14 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app } from "../state/app";
+import { activate, app, handleFor, loadTurn } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
+
+/** A work log opened by a click: segments drawn at once, then in each frame after. */
+const WORK_FIRST = 24;
+const WORK_MORE = 8;
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
@@ -40,12 +44,28 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         return f && k && f.key === k ? f.images : undefined;
     };
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
+    // Each image's place, kept from the first frame while it's fetched: what's below doesn't move when it comes.
+    const sizes = () => {
+        const s = p.turn.prompt?.imageSizes;
+        return s?.length === p.count ? s : undefined;
+    };
+    const failed = () => fetched()?.key === key() && !fetched()?.images.length;
+    const width = (k: number) => {
+        const [w, h] = sizes()?.[k] ?? [0, 0];
+        return `calc(${w && h ? Math.min(220, Math.max(56, (76 * w) / h)) : 101} * var(--sp))`;
+    };
+    const chip = () => (
+        <Show when={sizes() && !failed()} fallback={<span class="chip tiny">{label()}</span>}>
+            <For each={sizes()}>{(_, i) => <span class="prompt-image wait" style={{ width: width(i()) }} role="img" aria-label={`Image ${i() + 1} of ${p.count}`} />}</For>
+        </Show>
+    );
     return (
-        <Show when={images()?.length} fallback={<span class="chip tiny">{label()}</span>}>
+        <Show when={images()?.length} fallback={chip()}>
             <For each={images()}>
                 {(img, i) => (
                     <button
-                        class="prompt-image"
+                        class={`prompt-image ${sizes() ? "sized" : ""}`}
+                        style={sizes() ? { width: width(i()) } : undefined}
                         title="View full size"
                         aria-label={`View image ${i() + 1} of ${images()!.length}`}
                         onClick={(e) => setViewedImage({ images: images()!.map((m, k) => ({ name: `Image ${k + 1}`, full: m, preview: m.thumb })), index: i(), from: e.currentTarget })}
@@ -365,6 +385,11 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const [all, setAll] = createSignal(false);
     // The other worktrees the turn worked in (sub-agents' own, one it entered): with its own folder, the card's places.
     const places = () => (captured() ? recorded()?.places ?? [] : []);
+    // Who worked where is read from each one's calls: a turn sent folded hasn't all of them (long commands), nor its
+    // sub-agents' steps. Asked for when there's more than its own folder to say it of.
+    createEffect(() => {
+        if (places().length && p.turn.folded) void loadTurn(handleFor(p.sessionId), p.turn.id);
+    });
     const own = createMemo<OwnPlace | undefined>(() => (files().length ? { files: files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), ...total() } : undefined));
     const shape = () => cardShape(own(), places());
     const rows = createMemo(() => placeRows(own(), places()));
@@ -620,8 +645,11 @@ function TurnViewContent(p: TurnViewProps) {
     const unfold = (open: boolean) => { setUnfolded(open); p.onWorkOpen?.(open); };
     // Fading out before it folds: the work's last moment on screen, then "Worked for".
     const [folding, setFolding] = createSignal(false);
+    /** It finished here, in view of the reader: "Worked for" comes in (not on a turn built finished: a page of them). */
+    const [arrived, setArrived] = createSignal(false);
     // Run before DOM effects can remove the work the reader is inspecting.
     createComputed(on(foldable, (value, previous) => {
+        if (previous === false && value) setArrived(true);
         if (previous !== false || !value || untrack(unfolded)) return;
         if (p.keepWorkOpen?.()) return unfold(true);
         const ms = motionMs(200);
@@ -630,12 +658,41 @@ function TurnViewContent(p: TurnViewProps) {
         setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
+    // Opened by a click, a long log goes in a screenful at a time: the first rows at once, the rest in the frames after,
+    // below them (200 calls drawn in the click took 160 ms). Opened any other way (Find, put back as it was), all at once.
+    const [drawnSegs, setDrawnSegs] = createSignal(Infinity);
+    let staging = 0;
+    const openByClick = () => {
+        if (staging) cancelAnimationFrame(staging);
+        const total = segs().length;
+        if (total <= WORK_FIRST) return unfold(true);
+        setDrawnSegs(WORK_FIRST);
+        unfold(true);
+        const more = () => {
+            const next = untrack(drawnSegs) + WORK_MORE;
+            if (next >= segs().length || !untrack(unfolded)) return void setDrawnSegs(Infinity);
+            setDrawnSegs(next);
+            staging = requestAnimationFrame(more);
+        };
+        staging = requestAnimationFrame(more);
+    };
+    onCleanup(() => staging && cancelAnimationFrame(staging));
+    const drawn = (i: number) => i < drawnSegs();
+    // Sent with its work folded (Turn.folded): its rows are there, what they show opened comes whole (session.turn).
+    // Asked for as the pointer or focus comes to "Worked for", so it's usually here by the click (a round trip and up to
+    // 760 KB over a remote link); else as the work is shown, its rows at once and the rest filled in as it comes.
+    const wholeTurn = () => {
+        if (p.turn.folded) void loadTurn(handleFor(p.state.id), p.turn.id);
+    };
+    createEffect(() => {
+        if (showWork()) wholeTurn();
+    });
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
             if (r?.turnId !== p.turn.id || r.part === "prompt") return;
             const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
-            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) unfold(true);
+            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) (setDrawnSegs(Infinity), unfold(true));
         }),
     );
     // A prompt stopped before anything came still says how it ended (its line is in the reply's place).
@@ -680,16 +737,16 @@ function TurnViewContent(p: TurnViewProps) {
         </Switch>
     );
 
-    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never)) => (
+    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never), i: number) => (
         <Show
             when={seg().kind === "work"}
             fallback={
-                <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
+                <Show when={!(seg() as { interim: boolean }).interim || (showWork() && drawn(i))}>
                     {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
                 </Show>
             }
         >
-            <Show when={showWork()}>
+            <Show when={showWork() && drawn(i)}>
                 <div class={`worklog ${folding() ? "leaving" : ""}`}>
                     {/* One quiet line for the run, opening into its steps' rows. */}
                     <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>
@@ -715,10 +772,10 @@ function TurnViewContent(p: TurnViewProps) {
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Cavvy is working" : "Cavvy replied"}</h2>
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
-                    <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
+                    <Index each={segs().slice(0, lead())}>{(seg, i) => renderSeg(seg, i)}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
-                        <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
-                            const toggle = () => unfold(!unfolded());
+                        <button class="fold acts-h worked" classList={{ arrived: arrived() }} aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
+                            const toggle = () => (unfolded() ? unfold(false) : openByClick());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
                         }}>
@@ -726,7 +783,7 @@ function TurnViewContent(p: TurnViewProps) {
                             <span class="num">{worked() ?? "Work log"}</span>
                         </button>
                     </Show>
-                    <Index each={segs().slice(lead())}>{renderSeg}</Index>
+                    <Index each={segs().slice(lead())}>{(seg, i) => renderSeg(seg, lead() + i)}</Index>
                     <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} agents={p.agents} provider={p.state.model?.provider} />
                     </Show>

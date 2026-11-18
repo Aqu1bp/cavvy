@@ -69,8 +69,10 @@ async function panel() {
         document: { documentElement: {} }, cancelAnimationFrame() {}, requestAnimationFrame() {},
         terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
     };
-    let source = readFileSync(new URL("../gui/src/components/TerminalPanel.tsx", import.meta.url), "utf8");
-    source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
+    // The panel, its screen (a chunk of its own, lazy there: here as it is) and what they share, as one source.
+    const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+    let source = [read("../gui/src/lib/terminal-tabs.ts"), read("../gui/src/components/TerminalScreen.tsx"), read("../gui/src/components/TerminalPanel.tsx")].join("\n");
+    source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export default /gm, "").replace(/^export /gm, "").replace(/^const TerminalScreen = lazy\([\s\S]*?^\}\);\r?\n/m, "");
     const compiled = new Bun.Transpiler({ loader: "tsx", tsconfig: { compilerOptions: { jsx: "react", jsxFactory: "node" } } }).transformSync(source);
     const components = new Function(...Object.keys(dependencies), `${compiled}\nreturn { TerminalPanel, TerminalScreen, setupTickets };`)(...Object.values(dependencies));
     components.TerminalPanel({ cwd: "/project" });

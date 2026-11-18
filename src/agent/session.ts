@@ -4,16 +4,19 @@
 // Everything is passed through the redactor before it touches disk.
 
 import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, renameSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
 import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
+import { noteSessionWrite, sessionWriteCount, writtenAfter } from "./session-writes";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
+import { eachLine, linesFromEnd } from "../util/lines";
+import { digestOf, digestWith, type MessagesDigest } from "./history-digest";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
 
@@ -248,7 +251,88 @@ export function newSessionId(): string {
 
 export class Session {
     readonly meta: SessionMeta;
-    messages: Message[] = [];
+    private loadedMessages: Message[] = [];
+    /**
+     * What's needed of its messages without them, in their place until something asks for them (readMessages): read from
+     * a checkpoint of a session whose messages are most of it (a Claude Code session's, never compacted here).
+     */
+    private digest?: MessagesDigest;
+    get messages(): Message[] {
+        if (this.digest) this.readMessages();
+        return this.loadedMessages;
+    }
+    set messages(v: Message[]) {
+        this.digest = undefined;
+        this.loadedMessages = v;
+    }
+    /** How many messages it has, not reading them. */
+    get messageCount(): number {
+        return this.digest ? this.digest.count : this.loadedMessages.length;
+    }
+    /** Its last message, not reading them all. */
+    get lastMessage(): Message | undefined {
+        return this.digest ? this.digest.tail.at(-1) : this.loadedMessages.at(-1);
+    }
+    /** Its messages from `index` on at least, and where they start (`at`): only its last turn's, where that's all it has read. */
+    messagesFrom(index: number): { at: number; messages: readonly Message[] } {
+        const d = this.digest;
+        if (d && index >= d.from) return { at: d.from, messages: d.tail };
+        return { at: 0, messages: this.messages };
+    }
+    /** Its message at `index`, not reading them all where it's of its last turn. */
+    messageAt(index: number): Message | undefined {
+        const d = this.digest;
+        if (d && index >= d.from) return d.tail[index - d.from];
+        return this.messages[index];
+    }
+    /** Its messages from `index` on (a copy), not reading them all where they're its last turn's. */
+    messagesSince(index: number): Message[] {
+        const d = this.digest;
+        if (d && index >= d.from) return d.tail.slice(index - d.from);
+        return this.messages.slice(index);
+    }
+    /** What's needed of its messages, while they're not read (see digest). */
+    get historyDigest(): Readonly<MessagesDigest> | undefined {
+        return this.digest;
+    }
+    /** Where its file was read to, if it doesn't write to it: its messages read later are read to there. */
+    private readTo?: number;
+    /** Those pushed while its messages weren't read (push): the same objects once they are, not copies read back. */
+    private pushedUnread: Message[] = [];
+
+    /** Read from its file, as reading all of it makes them. */
+    private readMessages() {
+        const count = this.digest?.count;
+        const pushed = this.pushedUnread;
+        // As the file has them: no repair of its own (this session made its own when it was read, or is making it).
+        // Read first: a read that fails leaves the session as it was. One that doesn't write reads what it read then (a
+        // peer's look at a session another process is writing to): not what's been written since.
+        const inner = Session.read(this.file, false, true, false, this.persist ? undefined : this.readTo);
+        const read = inner.loadedMessages;
+        this.digest = undefined;
+        this.pushedUnread = [];
+        if (read.length === count && pushed.length) read.splice(read.length - pushed.length, pushed.length, ...pushed);
+        this.loadedMessages = read;
+        // Its lines, for the runtime opening it in this same task (readSegments), as a whole read leaves them.
+        const lines = inner.takeLoadedLines();
+        if (lines) {
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        }
+    }
+    /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
+    private digestible = false;
+    /**
+     * Its messages, read whole to build its turns (a first open), let go of now that those are built: a digest in their
+     * place, as a session opened from its checkpoint has, and they're read again from its file when they're asked for.
+     * Only where that checkpoint would have one (they're most of it) and the file has all of them (it writes to it).
+     */
+    letGoOfMessages(): boolean {
+        if (!this.persist || !this.digestible || this.digest || this.loadedLines || this.pushedUnread.length) return false;
+        this.digest = digestOf(this.loadedMessages);
+        this.loadedMessages = [];
+        return true;
+    }
     fastMode?: boolean;
     /** The speed the file has (a chat from before speeds were saved has it only in memory, until one is chosen). */
     private savedFastMode?: boolean;
@@ -258,6 +342,10 @@ export class Session {
     title?: string;
     /** The latest compaction summary (/summary). */
     summary?: string;
+    /** Its file's segments: one, and one more after each compaction (as readSegments makes them). */
+    segments = 1;
+    /** Its last compaction kept the prompt under way (it goes on in the segment after: Segment.kept). */
+    lastCompactKept = false;
     /** USD spent in this session (estimates included). */
     cost = 0;
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
@@ -389,6 +477,9 @@ export class Session {
      */
     release() {
         this.saveWorked();
+        // What waited for room (a full disk) goes down now if it can: no later write will take it.
+        if (this.failing) this.write();
+        this.stopRetry();
         this.released = true;
         if (!this.holding) return;
         this.holding = false;
@@ -411,23 +502,35 @@ export class Session {
     private torn = false;
     /** Saving failed, and hasn't worked since. */
     private failing = false;
+    /** Saving fails, and something waits to be saved: lost if Cavvy quits now. */
+    get unsaved(): boolean {
+        return this.failing && this.pending.length > 0;
+    }
     /** Told when saving stops working (and why), and when it works again (undefined). */
     onSaving?: (error: Error | undefined) => void;
+    /** While saving fails: what waits is tried again, so room made while the session is idle saves it. */
+    private retry?: ReturnType<typeof setTimeout>;
 
-    /** Whether it's on disk now. */
-    private write(line: Line): boolean {
+    private stopRetry() {
+        if (this.retry) clearTimeout(this.retry);
+        this.retry = undefined;
+    }
+
+    /** Whether it's on disk now. Without a line: what waits (saving failed) is written, if it can be now. */
+    private write(line?: Line): boolean {
         if (!this.persist || this.released) return false;
-        if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
-            this.pending.push(line);
+        if (!line && !this.pending.length) return true;
+        if (!this.started && line?.t !== "msg" && !existsSync(this.file)) {
+            if (line) this.pending.push(line);
             return false;
         }
         // One from before worked lines, written to for something else (a repair, a rename): when it last worked goes first,
         // or the sidebar would take this write's time for it.
-        if (line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
+        if (line && line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
             this.workedAt = this.savedWorkedAt = this.writtenAt;
             this.pending.push({ t: "worked", at: this.writtenAt });
         }
-        const lines = [...this.pending.splice(0), line];
+        const lines = [...this.pending.splice(0), ...(line ? [line] : [])];
         let saved = 0;
         try {
             if (!this.started) {
@@ -444,9 +547,11 @@ export class Session {
             for (; saved < lines.length; saved++) {
                 appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
                 this.torn = false;
+                noteSessionWrite(this.file);
             }
             if (this.failing) {
                 this.failing = false;
+                this.stopRetry();
                 this.onSaving?.(undefined);
             }
             return true;
@@ -460,6 +565,12 @@ export class Session {
                 this.failing = true;
                 this.onSaving?.(error as Error);
             }
+            this.stopRetry();
+            this.retry = setTimeout(() => {
+                this.retry = undefined;
+                this.write();
+            }, savingRetry.ms);
+            this.retry.unref?.();
             return false;
         }
     }
@@ -488,6 +599,16 @@ export class Session {
     /** Store a message (redacted); returns the stored copy. */
     push<M extends Message>(m: M): M {
         m = redactMessage(m) as M;
+        // Not read yet: put on its digest, once its file has it (they're read from there when they're asked for).
+        if (this.digest) {
+            if (this.write({ t: "msg", m })) {
+                this.digest = digestWith(this.digest, m);
+                this.pushedUnread.push(m);
+                return m;
+            }
+            this.messages.push(m);
+            return m;
+        }
         this.messages.push(m);
         this.write({ t: "msg", m });
         return m;
@@ -550,7 +671,7 @@ export class Session {
     recordNotice(level: TurnNotice["level"], text: string, extra: { details?: string[] } & NoticeData = {}): TurnNotice {
         // What it shows: the data's text, if it has one (as a live notice: history.liveNotice).
         const { details, text: shown, ...data } = extra;
-        const n: TurnNotice = { index: this.messages.length, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
+        const n: TurnNotice = { index: this.messageCount, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
         addNotice(this.notices, n);
         this.write({ t: "notice", ...n });
         return n;
@@ -563,7 +684,7 @@ export class Session {
      */
     recordSwitch(a: NoticeAccount): { notice: TurnNotice; merged: boolean } {
         const last = this.notices.at(-1);
-        const prev = last && mergesWith(last, a.provider, this.messages.length) ? last : undefined;
+        const prev = last && mergesWith(last, a.provider, this.messageCount) ? last : undefined;
         const all = [...(prev?.account?.stopped ?? []), ...(a.stopped ?? [])];
         const { stopped: _had, ...who } = a;
         const account: NoticeAccount = { ...who, ...(all.length ? { stopped: all } : {}) };
@@ -581,7 +702,7 @@ export class Session {
     recordStopped(origin: TurnNotice | undefined, stopped: NoticeStopped): { notice: TurnNotice; merged: boolean } {
         const last = this.notices.at(-1);
         const run = origin && this.switchRuns.get(origin);
-        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messages.length)) {
+        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messageCount)) {
             const account: NoticeAccount = { ...last.account, stopped: [...(last.account.stopped ?? []), ...stopped.tasks] };
             const notice = this.recordNotice("info", accountNoticeText(account), { account });
             this.switchRuns.set(notice, run);
@@ -842,6 +963,8 @@ export class Session {
         this.parked = [];
         this.summary = summary;
         this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
+        this.segments++;
+        this.lastCompactKept = kept;
         for (const m of messages) this.push(m);
     }
 
@@ -868,13 +991,120 @@ export class Session {
         return Session.read(file, false);
     }
 
-    private static read(file: string, persist = true): Session {
+    /** What it is, as read from its file (Session.read): its checkpoint's state (readCheckpoint). */
+    /** `digested`: with a digest of its messages in their place (digestOf), not them. */
+    private toState(digested = false): SessionState {
+        const digest = this.digest ?? (digested ? digestOf(this.loadedMessages) : undefined);
+        return {
+            meta: this.meta,
+            ...(digest ? { digest } : { messages: this.loadedMessages }),
+            notices: this.notices,
+            backends: [...this.backends],
+            backendPlaces: [...this.backendPlaces],
+            parked: this.parked,
+            summary: this.summary,
+            segments: this.segments,
+            lastCompactKept: this.lastCompactKept,
+            model: this.model,
+            fastMode: this.savedFastMode,
+            title: this.title,
+            workdir: this.workdir,
+            goal: this.goal,
+            plans: this.plans,
+            planLinks: this.planLinks,
+            imported: this.imported,
+            cost: this.cost,
+            costUnknown: this.costUnknown,
+            usageByModel: [...this.usageByModel],
+            backgroundTasks: [...this.backgroundTasks],
+            schedules: this.savedSchedules,
+            accounts: this.accounts,
+            workedAt: this.workedAt,
+        };
+    }
+
+    /** As its checkpoint has it (toState), before what's been written since is read. */
+    private restoreState(st: SessionState) {
+        this.loadedMessages = st.messages ?? [];
+        this.digest = st.digest;
+        this.digestible = Boolean(st.digest);
+        this.notices = st.notices;
+        this.backends = new Map(st.backends);
+        this.backendPlaces = new Map(st.backendPlaces);
+        this.parked = st.parked;
+        this.summary = st.summary;
+        this.segments = st.segments;
+        this.lastCompactKept = st.lastCompactKept;
+        this.model = st.model;
+        this.fastMode = this.savedFastMode = st.fastMode;
+        this.title = st.title;
+        this.workdir = st.workdir;
+        this.goal = st.goal;
+        this.plans = st.plans;
+        this.planLinks = st.planLinks;
+        this.imported = st.imported;
+        this.cost = st.cost;
+        this.costUnknown = st.costUnknown;
+        this.usageByModel = new Map(st.usageByModel);
+        for (const [k, v] of st.backgroundTasks) this.backgroundTasks.set(k, v);
+        this.savedSchedules = st.schedules;
+        this.schedules = JSON.parse(st.schedules) as ScheduledJob[];
+        this.accounts = st.accounts;
+        this.workedAt = this.savedWorkedAt = st.workedAt;
+    }
+
+    /** The lines just read from the file, until the end of the task that read them (takeLoadedLines). */
+    private loadedLines?: readonly Line[];
+
+    /** Those lines, left for takeLoadedLines (the runtime opening it): to look at without reading the file again. */
+    peekLoadedLines(): readonly Line[] | undefined {
+        return this.loadedLines;
+    }
+
+    /**
+     * Those lines, kept for takeLoadedLines past this task (a fork's log written a slice at a time before the runtime
+     * opens it): the function puts them back for the task it's called in.
+     */
+    keepLoadedLines(): () => void {
+        const lines = this.loadedLines;
+        return () => {
+            if (!lines) return;
+            this.loadedLines = lines;
+            queueMicrotask(() => (this.loadedLines = undefined));
+        };
+    }
+
+    /** The lines this session was just loaded from, once, while that's still the task that loaded it. */
+    takeLoadedLines(): readonly Line[] | undefined {
+        const lines = this.loadedLines;
+        this.loadedLines = undefined;
+        return lines;
+    }
+
+    /** `whole`: all of it, not from a checkpoint. `repair`: answer a tool call left without results (repairTail). */
+    private static read(file: string, persist = true, whole = false, repair = true, upTo?: number): Session {
         const writtenAt = statSync(file).mtimeMs;
-        const text = readFileSync(file, "utf-8");
-        let meta: SessionMeta | undefined;
+        // Read before, as it was up to a point: from there on (its checkpoint: readCheckpoint).
+        const cp = whole ? undefined : readCheckpoint(file);
+        let meta: SessionMeta | undefined = cp?.state.meta;
         const lines: Line[] = [];
-        for (const raw of text.split("\n")) {
-            if (!raw.trim()) continue;
+        // Each message line's length: what a checkpoint would hold of it, about.
+        const lineSizes = new WeakMap<Line, number>();
+        const kept = new WeakMap<Message, number>();
+        let empty = !cp;
+        // Characters read, to set against bytes (a line's length is in characters: non-ASCII text is more bytes).
+        let chars = 0;
+        // A line at a time (lib eachLine): a session of any size, never all of it as one string.
+        const { endsWithNewline, end } = eachLine(file, (raw) => {
+            empty = false;
+            chars += raw.length + 1;
+            if (!raw.trim()) return;
+            // A message: parsed when it's needed (most are before a compaction, and the session needs none of those).
+            if (raw.startsWith(MSG_LINE)) {
+                lines.push(lazyMessage(raw));
+                lineSizes.set(lines[lines.length - 1]!, raw.length);
+                return;
+            }
             try {
                 const l = JSON.parse(raw) as Line;
                 if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
@@ -882,11 +1112,24 @@ export class Session {
             } catch {
                 // a torn final line from a crash; ignore it
             }
-        }
+        }, undefined, cp?.offset ?? 0, upTo);
         if (!meta) throw new Error(`Not a session file: ${file}`);
+        // Read from a digest of its messages, and some changed since other than by adding one: all of it, as without one.
+        if (cp?.state.digest && lines.some((l) => CHANGES_MESSAGES.has(l.t))) return Session.read(file, persist, true, repair, upTo);
         const s = new Session(meta, { file, persist });
         s.started = true;
+        if (cp) s.restoreState(cp.state);
+        if (!persist) s.readTo = end;
+        // For the runtime opening it, in this same task (readSegments): the file isn't read and parsed again. Not kept
+        // past it, or a session loaded for anything else would hold every line it ever had. (Read from a checkpoint,
+        // they aren't all of them: readSegments reads the file.)
+        if (!cp) {
+            s.loadedLines = lines;
+            queueMicrotask(() => (s.loadedLines = undefined));
+        }
         for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
+        // (And as of its checkpoint.)
+        if (cp?.state.workedAt !== undefined) s.workedAt = Math.max(s.workedAt ?? -Infinity, cp.state.workedAt);
         // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
         if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);
         s.savedWorkedAt = s.workedAt;
@@ -894,19 +1137,34 @@ export class Session {
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load. (Written through write(), so one from before worked lines
         // keeps its time.)
-        if (persist && text && !text.endsWith("\n")) {
+        if (persist && !empty && !endsWithNewline) {
             try {
                 if (s.workedAt === undefined) appendFileSync(file, "\n" + redactedJson({ t: "worked", at: writtenAt }) + "\n");
                 else appendFileSync(file, "\n");
+                noteSessionWrite(file);
                 s.workedAt ??= writtenAt;
                 s.savedWorkedAt ??= writtenAt;
             } catch {
                 // read-only file: nothing will be appended either
             }
         }
-        for (const l of lines) {
-            if (l.t === "msg") s.messages.push(l.m);
+        // Before the last compaction: nothing it clears (the messages and all that's about them) is read.
+        const lastCompact = lines.findLastIndex((l) => l.t === "compact");
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i]!;
+            if (i < lastCompact && CLEARED_BY_COMPACT.has(l.t)) continue;
+            if (l.t === "msg") {
+                const m = l.m as Message | undefined;
+                // Added to its digest, read from one (digestWith: as a digest of them all).
+                if (m && s.digest) s.digest = digestWith(s.digest, m);
+                else if (m) {
+                    s.messages.push(m);
+                    kept.set(m, lineSizes.get(l) ?? 0);
+                }
+            }
             else if (l.t === "compact") {
+                s.segments++;
+                s.lastCompactKept = l.kept === true;
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
@@ -926,7 +1184,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messageCount, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendPlaces.set(l.provider, { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) });
                 else s.backendPlaces.delete(l.provider);
@@ -940,7 +1198,7 @@ export class Session {
                 if (typeof l.id === "string" && l.id) s.parked.push({
                     provider: l.provider,
                     place: { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) },
-                    session: { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) },
+                    session: { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messageCount, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) },
                 });
             }
             else if (l.t === "account" && (l.provider === "claude-code" || l.provider === "codex") && validAccountId(l.id)) {
@@ -975,11 +1233,20 @@ export class Session {
                 s.savedSchedules = JSON.stringify(s.schedules);
             }
         }
+        // Read far past where it was read from before (or all of it): from here, next time. As it is now, read: what
+        // happens to it from here (a repair below) is written to it, and read from it next time.
+        // Not where its messages alone are more than it would be kept at: a session never compacted (a Claude Code one's)
+        // has all of them, and making that checkpoint to throw it away was 18 ms of opening one of 100,000 items.
+        // Where they are most of it, a digest of them in their place (toState): opened from it, they're read only when
+        // they're asked for.
+        const bytesPerChar = chars ? (end - (cp?.offset ?? 0)) / chars : 1;
+        if (!s.digest && s.loadedMessages.reduce((n, m) => n + (kept.get(m) ?? 0), 0) * bytesPerChar * 0.9 > end * checkpointing.most) s.digestible = true;
+        if (persist && endsWithNewline && end - (cp?.offset ?? 0) >= checkpointing.after) writeCheckpoint(file, end, s.toState(s.digestible));
         // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
         // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
         // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
         for (const p of s.parked.filter((p) => s.backends.get(p.provider)?.id === p.session.id)) s.dropParked(p);
-        repairTail(s);
+        if (repair) repairTail(s);
         return s;
     }
 }
@@ -1011,6 +1278,144 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
 }
 
 /** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+/**
+ * A session as read from its file up to `offset` (Session.read), kept beside it (state/<id>.json) so it's read from
+ * there next time: a long session's file is mostly what its last compaction cleared, read and dropped each time it's
+ * opened (40 MB of a 30,000-item session). Used only if the file is the one it was read from (its inode) and still
+ * has, just before `offset`, the bytes it had then: it's only ever appended to.
+ */
+interface Checkpoint {
+    v: number;
+    offset: number;
+    ino: number;
+    /** The TAIL_BYTES before `offset`, base64. */
+    tail: string;
+    state: SessionState;
+}
+
+/** What a checkpoint keeps of a session (Session.toState). */
+interface SessionState {
+    meta: SessionMeta;
+    /** Its messages, or a digest of them in their place (Session.digest). */
+    messages?: Message[];
+    digest?: MessagesDigest;
+    notices: TurnNotice[];
+    backends: [string, BackendSession][];
+    backendPlaces: [string, AccountPlace][];
+    parked: ParkedBackend[];
+    summary?: string;
+    segments: number;
+    lastCompactKept: boolean;
+    model?: string;
+    fastMode?: boolean;
+    title?: string;
+    workdir?: string;
+    goal?: GoalRecord;
+    plans: PresentedPlan[];
+    planLinks: PlanLink[];
+    imported?: ImportRecord;
+    cost: number;
+    costUnknown: boolean;
+    usageByModel: [string, { usage: Usage; cost: number; unknown?: boolean }][];
+    backgroundTasks: [string, BackgroundTaskInfo][];
+    /** As saved (JSON). */
+    schedules: string;
+    accounts: Record<string, string>;
+    workedAt?: number;
+}
+
+const CHECKPOINT_VERSION = 4;
+/** Lines that change its messages other than by adding one: read from a digest of them (Session.read), these can't be applied to it. */
+const CHANGES_MESSAGES = new Set<string>(["compact", "rewind", "withdraw", "imagesRefused"]);
+/**
+ * `after`: read this far past a session's checkpoint (or with none), it's written anew. `most`: and kept only if it's
+ * at most this much of what it's read in place of. (Tests set them low to checkpoint short sessions.)
+ */
+export const checkpointing = { after: 1024 * 1024, most: 0.5 };
+const CHECKPOINT_TAIL = 256;
+
+export function checkpointFile(file: string): string {
+    return join(dirname(file), "state", basename(file).replace(/\.jsonl$/, ".json"));
+}
+
+/** The bytes of `file` (open as `fd`) before `offset`, as a checkpoint keeps them. */
+function tailBefore(fd: number, offset: number): string {
+    const n = Math.min(CHECKPOINT_TAIL, offset);
+    const b = Buffer.alloc(n);
+    readSync(fd, b, 0, n, offset - n);
+    return b.toString("base64");
+}
+
+function readCheckpoint(file: string): Checkpoint | undefined {
+    let cp: Checkpoint;
+    try {
+        cp = JSON.parse(readFileSync(checkpointFile(file), "utf-8")) as Checkpoint;
+    } catch {
+        return undefined;
+    }
+    if (cp?.v !== CHECKPOINT_VERSION || typeof cp.offset !== "number" || !cp.state?.meta) return undefined;
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const st = fstatSync(fd);
+        if (st.ino !== cp.ino || st.size < cp.offset || tailBefore(fd, cp.offset) !== cp.tail) return undefined;
+        return cp;
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+/** Whether it was written. */
+function writeCheckpoint(file: string, offset: number, state: SessionState): boolean {
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const cp: Checkpoint = { v: CHECKPOINT_VERSION, offset, ino: fstatSync(fd).ino, tail: tailBefore(fd, offset), state };
+        const json = JSON.stringify(cp);
+        // Kept only if it's read in place of much more (a session never compacted keeps all its messages: no saving).
+        if (json.length > offset * checkpointing.most) return false;
+        const out = checkpointFile(file);
+        ensureDir(dirname(out));
+        const tmp = `${out}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+        writeFileSync(tmp, json, { mode: 0o600 });
+        renameSync(tmp, out);
+        return true;
+    } catch {
+        // Read whole next time, as without it.
+        return false;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
+/** How a message's line starts (write: redactedJson keeps the key order). */
+const MSG_LINE = '{"t":"msg",';
+/** What a compaction empties, or only changes what it empties: lines of these before the last one needn't be read. */
+const CLEARED_BY_COMPACT = new Set<string>(["msg", "rewind", "withdraw", "notice", "imagesRefused"]);
+
+/** A message's line, parsed when its message is first read (undefined: a torn line). */
+function lazyMessage(raw: string): Line {
+    let m: Message | undefined;
+    let read = false;
+    return {
+        t: "msg",
+        get m() {
+            if (!read) {
+                read = true;
+                try {
+                    const l = JSON.parse(raw) as Line;
+                    if (l.t === "msg") m = l.m;
+                } catch {
+                    // a torn final line from a crash
+                }
+            }
+            return m as Message;
+        },
+    } as Line;
+}
+
 function markRefused(m: Message, model: string) {
     if (m.role !== "user" || m.meta?.imagesRefused?.includes(model)) return;
     m.meta = { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), model] };
@@ -1325,7 +1730,7 @@ function unlock(file: string) {
  * that, so answer dangling calls with an "interrupted" result on load.
  */
 function repairTail(s: Session) {
-    const last = s.messages[s.messages.length - 1];
+    const last = s.lastMessage;
     if (!last || last.role !== "assistant") return;
     const calls = last.content.filter((p) => p.type === "tool_call");
     if (!calls.length) return;
@@ -1338,6 +1743,8 @@ function repairTail(s: Session) {
 
 /** While a session works, how often at most a worked line goes down (Session.worked). */
 const WORKED_EVERY_MS = 60_000;
+/** While saving fails (a full disk), how often what waits is tried again (a test sets it lower). */
+export const savingRetry = { ms: 5_000 };
 const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
 /** Enough of a line to see its record type. */
@@ -1676,33 +2083,9 @@ export function heldSessionFolders(): string[] {
 export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number; capped?: () => void } = {}): SessionSummary[] {
     const root = paths.projectsDir();
     if (!existsSync(root)) return [];
-    const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
-    let dirs: string[] = [];
-    try {
-        dirs = readdirSync(root);
-    } catch {
-        return [];
-    }
-    for (const d of dirs) {
-        const dir = join(root, d);
-        let names: string[];
-        try {
-            names = readdirSync(dir);
-        } catch {
-            continue;
-        }
-        for (const f of names) {
-            if (!f.endsWith(".jsonl")) continue;
-            const file = join(dir, f);
-            try {
-                const st = statSync(file);
-                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, createdAt: st.birthtimeMs || st.ctimeMs });
-            } catch {
-                // vanished or unreadable
-            }
-        }
-    }
-    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+    const files = sessionFiles(root);
+    if (!files) return [];
+    const out = newestByWork(files.slice(), limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
         const s: SessionSummary = {
@@ -1719,6 +2102,142 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
     }, o.maxRead, o.capped);
     saveSessionHeads();
     return out;
+}
+
+type ListedFile = { f: string; file: string; mtimeMs: number; size: number; createdAt: number };
+/** Every session file as last listed whole, newest first, with each project folder's mtime then and when. */
+let listedFiles: { root: string; files: ListedFile[]; folders: Map<string, number>; at: number; writes: number } | undefined;
+/**
+ * Listed whole more than this long ago, it's listed whole again after the call, for the next. Until then, only the
+ * newest RELISTED_RECENT files are looked at again (what's being written to is among them; a file put in or taken out
+ * changes its folder's mtime). Statted whole at each call, 10,000 sessions held the server 22-34 ms each time a window
+ * opened or the sidebar was listed (measured): as long as history grows.
+ */
+const RELIST_MS = 1000;
+const RELISTED_RECENT = 64;
+
+let relistTimer: ReturnType<typeof setTimeout> | undefined;
+
+const folderTime = (dir: string) => {
+    try {
+        return statSync(dir).mtimeMs;
+    } catch {
+        return -1;
+    }
+};
+
+/** The session files under `root`, newest first (undefined: it couldn't be read). */
+function sessionFiles(root: string): ListedFile[] | undefined {
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return undefined;
+    }
+    const was = listedFiles;
+    if (was && was.root === root && dirs.length === was.folders.size && dirs.every((d) => was.folders.get(d) === folderTime(join(root, d)))) {
+        if (performance.now() - was.at >= RELIST_MS && !relistTimer) {
+            relistStarted = performance.now();
+            relistTimer = setTimeout(() => {
+                void listWholeLater(root).finally(() => (relistTimer = undefined));
+            }, 0);
+            relistTimer.unref?.();
+        }
+        let changed = false;
+        // Those this process wrote to since too, wherever they were (one far down, reopened and written to, is the
+        // newest now). Another process's write is seen by the next whole listing, at most RELIST_MS on.
+        const writes = sessionWriteCount();
+        const written = writtenAfter(was.writes);
+        was.writes = writes;
+        const files = was.files.map((x, i): ListedFile | undefined => {
+            if (i >= RELISTED_RECENT && !written?.has(x.file)) return x;
+            try {
+                const st = statSync(x.file);
+                if (st.mtimeMs === x.mtimeMs && st.size === x.size) return x;
+                changed = true;
+                return st.isFile() ? { ...x, mtimeMs: st.mtimeMs, size: st.size } : undefined;
+            } catch {
+                changed = true;
+                return undefined;
+            }
+        });
+        if (changed) listedFiles = { ...was, files: files.filter((x): x is ListedFile => x !== undefined).sort((a, b) => b.mtimeMs - a.mtimeMs) };
+        return listedFiles!.files;
+    }
+    return listWhole(root, dirs);
+}
+
+/** As listWhole, letting the server's other work run every RELIST_SLICE files (what's listed is the same). */
+const RELIST_SLICE = 500;
+async function listWholeLater(root: string): Promise<void> {
+    const writes = sessionWriteCount();
+    let dirs: string[];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return;
+    }
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    let since = 0;
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            if (++since >= RELIST_SLICE) {
+                since = 0;
+                await new Promise((r) => setImmediate(r));
+            }
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // Listed whole meanwhile (a folder changed, say): that's the newer.
+    if (listedFiles && listedFiles.root === root && listedFiles.at > relistStarted) return;
+    listedFiles = { root, files, folders, at: performance.now(), writes };
+}
+let relistStarted = 0;
+
+function listWhole(root: string, dirs: string[]): ListedFile[] {
+    const writes = sessionWriteCount();
+    const files: ListedFile[] = [];
+    const folders = new Map<string, number>();
+    for (const d of dirs) {
+        const dir = join(root, d);
+        folders.set(d, folderTime(dir));
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, size: st.size, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    listedFiles = { root, files, folders, at: performance.now(), writes };
+    return files;
 }
 
 /** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */
@@ -1793,18 +2312,18 @@ export function loadPromptHistory(cwd: string, limit = 500): string[] {
     const file = paths.history();
     if (!existsSync(file)) return [];
     try {
-        const lines = readFileSync(file, "utf-8").split("\n");
         const out: string[] = [];
-        for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
-            const raw = lines[i];
-            if (!raw) continue;
+        // From its end, as far back as it takes: it's every project's, kept for good.
+        linesFromEnd(file, (raw) => {
+            if (!raw) return;
             try {
                 const e = JSON.parse(raw) as { cwd: string; text: string };
                 if (e.cwd === cwd && e.text && out[out.length - 1] !== e.text) out.push(e.text);
             } catch {
                 // ignore
             }
-        }
+            return out.length < limit;
+        });
         return out.reverse();
     } catch {
         return [];

@@ -252,8 +252,9 @@ export const SESSION_DRAG = "application/x-cavvy-session";
  * The pane a component is in (components/Panes.tsx): its session, whether it's the one focused, and whether it's the
  * rightmost one (a floating inspector floats over it); `share`, how much of the column it is. `wasFocused`: it was focused before the press under way,
  * which focused it (a press on the other pane's side-panel button shows its panel rather than closing the panel).
- * Outside a split: the one, focused.
+ * Outside a split: the one, focused. `parked`: the one shown before, kept out of sight to be shown again as it was
+ * (Panes.tsx); not focused.
  */
-export interface Pane { id?: string; focused: () => boolean; split: () => boolean; rightmost: () => boolean; share: () => number; wasFocused: () => boolean }
-export const PaneContext = createContext<Pane>({ focused: () => true, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true });
+export interface Pane { id?: string; focused: () => boolean; parked: () => boolean; split: () => boolean; rightmost: () => boolean; share: () => number; wasFocused: () => boolean }
+export const PaneContext = createContext<Pane>({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true });
 export const usePane = () => useContext(PaneContext);

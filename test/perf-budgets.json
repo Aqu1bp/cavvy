@@ -3,13 +3,15 @@
     "gitSpawnsPerTurn": 13,
     "gitSpawnsUnchangedTurn": 0,
     "gitSpawnsIdle": 0,
-    "markdownParsedPerCharacter": 12.3,
+    "markdownParsedPerCharacter": 2.0,
     "codeTokenizedPerLine": 2,
     "streamClockWakesPerSecond": 21,
-    "guiEagerJsBytes": 1360000,
+    "guiEagerJsBytes": 848300,
     "guiEagerCssBytes": 310000,
     "glidesPerScreenOfReply": 3.6,
     "idleLayoutsAfterReply": 2,
     "idleStyleUpdatesAfterReply": 2,
-    "idleEntrancesRunningAfterReply": 0
+    "idleEntrancesRunningAfterReply": 0,
+    "idleHomeMemoryMB": 610,
+    "idleHomeCpuPercent": 2
 }
