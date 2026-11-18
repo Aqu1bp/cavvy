@@ -137,6 +137,11 @@ export interface AgentCliAdapter {
      * started to resume or fork (what it says before its first turn can be about an earlier process's work).
      */
     connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string; fork?: boolean }): Promise<CliConnection>;
+    /**
+     * Why the CLI itself said it's ending, once all it wrote is read: for a process that exits while starting, whose
+     * exit can be seen before its last output is (a session it can't resume says so there, not on stderr).
+     */
+    endReason?(): Promise<string | undefined>;
     status(accountId: string | undefined, signal?: AbortSignal): Promise<{ status: AgentCliStatus; limits?: PlanLimits }>;
     listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
     /** A one-off request with no tools (stream() today). */
