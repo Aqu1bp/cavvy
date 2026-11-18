@@ -12,6 +12,7 @@ import { dirname, join, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BrowserHost } from "./browser-host";
 import { mark, startMetrics } from "./metrics";
+import { askInPage, type PageAsk, type QuitQuestion } from "./quit-ask";
 import { MIN_SIZE, restorable, type WindowState } from "./window-state";
 
 // The app's folder (desktop-electron, or the packaged app's archive), not __dirname: the bundler fixes that to the
@@ -165,6 +166,30 @@ function quitCost(): Promise<{ unsaved: number; working: number }> {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Asking before quitting
+
+/** How long the page has to put the question up before the system's own box asks instead (a page stuck, or still loading). */
+const PAGE_ASK_MS = 1000;
+let quitAsks = 0;
+/** The question up in the window, while it is: asked to quit again, it's checked the page still answers. */
+let pageAsking: PageAsk | undefined;
+
+/** Whether to quit: asked in the window, in Cavvy's own dialog (quit-ask.ts), or in the system's box where the page can't ask. */
+async function askToQuit(q: QuitQuestion): Promise<boolean> {
+    if (win && !win.isDestroyed()) {
+        pageAsking = askInPage(win, q, { ipc: ipcMain, fromPage: fromGui, waitMs: PAGE_ASK_MS, id: ++quitAsks });
+        const inPage = await pageAsking.answer;
+        pageAsking = undefined;
+        if (inPage !== undefined) return inPage;
+        console.error("[cavvy] the window can't ask before quitting; asking in a message box");
+    }
+    const w = win && !win.isDestroyed() ? win : undefined;
+    const o = { type: "warning" as const, message: q.title, detail: q.detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 };
+    const { response } = await (w ? dialog.showMessageBox(w, o) : dialog.showMessageBox(o));
+    return response === 0;
+}
+
 async function stopServer() {
     const child = server;
     if (!child) return;
@@ -279,6 +304,12 @@ function createWindow() {
     win.webContents.on("render-process-gone", (_e, { reason }) => {
         console.error(`[cavvy] the window's page is gone (${reason})`);
         if (reason !== "clean-exit") void pageGone();
+    });
+    // Closing it quits (window-all-closed): asked first as ⌘Q is, in the window, which stays until the answer is Quit.
+    win.on("close", (e) => {
+        if (quitting) return;
+        e.preventDefault();
+        app.quit();
     });
     win.on("closed", () => {
         win = undefined;
@@ -402,7 +433,7 @@ function liquidGlass(): LiquidGlass | undefined {
 
 /**
  * Checks only (with CAVVY_ELECTRON_METRICS): a line written to <metrics file>.cmd does to the window what a person's
- * use of their desktop does: minimize/restore, hide/show, cover/uncover (another window over it).
+ * use of their desktop does: minimize/restore, hide/show, cover/uncover (another window over it), and quit (as ⌘Q, wherever the window is).
  */
 function testWindowCommands() {
     const file = process.env.CAVVY_ELECTRON_METRICS;
@@ -421,6 +452,7 @@ function testWindowCommands() {
         else if (cmd === "restore") win.restore();
         else if (cmd === "hide") win.hide();
         else if (cmd === "show") win.show();
+        else if (cmd === "quit") app.quit();
         else if (cmd === "cover") {
             cover = new BrowserWindow({ ...win.getBounds(), backgroundColor: "#202020", show: true, focusable: true });
             cover.focus();
@@ -553,27 +585,28 @@ else {
     app.on("before-quit", (e) => {
         if (quitting) return;
         e.preventDefault();
-        if (asking) return;
+        // Asked already (a second ⌘Q, the window closed meanwhile): the question that's up is the one answered, as long
+        // as the window still answers.
+        if (asking) {
+            if (win && !win.isDestroyed()) raiseWindow();
+            pageAsking?.recheck();
+            return;
+        }
         asking = true;
         // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk), or sessions on
         // this computer that are working (a server's carry on without the app). An update's restart asked before it began.
         void quitCost().then(async ({ unsaved, working }) => {
-            const w = win && !win.isDestroyed() ? win : undefined;
-            const question =
+            const question: QuitQuestion | undefined =
                 unsaved > 0
-                    ? { message: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
+                    ? { title: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
                     : working > 0 && !quitAsked
-                      ? { message: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
+                      ? { title: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
                       : undefined;
-            if (question) {
-                const o = { type: "warning" as const, ...question, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 };
-                const { response } = await (w ? dialog.showMessageBox(w, o) : dialog.showMessageBox(o));
-                if (response === 1) {
-                    asking = false;
-                    // Its last window closed to quit: it comes back, so the work can still be saved, or watched.
-                    if (!win || win.isDestroyed()) createWindow();
-                    return;
-                }
+            if (question && !(await askToQuit(question))) {
+                asking = false;
+                // Its last window closed to quit: it comes back, so the work can still be saved, or watched.
+                if (!win || win.isDestroyed()) createWindow();
+                return;
             }
             quitting = true;
             host.close();
