@@ -4,10 +4,10 @@
 // Marketplaces is where catalogs are added. Every change goes through the server, which reloads each open
 // folder's settings, commands and MCP servers.
 
-import { createEffect, createMemo, createSignal, For, Match, on as when, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, awayMachine, awayUnopened, reportError, rpc as own, rpcFor, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, linkedMachine, reportError, rpc as own, rpcFor, toast } from "../state/app";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -92,42 +92,31 @@ export function Plugins() {
     /** The details dialog, one object per opening: an install started in one closes only that one. */
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
-    const cwd = () => app.homeCwd;
-    // The plugins of the machine the folder is on: the session's in view (or Home's), read with the folder each time.
-    const link = () => {
-        // Its machine not reached yet: the window's own isn't asked about a folder that isn't its.
-        if (app.activeId && awayUnopened(app.activeId)) throw new Error("Still connecting to that session's machine. Try again in a moment.");
-        return rpcFor(app.activeId);
-    };
-    /** Where the rows shown came from (the connection, the folder, the machine's name): what's done to one is done there. */
-    let shown: { link: ReturnType<typeof rpcFor>; cwd?: string } | undefined;
+    /**
+     * Whose plugins these are, taken once: the machine and folder of the session in view (or Home's) when the panel
+     * opened. Everything listed and done here is that one's, whatever comes into view under Settings meanwhile.
+     */
+    let origin: { link: ReturnType<typeof rpcFor>; cwd?: string } | undefined;
     const [on, setOn] = createSignal<string>();
-    let asked = 0;
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
-        const mine = ++asked;
         try {
-            const from = { link: link(), cwd: cwd() };
-            const at = awayMachine(app.activeId);
-            const got = await from.link.call("plugins.list", { cwd: from.cwd });
-            // Another folder or machine came into view meanwhile: its own list is on its way.
-            if (mine !== asked) return;
-            shown = from;
-            setOn(at);
-            setInfo(got);
+            setInfo(await origin!.link.call("plugins.list", { cwd: origin!.cwd }));
         } catch (e) {
-            if (mine !== asked) return;
-            // Nothing shown is another machine's: the rows of the one before go.
-            shown = undefined;
-            setInfo(undefined);
             reportError(e);
         } finally {
             setLoading(false);
         }
     };
-    onMount(() => {
+    // Once the session in view is reached: another machine's still connecting isn't asked of the window's own Cavvy.
+    createEffect(() => {
+        const id = app.activeId;
+        if (id) linkedMachine(id);
+        if (origin || (id && awayUnopened(id))) return;
+        origin = { link: rpcFor(id), cwd: app.homeCwd };
+        setOn(awayMachine(id));
         void load().then(() => {
             const i = info();
             // First visit with nothing installed: show what there is to install.
@@ -135,17 +124,12 @@ export function Plugins() {
         });
     });
 
-    // The session in view changes under Settings (its shortcuts work here): the list is that folder's, on its machine.
-    createEffect(when(() => [app.activeId, app.homeCwd], () => void load(), { defer: true }));
-
     const act: Act = async (key, params, done) => {
-        const from = shown;
-        if (busy() || !from) return;
+        if (busy() || !origin) return;
         setBusy(key);
         try {
-            const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);
-            // Still the list it was done from.
-            if (shown === from) setInfo(r);
+            const r = await origin.link.call("plugins.action", { ...params, cwd: origin.cwd } as PluginActionParams);
+            setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
         } catch (e) {
