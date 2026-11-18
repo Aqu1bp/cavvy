@@ -115,7 +115,7 @@ if (import.meta.main) {
     console.log(`\n${line(head)}\n${widths.map((w) => "-".repeat(w)).join("  ")}\n${rows.map(line).join("\n")}`);
     console.log(`\n${rows.length} checks, ${flagged} worse than allowed. Baseline: ${baseline.label ?? "none"}${baseline.note ? ` (${baseline.note})` : ""}.`);
     if (args.includes("--save-baseline")) {
-        writeFileSync(baselineFile, JSON.stringify({ label, at: new Date().toISOString(), app: heavy?.app ?? stream?.app, figures: { ...baseline.figures, ...now } }, null, 1) + "\n");
+        writeFileSync(baselineFile, JSON.stringify({ label, at: new Date().toISOString(), figures: { ...baseline.figures, ...now } }, null, 1) + "\n");
         console.log(`Saved as the baseline: ${baselineFile}`);
     }
     process.exit(flagged ? 1 : 0);

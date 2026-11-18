@@ -1677,7 +1677,10 @@ export class Runtime {
         sent.reverse();
         const turns = from ? all.slice(from) : all;
         const unread = this.unread;
-        const { agents, more } = agentsFor(this.view.agents, turns, !from && !unread, (a) => this.agentFull(a), foldedIds(sent));
+        // Up to a turn: only the sub-agents of those turns (a fork has none of the later ones').
+        const upToIds = upTo === undefined ? undefined : new Set(all.map((t) => t.id));
+        const ofThese = upToIds ? this.view.agents.filter((a) => upToIds.has(a.turnId)) : this.view.agents;
+        const { agents, more } = agentsFor(ofThese, turns, !from && !unread, (a) => this.agentFull(a), foldedIds(sent));
         // Those before the latest segment's still being built: at least as many as there are (the window is told how many
         // when it asks for them: session.turns). Those not read from the store yet, and their sub-agents (counted).
         const earlier = from + (this.earlierAtLeast ?? 0) + (unread?.turns ?? 0);

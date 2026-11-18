@@ -149,6 +149,8 @@ let loadMore: (h: any, how: any) => Promise<boolean> = async () => false;
 let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undefined;
 /** state/app.ts onRenew: what each mounted conversation does when its session comes again, by session id. */
 const renews = new Map<string, () => (() => void) | void>();
+/** state/app.ts onReset: what each mounted conversation does once its turns are replaced (a rewind), by session id. */
+const resets = new Map<string, () => void>();
 /** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
 const workOpen = new Map<string, boolean>();
 /** What the conversation let go of (state/app.ts forgetEarlier): how many turns it kept each time. */
@@ -160,6 +162,7 @@ const scope = {
     rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
     onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
+    onReset: (h: any, fn: () => void) => (resets.set(h.id, fn), () => resets.delete(h.id)),
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
@@ -819,6 +822,21 @@ try {
     const stray = create("article");
     io.cb!([{ target: stray, isIntersecting: false }]);
     assert.equal(stray.props[FAR], undefined, "and the observer's callback, which may outlive it, no longer reaches the conversation");
+
+    // Read far up, then rewound (its turns replaced, fewer of them): the end of what's left is drawn, not held back as
+    // the turns far below the place read were.
+    {
+        const [rewTurns, setRewTurns] = solid.createSignal(turns(400));
+        const rewound = { id: "rewound", view: { state: {}, get turns() { return rewTurns(); } } };
+        dispose(); dispose = mount(rewound);
+        for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); settle(); }
+        assert.ok(turn("turn-0") && !turn("turn-120"), "read up, those far below held back");
+        setRewTurns(turns(100));
+        resets.get("rewound")?.();
+        settle();
+        assert.ok(turn("turn-99"), "rewound, the last turn left is drawn");
+        dispose();
+    }
 
     // A long conversation, all shown: a scroll event measures a few turns to find where it's read (they're in order),
     // following the end it measures none, and an anchor is found by its id, not by searching the column.
