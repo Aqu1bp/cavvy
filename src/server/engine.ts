@@ -3,6 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { answerPeers, homeFarPeers, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -62,7 +63,9 @@ import { LENDABLE, setLent, type Lendable } from "../tools/lent";
 import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
-import type { PeerHost } from "./session-peers";
+import { peerOps, type PeerHost } from "./session-peers";
+import { PeerError, type FarPeers } from "../agent/peers";
+import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -1400,6 +1403,7 @@ export class Engine {
         this.clients.delete(client);
         for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
+        this.dropHub(client);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
@@ -1986,6 +1990,43 @@ export class Engine {
         setLent(new Set([...this.lenders.values()].flat()));
     }
 
+    /** On a server: the user's own computers connected here that answer for the other machines' sessions (far-peers.ts), the latest last. */
+    private peerHubs = new Set<EngineClient>();
+    private peerCalls = new Map<string, { client: EngineClient; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+    private dropHub(client: EngineClient) {
+        this.peerHubs.delete(client);
+        for (const [id, c] of this.peerCalls) {
+            if (c.client !== client) continue;
+            this.peerCalls.delete(id);
+            clearTimeout(c.timer);
+            c.reject(new PeerError("Cavvy on your computer went away before it answered."));
+        }
+    }
+
+    /** What a session here reaches the user's other machines' sessions through, if anything (far-peers.ts). */
+    farPeers(): FarPeers | undefined {
+        if (this.o.away) {
+            return serverFarPeers((op, params) => {
+                const client = [...this.peerHubs].at(-1);
+                if (!client) return Promise.reject(new PeerError("Sessions on your other machines are reached through Cavvy on your computer, which isn't connected to this server right now."));
+                const callId = randomUUID();
+                return new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => {
+                        this.peerCalls.delete(callId);
+                        reject(new PeerError("Cavvy on your computer didn't answer in time."));
+                    }, PEERS_WAIT_MS);
+                    (timer as { unref?: () => void }).unref?.();
+                    this.peerCalls.set(callId, { client, resolve, reject, timer });
+                    client.send({ type: "peers.call", callId, op, params });
+                });
+            });
+        }
+        // The user's computer: only once it has servers.
+        if (!listServers().length) return undefined;
+        return homeFarPeers(() => this.serverLinks?.connectedServers() ?? new Map());
+    }
+
     /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
     private guests = new Map<string, Promise<Runtime>>();
     /** When each server's sessions were last lent a call that only reads, and one that acts, and when one of them last had the user told it asks (LENT_PER_MINUTE). */
@@ -2166,6 +2207,8 @@ export class Engine {
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
+                // What a session on a server asks about the user's other machines' sessions: this computer answers.
+                peers: (name, op, params) => answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map()),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -3205,6 +3248,39 @@ export class Engine {
                 if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
                 const name = str(p.name, "name");
                 return [...this.runtimes.values()].flatMap((rt) => (rt.guestOf === name && rt.guestSession && rt.asks.length ? [{ sessionId: rt.guestSession.id, lent: this.lentSession(rt) }] : []));
+            }
+            case "peers.hub": {
+                // Only a server is answered for by the user's computer: that computer answers for itself.
+                if (!this.o.away) throw new RpcError("This machine answers for its own sessions.", "unsupported");
+                this.peerHubs.delete(client);
+                this.peerHubs.add(client);
+                return null;
+            }
+            case "peers.result": {
+                const call = this.peerCalls.get(str(p.callId, "callId"));
+                if (!call || call.client !== client) return null;
+                this.peerCalls.delete(str(p.callId, "callId"));
+                clearTimeout(call.timer);
+                if (typeof p.error === "string") call.reject(new PeerError(p.error.slice(0, 1000)));
+                else call.resolve(p.result);
+                return null;
+            }
+            case "peers.list":
+            case "peers.read":
+            case "peers.send": {
+                // Asked by the user's own computer, about this server's sessions (far-peers.ts).
+                if (!this.o.away) throw new RpcError("Only a server is asked about its sessions this way.", "unsupported");
+                const ops = peerOps(this.peerHost(), true);
+                try {
+                    if (method === "peers.list") return ops.list({ query: optStr(p.query), limit: num(p.limit, 20) });
+                    if (method === "peers.read") return ops.read(str(p.id, "id"), typeof p.turns === "number" ? p.turns : undefined) ?? null;
+                    const f = (p.from && typeof p.from === "object" ? p.from : {}) as Record<string, unknown>;
+                    const mode = PERMISSION_MODES.find((m) => m === f.mode) ?? "bypassPermissions";
+                    return await ops.send(str(p.id, "id"), str(p.message, "message"), { id: str(f.id, "from.id"), title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
+                } catch (e) {
+                    if (e instanceof PeerError) throw new RpcError(e.message, "peer");
+                    throw e;
+                }
             }
             case "offers.result": {
                 const call = this.lentCalls.get(str(p.callId, "callId"));

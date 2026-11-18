@@ -21,4 +21,11 @@ A message shows in the receiving session as a quote under "Message from another 
 - Pressing Esc in a session holds messages from other sessions until you next send it something, as it holds pull request and monitor events. Messages from other sessions start or join at most 20 turns an hour in a session (events count toward the turns they start), so two agents answering each other can't run on unattended. Both limits are kept while Cavvy runs, through closing and reopening the session.
 - A session that's closed is opened to take a message, and closed again once it's done, unless a window shows it. A session open in a terminal can't take one: it says so to the sender.
 
+## On your other machines
+
+In the app, sessions on your servers can be reached the same way, and a session on a server can reach your Mac's sessions and your other servers'. `ListSessions` with every project lists them after the ones here, each named by its machine: `box/<id>` for a session on server `box`, `mac/<id>` for one on your Mac, as seen from a server. `ReadSession` and `SendToSession` take that name. It goes through your Mac's desktop app, so it works while the app is open and connected to the server; otherwise the agent is told that machine isn't connected.
+
+- A message sent to a session on a server isn't refused for that session's mode: sessions there start in Bypass permissions, and the server is where they're meant to run without asking. A message to a session on your Mac is held to the rule above.
+- Starting a session works only on the session's own machine.
+
 T3 Code's thread tools ([pingdotgg/t3code](https://github.com/pingdotgg/t3code), MIT) were the reference: listing by project, reading by id, messages that join a running turn, and no handing work to a session with a freer mode.

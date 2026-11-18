@@ -203,12 +203,12 @@ describe("what the agent reads", () => {
 describe("the tools", () => {
     const here = "/p";
     test("without peers, or from the terminal, they say why", async () => {
-        expect(listSessions(undefined, {}).text).toContain("only a session's main agent");
+        expect((await listSessions(undefined, {})).text).toContain("only a session's main agent");
         const disk = fakePeers("me", here, [summary("a", here)]);
         expect((await sendToSession(disk, { id: "a", message: "hi" })).text).toContain("Cavvy app only");
         expect((await startSession(disk, { prompt: "hi" })).text).toContain("Cavvy app only");
-        expect(readSession(disk, { id: "me" }).text).toBe("That's this session.");
-        expect(readSession(disk, { id: "nope" }).text).toContain("No session nope");
+        expect((await readSession(disk, { id: "me" })).text).toBe("That's this session.");
+        expect((await readSession(disk, { id: "nope" })).text).toContain("No session nope");
     });
 
     test("send checks the message and says what happened", async () => {
@@ -394,7 +394,7 @@ describe("in the app", () => {
         const stored = b.session.messages.find((m) => m.role === "user" && m.meta?.kind === "wake");
         expect(stored?.role === "user" && stored.meta?.from?.id).toBe(a.id);
         // And the sender can read what happened there.
-        const read = readSession(a.toolState.peers, { id: b.id });
+        const read = await readSession(a.toolState.peers, { id: b.id });
         expect(read.text).toContain(`## Message from session ${a.id}`);
         expect(read.text).toContain("Another session asked");
     });
@@ -436,7 +436,7 @@ describe("in the app", () => {
         const reminder = b.session.messages.find((m) => m.role === "user" && m.meta?.peers?.length);
         expect(reminder?.role === "user" && JSON.stringify(reminder.content)).toContain("isn't the user");
         // ReadSession shows where it joined.
-        expect(readSession(a.toolState.peers, { id: b.id }).text).toContain(`## Message from session ${a.id}`);
+        expect((await readSession(a.toolState.peers, { id: b.id })).text).toContain(`## Message from session ${a.id}`);
         // Reopened, it's there still.
         (client as any).subs.delete(b.id);
         (engine as any).unloadIfUnused(b.id);

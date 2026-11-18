@@ -47,6 +47,8 @@ const CHANGES_PER_SECOND = 20;
 /** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
 const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
+/** What a server says of its sessions to another machine's agent (src/server/far-peers.ts): a session's last turns, as text. */
+const PEERS_ANSWER = 1024 * 1024;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
 const MAX_PER_MINUTE = 32 * 1024 * 1024;
@@ -126,6 +128,11 @@ export class MachineWatch {
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
+            /**
+             * Answers what a session on the server asks about the user's other machines' sessions (far-peers.ts
+             * answerPeers): this one says so on connecting.
+             */
+            peers?: (op: string, params: Record<string, unknown>) => Promise<unknown>;
             /** Runs a call of one of those, through this machine's own checks. */
             lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
@@ -231,6 +238,15 @@ export class MachineWatch {
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
     call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
+        return this.request(method, params, MAX_ANSWER);
+    }
+
+    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts). */
+    ask(method: "peers.list" | "peers.read" | "peers.send", params: Record<string, unknown>): Promise<unknown> {
+        return this.request(method, params, PEERS_ANSWER);
+    }
+
+    private request(method: string, params: Record<string, unknown>, maxAnswer: number): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
         if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));
@@ -250,7 +266,7 @@ export class MachineWatch {
                     // and its kind when it names one (a window treats some apart).
                     if (error) return reject(Object.assign(new Error(cut(error.message, 300).replace(/\s+/g, " ").trim() || "It didn't work."), { theirs: true }, typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
                     const result = r.result ?? null;
-                    if (JSON.stringify(result).length > MAX_ANSWER) return reject(new Error(`${this.name} answered with more than was asked for.`));
+                    if (JSON.stringify(result).length > maxAnswer) return reject(new Error(`${this.name} answered with more than was asked for.`));
                     resolve(result);
                 },
             });
@@ -384,6 +400,7 @@ export class MachineWatch {
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
                 if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                if (this.o.peers) ws.send(JSON.stringify({ id: this.nextId++, method: "peers.hub", params: {} }));
                 return;
             }
             if (msg.id === 2) {
@@ -463,6 +480,18 @@ export class MachineWatch {
                         // Given up there meanwhile, or the connection is another one now: nobody waits for it.
                         if (!stop.signal.aborted) answer(r);
                     });
+            } else if (ev.type === "peers.call") {
+                // Answered whatever it asks, so nothing there waits on a request only dropped here.
+                const callId = typeof ev.callId === "string" && ev.callId.length <= 100 ? ev.callId : undefined;
+                if (!callId || !this.o.peers) return;
+                const params = ev.params && typeof ev.params === "object" && !Array.isArray(ev.params) ? (ev.params as Record<string, unknown>) : {};
+                void this.o
+                    .peers(typeof ev.op === "string" ? ev.op : "", params)
+                    .then(
+                        (result) => ({ result: result ?? null }),
+                        (e) => ({ error: cut((e as Error).message, 1000) }),
+                    )
+                    .then((r) => ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "peers.result", params: { callId, ...r } })));
             } else if (ev.type === "offers.cancel") {
                 if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();
             }
