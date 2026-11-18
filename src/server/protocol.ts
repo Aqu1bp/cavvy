@@ -856,6 +856,10 @@ export interface SessionState {
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
+    /** Its side chat, while one is open (session.sideChat), and whether it's working or waiting on the user. */
+    sideChat?: { id: string; status?: SessionStatus };
+    /** A side chat's: the session it's about. Never listed with the sessions. */
+    sideOf?: string;
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
     /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
@@ -2355,6 +2359,10 @@ export interface Methods {
      */
     "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
+    /** The session's side chat (opened if it has none), with `text` sent to it. */
+    "session.sideChat": { params: { id: string; text?: string }; result: { id: string } };
+    /** Close the session's side chat: it's discarded. */
+    "session.closeSideChat": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */

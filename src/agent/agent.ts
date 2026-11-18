@@ -50,6 +50,7 @@ import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground,
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
+import { withContext } from "./side-chat";
 import { cacheTtl, idleCompactPlan, type CacheWindow, type IdleCompactPlan } from "./idle-compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
@@ -340,6 +341,11 @@ export interface AgentOptions {
     parentFastMode?: () => boolean | undefined;
     /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
     listings?: () => ProviderListing[];
+    /**
+     * A side chat's (src/agent/side-chat.ts): another session's conversation, sent before this one's own messages
+     * and never part of them. An agent CLI is handed it with its first prompt, as a conversation it joins.
+     */
+    context?: () => readonly Message[];
 }
 
 const MAX_RETRIES = 10;
@@ -1447,7 +1453,7 @@ export class Agent {
     /** Estimated tokens in the next request. */
     estimatedContext(): number {
         const since = this.session.messagesSince(this.lastUsageTotal);
-        if (!this.contextTokens) return estimateTokens(this.session.messages) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
+        if (!this.contextTokens) return estimateTokens(withContext(this.o.context?.(), this.session.messages)) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
         return this.contextTokens + estimateTokens(since);
     }
 
@@ -1492,7 +1498,7 @@ export class Agent {
         return this.withRetries(signal, async () => {
             const last = (messages ?? this.session.messages).at(-1);
             this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
-            const sendable = await this.sendable(messages ?? this.session.messages);
+            const sendable = await this.sendable(messages ?? withContext(this.o.context?.(), this.session.messages));
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
             this.idleTried = false;
@@ -2248,7 +2254,8 @@ export class Agent {
      */
     private missedMessages(promptIndex: number, resume?: { synced: number }): Message[] {
         const from = resume ? resume.synced : 0;
-        const all = this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from));
+        // A side chat's CLI joins with the other session's conversation before its own.
+        const all = withContext(resume ? undefined : this.o.context?.(), this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from)));
         const has = (t: string) => all.some((x) => x.role === "user" && !x.meta?.resends && ((x.content[0]?.type === "text" && x.content[0].text === t) || textOf(x) === t));
         return all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has)));
     }
