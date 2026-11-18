@@ -609,6 +609,7 @@ export function Sidebar() {
     let listEl: HTMLElement | undefined;
     let frame = 0;
     const animations = new Set<Animation>();
+    /** Those that end rather than stop where they are when the rail holds still: fades, and the slides of a change asked for. */
     const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
@@ -650,6 +651,8 @@ export function Sidebar() {
         // The first list isn't a change, and one held under the pointer doesn't move. One let go (the user's own
         // settle or pin, with the pointer still here) moves now, so it's decided now, not when the frame comes.
         if (!previous || held()) return next;
+        // Let go for a change the user asked for (snoozing, a snooze's time come): its slides run to their end, held or not.
+        const asked = untrack(() => railFree() || manualLayout());
         // Where each row and heading was, and in what shape (a card or a one-line row).
         const before = new Map<string, { top: number; card: boolean }>();
         for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? [])
@@ -663,7 +666,7 @@ export function Sidebar() {
             const run = (el: HTMLElement, frames: Keyframe[]) => {
                 const animation = el.animate(frames, { duration, easing: "ease-out" });
                 animations.add(animation);
-                if ("opacity" in frames[0]!) fades.add(animation);
+                if ("opacity" in frames[0]! || asked) fades.add(animation);
                 animation.onfinish = () => animations.delete(animation);
             };
             for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? []) {
@@ -691,7 +694,8 @@ export function Sidebar() {
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {
-            // Held, a slide stops where it is; a fade ends, so nothing is left half there.
+            // Held, a slide stops where it is; a fade ends, so nothing is left half there. So does the slide of a change
+            // the user asked for: stopped, it left a row's gap above the rows it was moving up for as long as the pointer stayed.
             if (pause) fades.has(animation) ? animation.finish() : animation.pause();
             else animation.play();
         }
@@ -701,6 +705,11 @@ export function Sidebar() {
         for (const animation of animations) animation.cancel();
         setSidebarOrder(undefined);
     });
+    // A snoozed session waking (its time come, or it needs you) leaves Snoozed then, the pointer on the rail or not: the
+    // user chose the time. The one on screen too: it was held in the shelf, where the rail had it, until the pointer left.
+    createEffect(on(() => app.sessions.filter(isSnoozed).map((s) => s.id), (ids, was) => {
+        if (was?.some((id) => !ids.includes(id))) allowLayout();
+    }, { defer: true }));
     const showMore = (page: "cards" | "settled" | "archived") => {
         if (page === "cards") setShown((n) => n + PAGE);
         else if (page === "settled") setSettledShown((n) => n + PAGE);
