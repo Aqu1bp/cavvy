@@ -538,9 +538,10 @@ describe("permissions", () => {
         }
         // The reviewer isn't told of them either: it would take a push from Bash as approved too.
         expect(checker.recentApprovals()).toEqual([]);
-        // Other tools still remember an exact yes.
+        // Other tools' yeses do reach the reviewer.
         checker.approve(tool("Bash"), { command: "make" }, cwd);
-        expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "allow", remembered: true });
+        expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "ask" });
+        expect(checker.recentApprovals()).toEqual([{ tool: "Bash", cwd: expect.any(String), command: "make" }]);
     });
 
     test("watching only reads, so it runs without asking, plan mode included", () => {
