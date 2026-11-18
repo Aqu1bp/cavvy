@@ -24,7 +24,6 @@ import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
 import { uncleared, WorkList } from "./BackgroundTasks";
-import { BrowserPane } from "./BrowserPane";
 import { browserUnseen, loadBrowserState, setBrowserShown } from "../state/browser";
 import { loadSimulatorState, setSimulatorShown, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
@@ -232,6 +231,8 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     );
 }
 
+/** The Browser pane is loaded when it's first shown, with its menu and bars (BrowserTools.tsx). */
+const BrowserPane = lazy(() => import("./BrowserPane").then((m) => ({ default: m.BrowserPane })));
 /** The Simulator pane is loaded when it's first shown: only a Mac with Xcode, or a server lent one's, ever shows it. */
 const SimulatorPane = lazy(() => import("./SimulatorPane").then((m) => ({ default: m.SimulatorPane })));
 

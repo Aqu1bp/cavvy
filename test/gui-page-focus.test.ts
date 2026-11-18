@@ -601,7 +601,7 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
     expect(host).toContain("const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);");
     // A key reaching the page: the window's if it strayed there, else the person using the page. A press makes the page
     // theirs, and so does Tab into it from the window; the GUI is told either way.
-    expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
+    expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);(?:\s*\/\/[^\n]*)*\s*if \(findKey\(input\) && !tab\.agentKeys\)[^\n]*\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
     expect(host).toMatch(/if \(type === "mouseDown"\) \{\s*this\.theirs\(tab\);/);
     expect(host).toContain('gui.on("before-input-event", (_e, input) => this.tabKey(input));');
     expect(host).toMatch(/private theirs\(tab: Tab\) \{[^]*?tab\.theirs = true;[^]*?this\.toGui\(\{ type: "person", key: tab\.key, press: true, seq: tab\.theirsSeq \}\);/);

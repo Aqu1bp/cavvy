@@ -500,6 +500,8 @@ export interface QuestionInteraction {
     question: string;
     options: { label: string; description?: string }[];
     multi: boolean;
+    /** Images and files can go with the answer. */
+    attach?: boolean;
 }
 
 export interface PlanInteraction {
@@ -627,7 +629,8 @@ export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInt
 
 export type InteractionResponse =
     | { kind: "permission"; choice: PermissionOption["id"]; feedback?: string }
-    | { kind: "question"; answers?: string[] }
+    /** `images`, `files`: what's attached to the answer, as session.send carries them (where the question takes them). */
+    | { kind: "question"; answers?: string[]; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
     /** No value: declined. The value goes to the session's memory and nowhere else. */
     | { kind: "secret"; value?: string }
@@ -2218,6 +2221,8 @@ export interface Methods {
      * `list` is that list's id: a pick made in a list that's been replaced since picks nothing.
      */
     "browser.choose": { params: { id: string; index?: number; tab?: number; list?: number }; result: null };
+    /** The pane's find bar, in a page of the headless browser: `query` ("" clears what it marked); `step` 0 searches anew, 1 and -1 go to the next and previous match. `active` counts from 1 (0: none). */
+    "browser.find": { params: { id: string; query: string; step?: number; tab?: number }; result: { matches: number; active: number } };
     /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
     "simulator.state": { params: { id: string }; result: SimulatorState };
     /**

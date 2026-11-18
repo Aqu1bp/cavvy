@@ -62,6 +62,72 @@
     opacity: 0.5;
 }
 
+/* Under the tabs, opened from the pane's menu (BrowserTools.tsx): find in page, and the page's size and zoom. */
+.br-strip {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
+    flex: none;
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.br-strip .hb {
+    border-radius: var(--pill);
+}
+
+.br-strip-ic {
+    flex: none;
+    margin: 0 calc(2 * var(--sp)) 0 calc(4 * var(--sp));
+    color: var(--fg-3);
+}
+
+.br-strip input {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border: 0;
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg);
+    font: inherit;
+}
+
+.br-find-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.br-strip input.br-side {
+    width: calc(50 * var(--sp));
+    min-width: 0;
+    padding: 0 calc(4 * var(--sp));
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.br-strip-count,
+.br-strip-zoom {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.br-strip-label {
+    padding-left: calc(4 * var(--sp));
+}
+
+.br-strip-zoom {
+    min-width: calc(40 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
+    border-radius: var(--pill);
+    color: var(--fg-2);
+}
+
+.br-strip-zoom:hover {
+    background: var(--hover);
+}
+
 .br-tabs {
     display: flex;
     align-items: center;

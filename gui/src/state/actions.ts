@@ -806,11 +806,12 @@ export function editorName(): string | undefined {
  * only what's inside its folders.
  */
 /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken): the server opens it, `path` unused. `editor`: "finder" reveals it. */
-export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; gitToken?: string; editor?: string } = {}) {
+/** `cwd`: a folder open in Cavvy (a terminal's) the path is in, instead of a session's. */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; cwd?: string; gitToken?: string; editor?: string } = {}) {
     const sessionId = o.sessionId ?? app.activeId;
-    if (!sessionId) return;
+    if (!sessionId && !o.cwd) return;
     try {
-        await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
+        await rpc.call("fs.open", { ...(o.cwd ? { cwd: o.cwd } : { sessionId }), ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")
