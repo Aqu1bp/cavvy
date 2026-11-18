@@ -99,16 +99,11 @@ test("what was deleted on each server is listed as its, and only rows a window c
     expect(await trashOnServers(new Map([["box", box], ["lab", down], ["odd", { ask: async () => ({ not: "a list" }) }]]))).toEqual([{ id: "b1", title: "On box", projectName: "app", deletedAt: 20, machine: "box" }]);
 });
 
-test("a window on the user's computer lists and restores what was deleted on its servers; plugins are those of the folder's machine", async () => {
+test("a window on the user's computer lists and restores what was deleted on its servers; plugins don't take another machine's folder for a project here", async () => {
     const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
     const deleted = await read("RecentlyDeleted.tsx");
     expect(deleted).toContain('on ? rpc.call("servers.relay", { name: on, method: "session.restore", params: { id } }) : rpc.call("session.restore", { id })');
     expect(deleted).toContain("s.machine && restoredFrom(s.id, s.machine)");
-    const plugins = await read("Plugins.tsx");
-    // Taken once, when the session in view is reached; listed from and done to that one only.
-    expect(plugins).toContain("if (origin || (id && awayUnopened(id))) return;");
-    expect(plugins).toContain("origin = { link: rpcFor(id), cwd: app.homeCwd };");
-    expect(plugins).toContain('origin.link.call("plugins.action", { ...params, cwd: origin.cwd }');
-    // Only a maker's logo is asked of the window's own Cavvy.
-    expect(plugins.split("own.call(").length).toBe(2);
+    // Plugins are the window's own machine's: a folder on another machine isn't sent to it as a project of its own.
+    expect(await read("Plugins.tsx")).toContain("const cwd = () => (awayMachine(app.activeId) !== undefined || awayUnopened(app.activeId) ? undefined : app.homeCwd);");
 });

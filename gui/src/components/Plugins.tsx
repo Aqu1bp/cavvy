@@ -4,10 +4,10 @@
 // Marketplaces is where catalogs are added. Every change goes through the server, which reloads each open
 // folder's settings, commands and MCP servers.
 
-import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, awayMachine, awayUnopened, linkedMachine, reportError, rpc as own, rpcFor, toast } from "../state/app";
+import { app, awayMachine, awayUnopened, reportError, rpc, toast } from "../state/app";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -54,7 +54,7 @@ function logoFor(owner: string): Promise<string | undefined> {
     if (!hit) {
         // Only a logo is kept here. Without one (none, GitHub busy, offline) it's asked again the next time the
         // page shows it, and the server answers an account without an avatar from its own memory.
-        hit = own.call("plugins.logo", { owner }).then(
+        hit = rpc.call("plugins.logo", { owner }).then(
             (l) => (l ? `data:${l.mediaType};base64,${l.data}` : undefined),
             () => undefined,
         );
@@ -92,31 +92,22 @@ export function Plugins() {
     /** The details dialog, one object per opening: an install started in one closes only that one. */
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
-    /**
-     * Whose plugins these are, taken once: the machine and folder of the session in view (or Home's) when the panel
-     * opened. Everything listed and done here is that one's, whatever comes into view under Settings meanwhile.
-     */
-    let origin: { link: ReturnType<typeof rpcFor>; cwd?: string } | undefined;
-    const [on, setOn] = createSignal<string>();
+    // These are this window's machine's plugins. The folder in view counts (its project's own) only when it's on
+    // that machine: another machine's folder names nothing here.
+    const cwd = () => (awayMachine(app.activeId) !== undefined || awayUnopened(app.activeId) ? undefined : app.homeCwd);
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
     const load = async () => {
         try {
-            setInfo(await origin!.link.call("plugins.list", { cwd: origin!.cwd }));
+            setInfo(await rpc.call("plugins.list", { cwd: cwd() }));
         } catch (e) {
             reportError(e);
         } finally {
             setLoading(false);
         }
     };
-    // Once the session in view is reached: another machine's still connecting isn't asked of the window's own Cavvy.
-    createEffect(() => {
-        const id = app.activeId;
-        if (id) linkedMachine(id);
-        if (origin || (id && awayUnopened(id))) return;
-        origin = { link: rpcFor(id), cwd: app.homeCwd };
-        setOn(awayMachine(id));
+    onMount(() => {
         void load().then(() => {
             const i = info();
             // First visit with nothing installed: show what there is to install.
@@ -125,10 +116,10 @@ export function Plugins() {
     });
 
     const act: Act = async (key, params, done) => {
-        if (busy() || !origin) return;
+        if (busy()) return;
         setBusy(key);
         try {
-            const r = await origin.link.call("plugins.action", { ...params, cwd: origin.cwd } as PluginActionParams);
+            const r = await rpc.call("plugins.action", { ...params, cwd: cwd() } as PluginActionParams);
             setInfo(r);
             toast(r.message.split("\n")[0]!.replace(/^✔\s*/, ""), "success");
             done?.();
@@ -197,7 +188,6 @@ export function Plugins() {
                 {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
             <div class="pg-bar">
-                <Show when={on()}><span class="set-note">On {on()}</span></Show>
                 <Segmented
                     label="Show"
                     size="sm"
@@ -291,7 +281,7 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on {on() || "this computer"}, so install only from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on this computer, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
