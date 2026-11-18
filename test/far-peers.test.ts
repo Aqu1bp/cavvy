@@ -42,6 +42,10 @@ test("the user's computer lists each server's sessions by the server's name, and
     // The message says which session it's from as the server names this computer's: `mac/<id>` there.
     await far.send("box/b2", "Check the migration.", { id: "20261118-000000-aaaaaa", title: "Mine", mode: "auto" });
     expect(box.sent).toEqual([{ id: "b2", text: "Check the migration.", from: { id: `${HOME_NAME}/20261118-000000-aaaaaa`, title: "Mine", mode: "auto" } }]);
+    // None answering: why, not none.
+    const down = { ask: () => Promise.reject(new Error("went away")) };
+    await expect(homeFarPeers(() => new Map([["box", down]])).list({ limit: 5 })).rejects.toThrow("box: went away");
+    expect((await homeFarPeers(() => new Map([["box", down], ["lab", lab.link]])).list({ limit: 5 })).map((s) => s.id)).toEqual(["lab/l1"]);
     // One that isn't connected, or a name that isn't one: said, not sent.
     await expect(far.send("gone/x", "hi", { id: "a", title: "a", mode: "auto" })).rejects.toThrow("gone isn't connected right now");
     await expect(far.read("nope")).rejects.toThrow("is named <machine>/<id>");

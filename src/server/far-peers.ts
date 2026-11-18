@@ -74,15 +74,12 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
     };
     return {
         list: async ({ query, limit }) => {
-            const lists = await Promise.all(
-                [...servers()].map(([on, link]) =>
-                    link
-                        .ask("peers.list", { query, limit })
-                        .then((rows) => (Array.isArray(rows) ? rows : []).flatMap((r) => rowFrom(r, on) ?? []))
-                        .catch(() => []),
-                ),
-            );
-            return newest(lists.flat(), limit);
+            const asked = [...servers()];
+            const lists = await Promise.allSettled(asked.map(([on, link]) => link.ask("peers.list", { query, limit }).then((rows) => (Array.isArray(rows) ? rows : []).flatMap((r) => rowFrom(r, on) ?? []))));
+            // None answered: why, not none (one that didn't, among others that did, is left out).
+            const failed = lists.flatMap((r, i) => (r.status === "rejected" ? [`${asked[i]![0]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
+            if (asked.length && failed.length === asked.length) throw new PeerError(failed.join("; "));
+            return newest(lists.flatMap((r) => (r.status === "fulfilled" ? r.value : [])), limit);
         },
         read: async (id, turns) => {
             const s = at(id);
@@ -115,7 +112,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     if (op === "list") {
         const query = typeof params.query === "string" ? params.query : undefined;
         const mine = denied("ListSessions") ? [] : here.list({ query, limit }).map((s) => ({ ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME }));
-        return newest([...mine, ...(await far.list({ query, limit }))], limit);
+        // The other servers not answering leaves this computer's.
+        return newest([...mine, ...(await far.list({ query, limit }).catch(() => []))], limit);
     }
     const id = str(params.id, 300);
     const s = split(id);
