@@ -20,7 +20,7 @@ function machine(rows: ReturnType<typeof row>[]) {
         send: async (id, text, from) => {
             if (!rows.some((r) => r.id === id)) throw new PeerError(`No session ${id}.`);
             sent.push({ id, text, from });
-            return { text: `Sent to session ${id}.`, delivery: "started", title: id };
+            return { text: `Sent to session ${id} (“${id}”). It was idle.`, delivery: "started", title: id };
         },
     };
     // As a server's Cavvy answers the user's computer over its connection (engine peers.list/read/send).
@@ -40,14 +40,15 @@ test("the user's computer lists each server's sessions by the server's name, and
     expect(listed.map((s) => [s.id, s.machine])).toEqual([["box/b1", "box"], ["lab/l1", "lab"], ["box/b2", "box"]]);
     expect((await far.read("lab/l1"))?.text).toBe("turns of l1");
     // The message says which session it's from as the server names this computer's: `mac/<id>` there.
-    await far.send("box/b2", "Check the migration.", { id: "20261118-000000-aaaaaa", title: "Mine", mode: "auto" });
+    // What comes back names the session as this machine does, so the id can be used again as it's read.
+    expect((await far.send("box/b2", "Check the migration.", { id: "20261118-000000-aaaaaa", title: "Mine", mode: "auto" })).text).toBe("Sent to session box/b2 (“b2”). It was idle.");
     expect(box.sent).toEqual([{ id: "b2", text: "Check the migration.", from: { id: `${HOME_NAME}/20261118-000000-aaaaaa`, title: "Mine", mode: "auto" } }]);
     // None answering: why, not none.
     const down = { ask: () => Promise.reject(new Error("went away")) };
     await expect(homeFarPeers(() => new Map([["box", down]])).list({ limit: 5 })).rejects.toThrow("box: went away");
     expect((await homeFarPeers(() => new Map([["box", down], ["lab", lab.link]])).list({ limit: 5 })).map((s) => s.id)).toEqual(["lab/l1"]);
     // One that isn't connected, or a name that isn't one: said, not sent.
-    await expect(far.send("gone/x", "hi", { id: "a", title: "a", mode: "auto" })).rejects.toThrow("gone isn't connected right now");
+    await expect(far.send("gone/x", "hi", { id: "a", title: "a", mode: "auto" })).rejects.toThrow("gone isn't one of the user's machines, or isn't connected right now");
     await expect(far.read("nope")).rejects.toThrow("is named <machine>/<id>");
 });
 
@@ -62,7 +63,12 @@ test("a server asks through the user's computer: its own sessions and the other 
     expect((await far.read(`${HOME_NAME}/m1`))?.text).toBe("turns of m1");
     // To the Mac: from `box/<id>`, which the Mac names box's sessions by. To lab: the same, through the Mac.
     await far.send(`${HOME_NAME}/m1`, "Done on the server.", { id: "s9", title: "Server work", mode: "bypassPermissions" });
-    await far.send("lab/l1", "Your turn.", { id: "s9", title: "Server work", mode: "bypassPermissions" });
+    // Whatever spelling that machine keeps the id in, and whatever its title says.
+    const odd = { ask: async () => ({ text: "Sent to session B2 (“Sent to session b2 now”). It was idle.", delivery: "started", title: "t" }) };
+    expect((await homeFarPeers(() => new Map([["box", odd]])).send("box/b2", "hi", { id: "a", title: "a", mode: "auto" })).text).toBe("Sent to session box/b2 (“Sent to session b2 now”). It was idle.");
+    expect((await far.send("lab/l1", "Your turn.", { id: "s9", title: "Server work", mode: "bypassPermissions" })).text).toStartWith("Sent to session lab/l1 ");
+    // Its own machine's session, named as another machine would: told how it's named here, not that box is away.
+    await expect(far.read("box/s1")).rejects.toThrow("box/s1 is on this machine: a session here goes by its id alone (s1).");
     // Into the user's computer a server's session counts as Auto at most (its Bypass sessions take no work from one).
     expect(mac.sent[0]!.from).toEqual({ id: "box/s9", title: "Server work", mode: "auto" });
     expect(lab.sent[0]!.from).toEqual({ id: "box/s9", title: "Server work", mode: "bypassPermissions" });
