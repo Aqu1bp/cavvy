@@ -1797,6 +1797,46 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("in a trusted Git folder, rewind restores what shell commands changed too, and Undo puts it back", async () => {
+        const dir = project();
+        await snapshotRepo(dir);
+        const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust: true });
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, done, 15_000);
+        await c.call("session.send", { id, text: "justrun: echo made by a shell > shell.txt" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 15_000);
+        expect(existsSync(join(dir, "shell.txt"))).toBe(true);
+
+        const targets = await c.call("session.rewindTargets", { id });
+        const demo = targets.find((t: { text: string }) => t.text === "demo");
+        expect(demo.whole).toBe(true);
+        const plan = await c.call("session.rewindPlan", { id, index: demo.index });
+        expect(plan.whole).toBe(true);
+        const listed = plan.restore.map((r: { path: string; action: string }) => `${r.path}:${r.action}`);
+        expect(listed).toContain("shell.txt:delete");
+        expect(listed).toContain("src/auth/sso.ts:delete");
+        expect(listed).toContain("src/auth/index.ts:write");
+        const r = await c.call("session.rewind", { id, index: demo.index, planId: plan.planId, code: true, conversation: false });
+        expect(r.failed).toEqual([]);
+        expect(r.undo).toBeString();
+        expect(existsSync(join(dir, "shell.txt"))).toBe(false);
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
+        expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
+
+        const u = await c.call("session.rewindUndo", { id, undo: r.undo });
+        expect(u.failed).toEqual([]);
+        expect(readFileSync(join(dir, "shell.txt"), "utf-8")).toBe("made by a shell\n");
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        const again = await c.call("session.rewindUndo", { id, undo: r.undo }).then(() => "ok", (e: unknown) => e);
+        expect((again as Error).message).toMatch(/can't be undone/);
+        c.close();
+    }, 30_000);
+
     test("rewind leaves a file alone that changed after the plan was shown", async () => {
         const dir = project();
         const c = await client();

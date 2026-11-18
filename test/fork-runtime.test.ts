@@ -89,7 +89,7 @@ test("invalid, running, archived and stale fork requests are RpcErrors and creat
         const earlier = await fork(turn);
         expect(engine.runtimes.get(earlier.state.id)!.session.messages).toEqual(rt.session.messages.slice(0, 2));
         (rt as any).runStart = undefined;
-        const plan = rt.rewindPlan(0);
+        const plan = await rt.rewindPlan(0);
         await rt.rewind(0, plan.planId, false, true);
         await expect(fork(turn)).rejects.toBeInstanceOf(RpcError);
         rt.session.push(prompt("first", 3000));
@@ -161,11 +161,11 @@ test("fork rewind uses only its own file history and retains the pre-fork explan
         await history.write(file, Buffer.from("original session edit"));
         const made = await fork();
         const f = engine.runtimes.get(made.state.id)!;
-        const plan = f.rewindPlan(0);
+        const plan = await f.rewindPlan(0);
         expect(plan).toMatchObject({ forked: true, restore: [] });
         expect((await f.rewind(0, plan.planId, true, true)).restored).toEqual([]);
         expect(readFileSync(file, "utf8")).toBe("original session edit");
-        const originPlan = rt.rewindPlan(0);
+        const originPlan = await rt.rewindPlan(0);
         expect(originPlan.restore).toHaveLength(1);
         expect((await rt.rewind(0, originPlan.planId, true, false)).restored).toEqual(["answer.txt"]);
     } finally {
