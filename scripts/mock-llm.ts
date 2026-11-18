@@ -24,7 +24,7 @@
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
-//   "untitled"       the request for the session's title is refused (HTTP 400)
+//   "untitled"       the request for the session's title is refused (HTTP 400); so is Regenerate title's, once it's in the conversation
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
 //                    the states a call goes through, and the moves between them
@@ -401,7 +401,11 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
-        return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
+        // What came attached to the answer: framed files, saved ones, images.
+        const got = [...lastResult.matchAll(/<attached-file name="([^"]+)"|The user attached "([^"]+)"/g)].map((m) => m[1] ?? m[2]);
+        const images = /^(An image|\d+ images) the user attached/m.exec(lastResult)?.[1]?.toLowerCase();
+        const also = [...got, ...(images ? [images] : [])];
+        return { text: `Great, going with that. (${lastResult.split("\n")[0]!.replace(/^The user answered: /, "")})${also.length ? ` I have ${also.join(", ")}.` : ""}` };
     }
     if (/\bplan\b/.test(p)) {
         if (toolRounds === 0) return { reasoning: "I'll research first, then propose.", calls: [{ name: "Glob", args: { pattern: "**/*.ts" } }] };
@@ -570,6 +574,12 @@ function goalVerdict(prompt: string): string {
     if (/\bimpossible\b/i.test(goal)) return JSON.stringify({ verdict: "impossible", reason: "The goal asks for something that contradicts itself, so it can never hold." });
     if (check < 2) return JSON.stringify({ verdict: "not_met", reason: "The conversation shows no linter run yet; run it and show that it's clean." });
     return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
+}
+
+/** A title asked again from the conversation so far (Regenerate title): named after the user's latest request in it. */
+function latestAsk(prompt: string): string {
+    if (!prompt.startsWith("First request:")) return prompt;
+    return prompt.split("\n").filter((l) => l.startsWith("User: ")).at(-1)?.slice(6) ?? prompt;
 }
 
 function titleFor(prompt: string): string {
@@ -789,7 +799,7 @@ export function startMockLlm(o: MockOptions = {}) {
             }
 
             let step: Step;
-            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
+            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(latestAsk(prompt)) };
             else if (/check whether a coding agent has reached a goal/.test(system)) {
                 // A real check takes a moment: long enough to see it (not in tests, which run with no delay).
                 if (delay) await Bun.sleep(delay * 100);

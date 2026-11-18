@@ -511,6 +511,24 @@ describe("Claude Code backend", () => {
         expect(userTexts().at(-1)).not.toContain("rename the auth module");
     });
 
+    test("AskUserQuestion: what's attached to the answer goes in it as text, each saved file by its path", async () => {
+        process.env.FAKE_SCENARIO = "ask";
+        let as: string | undefined;
+        const ui = {
+            askQuestion: async () => ["Blue"],
+            askQuestionAttaching: async (_q: string, _o: unknown, _m: boolean, a: string) => (
+                (as = a),
+                { answers: ["Blue"], attached: [{ type: "file", kind: "saved", name: "image-1.png", size: 70, path: "/p/.cavvy/attachments/s/1/image-1.png" }, { type: "file", kind: "text", name: "a.txt", size: 3, lines: 1, text: "hi\n" }] }
+            ),
+        };
+        const { run } = await makeAgent({ provider: "claude-code", ui: ui as never });
+        await run("pick");
+        expect(as).toBe("paths");
+        const answer: string = permissionReplies()[0].updatedInput.answers["Which color?"];
+        expect(answer.startsWith("Blue, [The user attached \"image-1.png\" (70 B). It's saved at /p/.cavvy/attachments/s/1/image-1.png;")).toBe(true);
+        expect(answer).toMatch(/<attached-file name="a\.txt"[^>]*>\nhi\n/);
+    });
+
     test("ExitPlanMode: approving the plan switches the mode, here and in Claude Code", async () => {
         process.env.FAKE_SCENARIO = "plan";
         let plan = "";
@@ -1574,7 +1592,21 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
     const streamed = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "text" ? [e.text] : [])).join("");
     const subEvents = (events: AgentEvent[], parentId: string) => events.flatMap((e) => (e.type === "subagent" && e.parentId === parentId ? [e] : []));
     const elicitations = () => logLines().flatMap((l) => (l.elicitation !== undefined ? [l.elicitation] : []));
+    const userInputs = () => logLines().flatMap((l) => (l.userInput !== undefined ? [l.userInput] : []));
     const usageOf = (session: InstanceType<typeof Session>) => session.usageByModel.get("codex:default")!.usage;
+
+    test("requestUserInput: what's attached to the answer goes in its answers as text, each saved file by its path", async () => {
+        process.env.FAKE_SCENARIO = "ask";
+        let as: string | undefined;
+        const ui = {
+            askQuestion: async () => ["Red"],
+            askQuestionAttaching: async (_q: string, _o: unknown, _m: boolean, a: string) => ((as = a), { answers: ["Blue"], attached: [{ type: "file", kind: "saved", name: "spec.pdf", size: 2048, path: "/p/.cavvy/attachments/s/1/spec.pdf" }] }),
+        };
+        const a = await makeAgent({ provider: "codex", ui: ui as never });
+        expect(await a.run("go")).toBe("done");
+        expect(as).toBe("paths");
+        expect(userInputs()).toEqual([{ answers: { color: { answers: ["Blue", `[The user attached "spec.pdf" (2.0 KB). It's saved at /p/.cavvy/attachments/s/1/spec.pdf; open it with your tools if you need what's in it.]`] } } }]);
+    });
 
     test("a sub-agent Codex starts: its words aren't the reply, its tokens aren't the context, and its work shows under the spawn", async () => {
         process.env.FAKE_SCENARIO = "subagent";

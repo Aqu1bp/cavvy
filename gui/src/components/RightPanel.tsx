@@ -12,7 +12,7 @@ import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, machineFor, reportError, rpc, serversUi, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
-import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
+import { inspectorPane, panelFull, review, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
@@ -23,7 +23,6 @@ import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
 import { uncleared, WorkList } from "./BackgroundTasks";
-import { BrowserPane } from "./BrowserPane";
 import { browserUnseen, loadBrowserState, setBrowserShown } from "../state/browser";
 import { loadSimulatorState, setSimulatorShown, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
@@ -135,6 +134,8 @@ const CommandsPane = lazy(() => import("./CommandsPane"));
 /** The side chat (SideChatPane), loaded when it's first shown. */
 const SideChatPane = lazy(() => import("./SideChatPane"));
 
+/** The Browser pane is loaded when it's first shown, with its menu and bars (BrowserTools.tsx). */
+const BrowserPane = lazy(() => import("./BrowserPane").then((m) => ({ default: m.BrowserPane })));
 /** The Simulator pane is loaded when it's first shown: only a Mac with Xcode, or a server lent one's, ever shows it. */
 const SimulatorPane = lazy(() => import("./SimulatorPane").then((m) => ({ default: m.SimulatorPane })));
 
@@ -154,7 +155,7 @@ function usePanelWork(handle: () => SessionHandle) {
 /**
  * The panel's views, as icons down its outer edge (first for the keyboard; panel.css puts it there): one look at any
  * width. A view's name is its tooltip, and the title of its pane. It stays beside the diff reader too (`reviewing`:
- * Changes is the view the reader belongs to), so the reader reads as part of the panel: an icon leaves it for that view.
+ * Changes is the view the reader belongs to; none for the file viewer), so the reader reads as part of the panel: an icon leaves it for that view.
  */
 function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelWork>; reviewing?: boolean }) {
     const { changes, agents, commands } = p.work;
@@ -172,7 +173,7 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
         <div class="insp-rail">
             <Segmented
                 label="Side panel"
-                value={p.reviewing ? "changes" : inspectorPane()}
+                value={p.reviewing ? (review()?.file ? (undefined as never) : "changes") : inspectorPane()}
                 onChange={show}
                 options={[
                     {
