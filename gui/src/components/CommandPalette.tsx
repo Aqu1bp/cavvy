@@ -97,7 +97,7 @@ export function CommandPalette() {
             wait = setTimeout(async () => {
                 try {
                     await searchRounds(
-                        () => rpc.call("sessions.search", { query, limit: MAX_HITS }),
+                        (rest) => rpc.call("sessions.search", { query, limit: MAX_HITS, ...(rest ? { rest } : {}) }),
                         () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
                             setHits({ query, hits: r.hits });

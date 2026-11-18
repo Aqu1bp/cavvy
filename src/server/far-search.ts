@@ -8,6 +8,11 @@ import type { SessionSearchHit, SessionSearchResult } from "./protocol";
  * back. A server slower than that is stuck: it's left out.
  */
 export const FAR_SEARCH_MS = 3_000;
+/**
+ * How long this machine's own hits wait for the servers' before they're shown without them (the servers' follow
+ * when they come). A server's answer took 30 ms through the tunnel to a test server; this machine's own, 1-8 ms.
+ */
+export const FAR_GRACE_MS = 300;
 
 /** What a search can ask a server (servers/watch.ts MachineWatch.ask): `ms`, how long it waits. */
 export interface SearchAsk {

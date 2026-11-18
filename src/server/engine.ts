@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { applySync, readSynced } from "../servers/sync";
-import { searchServers, withServers } from "./far-search";
+import { FAR_GRACE_MS, searchServers, withServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
@@ -430,6 +430,8 @@ export class Engine {
     private forking = new Map<string, Promise<Runtime>>();
     /** Each window's latest search: an older one still reading stops. */
     private searches = new WeakMap<EngineClient, number>();
+    /** What a window's latest search asked the servers (searchSessions), until it's answered with. */
+    private farSearches = new WeakMap<EngineClient, { key: string; there: ReturnType<typeof searchServers> }>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -1039,14 +1041,22 @@ export class Engine {
     /** Search's files being read ahead (sessions.searchWarm). */
     private searchWarming?: Promise<unknown>;
 
-    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean, rest?: boolean): Promise<SessionSearchResult> {
         if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
         const seq = (this.searches.get(client) ?? 0) + 1;
         this.searches.set(client, seq);
         if (query.trim().length < 2) return { hits: [], partial: false };
         const most = Math.max(1, Math.min(Math.floor(limit), 200));
         // On the user's own computer, for its windows: the servers it's connected to are searched at the same time.
-        const far = !this.o.away && !client.machine ? searchServers(this.serverLinks?.connectedServers() ?? new Map(), { query, limit: most, archived }) : Promise.resolve([]);
+        // Asked once for a search: the window asking for the rest of it (`rest`, after an answer the servers' weren't
+        // in yet) waits on the same asking. Any other asking is a search of its own.
+        const key = JSON.stringify([query, most, archived]);
+        let far = rest ? this.farSearches.get(client) : undefined;
+        const again = far?.key === key;
+        if (!far || !again) {
+            far = { key, there: !this.o.away && !client.machine ? searchServers(this.serverLinks?.connectedServers() ?? new Map(), { query, limit: most, archived }) : Promise.resolve([]) };
+            this.farSearches.set(client, far);
+        }
         const arch = new Set(readStore().archived ?? []);
         const r = await searchSessions(query, {
             limit: most,
@@ -1055,8 +1065,11 @@ export class Engine {
             open: new Set(this.runtimes.keys()),
         });
         if (r.stale) return { hits: [], partial: true, stale: true };
-        const there = await far;
+        // The servers get a moment past this machine's own answer. One slower than that doesn't hold what was found
+        // here: that's answered now, said to be waiting for them (pending), and the window asks for the rest.
+        const there = await (again ? far.there : Promise.race([far.there, new Promise<undefined>((r) => setTimeout(r, FAR_GRACE_MS))]));
         if (this.searches.get(client) !== seq) return { hits: [], partial: true, stale: true };
+        if (there && this.farSearches.get(client) === far) this.farSearches.delete(client);
         const here = r.hits.map((h): SessionSearchHit => ({
             id: h.id,
             title: redact(this.runtimes.get(h.id)?.title ?? h.title),
@@ -1070,7 +1083,7 @@ export class Engine {
             ...(h.match ? { match: h.match } : {}),
             at: h.at,
         }));
-        return withServers({ partial: r.partial, hits: here }, there, most);
+        return there ? withServers({ partial: r.partial, hits: here }, there, most) : { partial: r.partial, pending: true, hits: here };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -2811,7 +2824,7 @@ export class Engine {
                 return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
-                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined, p.rest === true);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);
