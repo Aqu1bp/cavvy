@@ -10,7 +10,7 @@ import { IMPLEMENT_MODES, type ImplementMode, type ImplementPlanResult, type Pla
 import { RpcError } from "../lib/rpc";
 import { basename, tildify } from "../lib/format";
 import { canReveal, copyText, revealPath } from "../lib/platform";
-import { activate, app, rpc, sameMachine, toast } from "../state/app";
+import { activate, app, rpc, rpcFor, sameMachine, toast } from "../state/app";
 import { chooseFolder } from "../state/actions";
 import { planDialog, setPlanDialog } from "../state/ui";
 import { errorOf, type FormError } from "./WorktreeDialogs";
@@ -223,7 +223,8 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
         setError(undefined);
         p.setBusy(true);
         try {
-            if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
+            // On the plan's session's machine, where it's carried out.
+            if (trust) await rpcFor(p.sessionId).call("projects.trust", { path: trust, trust: true });
             if (!open) return;
             const before = made();
             const r = await rpc.call("session.implementPlan", { id: p.sessionId, toolId: p.info.id, branch: before?.branch ?? b, base: base().trim() || undefined, mode: mode(), resume: before?.path });

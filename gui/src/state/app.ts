@@ -1165,9 +1165,17 @@ export async function importCliSession(cwd: string, source: string, id: string):
     return adopt(snap);
 }
 
-export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
+/** Where a session made from Home now would be made: its machine's connection and mode (`there` unset: this window's). */
+export type HomeAt = { there?: { on: string; link: Rpc }; mode?: PermissionModeId };
+export function homeAt(): HomeAt {
+    const h = homeOn() !== undefined ? homeAway() : undefined;
+    return { there: h && { on: h.on, link: h.link }, mode: homeModeOf() };
+}
+
+/** Make a session in `cwd`, on Home's machine as it was when `at` was taken (the user may have moved on since). */
+export async function createSession(cwd: string, at: HomeAt): Promise<SessionHandle> {
     // From Home on another machine: made there, and opened here as one of its sessions is.
-    const there = homeOn() !== undefined && app.homeCwd === cwd ? homeAway()! : undefined;
+    const { there, mode } = at;
     const snap = await (there ? there.link : rpc).call("session.create", { cwd, mode });
     if (there) {
         away.set(snap.state.id, there.link);
@@ -1316,7 +1324,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
         if (e instanceof RpcError && e.code === "needs_trust" && project) {
-            requestTrust(project, () => { if (current()) void activate(id, project); });
+            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id));
         }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     }
@@ -1340,9 +1348,10 @@ export async function restoreActiveSession() {
  * MCP approval upgrades existing session trust, and an agent CLI that runs the folder's own hooks (`reason` says so)
  * needs it: declining either must not change that session.
  */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string) {
-    setTrustRequest({ path, then, purpose, reason });
+/** `link`: the connection to the machine the folder is on (another machine's session, or Home on one: rpcFor). */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc) {
+    setTrustRequest({ path, then, purpose, reason, link });
 }
 
 // ---------------------------------------------------------------------------
