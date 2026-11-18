@@ -3316,7 +3316,8 @@ export class Agent {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
             if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
-        // Approved without asking: by an allow rule, or an edit Cavvy's mode approves (accept edits: inside the workspace).
+        // Approved without asking: by an allow rule, an action the user allowed for the session, or an edit Cavvy's mode
+        // approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
         const memory = { memoryDir: this.o.memoryDir };
         let decision = this.o.checker.check(tool, input, mode, cwd, memory);
@@ -3401,7 +3402,8 @@ export class Agent {
         }
         if (answer.allow) {
             const grant = answer.grant ? ask.grant : undefined;
-            // A yes to part of a call isn't one to the next call that looks the same.
+            // "Allow once" covers this call; with a grant, so does the rest of the session. A yes to part of a call
+            // isn't one to the next call that looks the same, even for the session.
             if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
             return { allow: true, mode: answer.setMode };
@@ -3567,7 +3569,7 @@ export class Agent {
         const mode = this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
-        // What an approval is remembered by: the call as the model made it, before hosts are added.
+        // What an approval is recorded as: the call as the model made it, before hosts are added.
         const asked = input;
         // The hosts the checker opens by itself (settings, registries) join the ones the command listed.
         if (isShellTool(tool.name) && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
@@ -3659,7 +3661,7 @@ export class Agent {
             }
         }
         if (answer.allow) {
-            // This exact action needs no asking again; with a grant, what it covers doesn't either.
+            // "Allow once" covers this call only. With a grant, this exact action and what the grant covers run unasked for the session.
             const grant = answer.grant ? decision.grant : undefined;
             this.o.checker.approve(tool, asked, this.state.cwd, { sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);

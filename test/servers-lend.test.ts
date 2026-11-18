@@ -212,9 +212,11 @@ test("a call from a session there runs here, after this machine's own asking, sh
     await Bun.sleep(1500);
     const before = ran.filter((a) => a[2] === "bootstatus").length;
     await remote.call("session.send", { id, text: "simulator once again" });
+    // Allowed once the first time: asked again, on both machines.
+    expect((await answer(remote, id, "yes")).kind).toBe("permission");
+    expect(JSON.stringify(await answerLent(id, "yes"))).toContain("SimulatorControl(boot)");
     await until("the second turn there to end", async () => (await remote.call("session.open", { id })).turns.length === 2 && (await lastTurn(remote, id)).status === "done");
-    // It ran here again (allowed for this session the first time, on both machines, as the tool is anywhere),
-    // and no second session was made here for it.
+    // It ran here again, and no second session was made here for it.
     expect(ran.filter((a) => a[2] === "bootstatus").length).toBe(before + 1);
     expect((await lentTo(id)).id).toBe(mineId);
 });
