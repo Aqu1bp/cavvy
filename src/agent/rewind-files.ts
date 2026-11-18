@@ -266,7 +266,14 @@ export async function restoreFiles(plan: FileRestorePlan, o: { alongside?: strin
         if (c?.tree && c.root === root && !c.incomplete) fresh = c;
     }
     if (changes.size && !fresh) throw new Error("Couldn't read the files as they are now. Nothing was restored.");
-    const meanwhile = fresh && now ? await snapshots!.between(now, fresh) : new Map<string, unknown>();
+    let meanwhile: Map<string, unknown> = new Map();
+    try {
+        if (fresh && now) meanwhile = await snapshots!.between(now, fresh);
+    } catch {
+        if (changes.size) throw new Error("Couldn't read the files as they are now. Nothing was restored.");
+        // Cavvy's own copies check each file themselves; only Undo goes without.
+        fresh = undefined;
+    }
     const undo: UndoRecord | undefined = fresh && root ? { id: randomBytes(8).toString("hex"), root, files: new Map() } : undefined;
 
     for (const [rel, d] of ordered(changes)) {
