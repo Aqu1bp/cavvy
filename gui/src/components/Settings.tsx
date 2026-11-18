@@ -181,7 +181,8 @@ function General() {
         on(
             () => app.conn,
             (conn) => {
-                if (conn === "open") void refreshEditors();
+                // Settings too: what this computer allows (keeping it awake) can change as sessions run.
+                if (conn === "open") void Promise.all([refreshEditors(), refreshSettings()]);
             },
         ),
     );
@@ -310,6 +311,9 @@ function General() {
                 </Row>
                 <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
+                </Row>
+                <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : "The display can still sleep."}>
+                    <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false} onChange={(v) => void update({ keepAwake: v })} />
                 </Row>
                 {/* On one of the user's servers Bypass can always be chosen: there's nothing to allow. */}
                 <Show when={!s().bypassAlways}>
