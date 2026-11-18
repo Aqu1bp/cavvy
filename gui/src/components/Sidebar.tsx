@@ -400,8 +400,8 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     );
 }
 
-/** A row drags onto the stage to show its session beside the one in view (state/split.ts): not while it's renamed, nor one on another machine. */
-const draggable = (s: SessionSummary, editing: boolean) => (!editing && s.machine === machine ? "true" : undefined);
+/** A row drags onto the stage to show its session beside the one in view (state/split.ts), whichever machine it's on: not while it's renamed. */
+const draggable = (_s: SessionSummary, editing: boolean) => (!editing ? "true" : undefined);
 /** In a split, the one beside the session in view. */
 const beside = (id: string) => app.activeId !== id && inSplit(id);
 
