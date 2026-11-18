@@ -3401,6 +3401,9 @@ export class Agent {
         return this.tools.find((t) => t.name === name);
     }
 
+    /** The lender's mode each call of a lent tool was decided under (prepare), for as long as the call is. */
+    private lentDecided = new WeakMap<ToolCallPart, PermissionMode>();
+
     private toolContext(callId: string, signal: AbortSignal, sandbox?: Sandbox): ToolContext {
         return {
             callId: callId || undefined,
@@ -3551,7 +3554,7 @@ export class Agent {
         // A tool another machine lends: no freer than that machine's own default (tools/lent.ts).
         const lender = lentMode(tool.name);
         // Read with it: what the reviewer or the user allows from here on was decided under this one.
-        if (lender && !lent) (this.state.lentDecided ??= new Map()).set(call.id, lentAs());
+        if (lender) this.lentDecided.set(call, lentAs());
         const mode = lender ? narrowerMode(this.o.mode.get(), lender) : this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
@@ -3681,7 +3684,7 @@ export class Agent {
         let result: ToolResult;
         const cwdBefore = this.state.cwd;
         try {
-            result = await tool.run(input, this.toolContext(call.id, signal, sandbox));
+            result = await tool.run(input, { ...this.toolContext(call.id, signal, sandbox), lentAs: this.lentDecided.get(call) });
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }

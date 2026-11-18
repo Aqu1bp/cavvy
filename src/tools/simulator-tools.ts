@@ -407,9 +407,9 @@ function lendable(tool: Tool<any>): Tool<any> {
         ...tool,
         ...(validate ? { validate: (input: any, ctx: ToolContext) => (far(ctx) ? undefined : validate.call(tool, input, ctx)) } : {}),
         run: (input, ctx) => {
-            const decided = ctx.callId === undefined ? undefined : ctx.state.lentDecided?.get(ctx.callId);
-            if (ctx.callId !== undefined) ctx.state.lentDecided?.delete(ctx.callId);
-            return far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal, decided).then(keptHere) ?? run.call(tool, input, ctx);
+            const there = far(ctx);
+            if (!there) return run.call(tool, input, ctx);
+            return there.call(tool.name, input as Record<string, unknown>, ctx.signal, ctx.lentAs).then(keptHere);
         },
     };
 }

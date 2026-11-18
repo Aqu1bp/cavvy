@@ -14,7 +14,7 @@ export type Lendable = (typeof LENDABLE)[number];
 
 /** A session's way to the machine that lends (ToolState.lends): one call of one of its tools. */
 export interface Lends {
-    /** `decided`: the lender's mode the call was decided under here (lentAs), sent with it. */
+    /** `decided`: the lender's mode the call was decided under here (lentAs), sent with it; none, it isn't sent. */
     call(tool: string, input: Record<string, unknown>, signal: AbortSignal, decided?: PermissionMode): Promise<ToolResult>;
 }
 

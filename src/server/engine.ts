@@ -1975,6 +1975,8 @@ export class Engine {
     borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal, decided?: PermissionMode): Promise<ToolResult> {
         const [client, lender] = [...this.lenders].at(-1) ?? [];
         if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        // Decided while nothing was lent (the Mac's Cavvy away for a moment, back since): not under its mode, so not sent.
+        if (!decided) return Promise.resolve({ content: "Your Mac's Cavvy connected to this machine only just now. Call it again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
             const done = (r: ToolResult) => {
@@ -1989,7 +1991,7 @@ export class Engine {
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
             // With the mode it was decided under: the lender turns it away if its own has changed since.
-            client.send({ type: "offers.call", callId, tool, input, mode: decided ?? lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            client.send({ type: "offers.call", callId, tool, input, mode: decided, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 

@@ -28,7 +28,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, loadScopeChecked, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -5621,7 +5621,9 @@ export class Runtime {
         if (!agent) return { text: "Cavvy on your Mac has no model set up yet, which it needs before it lends its Simulator. Ask the user to set one up there.", isError: true };
         this.lending++;
         this.lastLent = Date.now();
-        // This machine's rules as they are now: no turn of this session's own reads them again.
+        // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't be
+        // read just now (being written) isn't one with no rules.
+        if (loadScopeChecked("user", this.ws.cwd).unreadable) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
         this.ws.reload();
         try {
             return await agent.runLent(tool, input, signal);

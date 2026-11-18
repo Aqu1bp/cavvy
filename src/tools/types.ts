@@ -100,8 +100,6 @@ export interface ToolState {
     simulator?: SimulatorSession;
     /** The way to a machine that lends this one tools it hasn't got (the user's Mac and its simulators: src/tools/lent.ts). */
     lends?: Lends;
-    /** The lender's mode each call of a lent tool was decided under, by the call's id (Agent.prepare), until it's sent. */
-    lentDecided?: Map<string, PermissionMode>;
     /** This session runs tools for a session on another of the user's machines (Runtime.guestOf): nothing is kept here for it, and what's refused doesn't describe this machine. */
     forAnother?: boolean;
     /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */
@@ -168,6 +166,8 @@ export interface ToolContext {
     /** Streams live progress text (e.g. command output) to the UI. */
     /** This call's own id, where it has one: what it shows is on that call's row, not on another of the same tool. */
     callId?: string;
+    /** For a call of a tool another machine lends: that machine's mode it was decided under here (Agent.prepare), sent with it. */
+    lentAs?: PermissionMode;
     onProgress?: (text: string) => void;
     ui: UiBridge;
     /** Runs a sub-agent (Task tool), on `model` (provider:model) when given. */

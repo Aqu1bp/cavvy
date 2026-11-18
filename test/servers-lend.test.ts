@@ -484,13 +484,16 @@ test("two of the user's machines can lend to one server: one leaving doesn't tak
         await engine.handle(b as never, "offers.set", { kinds: ["simulator", "something-else"] });
         expect(lent("simulator")).toBe(true);
         // A call goes to the one that said so last, and ends when that one leaves.
-        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect([a.events.length, b.events.map((e) => e.type)]).toEqual([0, ["offers.call"]]);
+        // One decided while nothing was lent isn't sent: it wasn't decided under the lender's mode.
+        expect((await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal)).content).toContain("only just now");
+        expect(b.events.length).toBe(1);
         engine.dropClient(b as never);
         expect(await answer).toEqual({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
         // The other still lends: sessions keep the tools, and the next call goes to it.
         expect(lent("simulator")).toBe(true);
-        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(a.events.map((e) => e.type)).toEqual(["offers.call"]);
         engine.dropClient(a as never);
         expect(lent("simulator")).toBe(false);
@@ -545,7 +548,7 @@ test("the Simulator turned off on the Mac while it's connected: the session ther
     try {
         await until("the Mac to be lending", () => lent("simulator"));
         kinds = [];
-        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(told).toEqual({ content: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
         // And the server's sessions stop being offered what can't run.
         await until("the tools to be taken away", () => !lent("simulator"));
