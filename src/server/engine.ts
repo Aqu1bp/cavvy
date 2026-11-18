@@ -1678,6 +1678,18 @@ export class Engine {
         this.upsertRow(rt.id, { settled: true });
     }
 
+    /** A new title from the conversation so far. One that isn't open is opened for it, and closed again after. */
+    private async regenerateTitle(id: string): Promise<string> {
+        while (this.closing.has(id)) await this.afterClosing(id);
+        const opened = !this.runtimes.has(id);
+        const rt = this.openSession(id);
+        try {
+            return await rt.regenerateTitle();
+        } finally {
+            if (opened) this.unloadLater(id);
+        }
+    }
+
     /** Never settled by itself (`on`), or as any other again. */
     private neverSettle(id: string, on: boolean) {
         if (!this.runtimes.has(id) && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
@@ -3305,6 +3317,8 @@ export class Engine {
             case "session.snooze":
                 this.snooze(checkId(p.id), p.until);
                 return null;
+            case "session.regenerateTitle":
+                return { title: await this.regenerateTitle(checkId(p.id)) };
             case "session.neverSettle":
                 this.neverSettle(checkId(p.id), p.on === true);
                 return null;

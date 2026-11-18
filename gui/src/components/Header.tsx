@@ -4,7 +4,7 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, lazy, on, Show, Suspense, type JSX } from "solid-js";
-import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, Sparkles, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, machineFor, reportError, rpc, toast } from "../state/app";
@@ -339,6 +339,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
+                                    { icon: Sparkles, label: "Regenerate title", run: () => void (close(), import("./RowExtras").then((m) => m.regenerateTitle(s().id))) },
                                     { icon: History, label: "Rewind…", run: () => void (close(), setRewindOpen(true)) },
                                     {
                                         icon: Shrink,

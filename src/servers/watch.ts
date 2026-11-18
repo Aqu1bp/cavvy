@@ -242,7 +242,8 @@ export class MachineWatch {
             const timer = setTimeout(() => {
                 this.calls.delete(id);
                 reject(new Error(`${this.name} didn't answer.`));
-            }, REPLY_MS);
+                // A title is a model's answer there: it can take a CLI's start and a reply.
+            }, method === "session.regenerateTitle" ? 75_000 : REPLY_MS);
             (timer as { unref?: () => void }).unref?.();
             this.calls.set(id, {
                 timer,
