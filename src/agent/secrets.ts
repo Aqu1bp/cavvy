@@ -7,6 +7,7 @@
 import { knownSecrets, redactionMarkers, registerSecret } from "../util/redact";
 import { allProviders, SEARCH_PROVIDERS } from "../providers/registry";
 import { secretEnvVarNames } from "../auth/credentials";
+import { CREDENTIAL_NAME } from "../server/env-names";
 
 export const MAX_SECRET_BYTES = 8 * 1024;
 /** registerSecret ignores anything shorter; a shorter value couldn't be kept out of the output. */
@@ -14,7 +15,6 @@ export const MIN_SECRET_LENGTH = 8;
 export const MAX_PURPOSE = 500;
 
 export const SECRET_NAME_RULE = "Names must end in TOKEN, KEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, CREDENTIAL, CREDENTIALS or AUTH (with or without an underscore before the ending). DATABASE_URL is the only exception. Reserved names are still refused.";
-const CREDENTIAL_NAME = /_?(TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|PAT|CREDENTIAL|CREDENTIALS|AUTH)$/;
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 // Variables that change how a shell, a runtime or a tool runs, or that the

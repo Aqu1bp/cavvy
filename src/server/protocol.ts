@@ -1312,6 +1312,8 @@ export interface ProviderInfo {
         accounts?: AccountInfo[];
         defaultAccount?: string;
         installed: boolean;
+        /** The program it runs (its saved path, else the one on PATH): an instance without a path of its own runs it too. */
+        path?: string;
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
         install: string;

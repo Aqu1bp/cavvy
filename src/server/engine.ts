@@ -2211,6 +2211,7 @@ export class Engine {
                 const def = agentCli(p.id)!;
                 const cli = def.cli;
                 const on = Boolean(readAgentConfig(p.id));
+                const bin = findCli(p.id, cli);
                 out.push({
                     id: p.id,
                     name: p.name,
@@ -2222,7 +2223,8 @@ export class Engine {
                     agentCli: {
                         accounts: await this.accountsList(p.id),
                         defaultAccount: def.account ? defaultAccount(p.id) : "default",
-                        installed: Boolean(findCli(p.id, cli)),
+                        installed: Boolean(bin),
+                        ...(bin ? { path: bin } : {}),
                         signIn: cli.signIn,
                         install: cli.install,
                         plan: def.planLabel,

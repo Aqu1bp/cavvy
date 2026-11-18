@@ -84,7 +84,8 @@ Each CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) can be started 
 
 - A variable you set is passed to that CLI only, even when it's one Cavvy otherwise strips (`ANTHROPIC_AUTH_TOKEN` above), and over the same name in Cavvy's own environment. Other CLIs, Cavvy's tools, hooks and MCP servers don't get it. Without any, a CLI's environment is as described above: what you have in your shell for Cavvy (an `ANTHROPIC_API_KEY`, say) never reaches it.
 - A secret value is stored like an API key (the OS keychain, or `~/.cavvy/credentials.json` with mode 600) and only its name goes in `providers.json` (`"secretEnv": ["ANTHROPIC_AUTH_TOKEN"]`). It's masked wherever Cavvy shows or saves text, and Settings never shows it again: leave its field blank to keep it. The CLI itself has it in its environment, so commands it runs can read it, as they can any variable you start a CLI with.
-- The account folders' variables (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `CODEX_HOME`) and Cavvy's own (`CAVVY…`) can't be set here: use accounts for the first. What Cavvy sets for a launch (its session marker, a one-off's settings) goes over yours.
+- A name ending like a credential's (TOKEN, KEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, CREDENTIAL(S), AUTH, as for [secrets you're asked for](secrets.md)) starts secret; open the lock to keep it plain. A row whose lock you used stays as you set it.
+- The account folders' variables (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `CODEX_HOME`) and Cavvy's own (`CAVVY…`) can't be set here, and the dialog says so as you type one: use accounts for the first. What Cavvy sets for a launch (its session marker, a one-off's settings) goes over yours.
 - A change applies from each session's next message: a CLI already running is restarted then (after its background work, if it has any). The CLI's model list is listed again with the new variables.
 - Turning a CLI off removes its variables, secrets included.
 
@@ -99,7 +100,7 @@ Each CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) can be started 
 } }
 ```
 
-- Its own `env`, `args` and `models`; its `path` if set, else its CLI's. Nothing else of its CLI's setup (its variables, its arguments) applies to it.
+- Its own `env`, `args` and `models`; its `path` if set, else its CLI's (the dialog shows that one in the empty field). Nothing else of its CLI's setup (its variables, its arguments) applies to it.
 - Accounts stay the CLI's: a setup runs on the account its session chose for that CLI (or the CLI's starting account), with that account's folder, settings and history. Most setups that need one carry their own credential in a variable, so a second set of accounts per setup would only be more to keep apart.
 - Its model list costs nothing at startup or when the picker opens: until it's listed, it shows its CLI's list. It's listed with its own setup when you add or change it, and when you refresh the lists (`ctrl+r` in `/model`, or the refresh button in the picker); that list is then kept, whatever its age, until the next of those.
 - Switching a session between a CLI and one of its setups is a switch of provider: the other one gets the conversation so far, as a switch to another model does.

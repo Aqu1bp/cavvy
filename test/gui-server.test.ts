@@ -2488,6 +2488,7 @@ describe("using a plan through an installed CLI", () => {
         const was = await c.call<GuiSettings>("settings.get", {});
         const { id } = await c.call<{ id: string }>("providers.addInstance", { base: "claude-code", name: "My Router", models: ["router/model-a", "router/model-b"] });
         expect(id).toBe("claude-code@my-router");
+        expect((await claudeCode(c)).agentCli.path).toBe(join(bin, "claude"));
         // A model taken off its list resets what was set to it; one still there stays.
         await c.call("settings.update", { patch: { model: `${id}:router/model-a`, smallModel: `${id}:router/model-b` } });
         expect(await c.call("providers.updateInstance", { id, name: "My Router", models: ["router/model-a"] })).toEqual({ reset: ["smallModel"] });

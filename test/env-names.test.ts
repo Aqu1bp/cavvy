@@ -1,0 +1,14 @@
+import { afterAll, expect, test } from "bun:test";
+import { isolate } from "./helpers/isolate";
+const iso = isolate();
+const { envNameProblem, looksSecret } = await import("../src/server/env-names");
+afterAll(() => iso.cleanup());
+
+test("a variable named like a credential starts secret; reserved names are refused as they're typed", () => {
+    for (const n of ["ANTHROPIC_AUTH_TOKEN", "OPENROUTER_API_KEY", "PGPASSWORD", "MYSQL_PWD", "GH_PAT", "AWS_CREDENTIALS", "x_auth", "client_secret"]) expect(looksSecret(n)).toBe(true);
+    for (const n of ["ANTHROPIC_BASE_URL", "FAKE_ECHO_ENV", "", "TOKENS_PER_MINUTE"]) expect(looksSecret(n)).toBe(false);
+    expect(envNameProblem("CLAUDE_CONFIG_DIR")).toBe("CLAUDE_CONFIG_DIR is set by the account: add an account instead.");
+    expect(envNameProblem("CAVVY_SESSION")).toBe("CAVVY_SESSION is Cavvy's own.");
+    expect(envNameProblem("MY-VAR")).toMatch(/isn't a variable name/);
+    expect(envNameProblem("ANTHROPIC_BASE_URL")).toBeUndefined();
+});
