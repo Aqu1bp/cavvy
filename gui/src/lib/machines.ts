@@ -63,10 +63,15 @@ if (home) {
      * reached) the rest: this computer's and the other servers'. Its hits are named from this window: this
      * computer's "", another server's by its name. Without it, the server's own stand.
      */
-    const search = (params: unknown): Promise<SessionSearchResult> => {
+    /** The window's own server's hits: its own, whatever it says of them (one can't be opened on another machine). */
+    const ownSearch = (params: unknown): Promise<SessionSearchResult> => {
         own = true;
-        const here = rpc.call("sessions.search", params as never);
+        const here = rpc.call("sessions.search", params as never).then((r) => (Array.isArray(r.hits) ? { ...r, hits: r.hits.filter((h) => h && typeof h === "object" && typeof h.id === "string" && typeof h.at === "number").map(({ machine: _, ...h }) => h) } : r));
         own = false;
+        return here;
+    };
+    const search = (params: unknown): Promise<SessionSearchResult> => {
+        const here = ownSearch(params);
         // Not waited on past a server's own time to answer (far-search.ts FAR_SEARCH_MS): one that's stuck doesn't hold the window's own hits.
         const there = Promise.race([(ask("sessions.search", { ...(params as object), others: machine }) as Promise<SessionSearchResult>).catch(() => undefined), new Promise<undefined>((done) => setTimeout(done, HOME_SEARCH_MS))]);
         return Promise.all([here, there]).then(([a, b]) => {
@@ -81,7 +86,7 @@ if (home) {
     };
     rpc.route = (method, params) => {
         if (method.startsWith("app.update.") || method === "usage.summary") return ask(method, params);
-        if (!own && home.state === "open" && method === "sessions.search") return search(params);
+        if (!own && method === "sessions.search") return home.state === "open" ? search(params) : ownSearch(params);
         // Read ahead there too, for the search that follows.
         if (!own && home.state === "open" && method === "sessions.searchWarm") void ask(method, params).catch(() => undefined);
         return route?.(method, params);

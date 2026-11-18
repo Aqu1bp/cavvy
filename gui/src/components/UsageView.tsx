@@ -1,4 +1,5 @@
 // Local transcript history and the existing per-account plan limit reports.
+import { machine as windowMachine } from "../lib/platform";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Hourglass, Info, KeyRound, RotateCcw } from "lucide-solid";
 import { planLimitKey, type UsageBucket, type UsageDays, type UsageSource, type UsageSummary, type UsageTotals } from "@shared/protocol";
@@ -149,6 +150,8 @@ function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary give
     const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : p.names?.[`${a.source}:${a.accountId}`] ?? account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
     const meta = (a: AccountTotal) => {
         if (a.source === "api") return "API key";
+        // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
+        if (windowMachine) return "";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
         return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };

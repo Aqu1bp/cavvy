@@ -2335,10 +2335,10 @@ export class Engine {
                 // What a session on a server asks about the user's other machines' sessions: this computer answers.
                 peers: (name, op, params) =>
                     answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map(), (tool) => {
-                        // This computer's own rules for the session tools hold for what a server asks of its sessions.
+                        // This computer's own rules for the session tools hold for what a server asks through it: of its sessions, and of the other servers'.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
-                        if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about its sessions.";
-                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
+                        if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about sessions on other machines.";
+                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
