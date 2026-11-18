@@ -419,6 +419,11 @@ export class Engine {
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
     private closingIn = new Map<string, string[]>();
+
+    /** The folders of this app's other sessions that are working now, or closing: a rewind doesn't put files back under them. */
+    private workingFolders(rt: Runtime): string[] {
+        return [...[...this.runtimes.values()].filter((r) => r !== rt && r.busy).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat()];
+    }
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
@@ -2917,12 +2922,16 @@ export class Engine {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
                 await rt.allTurns();
-                return rt.rewindPlan(num(p.index, -1));
+                return rt.rewindPlan(num(p.index, -1), this.workingFolders(rt));
             }
-            case "session.rewind":
-                await this.runtime(p.id).yieldIdleCompaction();
-                await this.runtime(p.id).allTurns();
-                return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
+            case "session.rewind": {
+                const rt = this.runtime(p.id);
+                await rt.yieldIdleCompaction();
+                await rt.allTurns();
+                return rt.rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation), this.workingFolders(rt));
+            }
+            case "session.rewindUndo":
+                return this.runtime(p.id).rewindUndo(str(p.undo, "undo"));
             case "session.fork": {
                 const original = this.runtime(p.id);
                 const text = str(p.text, "text");
