@@ -181,7 +181,8 @@ function General() {
         on(
             () => app.conn,
             (conn) => {
-                if (conn === "open") void refreshEditors();
+                // Settings too: what this computer allows (keeping it awake) can change as sessions run.
+                if (conn === "open") void Promise.all([refreshEditors(), refreshSettings()]);
             },
         ),
     );
