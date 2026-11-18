@@ -179,5 +179,7 @@ describe("writeJson is atomic", () => {
         expect(out.reads).toBeGreaterThan(5);
         expect(out.bad).toBe(0);
         expect(leftovers(d)).toEqual([]);
-    });
+        // 1.5 s by its own clock. Each write syncs the file and its folder, and on a CI runner one of them once held
+        // the writer for 4 s: the checks above all passed, half a second after Bun's 5 s limit. A slow disk is slow, not a failure.
+    }, 30_000);
 });

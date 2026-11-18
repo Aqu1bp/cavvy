@@ -95,6 +95,16 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: gui
+      # A browser's first start on a runner reads it from disk: 1 to 35 s measured here, and up to 60 s inside a test
+      # with the disk busy, which failed whichever test started one first. Read here, before any test's clock runs.
+      - name: Start each browser once
+        run: |
+          for browser in /usr/bin/google-chrome /usr/bin/chromium; do
+            [ -x "$browser" ] || continue
+            start=$(date +%s%N)
+            timeout 180 "$browser" --headless --no-sandbox --dump-dom about:blank > /dev/null 2>&1 || echo "$browser didn't start"
+            echo "$browser: $(( ($(date +%s%N) - start) / 1000000 )) ms"
+          done
       - name: Run this shard's test files
         run: bun scripts/test-shard.ts ${{ matrix.shard }} 4 --reporter=junit --reporter-outfile=junit-${{ matrix.shard }}.xml
       # Feeds `bun scripts/test-shard.ts --timings`, which rebalances the shards.

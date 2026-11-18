@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const { encodeMessage, MessageReader } = await import("../src/lsp/protocol");
@@ -264,7 +265,7 @@ describe("diagnostics after an edit", () => {
         managers.push(m);
         const file = join(root, "a.ts");
         expect((await m.afterEdit(file, "ERROR: one\n"))?.files[0]?.newErrors).toBe(1);
-        const methods = (log: string) => (existsSync(log) ? readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l).method) : []);
+        const methods = (log: string) => (existsSync(log) ? fakeLog(log).map((l) => l.method) : []);
         // Unchanged: the same process answers.
         await m.afterEdit(file, "ERROR: one\nERROR: again\n");
         expect(methods(one).filter((x) => x === "initialize")).toHaveLength(1);
@@ -538,7 +539,7 @@ describe("diagnostics after an edit", () => {
         expect(alive(pid)).toBe(true);
         await two.dispose();
         expect(alive(pid)).toBe(false);
-        const methods = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l).method);
+        const methods = fakeLog(log).map((l) => l.method);
         expect(methods.filter((x) => x === "initialize")).toHaveLength(1);
         expect(methods).toContain("textDocument/didSave");
         expect(methods.slice(-2)).toEqual(["shutdown", "exit"]);
@@ -643,7 +644,7 @@ describe("review fixes", () => {
         expect(r?.files.map((f) => [f.path, f.items.map((i) => i.message)])).toEqual([["a.ts", ["two"]]]);
         rmSync(a);
         await m.afterEdit(join(root, "b.ts"), "fine again\n");
-        const methods = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l).method);
+        const methods = fakeLog(log).map((l) => l.method);
         expect(methods).toContain("textDocument/didClose");
     });
 

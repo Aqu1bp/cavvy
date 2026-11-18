@@ -162,7 +162,7 @@ describe("Claude Code", () => {
         const sent = received().filter((m) => m.type === "user").map((m) => m.message.content.find((c: any) => c.type === "text")?.text);
         expect(sent[0]).toBe("/goal the tests pass");
         expect(a.goals()[0]).toMatchObject({ condition: "the tests pass" });
-        const argv = received().length ? (readFileSync(LOG, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).find((l: any) => l.argv)?.argv as string[]) : [];
+        const argv = received().length ? (fakeLog(LOG).find((l: any) => l.argv)?.argv as string[]) : [];
         const system = argv[argv.indexOf("--append-system-prompt") + 1];
         expect(system).toContain("<conversation-so-far>");
         expect(system).toContain("the API is in src/api");
@@ -944,7 +944,7 @@ describe("in the app's server", () => {
             // Codex's (JSON-RPC, with a method), not the fake Claude Code's beside it.
             const codexRpc = () => received().filter((m) => m.method);
             const before = codexRpc().length;
-            const appServers = () => readFileSync(LOG, "utf-8").trim().split("\n").filter((l) => JSON.parse(l).argv?.[0] === "app-server").length;
+            const appServers = () => fakeLog(LOG).filter((l) => l.argv?.[0] === "app-server").length;
             const processes = appServers();
             expect(await rt.switchModel("claude-code:default")).toBe(true);
             expect(codexRpc().slice(before)).toEqual([]);
