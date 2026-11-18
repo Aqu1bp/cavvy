@@ -173,6 +173,7 @@
     flex: none;
     overflow-x: auto;
     scrollbar-width: none;
+    container-type: inline-size;
 }
 
 .br-tab {
@@ -319,6 +320,22 @@
 }
 
 /* The agent is driving this tab. */
+/* Beside the tabs, whole or not at all: the tabs give way first, and in a strip too narrow for both the dot alone
+   shows (the words stay for screen readers). */
+.br-tabs .br-who {
+    flex: none;
+}
+
+@container (width < 360px) {
+    .br-tabs .br-who .truncate {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+}
+
 .br-dot {
     width: calc(7 * var(--sp));
     height: calc(7 * var(--sp));

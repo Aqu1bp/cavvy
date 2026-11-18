@@ -163,6 +163,8 @@ const POPUP: BrowserWindowConstructorOptions = {
 const DEVTOOLS_SHOW_MS = 1500;
 
 /** Ctrl+F, or ⌘F on a Mac, alone. */
+/** F5, or Ctrl+R (⌘R; with Shift too): a browser's reload. */
+const reloadKey = (input: Input) => input.type === "keyDown" && !input.alt && ((input.key === "F5" && !input.control && !input.meta) || (input.key.toLowerCase() === "r" && (process.platform === "darwin" ? input.meta && !input.control : input.control && !input.meta)));
 const findKey = (input: Input) => input.type === "keyDown" && input.key.toLowerCase() === "f" && (process.platform === "darwin" ? input.meta && !input.control : input.control && !input.meta) && !input.alt && !input.shift;
 
 export class BrowserHost {
@@ -900,6 +902,8 @@ export class BrowserHost {
             // Ctrl+F (⌘F) of the person's in the page opens the pane's find bar, as a browser's own find does, rather
             // than reaching the page.
             if (findKey(input) && !tab.agentKeys) return void (e.preventDefault(), this.toGui({ type: "find", key }));
+            // So does F5 or Ctrl+R (⌘R): the pane reloads it, as its Reload button does.
+            if (reloadKey(input) && !tab.agentKeys) return void (e.preventDefault(), this.toGui({ type: "reload", key }));
             person(input.type);
             if (tab.agentInputs === 0) this.tabKey(input);
         });
