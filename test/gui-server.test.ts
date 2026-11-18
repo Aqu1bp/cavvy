@@ -3726,7 +3726,8 @@ describe("reopening a Claude Code session", () => {
                 await c2.call("session.send", { id, text: "and then?" });
                 await c2.answer(id, { kind: "permission", choice: "yes" }); // its Write, in Manual
                 await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 3, 30_000);
-                expect(sentPrompts(log).at(-1)).toContain("switched the permission mode");
+                // By name only: Claude Code runs in its own Manual, which isn't Cavvy's to describe.
+                expect(sentPrompts(log).at(-1)).toContain(String.raw`switched the permission mode to \"Manual\".\n`);
                 c2.close();
             } finally {
                 await again.stop();
