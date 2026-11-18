@@ -1180,7 +1180,7 @@ export function homeAt(): HomeAt {
 }
 
 /** Make a session in `cwd`, on Home's machine as it was when `at` was taken (the user may have moved on since). */
-export async function createSession(cwd: string, at: HomeAt): Promise<SessionHandle> {
+export async function createSession(cwd: string, at: HomeAt = homeAt()): Promise<SessionHandle> {
     // From Home on another machine: made there, and opened here as one of its sessions is.
     const { there, mode } = at;
     const snap = await (there ? there.link : rpc).call("session.create", { cwd, mode });
