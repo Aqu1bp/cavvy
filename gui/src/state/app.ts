@@ -225,7 +225,7 @@ export function providersFor(sessionId: string | undefined): ProviderInfo[] {
 }
 function machineProvidersAgain(on: string, link: Rpc) {
     void link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
-    void link.call("limits.get", {}).then((l) => setMachineLimits(on, reconcile(Object.fromEntries(l.map((x) => [planLimitKey(x.provider, x.accountId), fromWireLimits(x)])))), () => undefined);
+    void link.call("limits.get", {}).then((l) => Array.isArray(l) && setMachineLimits(on, reconcile(Object.fromEntries(l.map((x) => [planLimitKey(x.provider, x.accountId), fromWireLimits(x)])))), () => undefined);
 }
 /** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
