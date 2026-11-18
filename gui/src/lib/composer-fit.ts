@@ -4,12 +4,14 @@
 // steps taken, as words ("1 2 3"), for composer.css:
 //   1. the effort after the model's name ("xhigh": its tooltip, and the picker, still say it)
 //   2. the pickers' chevrons
-//   3. the model's name, once only a few letters of it would show (the provider's mark stays)
-//   4. the context ring
+//   3. the attach button, so the model's name keeps its room (files still go in by a drop or a paste): the side
+//      chat's composer at its narrowest, where it would otherwise be the provider's mark alone
+//   4. the model's name, once only a few letters of it would show (the provider's mark stays)
+//   5. the context ring
 
-export const FIT_STEPS = 4;
+export const FIT_STEPS = 5;
 /** Cut shorter than this many of its letters' height, the model's name gives way to the provider's mark. */
-const NAME_LEAST_EM = 5;
+const NAME_LEAST_EM = 4;
 
 /** The steps taken, as the attribute's words: 3 is "1 2 3". */
 export function fitWords(steps: number): string {
@@ -35,7 +37,7 @@ function fits(bar: HTMLElement, steps: number): boolean {
     if (end > bar.getBoundingClientRect().right + 0.5) return false;
     const name = bar.querySelector<HTMLElement>(".pick.model > .truncate");
     if (steps < 2) return !cut(name);
-    if (steps === 2 && name && cut(name)) return name.clientWidth >= NAME_LEAST_EM * parseFloat(getComputedStyle(name).fontSize);
+    if (steps < 4 && name && cut(name)) return name.clientWidth >= NAME_LEAST_EM * parseFloat(getComputedStyle(name).fontSize);
     return true;
 }
 

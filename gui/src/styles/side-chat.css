@@ -40,9 +40,16 @@
     min-height: 0;
 }
 
-/* No title bar over it: the conversation fades out just under the panel's title line. */
+/* No title bar over it: the conversation fades out just under the panel's title line. The conversation's margins and
+   the composer's foot are the session's, not a narrow pane's (stage.css): beside it, they line up with its own, and its
+   edges with the panel's title line. */
 .side-chat .stage {
     --bar-h: 0px;
+    --stage-x: calc(18 * var(--sp));
+}
+
+.side-chat .composer-dock {
+    padding-bottom: calc(12 * var(--sp));
 }
 
 /* The empty view's one line, where the panel's other views put theirs. */

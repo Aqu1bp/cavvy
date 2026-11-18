@@ -2445,8 +2445,10 @@ export interface Methods {
     "session.close": { params: { id: string }; result: null };
     /** The session's side chat (opened if it has none), with `text` sent to it. */
     "session.sideChat": { params: { id: string; text?: string }; result: { id: string } };
-    /** Close the session's side chat: it's discarded. */
+    /** Close the session's side chat: it's discarded, once a while for Undo has passed. */
     "session.closeSideChat": { params: { id: string }; result: null };
+    /** The side chat closed a moment ago, back (Undo). Fails once it's been discarded. */
+    "session.reopenSideChat": { params: { id: string }; result: { id: string } };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */

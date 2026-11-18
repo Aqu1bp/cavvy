@@ -982,6 +982,16 @@ button.att-card:hover {
     white-space: pre;
 }
 
+/* A side chat's answer: drawn as the conversation draws it (markdown.css .md.small), a little taller before it scrolls. */
+.attachment-preview.prose {
+    max-height: calc(240 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    white-space: normal;
+}
+
 .attachments-note {
     padding: calc(6 * var(--sp)) 0 0;
     font-size: 0.857rem;
@@ -1320,15 +1330,15 @@ button.att-card:hover {
     margin-right: calc(2 * var(--sp));
 }
 
-.composer-bar[data-fit~="3"] .pick.model > :is(svg:not(.chev), .provider-mono) {
+.composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
     display: inline-flex;
 }
 
 /* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
    still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
 .composer-bar[data-fit~="1"] .pick .lbl,
-.composer-bar[data-fit~="3"] .pick-acct,
-.composer-bar[data-fit~="3"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
+.composer-bar[data-fit~="4"] .pick-acct,
+.composer-bar[data-fit~="4"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1339,7 +1349,8 @@ button.att-card:hover {
 
 .composer-bar[data-fit~="1"] .ctx-limit .lbl,
 .composer-bar[data-fit~="2"] .pick .chev,
-.composer-bar[data-fit~="4"] .ctx-btn {
+.composer-bar[data-fit~="3"] > .cb:first-of-type,
+.composer-bar[data-fit~="5"] .ctx-btn {
     display: none;
 }
 
