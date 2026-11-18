@@ -12,7 +12,7 @@ import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
-import { besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
+import { asideFocused, besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
@@ -469,7 +469,8 @@ export function App() {
             // And otherwise interrupts a working session.
             // Not while it asks something, its own or what this computer asks for it (a session on a server: lib/lent.ts):
             // Esc is the card's then.
-            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
+            // Nor from the side chat: its Esc is its own (Composer).
+            if (action === "app:interrupt" && !asideFocused() && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
                 e.preventDefault();
                 interrupt();
             }

@@ -378,8 +378,8 @@ export function respond(id: string, interactionId: string, response: Interaction
     );
 }
 
-export async function setModel(ref: string) {
-    const id = app.activeId;
+/** `id`: the session it's for (the one shown, or Home's when none); a side chat's isn't kept as the default (`persist`). */
+export async function setModel(ref: string, id = app.activeId, persist = true) {
     const st = id ? handleFor(id)?.view.state : undefined;
     // An idle compaction stops for a model switch.
     if (st?.busy && !st.activity?.idle) {
@@ -387,7 +387,7 @@ export async function setModel(ref: string) {
         return;
     }
     try {
-        if (id) await rpc.call("session.setModel", { id, ref, persist: true });
+        if (id) await rpc.call("session.setModel", { id, ref, persist });
         else if (!(await updateHomeSettings({ model: ref }))) {
             await rpc.call("settings.update", { patch: { model: ref } });
             setApp("settings", "model", ref);
@@ -397,16 +397,15 @@ export async function setModel(ref: string) {
     }
 }
 
-export async function setAccount(provider: string, accountId: string) {
+export async function setAccount(provider: string, accountId: string, id = app.activeId) {
     try {
-        if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
+        if (id) await rpc.call("session.setAccount", { id, provider, accountId });
         else await rpc.call("accounts.setDefault", { provider, id: accountId });
         await refreshProviders();
     } catch (e) { reportError(e); }
 }
 
-export async function setMode(mode: PermissionModeId) {
-    const id = app.activeId;
+export async function setMode(mode: PermissionModeId, id = app.activeId) {
     if (!id) {
         // For the sessions started from the home screen (the saved default is in Settings).
         if (!setHomeAwayMode(mode)) setApp("homeMode", mode);
@@ -422,9 +421,9 @@ export async function setMode(mode: PermissionModeId) {
     });
 }
 
-export async function setFastMode(enabled: boolean) {
+export async function setFastMode(enabled: boolean, id = app.activeId) {
     try {
-        if (app.activeId) await rpc.call("session.setFastMode", { id: app.activeId, enabled });
+        if (id) await rpc.call("session.setFastMode", { id, enabled });
         else if (!(await updateHomeSettings({ fastMode: enabled }))) {
             const settings = await rpc.call("settings.update", { patch: { fastMode: enabled } });
             setApp("settings", settings);
@@ -433,8 +432,7 @@ export async function setFastMode(enabled: boolean) {
 }
 
 /** Whether the server took it (a failure is reported here). */
-export async function setEffort(effort: EffortLevel): Promise<boolean> {
-    const id = app.activeId;
+export async function setEffort(effort: EffortLevel, id = app.activeId): Promise<boolean> {
     const failed = (e: unknown) => {
         reportError(e);
         return false;
