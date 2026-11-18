@@ -1002,6 +1002,30 @@ describe("the process: crashes, restarts, settings", () => {
         expect(controls("set_permission_mode").map((r) => r.mode)).toContain("plan");
     });
 
+    test("a switch to accept edits and back reaches the running process as Claude Code's own modes", async () => {
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, setMode } = await makeAgent();
+        expect(await run("one")).toBe("done");
+        setMode("acceptEdits");
+        expect(await run("two")).toBe("done");
+        setMode("default");
+        expect(await run("three")).toBe("done");
+        expect(starts().length).toBe(1);
+        expect(controls("set_permission_mode").map((r) => r.mode)).toEqual(["acceptEdits", "default"]);
+    });
+
+    test("in bypass, a background sub-agent's own ask gets no card: it's allowed", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-ask";
+        const asked: PermissionRequest[] = [];
+        const { run, setMode, wakes } = await makeAgent({ ask: (req) => (asked.push(req), { allow: false }) });
+        setMode("bypassPermissions");
+        expect(await run("start it")).toBe("done");
+        await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
+        await until(() => wakes.length > 0, 5000, "its report");
+    });
+
     test("a model change Claude Code refuses restarts the idle process, resuming the session", async () => {
         process.env.FAKE_SCENARIO = "silent";
         process.env.FAKE_SET_MODEL_FAIL = "1";
