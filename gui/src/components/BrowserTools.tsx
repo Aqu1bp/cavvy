@@ -193,23 +193,25 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         const n = side(text);
         if (d && n !== undefined && n !== d[which]) setView({ device: { ...d, [which]: n }, zoom: zoom() });
     };
-    // The desktop app's page zooms itself (as its browser would); the headless one is asked for a zoomed size.
-    createEffect(() => {
-        if (!o.native) return;
-        const view = webview();
-        const z = zoom();
+    // The desktop app's page zooms itself (as its browser would); the headless one is asked for a zoomed size. Set on
+    // each tab as it's shown (Chromium keeps a zoom per site, which a page here mustn't pick up unasked), and the one
+    // left is put back to 100% for the agent, as a headless page is once the pane stops watching it.
+    let zoomed: Webview | undefined;
+    const setZoom = (view: Webview | undefined, z: number) => {
         try {
             view?.setZoomFactor(z);
         } catch {
-            // Not attached yet: the next change sets it.
+            // Not attached yet, or gone: the next change sets it.
         }
+    };
+    createEffect(() => {
+        if (!o.native) return;
+        const view = webview();
+        if (zoomed && zoomed !== view) setZoom(zoomed, 1);
+        zoomed = view;
+        setZoom(view, zoom());
     });
-    onCleanup(() => {
-        // Left at 100% for the agent, as a headless page is once the pane stops watching it.
-        try {
-            if (zoom() !== 1) webview()?.setZoomFactor(1);
-        } catch { /* gone */ }
-    });
+    onCleanup(() => setZoom(zoomed, 1));
 
     const devTools = () => {
         setMenuOpen(false);
