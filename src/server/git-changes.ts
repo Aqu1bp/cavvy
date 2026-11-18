@@ -1547,7 +1547,7 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         const d = fileDiff(path, b, a, how);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
         // The new side's length, so the lines after the last hunk can be asked for (DiffOptions.full).
-        if (d.hunks.length && a !== null) out.lines = a.length ? a.split("\n").length - (a.endsWith("\n") ? 1 : 0) : 0;
+        if (d.hunks.length && a !== null) out.lines = lineCount(a);
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;
         // Where it was is in its heading (the review's file row): what the empty diff says is why it's empty.
         else if (c.change === "renamed" && !d.hunks.length) out.note = "Contents unchanged";
@@ -1560,6 +1560,13 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         files.push(out);
     }
     return files;
+}
+
+/** Lines in a text, as the diff splits it: a last line without a newline counts. */
+function lineCount(text: string): number {
+    let n = 0;
+    for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) n++;
+    return text.length && !text.endsWith("\n") ? n + 1 : n;
 }
 
 type Side = { text: string; bytes: number; link?: true; raw?: Buffer } | { note: string } | { later: true };

@@ -46,6 +46,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "app:settings", context: "Global", description: "Settings", defaults: { gui: ["mod+,"] } },
     { id: "app:toggleSidebar", context: "Global", description: "Toggle the sidebar", defaults: { gui: ["mod+b"] } },
     { id: "app:togglePanel", context: "Global", description: "Toggle the side panel", defaults: { gui: ["mod+."] } },
+    { id: "app:toggleReview", context: "Global", description: "Review changes", defaults: { gui: ["mod+shift+g"] } },
     { id: "app:previousSession", context: "Global", description: "Previous session", defaults: { gui: ["mod+[", "mod+alt+up"] } },
     { id: "app:nextSession", context: "Global", description: "Next session", defaults: { gui: ["mod+]", "mod+alt+down"] } },
     { id: "app:toggleTerminal", context: "Global", description: "Toggle the terminal", defaults: { gui: ["ctrl+`", "mod+`"] } },

@@ -632,6 +632,42 @@
     padding: calc(6 * var(--sp));
 }
 
+/* The commit picker's rows: id, subject, age. */
+.rv-commits {
+    max-height: calc(340 * var(--sp));
+}
+
+.menu-item.rv-commit {
+    gap: calc(8 * var(--sp));
+}
+
+.rv-commit .sha {
+    flex: none;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.rv-commit .when {
+    flex: none;
+}
+
+.tb.base .truncate {
+    max-width: calc(220 * var(--sp));
+}
+
+/* Lines a diff leaves out, before a hunk or after the last: a button in the hunk's header. */
+.dv-gapbtn {
+    margin-right: calc(10 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font: inherit;
+    color: var(--accent-text);
+}
+
+.dv-gapbtn:hover {
+    background: var(--hover);
+}
+
 /* ---- Comments on lines (blocks/DiffComments), as the mockup's boxes under the line ---- */
 
 .review .dc-slot {
