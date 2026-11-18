@@ -143,7 +143,7 @@ function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
 
 function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: string; label: string; apiOnly?: boolean }) {
     // Claude Code and Codex run whole turns: they can't answer a one-off request.
-    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider)?.kind !== "agent") : app.models);
+    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider.split("@")[0])?.kind !== "agent") : app.models);
     const provider = () => (p.value ? app.models.find((g) => g.models.some((m) => m.ref === p.value)) : undefined);
     return (
         <SelectButton icon={provider() ? <ProviderIcon id={provider()!.provider} name={provider()!.providerName} size={15} /> : undefined}>
