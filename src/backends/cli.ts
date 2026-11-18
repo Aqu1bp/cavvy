@@ -130,8 +130,38 @@ export class JsonLinesProcess {
         this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
-        void this.exited.then(() => (this.gone = true));
+        void this.exited.then(() => {
+            this.gone = true;
+            for (const w of this.exitWaiters) w();
+            this.exitWaiters.clear();
+        });
         this.stderrEnded = this.drainStderr();
+    }
+
+    /** What's waiting on its exit (orExit): told once it exits, each gone as soon as what it waited with settles. */
+    private exitWaiters = new Set<() => void>();
+
+    /**
+     * `p`, or `onExit` should the process exit first. Not a race with `exited`: each call's reaction to it would stay
+     * until the process exits, holding the call's scope (a sent line: every prompt, every file an @-mention attached,
+     * 14.8 MB of a real run's heap after 75 minutes). Here what waits is let go of when `p` settles.
+     */
+    private orExit<T>(p: Promise<T>, onExit: T): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const w = () => resolve(onExit);
+            if (this.gone) queueMicrotask(w);
+            else this.exitWaiters.add(w);
+            p.then(
+                (v) => {
+                    this.exitWaiters.delete(w);
+                    resolve(v);
+                },
+                (e) => {
+                    this.exitWaiters.delete(w);
+                    reject(e);
+                },
+            );
+        });
     }
 
     private async drainStderr() {
@@ -175,11 +205,11 @@ export class JsonLinesProcess {
                 else if (!n) break;
             }
             if (!waited) return true;
-            return !(await Promise.race([this.exited.then(() => true), Bun.sleep(EXIT_SEEN_MS).then(() => false)]));
+            return !(await this.orExit(Bun.sleep(EXIT_SEEN_MS).then(() => false), true));
         })();
         try {
             // Its exit settles it too, should the pipe's promises never.
-            return await Promise.race([written, this.exited.then(() => false)]);
+            return await this.orExit(written, false);
         } catch {
             // it exited; reading its output says why
             return false;
