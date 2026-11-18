@@ -57,7 +57,7 @@ import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } f
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
-import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, opensInside, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
@@ -2800,14 +2800,16 @@ export class Engine {
 
     /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
     private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
-        const { cwd } = this.openScope(p);
+        const { cwd, roots } = this.openScope(p);
         const query = typeof p.query === "string" ? p.query.slice(0, 256) : "";
         const limit = Math.max(1, Math.min(200, Number.isInteger(p.limit) ? p.limit : 50));
         const files = p.sessionId !== undefined ? this.runtime(p.sessionId).ws.files : this.workspaces.get(cwd)?.files;
         if (!files) throw new RpcError("That folder isn't open in Cavvy", "not_open");
         // Folders are in the listing too ("src/"): asked for more, so as many files are left.
-        const found = await files.searchSoon(query.trim(), limit * 2);
-        return { paths: found.filter((f) => !f.endsWith("/")).slice(0, limit) };
+        const found = (await files.searchSoon(query.trim(), limit * 2)).filter((f) => !f.endsWith("/"));
+        // A link out of the session's folders, which the viewer would refuse, isn't offered.
+        const opens = await Promise.all(found.map((f) => opensInside(f, cwd, roots)));
+        return { paths: found.filter((_, i) => opens[i]).slice(0, limit) };
     }
 
     /** Search in project: in the session's folder, the window's last search stopped first. */
