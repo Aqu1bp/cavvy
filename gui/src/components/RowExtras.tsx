@@ -1,11 +1,11 @@
 // What a session's row menu offers beyond the usual (Sidebar.tsx RowMenu), loaded the first time the rail is pointed
-// at or focused: Snooze (until a time, or until it needs you) and Wake now. And the whole menu of several rows picked
+// at or focused: Snooze (until a time, or until it needs you), Wake now and Never auto-settle. And the whole menu of several rows picked
 // together (BulkItems), which a click on one row never needs.
 
 import "../styles/snooze.css";
 import { batch, createSignal, For, Show } from "solid-js";
 import { render } from "solid-js/web";
-import { AlarmClock, AlarmClockOff, Archive, ArchiveRestore, CheckCheck, ChevronRight, Trash2, Undo2, X } from "lucide-solid";
+import { AlarmClock, AlarmClockOff, Anchor, Archive, ArchiveRestore, CheckCheck, ChevronRight, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { app, reportError, rpc, setApp, toast } from "../state/app";
 import { freeRail } from "../state/ui";
@@ -69,6 +69,15 @@ export async function wakeSessions(ids: readonly string[]) {
     unselect(r.done);
 }
 
+/** Never settled by itself when it's been idle (Settings → General), or as any other again. */
+async function neverSettle(id: string, on: boolean) {
+    setApp("sessions", (s) => s.id === id, "neverSettle", on || undefined);
+    await rpc.call("session.neverSettle", { id, on }).catch((e) => {
+        setApp("sessions", (s) => s.id === id, "neverSettle", !on || undefined);
+        reportError(e);
+    });
+}
+
 /** Custom…: a dialog of its own (a field to type in can't be in a menu, whose keys move between its items). */
 function askCustom(ids: readonly string[]) {
     const host = document.body.appendChild(document.createElement("div"));
@@ -105,7 +114,7 @@ function askCustom(ids: readonly string[]) {
 
 /** `plan`: several picked (a selected row's menu): every action for all of them. Otherwise Snooze and Wake now for `ids`. */
 export default function RowExtras(p: { ids: readonly string[]; close: () => void; plan?: BulkPlan; clear?: () => void }) {
-    return <Show when={p.plan} fallback={<SnoozeItems ids={p.ids} close={p.close} />}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
+    return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><KeepItem id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
 }
 
 /** The actions on several selected sessions, as menu items (a selected row's context menu). */
@@ -145,6 +154,19 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
                 <Trash2 size={14} /> Delete {n(plan.delete)}
             </button>
         </>
+    );
+}
+
+/** Never auto-settle, checked when it's set. Not for an archived one: it's out of the list. */
+function KeepItem(p: { id: string; close: () => void }) {
+    const s = () => summary(p.id);
+    return (
+        <Show when={s() && !s()!.archived}>
+            <button role="menuitemcheckbox" aria-checked={Boolean(s()!.neverSettle)} class="menu-item compact" onClick={() => (p.close(), void neverSettle(p.id, !s()!.neverSettle))}>
+                <Anchor size={14} /> Never auto-settle
+                <span class="snz-tick" aria-hidden="true">{s()!.neverSettle ? "✓" : ""}</span>
+            </button>
+        </Show>
     );
 }
 

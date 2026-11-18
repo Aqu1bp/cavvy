@@ -182,6 +182,7 @@ export class ServerLinks {
             : known === "session.pin" ? { id, pinned: params.pinned === true }
             : known === "session.settle" ? { id, settled: params.settled === true }
             : known === "session.archive" ? { id, archived: params.archived === true }
+            : known === "session.neverSettle" ? { id, on: params.on === true }
             : known === "session.snooze" ? { id, until: typeof params.until === "number" && Number.isFinite(params.until) ? params.until : null }
             : { id };
         const answer = await w.call(known, sent);

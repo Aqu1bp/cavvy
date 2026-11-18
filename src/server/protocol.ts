@@ -965,6 +965,8 @@ export interface SessionSummary {
     snoozedUntil?: number;
     /** It woke from a snooze and hasn't been opened since. */
     woke?: true;
+    /** Never settled by itself (Settings → General, "Settle idle sessions after"). */
+    neverSettle?: true;
     /** The model it last used ("provider:id"). */
     model?: string;
     /** Loaded in the server right now. */
@@ -1724,6 +1726,8 @@ export interface GuiSettings {
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
+    /** Sessions idle this many days are settled by themselves: 0 (off), 1, 3, 7 (the default) or 14. */
+    autoSettleDays?: number;
     /** Keep the computer from idling to sleep while sessions work (default true). */
     keepAwake?: boolean;
     /** Set when keeping it awake can't work on this computer (nothing to run, not installed, or refused). */
@@ -1889,7 +1893,7 @@ export interface LentSession {
  * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
  * as it's archived, which asks about folders on that machine.
  */
-export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze"] as const;
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze", "session.neverSettle"] as const;
 /**
  * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
  * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
@@ -2367,6 +2371,8 @@ export interface Methods {
      * failure, or the end of the turn it was running. `until: null` wakes it now.
      */
     "session.snooze": { params: { id: string; until: number | null }; result: null };
+    /** Never settled by itself when it's been idle (`on`), or as any other again. */
+    "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };

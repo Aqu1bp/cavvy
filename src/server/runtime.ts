@@ -5355,7 +5355,14 @@ export class Runtime {
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
         if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
-            this.prRead = { at: Date.now(), promise: gitPrState(this.ws.cwd).then((pr) => ({ pr })) };
+            this.prRead = {
+                at: Date.now(),
+                promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
+                    if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
+                    return { pr };
+                }),
+            };
         }
         return this.prRead.promise;
     }

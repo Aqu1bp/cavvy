@@ -126,6 +126,7 @@ import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
+import { autoSettleDays, AUTO_SETTLE_DAYS, forgetPlay, notePlay, settleable, settleDue, type SettleStore } from "./auto-settle";
 import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
 import { keepAwake } from "../agent/keep-awake";
@@ -226,7 +227,7 @@ export interface EngineClient {
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
 
-interface GuiStore extends SnoozeStore {
+interface GuiStore extends SnoozeStore, SettleStore {
     recent?: { path: string; at: number }[];
     pinned?: string[];
     archived?: string[];
@@ -251,11 +252,11 @@ function runOutcome(rt: Runtime): RunOutcome {
 }
 
 /** The store's lists as sets, for asking about many sessions at once. */
-type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember>; woke: Set<string>; snoozed: Record<string, SnoozeEntry> };
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember>; woke: Set<string>; snoozed: Record<string, SnoozeEntry>; neverSettle: Set<string> };
 let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
 function storeLists(store: GuiStore): StoreLists {
     // The store read is frozen and kept until the file changes: so are these.
-    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store), woke: new Set(store.woke ?? []), snoozed: store.snoozed ?? {} } };
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store), woke: new Set(store.woke ?? []), snoozed: store.snoozed ?? {}, neverSettle: new Set(store.neverSettle ?? []) } };
     return listsOf.lists;
 }
 
@@ -281,13 +282,15 @@ function updateStore(fn: (s: GuiStore) => void): boolean {
 }
 
 /** A row's snooze (snooze.ts): when it wakes, or that it woke and hasn't been opened since. */
-function snoozeOf(id: string, lists: StoreLists): Pick<SessionSummary, "snoozedUntil" | "woke"> {
+function snoozeOf(id: string, lists: StoreLists): Pick<SessionSummary, "snoozedUntil" | "woke" | "neverSettle"> {
     const until = lists.snoozed[id]?.until;
-    return { ...(until !== undefined ? { snoozedUntil: until } : {}), ...(lists.woke.has(id) ? { woke: true as const } : {}) };
+    return { ...(until !== undefined ? { snoozedUntil: until } : {}), ...(lists.woke.has(id) ? { woke: true as const } : {}), ...(lists.neverSettle.has(id) ? { neverSettle: true as const } : {}) };
 }
 
 /** How often a far-off wake is checked again: a laptop's sleep holds timers back (snooze.ts Alarm). */
 const ALARM_MAX_MS = 10 * 60_000;
+/** The same with nothing snoozed, only sessions to settle (by the day). */
+const SETTLE_CHECK_MS = 6 * 3600_000;
 
 // ---------------------------------------------------------------------------
 
@@ -1535,6 +1538,7 @@ export class Engine {
         updateStore((s) => {
             for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
             forget(s, id);
+            forgetPlay(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
     }
@@ -1555,15 +1559,17 @@ export class Engine {
             s[key] = [...list];
             // Archived, it's out of the list: a snooze has nothing left to bring back.
             if (key === "archived" && on) forget(s, id);
+            // Brought back by hand: it isn't settled again by itself until it's been idle the setting's days from now.
+            if ((key === "settled" || key === "archived") && !on) notePlay(s, id, this.now());
         });
         this.upsertRow(id, { [key]: on });
     }
 
     /** Every window hears how a session's row is now. */
-    private upsertRow(id: string, over?: Partial<SessionSummary>) {
+    private upsertRow(id: string, over?: Partial<SessionSummary>, known?: SessionSummary) {
         const rt = this.runtimes.get(id);
         // One that isn't open is read from its file, in whichever list its flags now put it.
-        const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
+        const summary = rt ? this.summaryOf(rt) : (known ?? this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
         if (!summary) return;
         const session = { ...summary, ...over };
         // What sessionChanged next compares with: it's what the windows have now.
@@ -1603,6 +1609,7 @@ export class Engine {
         updateStore((s) => {
             woken(s, id, mark);
             if (self && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
+            notePlay(s, id, this.now());
         });
         this.upsertRow(id);
         this.alarm.arm(nextWake(readStore()));
@@ -1618,7 +1625,70 @@ export class Engine {
     private sweep() {
         if (this.stopping) return;
         for (const id of dueWakes(readStore(), this.now())) this.wake(id, true);
-        this.alarm.arm(nextWake(readStore()));
+        const settle = this.autoSettle();
+        const wake = nextWake(readStore());
+        const next = wake === undefined ? settle : settle === undefined ? wake : Math.min(wake, settle);
+        // Settling is by the day: with nothing snoozed, the timer can wait hours.
+        this.alarm.arm(next, wake === undefined ? SETTLE_CHECK_MS : undefined);
+    }
+
+    /** The setting's days (0: off), from the user's settings on this machine. */
+    private autoSettleDays(): number {
+        return autoSettleDays(loadScope("user", this.o.startCwd ?? homedir()).autoSettleDays);
+    }
+
+    /** Settles the sessions idle the setting's days, at once and in one write; when the next will be due. */
+    private autoSettle(): number | undefined {
+        const days = this.autoSettleDays();
+        if (!days) return undefined;
+        const store = readStore();
+        const shown = new Set([...this.clients].map((c) => c.shown));
+        const list = this.listSessions(1000);
+        const { due, next } = settleDue(
+            list.map((s) => {
+                const rt = this.runtimes.get(s.id);
+                return { ...s, busy: rt ? !rt.idle : false, shown: shown.has(s.id) };
+            }),
+            store,
+            days,
+            this.now(),
+        );
+        if (!due.length) return next;
+        const settled = new Set(due);
+        if (!updateStore((s) => (s.settled = [...new Set([...(s.settled ?? []), ...due])]))) return next;
+        this.log(`Settled ${due.length} session${due.length === 1 ? "" : "s"} idle ${days} days or more`);
+        for (const s of list) if (settled.has(s.id)) this.upsertRow(s.id, { settled: true }, s);
+        return next;
+    }
+
+    /**
+     * Its pull request is known merged or closed (its PR row, read as it's shown): with auto-settle on, it's settled,
+     * once. Not one working or waiting, pinned, snoozed or kept in play.
+     */
+    prEnded(rt: Runtime) {
+        const store = readStore();
+        if (!this.autoSettleDays() || store.prSettled?.includes(rt.id)) return;
+        const s = this.summaryOf(rt);
+        if (!settleable({ ...s, busy: !rt.idle }, store)) return;
+        updateStore((x) => {
+            x.settled = [...new Set([...(x.settled ?? []), rt.id])];
+            x.prSettled = [...(x.prSettled ?? []), rt.id].slice(-500);
+        });
+        this.upsertRow(rt.id, { settled: true });
+    }
+
+    /** Never settled by itself (`on`), or as any other again. */
+    private neverSettle(id: string, on: boolean) {
+        if (!this.runtimes.has(id) && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            const list = new Set(s.neverSettle ?? []);
+            if (on) list.add(id);
+            else list.delete(id);
+            s.neverSettle = [...list];
+            if (!on) notePlay(s, id, this.now());
+        });
+        this.upsertRow(id);
+        if (!on) this.sweep();
     }
 
     // -----------------------------------------------------------------------
@@ -2415,6 +2485,7 @@ export class Engine {
             bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
+            autoSettleDays: autoSettleDays(s.autoSettleDays),
             keepAwake: s.keepAwake !== false,
             ...(keepAwake.available() ? {} : { keepAwakeUnavailable: true }),
         };
@@ -2456,10 +2527,16 @@ export class Engine {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
                 s.editor = patch.editor || undefined;
             }
+            if ("autoSettleDays" in patch) {
+                if (!AUTO_SETTLE_DAYS.includes(patch.autoSettleDays as (typeof AUTO_SETTLE_DAYS)[number])) throw new RpcError(`autoSettleDays must be one of ${AUTO_SETTLE_DAYS.join(", ")}`, "invalid");
+                s.autoSettleDays = patch.autoSettleDays;
+            }
             // On is the default: stored only when off.
             if ("keepAwake" in patch) s.keepAwake = patch.keepAwake === false ? false : undefined;
         });
         if ("keepAwake" in patch) keepAwake.refresh();
+        // Shorter, or on: what's idle that long settles now.
+        if ("autoSettleDays" in patch) this.sweep();
         this.reloadSettings();
         // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
         if ("simulator" in patch) this.serverLinks?.relend();
@@ -3227,6 +3304,9 @@ export class Engine {
             case "session.snooze":
                 this.snooze(checkId(p.id), p.until);
                 return null;
+            case "session.neverSettle":
+                this.neverSettle(checkId(p.id), p.on === true);
+                return null;
             case "session.archiveOffer":
                 return await this.archiveOffer(client, text(p.id, "id", 200));
             case "session.planInfo":
@@ -3250,6 +3330,8 @@ export class Engine {
                 } : undefined);
                 const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
+                    // Brought back: not settled by itself straight away for having been idle.
+                    notePlay(s, id, this.now());
                 });
                 // In whichever list it's in: without its flags saved, it's back as an active one.
                 const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);

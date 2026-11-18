@@ -75,12 +75,12 @@ export class Alarm {
         },
     ) {}
 
-    /** Set for `at` (undefined: nothing due), replacing what was set. */
-    arm(at: number | undefined) {
+    /** Set for `at` (undefined: nothing due), replacing what was set; checked again after `maxDelayMs` at most (default: the alarm's). */
+    arm(at: number | undefined, maxDelayMs = this.o.maxDelayMs) {
         this.stop();
         this.at = at;
         if (at === undefined) return;
-        const delay = Math.max(0, Math.min(at - this.o.now(), this.o.maxDelayMs));
+        const delay = Math.max(0, Math.min(at - this.o.now(), maxDelayMs));
         const fire = () => {
             this.timer = undefined;
             this.o.fire();

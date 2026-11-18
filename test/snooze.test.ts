@@ -192,7 +192,8 @@ describe("snoozing sessions", () => {
         clock.sleep(6 * HOUR);
         await call("sessions.list", {});
         expect(row(a)?.woke).toBe(true);
-        expect(clock.pending()).toHaveLength(0);
+        // Nothing snoozed: what's left is settling's check, hours off.
+        expect(clock.pending().every((at) => at - clock.now() > HOUR)).toBe(true);
         await engine.stop();
     });
 
