@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
-import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
+import { activate, app, handleFor, reportError, restoredFrom, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
@@ -120,6 +120,8 @@ export function CommandPalette() {
         setSettingsTab(undefined);
         setAgentFocus(undefined);
         setJumpTarget({ sessionId: h.id, seg: h.seg, index: h.index, role: h.role, query });
+        // One on a server, maybe not in the list: opened from there.
+        if (h.machine) restoredFrom(h.id, h.machine);
         void activate(h.id, h.cwd);
     };
 
@@ -191,7 +193,7 @@ export function CommandPalette() {
                 id: `m-${h.id}-${h.seg}-${h.index}-${i}`,
                 section: "Messages",
                 label: sn.text,
-                desc: `${h.title} · ${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
+                desc: `${h.title} · ${h.machine ? `${h.machine} · ` : ""}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
                 icon: h.role === "user" ? <User size={15} /> : <Bot size={15} />,
                 snippet: sn,
                 run: () => openHit(h, said.query),

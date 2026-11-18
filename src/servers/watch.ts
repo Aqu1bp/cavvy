@@ -250,8 +250,8 @@ export class MachineWatch {
         return this.request(method, params, MAX_ANSWER);
     }
 
-    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts). */
-    ask(method: "peers.list" | "peers.read" | "peers.send", params: Record<string, unknown>): Promise<unknown> {
+    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts), or for a search here. */
+    ask(method: "peers.list" | "peers.read" | "peers.send" | "sessions.search", params: Record<string, unknown>): Promise<unknown> {
         return this.request(method, params, PEERS_ANSWER);
     }
 
