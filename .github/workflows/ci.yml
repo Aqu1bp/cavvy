@@ -102,7 +102,7 @@ jobs:
           for browser in /usr/bin/google-chrome /usr/bin/chromium; do
             [ -x "$browser" ] || continue
             start=$(date +%s%N)
-            timeout 180 "$browser" --headless --no-sandbox --dump-dom about:blank > /dev/null 2>&1 || echo "$browser didn't start"
+            timeout --kill-after=5 180 "$browser" --headless --no-sandbox --dump-dom about:blank > /dev/null 2>&1 || echo "$browser didn't start"
             echo "$browser: $(( ($(date +%s%N) - start) / 1000000 )) ms"
           done
       - name: Run this shard's test files

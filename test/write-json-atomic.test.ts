@@ -169,7 +169,8 @@ describe("writeJson is atomic", () => {
         );
         const end = Date.now() + 1500;
         let i = 1;
-        while (Date.now() < end) {
+        // For 1.5 s, and the few writes checked below however long a slow disk holds one.
+        while (Date.now() < end || i <= 6) {
             writeJson(f, body(i++), 0o600);
             await Bun.sleep(0);
         }
