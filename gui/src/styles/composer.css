@@ -1679,6 +1679,41 @@ button.att-card:hover {
     color: var(--fg-2);
 }
 
+/* A question's card: the whole of it, to its edges, takes files dropped on it (for the answer, not the message). */
+.q-card {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+    margin: calc(-16 * var(--sp)) calc(-16 * var(--sp)) calc(-14 * var(--sp)) calc(-18 * var(--sp));
+    padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
+    border-radius: inherit;
+}
+
+.itab-count + .q-card {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+.q-card.dragging {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.q-field {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.q-field .hb.sm {
+    flex: none;
+    border-radius: 50%;
+}
+
+.q-attached .attachments-wrap {
+    margin-bottom: 0;
+}
+
 /* Questions: numbered options, then a field for your own answer. */
 .q-options {
     display: flex;

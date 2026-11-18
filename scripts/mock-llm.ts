@@ -401,7 +401,11 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
-        return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
+        // What came attached to the answer: framed files, saved ones, images.
+        const got = [...lastResult.matchAll(/<attached-file name="([^"]+)"|The user attached "([^"]+)"/g)].map((m) => m[1] ?? m[2]);
+        const images = /^(An image|\d+ images) the user attached/m.exec(lastResult)?.[1]?.toLowerCase();
+        const also = [...got, ...(images ? [images] : [])];
+        return { text: `Great, going with that. (${lastResult.split("\n")[0]!.replace(/^The user answered: /, "")})${also.length ? ` I have ${also.join(", ")}.` : ""}` };
     }
     if (/\bplan\b/.test(p)) {
         if (toolRounds === 0) return { reasoning: "I'll research first, then propose.", calls: [{ name: "Glob", args: { pattern: "**/*.ts" } }] };

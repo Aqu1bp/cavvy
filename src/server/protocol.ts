@@ -500,6 +500,8 @@ export interface QuestionInteraction {
     question: string;
     options: { label: string; description?: string }[];
     multi: boolean;
+    /** Images and files can go with the answer. */
+    attach?: boolean;
 }
 
 export interface PlanInteraction {
@@ -627,7 +629,8 @@ export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInt
 
 export type InteractionResponse =
     | { kind: "permission"; choice: PermissionOption["id"]; feedback?: string }
-    | { kind: "question"; answers?: string[] }
+    /** `images`, `files`: what's attached to the answer, as session.send carries them (where the question takes them). */
+    | { kind: "question"; answers?: string[]; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
     /** No value: declined. The value goes to the session's memory and nowhere else. */
     | { kind: "secret"; value?: string }

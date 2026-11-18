@@ -44,6 +44,7 @@
 // FAKE_CRASH_FILE     exits (code 3) as soon as this file exists (and removes it): a crash on demand
 // FAKE_IDLE_LIMIT_MS  after a turn ends, sends FAKE_LIMIT_UPDATE's account/rateLimits/updated this much later (idle)
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web | steps (command, message, command, answer)
+//                     | ask (a question for the user, item/tool/requestUserInput; the answer is logged as userInput)
 //                     | edit (a patch, then work until steered; FAKE_EDIT_FILE, FAKE_EDIT_TEXT, FAKE_EDIT_WAIT)
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
@@ -745,6 +746,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const ok = r?.action === "accept";
         const error = r?.action === "decline" ? { message: "user rejected MCP tool call" } : r?.action === "cancel" ? { message: "user cancelled MCP tool call" } : null;
         notify("item/completed", { threadId, turnId, item: { ...item, status: ok ? "completed" : "failed", error: ok ? null : error, result: ok ? { content: [{ type: "text", text: `wrote ${JSON.stringify(r?.content)}` }] } : null } });
+    } else if (scenario === "ask") {
+        const r = await serverRequest("item/tool/requestUserInput", { threadId, turnId, itemId: `ask-${turnId}`, questions: [{ id: "color", header: "Color", question: "Which color?", options: [{ label: "Red", description: "Warm" }, { label: "Blue", description: "Cool" }] }] });
+        log({ userInput: r });
     } else if (scenario === "web") {
         const ws = { type: "webSearch", id: `ws-${turnId}`, query: "", action: { type: "other" }, results: null };
         notify("item/started", { threadId, turnId, item: ws });
