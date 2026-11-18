@@ -69,6 +69,8 @@ export interface TrashedSessionSummary {
     cwd?: string;
     projectName?: string;
     deletedAt: number;
+    /** The server it was deleted on, for a window on the user's own computer (none: this machine's own). */
+    machine?: string;
 }
 
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {

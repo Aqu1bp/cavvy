@@ -91,3 +91,21 @@ test("the palette shows this machine's hits while the servers answer, then asks 
     expect(asked).toEqual([undefined, true, undefined, true]);
     expect(shown).toEqual([{ hits: ["m1"], more: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
 });
+
+test("what was deleted on each server is listed as its, and only rows a window can show", async () => {
+    const { trashOnServers } = await import("../src/server/far-search");
+    const box = { ask: async () => [{ id: "b1", title: "On box", projectName: "app", cwd: "/srv/app", deletedAt: 20 }, { id: "../x", title: "t", deletedAt: 1 }, { id: "b2", title: 7, deletedAt: 1 }, { id: "b3", title: "t", deletedAt: "soon" }, null] };
+    const down = { ask: () => Promise.reject(new Error("went away")) };
+    expect(await trashOnServers(new Map([["box", box], ["lab", down], ["odd", { ask: async () => ({ not: "a list" }) }]]))).toEqual([{ id: "b1", title: "On box", projectName: "app", deletedAt: 20, machine: "box" }]);
+});
+
+test("a window on the user's computer lists and restores what was deleted on its servers; plugins are those of the folder's machine", async () => {
+    const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
+    const deleted = await read("RecentlyDeleted.tsx");
+    expect(deleted).toContain('on ? rpc.call("servers.relay", { name: on, method: "session.restore", params: { id } }) : rpc.call("session.restore", { id })');
+    expect(deleted).toContain("s.machine && restoredFrom(s.id, s.machine)");
+    const plugins = await read("Plugins.tsx");
+    expect(plugins).toContain("const rpc = rpcFor(app.activeId);");
+    // Only a maker's logo is asked of the window's own Cavvy.
+    expect(plugins.split("own.call(").length).toBe(2);
+});

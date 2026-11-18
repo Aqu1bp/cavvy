@@ -1,7 +1,7 @@
 // A search on the user's own computer, for its windows, looks on the servers it's connected to as well: each is asked
 // the same search at the same time as this machine's own, and what it found is said to be its (machine).
 
-import type { SessionSearchHit, SessionSearchResult } from "./protocol";
+import type { SessionSearchHit, SessionSearchResult, TrashedSessionSummary } from "./protocol";
 
 /**
  * How long a search waits for a server's answer: its own search's time limit (search.ts, 2.5 s) and the way there and
@@ -54,4 +54,19 @@ export function searchServers(servers: Map<string, SearchAsk>, params: { query: 
 export function withServers(here: SessionSearchResult, there: { hits: SessionSearchHit[]; partial: boolean }[], limit: number): SessionSearchResult {
     if (!there.length) return here;
     return { partial: here.partial || there.some((t) => t.partial), hits: [...here.hits, ...there.flatMap((t) => t.hits)].sort((a, b) => b.at - a.at).slice(0, limit) };
+}
+
+/** What a server lists as deleted there (sessions.trash), by the server's name: only rows of the shape a window shows, newest first with this machine's. A server that doesn't answer in time lists none. */
+export async function trashOnServers(servers: Map<string, { ask(method: "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> }>, ms = FAR_SEARCH_MS): Promise<TrashedSessionSummary[]> {
+    const lists = await Promise.all(
+        [...servers].map(async ([machine, w]) => {
+            const rows = await w.ask("sessions.trash", {}, ms).catch(() => undefined);
+            return (Array.isArray(rows) ? rows.slice(0, 500) : []).flatMap((r): TrashedSessionSummary[] => {
+                const x = r as Record<string, unknown> | null;
+                if (!x || typeof x !== "object" || typeof x.id !== "string" || !/^[\w.-]{1,120}$/.test(x.id) || typeof x.title !== "string" || typeof x.deletedAt !== "number" || !Number.isFinite(new Date(x.deletedAt).getTime())) return [];
+                return [{ id: x.id, title: x.title.slice(0, 300), deletedAt: x.deletedAt, ...(typeof x.projectName === "string" ? { projectName: x.projectName.slice(0, 200) } : {}), machine }];
+            });
+        }),
+    );
+    return lists.flat();
 }

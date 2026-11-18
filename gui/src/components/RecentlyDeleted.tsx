@@ -6,7 +6,7 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
 import { ArchiveRestore } from "lucide-solid";
 import type { TrashedSessionSummary } from "@shared/protocol";
-import { activate, reportError, rpc } from "../state/app";
+import { activate, reportError, restoredFrom, rpc } from "../state/app";
 import { deletedOpen, setDeletedOpen } from "../state/ui";
 import { ago } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
@@ -25,10 +25,11 @@ export function RecentlyDeleted() {
             rpc.call("sessions.trash", {}).then(setList, (e) => (setList([]), reportError(e)));
         }),
     );
-    const restore = async (id: string) => {
+    const restore = async (id: string, on?: string) => {
         setBusy(id);
         try {
-            await rpc.call("session.restore", { id });
+            // One deleted on a server is brought back there, through this computer's Cavvy.
+            await (on ? rpc.call("servers.relay", { name: on, method: "session.restore", params: { id } }) : rpc.call("session.restore", { id }));
             setRestored((s) => new Set([...s, id]));
         } catch (e) {
             reportError(e);
@@ -50,14 +51,14 @@ export function RecentlyDeleted() {
                                             <div class="deleted-text">
                                                 <span class="deleted-title truncate">{s.title}</span>
                                                 <span class="deleted-meta truncate">
-                                                    {s.projectName ? `${s.projectName} · ` : ""}
+                                                    {s.machine ? `${s.machine} · ` : ""}{s.projectName ? `${s.projectName} · ` : ""}
                                                     {back() ? "Restored" : `Deleted ${ago(s.deletedAt) === "now" ? "just now" : `${ago(s.deletedAt)} ago`}`}
                                                 </span>
                                             </div>
                                             <Show
                                                 when={back()}
                                                 fallback={
-                                                    <button class="btn sm secondary" disabled={busy() !== undefined} onClick={() => void restore(s.id)}>
+                                                    <button class="btn sm secondary" disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
                                                         <Show when={busy() === s.id} fallback={<ArchiveRestore size={14} />}>
                                                             <Spinner />
                                                         </Show>
@@ -65,7 +66,7 @@ export function RecentlyDeleted() {
                                                     </button>
                                                 }
                                             >
-                                                <button class="btn sm secondary" onClick={() => (close(), void activate(s.id))}>
+                                                <button class="btn sm secondary" onClick={() => (close(), s.machine && restoredFrom(s.id, s.machine), void activate(s.id))}>
                                                     Open
                                                 </button>
                                             </Show>

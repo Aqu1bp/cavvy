@@ -7,7 +7,7 @@
 import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
 import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, reportError, rpc as own, rpcFor, toast } from "../state/app";
 import { ago, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { categoryOf, logoOwner, type CategoryIcon } from "../lib/plugins";
@@ -54,7 +54,7 @@ function logoFor(owner: string): Promise<string | undefined> {
     if (!hit) {
         // Only a logo is kept here. Without one (none, GitHub busy, offline) it's asked again the next time the
         // page shows it, and the server answers an account without an avatar from its own memory.
-        hit = rpc.call("plugins.logo", { owner }).then(
+        hit = own.call("plugins.logo", { owner }).then(
             (l) => (l ? `data:${l.mediaType};base64,${l.data}` : undefined),
             () => undefined,
         );
@@ -93,6 +93,9 @@ export function Plugins() {
     const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
     const cwd = () => app.homeCwd;
+    // The plugins of the machine the folder is on: the session's in view (or Home's), as they were when this opened.
+    const rpc = rpcFor(app.activeId);
+    const on = awayMachine(app.activeId);
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
 
@@ -186,6 +189,7 @@ export function Plugins() {
                 {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
             <div class="pg-bar">
+                <Show when={on}><span class="set-note">On {on}</span></Show>
                 <Segmented
                     label="Show"
                     size="sm"
@@ -279,7 +283,7 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on this computer, so install only from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on {on || "this computer"}, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
