@@ -21,6 +21,7 @@ import type { Tool, ToolState } from "./tools/types";
 import { killAllShells } from "./tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "./tools/web-tools";
 import { cachedListings, clientFor, defaultModelFrom, listAllModels, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "./providers/models";
+import { fallbackNotice, unavailableReason } from "./providers/model-refs";
 import { getProvider, resolveBaseUrl, type ProviderDef } from "./providers/registry";
 import type { ProviderListing } from "./providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type Usage } from "./providers/types";
@@ -138,11 +139,18 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     // ---- model
     let listings = cachedListings();
     let ref = o.modelRef ?? settings.model ?? o.fallbackModel;
+    // What couldn't be used (the resumed session's model, then the saved default): said once, by name, with what's used instead.
+    let missed: string | undefined;
     if (!o.modelRef && resumed?.model && resumed.model !== ref) {
         const p = parseModelRef(resumed.model);
         const usable = p && getProvider(p.provider) && resolveModelInfo(resumed.model) && (await clientFor(p.provider).then(() => true, () => false));
         if (usable) ref = resumed.model;
-        else o.warn(`this session used ${resumed.model}, which isn't available now; using ${ref ?? "the default model"}.`);
+        else missed = resumed.model;
+    }
+    // The saved default names a provider that was removed or turned off: as with none set, not an error.
+    if (!o.modelRef && ref && ref !== resumed?.model && (await unavailableReason(ref))) {
+        missed ??= ref;
+        ref = undefined;
     }
     if (!ref) {
         let pick = defaultModelFrom(listings);
@@ -165,6 +173,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     if (model && !model.contextWindow) model = (await lookupModel(ref).catch(() => undefined)) ?? model;
     if (!model) throw new SetupError(`Unknown model "${ref}".`);
     if (o.fastMode && !model.supportsFastMode) throw new SetupError("Fast mode is not available for this model/backend. Refresh the model list or choose a supported model.");
+    if (missed) o.warn(fallbackNotice((await unavailableReason(missed)) ?? (missed === resumed?.model ? "The model this session used isn't available" : "The default model isn't available"), model));
     const mainModel = model;
 
     // ---- session and tools

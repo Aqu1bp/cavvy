@@ -132,6 +132,7 @@ for (const outcome of ["success", "error", "refresh error"] as const) {
             rpc: { call: (...args: unknown[]) => { calls.push(args); return request.promise; } },
             refreshProviders: () => Promise.resolve(), refreshModels: () => refresh.promise,
             toast: (message: string) => messages.push(message), reportError: (e: unknown) => errors.push(e),
+            resetToast: () => {},
         });
         let dispose!: () => void;
         solid.createRoot((d: () => void) => {

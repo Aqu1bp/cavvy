@@ -58,6 +58,7 @@ import { isShellTool } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
+import { fallbackNotice, unavailableReason } from "../providers/model-refs";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account, accountSwitch, catalogNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
@@ -519,15 +520,23 @@ export class App {
     private async pickStartupModel() {
         // --model, then a resumed session's own model, then the saved default.
         const candidates = [this.init.modelRef, this.resumedModel, this.settings.model ?? this.init.fallbackModel].filter((r): r is string => Boolean(r && parseModelRef(r)));
+        // The resumed session's model, else the saved default, when it couldn't be used: said once, by name.
+        let missed: string | undefined;
+        const tell = async () => {
+            if (!missed || !this.model) return;
+            const why = (await unavailableReason(missed)) ?? (missed === this.resumedModel ? "The model this session used isn't available" : "The default model isn't available");
+            this.notice(fallbackNotice(why, this.model), "warn");
+        };
         for (const ref of new Set(candidates)) {
             // An explicit --model should say why it can't be used.
             const ok = await this.setModel(ref, { quiet: ref !== this.init.modelRef, persist: false });
             if (ok) {
-                if (ref !== this.resumedModel && this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
+                await tell();
                 this.printModelLine();
                 void this.refreshListings();
                 return;
             }
+            if (ref !== this.init.modelRef) missed ??= ref;
         }
         this.listings = cachedListings();
         let pick = defaultModelFrom(this.listings);
@@ -540,7 +549,7 @@ export class App {
             pick = defaultModelFrom(this.listings);
         } else void this.refreshListings();
         if (pick && (await this.setModel(modelRef(pick), { quiet: true, persist: false }))) {
-            if (this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
+            await tell();
             this.printModelLine();
             return;
         }
@@ -849,19 +858,17 @@ export class App {
             if (r) ({ model, client } = r);
         } else if (opts?.main) {
             // the session's own model
-        } else if (smallRef) {
-            const p = parseModelRef(smallRef);
-            if (p) {
-                try {
-                    client = await clientFor(p.provider);
-                    model = resolveModelInfo(smallRef) ?? model;
-                } catch {
-                    // fall back to the main model
-                }
-            }
         } else {
-            const small = smallModelFor(model.provider, this.listings);
-            if (small) model = small;
+            const p = smallRef ? parseModelRef(smallRef) : undefined;
+            const chosen = p && (await clientFor(p.provider).then((c) => c, () => undefined));
+            if (chosen) {
+                client = chosen;
+                model = resolveModelInfo(smallRef!) ?? model;
+            } else {
+                // None set, or its provider was removed or turned off: a small model of the session's provider.
+                const small = smallModelFor(model.provider, this.listings);
+                if (small) model = small;
+            }
         }
         const res = await client.stream(
             // Not a session message, so redact here (WebFetch pages, reviewer prompts).

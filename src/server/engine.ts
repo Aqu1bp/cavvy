@@ -39,6 +39,7 @@ import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
+import { clearModelSettings, type ModelSetting } from "../providers/model-refs";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
 import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
@@ -2553,6 +2554,30 @@ export class Engine {
         await this.accountsList(providerId, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
     }
 
+    /**
+     * The user's saved models (default, small, reviewer) that `gone` matches go back to unset, as a provider is removed
+     * or turned off: a new session then starts as with none set, not on something that can't run. The settings reset.
+     */
+    private forgetModels(gone: (ref: { provider: string; id: string }) => boolean): ModelSetting[] {
+        try {
+            const reset = clearModelSettings(this.o.startCwd ?? homedir(), gone);
+            if (reset.length) this.reloadSettings();
+            return reset;
+        } catch (e) {
+            this.o.log?.(`settings: couldn't reset models of a removed provider: ${(e as Error).message}`);
+            return [];
+        }
+    }
+
+    /** A key removed or a CLI turned off: unless it can still be used (a key from the environment), what named it is reset. */
+    private async providerRemoved(id: string): Promise<{ reset: ModelSetting[] }> {
+        if (await clientFor(id).then(() => true, () => false)) return { reset: [] };
+        const reset = this.forgetModels((r) => r.provider === id);
+        for (const r of this.runtimes.values()) r.providerGone(id);
+        if (reset.length) this.broadcast({ type: "models.changed" });
+        return { reset };
+    }
+
     /** As /login does: with no default model yet, the newly connected provider's best one becomes it. */
     private adoptDefaultModel(providerId: string): string | undefined {
         if (this.guiSettings(this.o.startCwd).model) return undefined;
@@ -2575,8 +2600,10 @@ export class Engine {
 
     private guiSettings(cwd?: string): GuiSettings {
         const s = loadScope("user", cwd ?? homedir());
+        const auto = defaultModelFrom(this.listings);
         return {
             model: s.model,
+            ...(auto ? { autoModel: modelRef(auto) } : {}),
             smallModel: s.smallModel,
             reviewModel: s.reviewModel,
             effort: s.effort,
@@ -3654,14 +3681,20 @@ export class Engine {
             }
             case "providers.updateInstance": {
                 const id = str(p.id, "id");
+                const had = readAgentConfig(id)?.models ?? [];
                 try {
                     await updateInstance(id, instanceInput(p));
                 } catch (e) {
                     throw new RpcError(redact((e as Error).message), "invalid");
                 }
                 forgetClient(id);
+                // A model of its own taken off its list, that its CLI doesn't list either: what was set to it goes back to unset.
+                const kept = new Set([...(readAgentConfig(id)?.models ?? []), ...(this.listings.find((l) => l.provider.id === baseCli(id))?.models.map((m) => m.id) ?? [])]);
+                const dropped = new Set(had.filter((m) => !kept.has(m)));
+                const reset = dropped.size ? this.forgetModels((r) => r.provider === id && dropped.has(r.id)) : [];
                 void this.refreshListings(false, [id]);
-                return null;
+                if (reset.length) this.broadcast({ type: "models.changed" });
+                return { reset };
             }
             case "providers.removeInstance": {
                 const id = str(p.id, "id");
@@ -3670,9 +3703,11 @@ export class Engine {
                     throw new RpcError(redact((e as Error).message), "invalid");
                 });
                 forgetClient(id);
+                const reset = this.forgetModels((r) => r.provider === id);
+                for (const r of this.runtimes.values()) r.providerGone(id);
                 void this.refreshListings(false, []);
                 this.broadcast({ type: "models.changed" });
-                return null;
+                return { reset };
             }
             case "offers.set": {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
@@ -3808,14 +3843,14 @@ export class Engine {
                     await turnOffAgent(id);
                     forgetClient(id);
                     await this.afterKeyChange(id);
-                    return null;
+                    return this.providerRemoved(id);
                 }
                 const k = await getKey(id);
                 if (k?.source === "env") throw new RpcError(`The ${id} key comes from $${k.envVar}; unset it in your shell.`);
                 await removeKey(id);
                 forgetClient(id);
                 await this.afterKeyChange(id);
-                return null;
+                return this.providerRemoved(id);
             }
             case "projects.recent":
                 return this.recentProjects();

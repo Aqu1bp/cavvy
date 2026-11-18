@@ -11,7 +11,7 @@ import { AnthropicProvider } from "./anthropic";
 import { OpenAICompatProvider, compatModelInfo } from "./openai-compat";
 import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
+import { allProviders, getProvider, providerLabel, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
 import { anthropicPricing, anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
@@ -75,7 +75,7 @@ function providerConfiguration(def: ProviderDef): string {
 /** A client for a provider, with its stored key. Throws if a key is required but missing. */
 export async function clientFor(providerId: string): Promise<ProviderClient> {
     const def = getProvider(providerId);
-    if (!def && baseCli(providerId) !== providerId && agentCli(providerId)) throw new ProviderError(`The ${agentCli(providerId)!.name} setup "${providerId.slice(providerId.indexOf("@") + 1)}" was removed. Pick another model.`, 404);
+    if (!def && baseCli(providerId) !== providerId && agentCli(providerId)) throw new ProviderError(`${providerLabel(providerId)} was removed. Pick another model.`, 404);
     if (!def) throw new ProviderError(`Unknown provider "${providerId}". Run /providers to see the list.`);
     const cred = await credentialFingerprint(def);
     // A secret variable saved by another Cavvy since this one read them.
@@ -472,7 +472,11 @@ export async function reviewTarget(setting: string | undefined): Promise<{ clien
         if (isAgentBackend(client)) throw new ProviderError(`${getProvider(p.provider)?.name ?? p.provider} can't review actions; pick an API model`);
         return { client, model };
     } catch (e) {
-        if (setting) throw new ProviderError(`the reviewer you chose (${setting}) can't be used: ${(e as Error).message}`);
+        if (setting) {
+            const p = parseModelRef(setting);
+            const named = p ? `${resolveModelInfo(setting)?.name ?? p.id} on ${providerLabel(p.provider)}` : setting;
+            throw new ProviderError(`the reviewer you chose (${named}) can't be used: ${(e as Error).message}`);
+        }
         return undefined;
     }
 }

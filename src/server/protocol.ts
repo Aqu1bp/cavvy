@@ -662,6 +662,8 @@ export interface ModelSummary {
     effortLevels?: EffortLevel[];
     supportsFastMode?: boolean;
     deprecated?: boolean;
+    /** Its provider was removed or turned off: it can't run until another model is picked. */
+    unavailable?: true;
     /**
      * false: a message sent while it works can't join the running turn (its agent CLI takes none mid-turn), so it
      * waits for the turn's end, and nothing offers to steer. Missing: it can (Cavvy's own models, Claude Code, Codex).
@@ -1787,8 +1789,13 @@ export interface GitCommitMessageInfo {
     model: string;
 }
 
+/** The settings that hold a model: reset to unset when what they name is removed. */
+export type ModelSettingName = "model" | "smallModel" | "reviewModel";
+
 export interface GuiSettings {
     model?: string;
+    /** What a new session starts on when `model` is unset, or names something that can't run now (read-only). */
+    autoModel?: string;
     smallModel?: string;
     /** The auto-mode reviewer. Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. */
     reviewModel?: string;
@@ -2574,16 +2581,16 @@ export interface Methods {
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
     /** `model`: the default model it set, when there was none yet. */
     "providers.setKey": { params: { provider?: string; key: string }; result: { provider: string; masked: string; warning?: string; model?: string } };
-    "providers.removeKey": { params: { provider: string }; result: null };
+    "providers.removeKey": { params: { provider: string }; result: { reset: ModelSettingName[] } };
     /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
     /** Set all of an agent CLI's environment variables (those left out are removed). It has to be turned on. */
     "providers.setEnv": { params: { provider: string; vars: AgentEnvVar[] }; result: null };
     /** Add a named instance of an agent CLI (`base`: claude-code, codex, …); its models are listed with its setup. */
     "providers.addInstance": { params: AgentInstanceInput & { base: string }; result: { id: string } };
-    "providers.updateInstance": { params: AgentInstanceInput & { id: string }; result: null };
+    "providers.updateInstance": { params: AgentInstanceInput & { id: string }; result: { reset: ModelSettingName[] } };
     /** Its running turns go on; a session on it then asks for another model. */
-    "providers.removeInstance": { params: { id: string }; result: null };
+    "providers.removeInstance": { params: { id: string }; result: { reset: ModelSettingName[] } };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
     /** Import one into a Cavvy session (or open the one that already holds it). */

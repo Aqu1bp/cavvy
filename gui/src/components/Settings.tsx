@@ -19,11 +19,12 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { resetToast } from "../lib/reset-toast";
 import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
-import { EffortSlider } from "./ModelPicker";
+import { EffortSlider, refLabel } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
@@ -145,10 +146,13 @@ function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: 
     // Claude Code and Codex run whole turns: they can't answer a one-off request.
     const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider.split("@")[0])?.kind !== "agent") : app.models);
     const provider = () => (p.value ? app.models.find((g) => g.models.some((m) => m.ref === p.value)) : undefined);
+    // Saved but not listed (its provider removed or turned off, or a model typed by hand): shown as such, never blank or as its id.
+    const unlisted = () => (p.value && app.models.length && !provider() ? refLabel(p.value, app.models) : undefined);
     return (
         <SelectButton icon={provider() ? <ProviderIcon id={provider()!.provider} name={provider()!.providerName} size={15} /> : undefined}>
             <select class="select" aria-label={p.label} value={p.value ?? ""} onChange={(e) => p.onChange(e.currentTarget.value)}>
                 <option value="">{p.empty}</option>
+                <Show when={unlisted()}>{(u) => <option value={p.value} disabled>{u().provider ? `${u().name} · ${u().provider}` : u().name}</option>}</Show>
                 <For each={groups()}>
                     {(g) => (
                         <optgroup label={g.providerName}>
@@ -559,9 +563,10 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         if (removingProviders().has(id)) return;
         setRemovingProviders((ids) => new Set(ids).add(id));
         try {
-            await rpc.call("providers.removeKey", { provider: id });
+            const r = await rpc.call("providers.removeKey", { provider: id });
             await Promise.all([refreshProviders(), refreshModels()]);
             toast(agentCli ? `Turned off ${name}; it stays signed in` : `Removed the ${name} key`);
+            resetToast(r?.reset);
         } catch (e) {
             reportError(e);
         } finally {

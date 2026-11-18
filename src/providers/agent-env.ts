@@ -19,6 +19,7 @@ import { registerSecret } from "../util/redact";
 import { ProviderError } from "./types";
 import { readAgentConfig, readProvidersFile, readProvidersFileForUpdate, removeAgentConfig, validEnvName, writeProvidersFile } from "./registry";
 import { accountEnv } from "./accounts";
+import { providerLabel } from "./registry";
 
 /** A variable as Settings shows and saves it. A secret's value is never sent out: left out, the saved one stays. */
 export interface AgentEnvVar {
@@ -87,7 +88,7 @@ export function agentEnv(provider: string): Record<string, string> {
 export function cliEnv(provider: string, accountId?: string, cwd?: string): Record<string, string> {
     // A removed instance isn't started as its CLI's own setup in its place (a plan instead of a router, say).
     if (baseCli(provider) !== provider && !readAgentConfig(provider)) {
-        throw new ProviderError(`The ${agentCli(provider)?.name ?? baseCli(provider)} setup "${provider.slice(provider.indexOf("@") + 1)}" was removed. Pick another model.`, 404);
+        throw new ProviderError(`${providerLabel(provider)} was removed. Pick another model.`, 404);
     }
     const own = agentEnv(provider);
     return agentCli(provider)?.account ? { ...own, ...accountEnv(provider, accountId, cwd) } : own;
