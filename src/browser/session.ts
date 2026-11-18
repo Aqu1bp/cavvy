@@ -49,6 +49,7 @@ export class BrowserSession implements PoolClient {
     private ids = new WeakMap<Page, number>();
     private seq = 0;
     private feed: FrameFeed<TabFrame>;
+    private steady = false;
     private listeners = new Set<() => void>();
     private announcing?: ReturnType<typeof setTimeout>;
     /** The pane's size while a window watches: tabs follow it. */
@@ -125,8 +126,10 @@ export class BrowserSession implements PoolClient {
     }
 
     /** A window starts (or resizes) watching the current tab: `send` gets its frames, one at a time as it acks them. */
-    watch(key: object, send: (frame: TabFrame, frameId: string) => void, size: { width: number; height: number; scale: number }) {
+    watch(key: object, send: (frame: TabFrame, frameId: string) => void, size: { width: number; height: number; scale: number; steady?: boolean }) {
         this.feed.add(key, send);
+        // The pane keeps a still under the stream (far-stream.ts): asked for by the pane that knows to.
+        this.steady = size.steady === true;
         this.resize(size);
     }
 
@@ -181,7 +184,7 @@ export class BrowserSession implements PoolClient {
                     // Asked again with other limits it goes on with the old ones: it is started over.
                     await want.stopScreencast();
                     await want.setViewport(this.drawn(v));
-                    await want.startScreencast(this.o.far ? v.scale : undefined);
+                    await want.startScreencast(this.o.far ? v.scale : undefined, this.steady);
                 }
             } catch {
                 // the tab closed meanwhile

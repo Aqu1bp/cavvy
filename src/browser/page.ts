@@ -13,7 +13,7 @@ import { TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
-import { FarStream } from "./far-stream";
+import { FarStream, type Still } from "./far-stream";
 import { frameSize, pictureSize } from "./frame-size";
 
 /** A failure the agent can act on: its message says what to do. */
@@ -37,6 +37,8 @@ export interface Frame {
     data: string;
     width: number;
     height: number;
+    /** A sharp still of a page watched over a network, and which (far-stream.ts): at rest, or still changing. */
+    still?: Still;
 }
 
 export interface PageHooks {
@@ -299,6 +301,8 @@ export class Page {
      * is answered, and the answer may only come from a later call: so a dialog opening ends the wait too.
      */
     async input(method: string, params: Record<string, unknown>) {
+        // What changes next is the user's doing (a scroll, a letter), unless the pointer only passed over the page.
+        if (!(method === "Input.dispatchMouseEvent" && params.type === "mouseMoved" && !params.buttons)) this.far?.moved();
         const stop = new AbortController();
         const sent = this.send(method, params);
         const dialog = this.waitUntil(() => this.dialog !== undefined, COMMAND_TIMEOUT_MS, stop.signal).then(
@@ -817,7 +821,7 @@ export class Page {
      * network, so they're lighter while the page moves (FAR_QUALITY, and the page drawn at 1x: BrowserSession.drawn),
      * and the still when it stops is the sharp one, drawn again at the pane's scale.
      */
-    async startScreencast(stillScale?: number) {
+    async startScreencast(stillScale?: number, steady = false) {
         const far = stillScale !== undefined;
         const [width, height] = [this.viewport.width * this.viewport.scale, this.viewport.height * this.viewport.scale];
         this.streaming = true;
@@ -826,7 +830,8 @@ export class Page {
         this.far?.stop();
         this.far = far
             ? new FarStream({
-                  show: (frame) => this.streaming && !this.closed && this.o.hooks.frame(this, frame),
+                  steady,
+                  show: (frame, still) => this.streaming && !this.closed && this.o.hooks.frame(this, still ? { ...frame, still } : frame),
                   still: async () => {
                       if (!this.streaming || this.closed) return undefined;
                       const { width, height, scale } = this.viewport;
