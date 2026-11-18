@@ -53,6 +53,12 @@ function sentFrom(v: unknown): Sent {
     const delivery = DELIVERIES.find((d) => d === r.delivery) ?? "started";
     return { text: str(r.text, 2000), delivery, title: str(r.title, 300) };
 }
+/** What the machine a message went to said of it, naming the session as this machine names it (`<machine>/<id>`), not by the id it has there. */
+function sentTo(id: string, v: unknown): Sent {
+    const sent = sentFrom(v);
+    const there = split(id)?.id;
+    return there ? { ...sent, text: sent.text.replace(`Sent to session ${there} `, `Sent to session ${id} `) } : sent;
+}
 /** A server's refusal (PeerError there) is the model's to read, as one here would be. */
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
@@ -69,7 +75,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
     const at = (id: string) => {
         const s = split(id);
         const link = s && servers().get(s.on);
-        if (!s || !link) throw new PeerError(`No session ${id}: ${s ? `${s.on} isn't connected right now` : "a session on another machine is named <machine>/<id>"}. ListSessions (all: true) shows the ones there are.`);
+        if (!s || !link) throw new PeerError(`No session ${id}: ${s ? `${s.on} isn't one of the user's machines, or isn't connected right now` : "a session on another machine is named <machine>/<id>"}. ListSessions (all: true) shows the ones there are.`);
         return { ...s, link };
     };
     return {
@@ -89,7 +95,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
         send: async (id, message, from) => {
             const s = at(id);
             // Named as the server names this computer's sessions.
-            return sentFrom(await s.link.ask("peers.send", { id: s.id, message, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refused));
+            return sentTo(id, await s.link.ask("peers.send", { id: s.id, message, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refused));
         },
     };
 }
@@ -119,6 +125,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     const id = str(params.id, 300);
     const s = split(id);
     if (!s) throw new PeerError(`No session ${id}. ListSessions (all: true) shows the ones there are.`);
+    // Its own machine's, named as another machine would name it.
+    if (s.on === asker) throw new PeerError(`${id} is on this machine: a session here goes by its id alone (${s.id}).`);
     if (op === "read") {
         const turns = typeof params.turns === "number" ? params.turns : undefined;
         if (s.on !== HOME_NAME) return far.read(id, turns);
@@ -140,7 +148,7 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
             return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
         }
         const link = others.get(s.on);
-        if (!link) throw new PeerError(`No session ${id}: ${s.on} isn't connected right now.`);
+        if (!link) throw new PeerError(`No session ${id}: ${s.on} isn't one of the user's machines, or isn't connected right now.`);
         return sentFrom(await link.ask("peers.send", { id: s.id, message, from }).catch(refused));
     }
     throw new PeerError(`Unknown request ${op}.`);
@@ -166,7 +174,7 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
             );
         },
         read: async (id, turns) => readFrom(await call("read", { id, turns }).catch(refused)),
-        send: async (id, message, from) => sentFrom(await call("send", { id, message, from }).catch(refused)),
+        send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refused)),
     };
 }
 
