@@ -245,7 +245,8 @@ function tellShown() {
     const id = shownNow();
     // In a split, the other pane too, to its machine when the focused one isn't on it.
     const shown = id === undefined ? [] : [id, ...onScreen.beside().filter((x) => x !== id)];
-    const on = (link: Rpc) => shown.find((x) => (away.get(x) ?? rpc) === link);
+    // One not linked yet is the window's only if it's on the window's machine.
+    const on = (link: Rpc) => shown.find((x) => (away.get(x) ?? ((machineOf(x) ?? "") === (machine ?? "") ? rpc : undefined)) === link);
     if (app.conn === "open") void rpc.call("session.shown", { id: on(rpc) }).catch(() => undefined);
     for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: on(link) }).catch(() => undefined);
 }
@@ -1766,7 +1767,9 @@ export function start() {
     createRoot(() => createEffect(() => {
         shownNow();
         onScreen.beside();
-        if (app.conn === "open") tellShown();
+        // Each connection that's open hears it, the window's own or not (tellShown checks each).
+        void app.conn;
+        tellShown();
     }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;

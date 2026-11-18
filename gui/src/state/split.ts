@@ -7,14 +7,13 @@
 import { batch, createContext, createRoot, createSignal, useContext } from "solid-js";
 import { createStore, unwrap } from "solid-js/store";
 import { activate, app, forgetSession, handleFor, machineOf, onScreen, openBeside, restoredFrom, wasDeleted } from "./app";
-import { machine } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { safeRenderText } from "../lib/render-error";
 import { agentFocus, inspectorPane, review, setAgentFocus, setInspectorPane, setReview, splitActions } from "./ui";
 import type { InspectorPane } from "../lib/inspector";
 
 export type Side = "left" | "right";
-/** `added`: the one dropped last, on `side`; `anchor`, the other. `on`: the machine of each not on the window's ("" this computer). */
+/** `added`: the one dropped last, on `side`; `anchor`, the other. `on`, as saved: each one's machine ("" this computer). */
 export interface Split { anchor: string; added: string; side: Side; on?: Record<string, string> }
 
 const SPLIT_KEY = "cavvy.split";
@@ -37,14 +36,8 @@ export { split };
 function setSplit(s: Split | undefined) {
     setSplitNow(s);
     try {
-        if (s) {
-            const on: Record<string, string> = {};
-            for (const id of [s.anchor, s.added]) {
-                const m = machineOf(id);
-                if (m !== machine) on[id] = m ?? "";
-            }
-            sessionStorage.setItem(SPLIT_KEY, JSON.stringify(Object.keys(on).length ? { ...s, on } : s));
-        }
+        // Each one's machine, the window's own too: a window gone to another machine opens both from where they are.
+        if (s) sessionStorage.setItem(SPLIT_KEY, JSON.stringify({ ...s, on: Object.fromEntries([s.anchor, s.added].map((id) => [id, machineOf(id) ?? ""])) }));
         else sessionStorage.removeItem(SPLIT_KEY);
     } catch { /* in memory only */ }
 }
