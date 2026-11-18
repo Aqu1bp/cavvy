@@ -52,10 +52,13 @@ const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Numb
 // --fake-claude: Claude Code turned on, as a stand-in (test/fixtures/fake-claude.ts) that never reaches a model or this
 // machine's own Claude Code. Its environment variables (Settings → Providers) show in its replies: set FAKE_ECHO_ENV to
 // the names to see, as in FAKE_ECHO_ENV=ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN.
+// The stand-in is also first on PATH: turned off and on again in Settings, Claude Code loses its saved path and is
+// looked up there, where this machine's own would otherwise be found and asked who's signed in.
 const agents: Record<string, unknown> = {};
-if (args.includes("--fake-claude")) {
-    const bin = join(root, "fake-bin", "claude");
-    mkdirSync(join(root, "fake-bin"), { recursive: true });
+const fakeBin = args.includes("--fake-claude") ? join(root, "fake-bin") : undefined;
+if (fakeBin) {
+    const bin = join(fakeBin, "claude");
+    mkdirSync(fakeBin, { recursive: true });
     writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${resolve(import.meta.dir, "..", "test", "fixtures", "fake-claude.ts")}" "$@"\n`, { mode: 0o755 });
     agents["claude-code"] = { path: bin };
 }
@@ -84,7 +87,7 @@ for (const [name, text] of Object.entries(demoSkills)) {
 
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
-const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: `${acme.bin}:${process.env.PATH}` };
+const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: [fakeBin, acme.bin, process.env.PATH].filter(Boolean).join(":") };
 if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
 if (arg("--token")) env.CAVVY_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];
