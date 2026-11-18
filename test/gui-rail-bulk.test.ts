@@ -12,6 +12,7 @@ import type { SessionSummary } from "../src/server/protocol";
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
 const originalTimeout = globalThis.setTimeout;
 const originalClearTimeout = globalThis.clearTimeout;
+const originalNow = performance.now;
 const timeouts: number[] = [];
 const original = { sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, homeCwd: app.homeCwd };
 
@@ -23,6 +24,9 @@ beforeEach(() => {
     timeouts.length = 0;
     globalThis.setTimeout = ((_fn: () => void, ms: number) => (timeouts.push(ms), 0)) as unknown as typeof setTimeout;
     globalThis.clearTimeout = (() => {}) as unknown as typeof clearTimeout;
+    // The clock stands still: a toast reads it when it's made and again when its timer is set, and a pause between
+    // the two (5 ms on a busy CI machine) would come off the length noted.
+    performance.now = () => 1000;
     setApp({ sessions: [s("a"), s("b"), s("c")], archived: [s("x", { archived: true }), s("y", { archived: true })], activeId: undefined });
     setRailSelection({ ids: ["a", "b", "c"], anchor: "a" });
 });
@@ -31,6 +35,7 @@ afterEach(() => {
     while (toasts.length) dismissToast(toasts[0]!.id);
     globalThis.setTimeout = originalTimeout;
     globalThis.clearTimeout = originalClearTimeout;
+    performance.now = originalNow;
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
     else Reflect.deleteProperty(globalThis, "document");
     setApp({ sessions: original.sessions, archived: original.archived, activeId: original.activeId, homeCwd: original.homeCwd });
@@ -46,7 +51,7 @@ test("deleting several: each through session.delete, one toast, and one Undo res
         expect(calls(call, "session.delete")).toEqual(["a", "b", "c"]);
         expect(toasts.map((t) => [t.level, t.message, t.action?.label])).toEqual([["info", "3 sessions deleted", "Undo"]]);
         // As long as one delete's Undo stays.
-        expect(timeouts.map(Math.round)).toEqual([UNDO_DELETE_MS]);
+        expect(timeouts).toEqual([UNDO_DELETE_MS]);
         expect(railSelection().ids).toEqual([]);
         await runToastAction(toasts[0]!.id);
         expect(calls(call, "session.restore")).toEqual(["a", "b", "c"]);

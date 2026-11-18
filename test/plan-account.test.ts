@@ -1,9 +1,10 @@
 // Real plan RPC, Git worktree and fake Codex process, without listening sockets.
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 import type { ImplementPlanResult } from "../src/server/protocol";
+import { fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
@@ -84,7 +85,7 @@ for (const selected of [work.id, "default"]) test(`plan implementation keeps Cod
         while (!next.idle && Date.now() < deadline) await Bun.sleep(10);
         expect(next.idle).toBe(true);
         expect(next.snapshot().turns[0]?.status).toBe("done");
-        const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        const lines = fakeLog(log);
         const starts = lines.filter((line) => line.argv);
         expect(starts).toHaveLength(1);
         expect(starts[0].codexHome).toBe(selected === "default" ? process.env.CODEX_HOME : work.folder);

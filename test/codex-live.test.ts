@@ -1172,7 +1172,7 @@ describe("#438: a steer Codex accepted but hadn't taken when Esc came", () => {
     const inRollout = (word: string) => {
         const f = join(process.env.CODEX_HOME!, "sessions", "thr-new.jsonl");
         if (!existsSync(f)) return 0;
-        return readFileSync(f, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
+        return fakeLog(f).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
     };
     const count = (s: string | undefined, word: string) => (s ?? "").split(word).length - 1;
     beforeEach(() => rmSync(join(process.env.CODEX_HOME!, "sessions"), { recursive: true, force: true }));
@@ -1282,7 +1282,7 @@ describe("#451 review: delivered only once Codex takes it, and back whole when i
     const inRollout = (word: string) => {
         const f = join(process.env.CODEX_HOME!, "sessions", "thr-new.jsonl");
         if (!existsSync(f)) return 0;
-        return readFileSync(f, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
+        return fakeLog(f).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
     };
     const count = (s: string | undefined, word: string) => (s ?? "").split(word).length - 1;
     beforeEach(() => rmSync(join(process.env.CODEX_HOME!, "sessions"), { recursive: true, force: true }));
