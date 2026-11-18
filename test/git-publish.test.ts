@@ -32,9 +32,9 @@ test("no remote, ambiguous remotes, detached HEAD and changed confirmation canno
     git(cwd, "commit", "--allow-empty", "-qm", "changed");
     await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "stale" });
     git(cwd, "remote", "add", "other", "/tmp/nonexistent");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("unambiguous");
+    await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "no_remote", message: "Set an upstream for this branch to choose which remote to push to." });
     git(cwd, "remote", "remove", "origin"); git(cwd, "remote", "remove", "other");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("unambiguous");
+    await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "no_remote", message: "This repository has no remote." });
     git(cwd, "checkout", "--detach");
     await expect(gitPublishInfo(cwd)).rejects.toThrow("detached HEAD");
     expect(calls(state, ".git-calls").some((args) => args.includes("push"))).toBe(false);
@@ -176,17 +176,26 @@ test("PR state lookup failure leaves the push preview usable", async () => {
     expect(preview.prError).toContain("REDACTED");
 });
 
-test("an unknown remote default requires explicit confirmation and cancellation starts no processes", async () => {
+test("an unknown remote default guards main and master, not a new feature branch; cancellation starts no processes", async () => {
     const { cwd, remote, state } = repo();
+    // The remote's HEAD on a branch not made yet (a new bare repository's): it doesn't say which is its default.
     git(remote, "symbolic-ref", "HEAD", "refs/heads/unborn-default");
     const preview = await gitPublishInfo(cwd);
-    expect(preview.defaultUnknown).toBe(true);
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "protected_branch" });
+    expect(preview).toMatchObject({ branch: "feature", defaultUnknown: true, protected: false });
     const before = calls(state, ".git-calls").length;
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push", confirmProtected: true }, AbortSignal.abort())).rejects.toMatchObject({ code: "git_cancelled" });
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" }, AbortSignal.abort())).rejects.toMatchObject({ code: "git_cancelled" });
     expect(calls(state, ".git-calls")).toHaveLength(before);
-    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push", confirmProtected: true });
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    for (const branch of ["main", "master"]) {
+        if (branch === "main") git(cwd, "checkout", "-q", "main");
+        else git(cwd, "checkout", "-q", "-b", "master");
+        const held = await gitPublishInfo(cwd);
+        expect(held).toMatchObject({ branch, defaultUnknown: true, protected: true });
+        await expect(gitPublish(cwd, { fingerprint: held.fingerprint, action: "push" })).rejects.toMatchObject({ code: "protected_branch" });
+        await gitPublish(cwd, { fingerprint: held.fingerprint, action: "push", confirmProtected: true });
+        expect(git(remote, "rev-parse", branch)).toBe(git(cwd, "rev-parse", "HEAD"));
+    }
 });
 
 

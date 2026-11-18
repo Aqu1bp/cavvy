@@ -75,7 +75,7 @@ test("engine unauthenticated PR request cannot push; missing upstream remote is 
         await expect(engine.handle(client, "session.gitPublish", { id, action: "pr", fingerprint: info.fingerprint, base: "main", title: "Title" })).rejects.toMatchObject({ message: "GitHub isn't signed in.", code: "sign_in" });
         expect(calls(state, ".git-calls").filter((args) => args.includes("push"))).toHaveLength(0);
         git(cwd, "remote", "remove", "origin");
-        await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toThrow("unambiguous");
+        await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toMatchObject({ code: "no_remote", message: "This repository has no remote." });
     } finally { await engine.stop(); }
 });
 

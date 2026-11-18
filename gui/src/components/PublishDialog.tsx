@@ -16,7 +16,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const [confirmed, setConfirmed] = createSignal(false);
     const [busy, setBusy] = createSignal(false);
     const [loading, setLoading] = createSignal(false);
-    const [error, setError] = createSignal<string>();
+    /** What went wrong: Cavvy's own sentence, or git's output (`raw`, shown as it printed it). */
+    const [error, setError] = createSignal<{ text: string; raw?: boolean }>();
     // Generate: the model that drafted the title and description, what they were before (for Undo), or why it couldn't.
     const [generating, setGenerating] = createSignal(false);
     const [drafted, setDrafted] = createSignal<{ model: string; title: string; body: string }>();
@@ -35,11 +36,15 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             const info = await rpc.call("session.gitPublishInfo", { id });
             if (revision !== version) return;
             setView(info); setTitle(info.title); setBody(info.body); setBase(info.base ?? "");
-        } catch (e) { if (revision === version) setError(errorText(e)); }
+        } catch (e) {
+            // Said as the branch dialog's "Can't fetch: …" says it (GitBranches.tsx).
+            const why = errorText(e);
+            if (revision === version) setError({ text: `Can't push: ${/^[A-Z][a-z]/.test(why) ? why[0]!.toLowerCase() + why.slice(1) : why}` });
+        }
         finally { if (revision === version) setLoading(false); }
     }));
     const blocked = () => commitUnavailable(handleFor(p.id))?.replace(/committing/g, "publishing").replace("Git runs the repository's hooks", "Git transports can run configured programs");
-    const ready = () => Boolean(view()) && !loading() && !busy() && !blocked() && (!(view()!.protected || view()!.defaultUnknown) || confirmed());
+    const ready = () => Boolean(view()) && !loading() && !busy() && !blocked() && (!view()!.protected || confirmed());
     const publish = async (action: "push" | "pr") => {
         const info = view(), id = p.id;
         if (!info || !id || !ready() || (action === "pr" && (!info.gh || !title().trim() || !base().trim()))) return;
@@ -56,7 +61,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             if (revision !== version) return;
             // Signed out since the dialog opened: the button for it, not the CLI's advice.
             if ((e as { code?: string }).code === "sign_in") setView({ ...info, gh: false, ghSignedOut: true });
-            else setError(errorText(e));
+            else setError({ text: errorText(e), raw: (e as { code?: string }).code === "git" });
         }
         finally { setBusy(false); }
     };
@@ -100,8 +105,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                         <Show when={!view()?.hasUpstream} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{view()?.ahead} ahead · {view()?.behind} behind</p></Show>}>
                             <p class="muted small">New branch</p>
                         </Show>
-                        <Show when={view()?.protected || view()?.defaultUnknown}>
-                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
+                        <Show when={view()?.protected}>
+                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch.</label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
@@ -134,7 +139,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     </Show>
                 </Show>
                 <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>
-                <Show when={error()}><pre class="commit-error" role="alert">{error()}</pre></Show>
+                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert">{e().text}</pre> : <p class="commit-error" role="alert">{e().text}</p>)}</Show>
                 <div class="dialog-actions">
                     <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>
                     <span class="grow" />

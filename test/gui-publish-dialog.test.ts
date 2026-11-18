@@ -35,6 +35,13 @@ test("opening only previews; push requires protected acknowledgement and sends d
     expect(d.closed()).toBe(true);
 });
 
+test("a new branch to a remote that doesn't say its default pushes without the protected acknowledgement", async () => {
+    const d = dialog({ ...defaults, base: undefined, defaultUnknown: true, protected: false } as never);
+    await d.effects[0]!();
+    d.button("Confirm push").props.onClick(); await tick();
+    expect(d.calls[1]).toMatchObject({ method: "session.gitPublish", params: { action: "push", confirmProtected: false } });
+});
+
 test("PR click uses edited title, body, base and draft without auto-publishing", async () => {
     const d = dialog(); await d.effects[0]!();
     d.input("pr-title").props.onInput({ currentTarget: { value: "Edited" } });
