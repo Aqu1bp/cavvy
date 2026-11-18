@@ -6,6 +6,8 @@ export interface BrowserImageFrame {
     tab: number;
     width: number;
     height: number;
+    /** A sharp still of a page watched over a network: at rest (1), or as it was a moment ago while it keeps changing (2). */
+    still?: 1 | 2;
     data: Uint8Array<ArrayBuffer>;
 }
 const encoder = new TextEncoder();
@@ -31,7 +33,7 @@ export function decodeBrowserFrame(packet: ArrayBuffer): BrowserImageFrame | und
         if (typeof h.sessionId !== "string" || typeof h.frameId !== "string" ||
             !Number.isSafeInteger(h.tab) || !Number.isSafeInteger(h.width) || !Number.isSafeInteger(h.height) ||
             h.width < 1 || h.height < 1 || h.width > 16000 || h.height > 16000) return;
-        return { sessionId: h.sessionId, frameId: h.frameId, tab: h.tab, width: h.width, height: h.height, data: new Uint8Array(packet, 4 + length) };
+        return { sessionId: h.sessionId, frameId: h.frameId, tab: h.tab, width: h.width, height: h.height, ...(h.still === 1 || h.still === 2 ? { still: h.still } : {}), data: new Uint8Array(packet, 4 + length) };
     } catch { return; }
 }
 

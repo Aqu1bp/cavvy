@@ -11,6 +11,7 @@ import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, typ
 import { panelHold, settingsTab } from "../state/ui";
 import { electron, machine } from "../lib/platform";
 import type { Follow } from "../lib/follow-box";
+import { Layers, type Pixels } from "../lib/browser-layers";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
@@ -53,8 +54,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     let dragEnd: (() => void) | undefined;
     const heldKeys = new Map<string, BrowserInput>();
     let inputTab: number | undefined;
-    /** The frame drawn, with the page's size it shows. */
-    let bitmap: ImageBitmap | undefined;
+    /** The pictures drawn (a server's page: its last still, and what the stream changed over it: lib/browser-layers.ts), and the page's size they show. */
+    const layers = new Layers<ImageBitmap>();
     let frame: Size | undefined;
     let sized: Size | undefined;
     const [draft, setDraft] = createSignal<string>();
@@ -73,9 +74,37 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const dpr = window.devicePixelRatio || 1;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (!bitmap || !frame) return;
+        const plan = layers.plan();
+        if (!plan || !frame) return;
         const at = placeFrame(boxSize(), frame);
-        ctx.drawImage(bitmap, at.x, at.y, at.width, at.height);
+        if (plan.under) ctx.drawImage(plan.under, at.x, at.y, at.width, at.height);
+        if (plan.over && plan.part) {
+            // Only what changed, from the stream's frame: its pixels to a CSS pixel of the page, and the box's.
+            const { part, over } = plan;
+            const from = over.width / plan.size.width;
+            const to = at.width / plan.size.width;
+            ctx.drawImage(over, part.x * from, part.y * from, part.width * from, part.height * from, at.x + part.x * to, at.y + part.y * to, part.width * to, part.height * to);
+        } else if (plan.over) ctx.drawImage(plan.over, at.x, at.y, at.width, at.height);
+    };
+
+    /** A frame's pixels at half its size, for telling what changed since the one before (a server's page only). */
+    let reader: { canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D } | undefined;
+    const pixelsOf = (picture: ImageBitmap, size: Size): Pixels | undefined => {
+        const scale = 0.5;
+        const width = Math.max(1, Math.round(size.width * scale));
+        const height = Math.max(1, Math.round(size.height * scale));
+        try {
+            if (!reader || reader.canvas.width !== width || reader.canvas.height !== height) {
+                const c = new OffscreenCanvas(width, height);
+                const ctx = c.getContext("2d", { willReadFrequently: true });
+                if (!ctx) return undefined;
+                reader = { canvas: c, ctx };
+            }
+            reader.ctx.drawImage(picture, 0, 0, width, height);
+            return { data: new Uint32Array(reader.ctx.getImageData(0, 0, width, height).data.buffer), width, height, scale };
+        } catch {
+            return undefined;
+        }
     };
 
     const fit = () => {
@@ -99,10 +128,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     next.close();
                     return;
                 }
-                bitmap?.close();
-                bitmap = next;
+                const size = { width: f.width, height: f.height };
+                // A still of a page that has moved on all over since isn't shown: the stream is ahead of it.
+                if (f.still) {
+                    if (!layers.still(next, size, f.still)) return;
+                } else layers.frame(next, size, layers.compares ? () => pixelsOf(next, size) : undefined);
                 setHasPicture(true);
-                frame = { width: f.width, height: f.height };
+                frame = layers.plan()?.size ?? size;
                 draw();
             }
         } catch {
@@ -133,7 +165,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const size = paneSize(boxSize());
         if (size.width < 1 || size.height < 1) return;
         sized = size;
-        void stream.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1 }).then((s) => adoptBrowserState(id(), s), reportError);
+        void stream.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1, steady: true }).then((s) => adoptBrowserState(id(), s), reportError);
     };
 
     onMount(() => {
@@ -178,8 +210,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void stream.call("browser.unwatch", { id: id() }).catch(() => undefined);
         stream.close();
         waiting = undefined;
-        bitmap?.close();
-        bitmap = undefined;
+        layers.clear();
     });
 
     // Watched again after a reconnect (the server lets go of a window that went away), and not while hidden or covered.
@@ -221,8 +252,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             () => {
                 generation++;
                 cancelInput();
-                bitmap?.close();
-                bitmap = undefined;
+                layers.clear();
                 frame = undefined;
                 setHasPicture(false);
                 draw();

@@ -1968,7 +1968,8 @@ export type ServerEvent =
      * A frame of the current tab, for a window watching it (browser.watch), sent after it acknowledges receipt of the last (browser.ack).
      * `data`: a JPEG frame, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
      */
-    | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
+    /** `still`: a sharp still of a page watched over a network: at rest (1), or as it was a moment ago while it keeps changing (2). */
+    | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number; still?: 1 | 2 }
     /** A session's simulator changed: its device, whether it runs, the devices there are (sent to the windows that have the session open). */
     | { type: "simulator.state"; sessionId: string; state: SimulatorState }
     /**
@@ -2181,7 +2182,7 @@ export interface Methods {
      * The window shows the session's current tab, in a pane of this size (CSS pixels; `scale`: device pixels per CSS pixel):
      * the page takes that size, and frames come as browser.frame until browser.unwatch. Another call with a new size resizes.
      */
-    "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
+    "browser.watch": { params: { id: string; width: number; height: number; scale: number; /** The pane keeps a still under the stream: it's sent one now and then while the page keeps changing (a server's pages). */ steady?: boolean }; result: BrowserState };
     "browser.unwatch": { params: { id: string }; result: null };
     /** The window has received this frame; decoding independently retains only the latest waiting picture. */
     "browser.ack": { params: { id: string; frameId: string }; result: null };

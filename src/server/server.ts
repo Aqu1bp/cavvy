@@ -299,8 +299,8 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                         return;
                     }
                     if (ws.data.browser && ev.type === "browser.frame") {
-                        const { sessionId, frameId, tab, width, height, data } = ev;
-                        out.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
+                        const { sessionId, frameId, tab, width, height, data, still } = ev;
+                        out.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height, ...(still ? { still } : {}) }, Buffer.from(data, "base64")));
                     } else if (ws.data.browser && ev.type === "simulator.frame") {
                         // Binary as the helper made it: no base64 on the way.
                         const { sessionId, frameId, width, height, data } = ev;

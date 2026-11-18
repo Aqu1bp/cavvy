@@ -153,3 +153,61 @@ test("one picture is on its way to a viewer at a time, or as many as it's told: 
         expect(got.length).toBe(atOnce + 1);
     }
 });
+
+test("a page that keeps changing by itself gets a still now and then, for a pane that asks; not while the user moves it", async () => {
+    const { STEADY_MS, MOVED_MS } = await import("../src/browser/far-stream");
+    const shown: [string, number | undefined][] = [];
+    let page = 0;
+    let clock = 10_000;
+    const make = (steady: boolean) => {
+        const stream: InstanceType<typeof FarStream<string>> = new FarStream<string>({
+            steady,
+            now: () => clock,
+            show: (f, still) => void shown.push([f, still]),
+            // Taken at once; the page has changed again by the time it's looked at (the frame below).
+            still: async () => ({ frame: `sharp:${page}`, key: `still:${page}` }),
+        });
+        return stream;
+    };
+    /** Frames every 50 ms for `ms`, the page changing each time. */
+    const run = async (stream: ReturnType<typeof make>, ms: number, moved = false) => {
+        for (let t = 0; t < ms; t += 50) {
+            clock += 50;
+            if (moved) stream.moved();
+            stream.frame(`light:${++page}`, page);
+            // The still's own turn, then the next frame says the page changed meanwhile.
+            await Promise.resolve();
+            clock += 1;
+            stream.frame(`light:${++page}`, page);
+            await Promise.resolve();
+        }
+    };
+    const steady = make(true);
+    steady.start();
+    await run(steady, STEADY_MS + 300);
+    const stills = shown.filter(([, s]) => s !== undefined);
+    // One, marked as the page a moment ago (2), though the page never stopped.
+    expect(stills.map(([, s]) => s)).toEqual([2]);
+    // The user scrolling: every frame is theirs, and no still interrupts them.
+    shown.length = 0;
+    await run(steady, STEADY_MS + MOVED_MS + 300, true);
+    expect(shown.filter(([, s]) => s !== undefined)).toEqual([]);
+    steady.stop();
+    // A pane that didn't ask gets none while frames keep coming: it would show an older picture over a newer one.
+    shown.length = 0;
+    const plain = make(false);
+    plain.start();
+    await run(plain, STEADY_MS + 300);
+    expect(shown.filter(([, s]) => s !== undefined)).toEqual([]);
+    plain.stop();
+});
+
+test("the still when the page stops is marked as the page at rest", async () => {
+    const shown: [string, number | undefined][] = [];
+    const stream = new FarStream<string>({ steady: true, show: (f, still) => void shown.push([f, still]), still: async () => ({ frame: "sharp", key: "k" }) });
+    stream.start();
+    stream.frame("light", 1);
+    await settled();
+    expect(shown).toEqual([["light", undefined], ["sharp", 1]]);
+    stream.stop();
+});

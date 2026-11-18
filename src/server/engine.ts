@@ -2784,8 +2784,8 @@ export class Engine {
                         shownTab = f.tab;
                         client.send({ type: "browser.state", sessionId: rt.id, state: rt.browser.state() });
                     }
-                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height });
-                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
+                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height, ...(f.still ? { still: f.still } : {}) });
+                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1), steady: p.steady === true });
                 return rt.browser.state();
             }
             case "browser.unwatch":
