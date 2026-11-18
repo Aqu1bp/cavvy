@@ -106,8 +106,11 @@ export function Plugins() {
     /** The folder in view, when it's on that machine: its project's own plugins count there, and nowhere else. */
     const folderOn = (on: string) => {
         const id = app.activeId;
-        const its = awayMachine(id) ?? (awayUnopened(id) ? (machineOf(id!) ?? "") : undefined);
-        return (its ?? "") === on ? app.homeCwd : undefined;
+        // By name, each as the user's own computer names it ("" itself): the window's own machine is a server's
+        // name in a window on one, where "" from awayMachine is this computer's.
+        const own = windowMachine ?? "";
+        const its = awayMachine(id) ?? (awayUnopened(id) ? (machineOf(id!) ?? "") : own);
+        return its === (on || own) ? app.homeCwd : undefined;
     };
     let searchEl: HTMLInputElement | undefined;
     let sourceEl: HTMLInputElement | undefined;
@@ -134,10 +137,13 @@ export function Plugins() {
         }
     };
     const pick = (on: string) => {
-        if (on === where() || busy()) return;
+        // The one shown, picked again, only when its list didn't come: tried again.
+        if ((on === where() && origin) || busy()) return;
         setWhere(on);
         setDetails(undefined);
         setConfirm(undefined);
+        // What was typed for one machine (a marketplace's path there) isn't sent to another.
+        setSource("");
         origin = undefined;
         setInfo(undefined);
         setLoading(true);

@@ -109,7 +109,7 @@ test("a window on the user's computer lists and restores what was deleted on its
     const plugins = await read("Plugins.tsx");
     expect(plugins).toContain("const from = { link: on ? await linkFor(on) : rpc, cwd: folderOn(on) };");
     expect(plugins).toContain('const r = await from.link.call("plugins.action", { ...params, cwd: from.cwd } as PluginActionParams);');
-    expect(plugins).toContain("return (its ?? \"\") === on ? app.homeCwd : undefined;");
+    expect(plugins).toContain("return its === (on || own) ? app.homeCwd : undefined;");
     // No call about plugins goes anywhere but where the rows came from (a maker's logo aside).
     expect(plugins.split("rpc.call(").length).toBe(3);
 });
