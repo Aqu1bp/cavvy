@@ -9,6 +9,20 @@ test("switching to a session on another machine opens it in the same page, and n
     expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 }, 60_000);
 
+// A server's session shown in a window on this computer: what's on its machine isn't looked for on this one.
+test("a server session's sign-in port, plan folder and Finder reveal follow its machine", async () => {
+    const read = (f: string) => Bun.file(new URL(`../gui/src/${f}`, import.meta.url)).text();
+    // Its sign-in page's port is brought over by this computer's Cavvy, for the session's server.
+    const card = await read("components/SignInCard.tsx");
+    expect(card).toContain("const name = awayMachine(p.sessionId) || windowMachine;");
+    expect(card).toContain("const far = windowMachine ? home : rpc;");
+    // Finder shows this computer's files only.
+    expect(await read("state/app.ts")).toContain("export const revealsIn = (sessionId: string) => canReveal && awayMachine(sessionId) === undefined;");
+    for (const f of ["RightPanel.tsx", "ReviewPane.tsx", "PlanDialogs.tsx"]) expect(await read(`components/${f}`)).not.toContain("canReveal");
+    // Where a plan is saved is chosen among its machine's folders.
+    expect(await read("components/PlanDialogs.tsx")).toContain("setFolderPickerOpen({ then, link: rpcFor(p.sessionId), ...o })");
+});
+
 // Home in a folder on another machine: its worktrees are that machine's, listed, made and removed over the
 // connection to it (rpcFor), and the one picked opens there.
 test("Home's worktree picker asks the machine Home is on", async () => {
