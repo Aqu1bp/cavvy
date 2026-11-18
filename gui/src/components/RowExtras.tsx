@@ -1,19 +1,21 @@
 // What a session's row menu offers beyond the usual (Sidebar.tsx RowMenu), loaded the first time the rail is pointed
-// at or focused: Snooze (until a time, or until it needs you), Wake now, Never auto-settle and Regenerate title. And the whole menu of several rows picked
-// together (BulkItems), which a click on one row never needs.
+// at or focused: Wake now, Snooze ▸ (until a time), and More ▸ (Regenerate title, Never auto-settle, New session). And
+// the whole menu of several rows picked together (BulkItems), which a click on one row never needs.
 
 import "../styles/snooze.css";
 import { batch, createSignal, For, Show } from "solid-js";
 import { render } from "solid-js/web";
-import { AlarmClock, AlarmClockOff, Anchor, Archive, ArchiveRestore, CheckCheck, ChevronRight, Sparkles, Trash2, Undo2, X } from "lucide-solid";
+import { AlarmClock, AlarmClockOff, Anchor, Archive, ArchiveRestore, Check, CheckCheck, Ellipsis, Plus, Sparkles, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, setApp, toast } from "../state/app";
 import { freeRail } from "../state/ui";
 import { unselect } from "../state/sidebar";
 import { sessionCount, type BulkPlan } from "../lib/rail-select";
-import { archiveSessions, deleteSessions, rename, settleSessions } from "../state/actions";
-import { customProblem, fromLocalInput, localInput, snoozeChoices, wakesText } from "../lib/snooze";
+import { archiveSessions, deleteSessions, newSession, rename, settleSessions } from "../state/actions";
+import { customProblem, fromLocalInput, localInput, snoozeChoices } from "../lib/snooze";
+import { wakeTime } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
+import { Submenu } from "./ui/Submenu";
 
 const summary = (id: string) => app.sessions.find((s) => s.id === id);
 
@@ -43,8 +45,7 @@ export async function snoozeSessions(ids: readonly string[], at: number) {
     if (r.failed.length) reportError(r.error);
     if (!r.done.length) return;
     unselect(r.done);
-    const when = wakesText(at, Date.now());
-    toast(r.done.length === 1 ? `Snoozed until ${when.replace(/^Tomorrow/, "tomorrow")}` : `${sessionCount(r.done.length)} snoozed`, "info", {
+    toast(r.done.length === 1 ? `Snoozed until ${wakeTime(at, Date.now(), true)}` : `${sessionCount(r.done.length)} snoozed`, "info", {
         label: "Undo",
         run: async () => {
             // One whose old time has passed meanwhile is just woken.
@@ -133,9 +134,27 @@ function askCustom(ids: readonly string[]) {
     }, host);
 }
 
-/** `plan`: several picked (a selected row's menu): every action for all of them. Otherwise Snooze and Wake now for `ids`. */
+/** `plan`: several picked (a selected row's menu): every action for all of them. Otherwise Wake now, Snooze and More for `ids`. */
 export default function RowExtras(p: { ids: readonly string[]; close: () => void; plan?: BulkPlan; clear?: () => void }) {
-    return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><KeepItem id={p.ids[0]!} close={p.close} /><TitleItem id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
+    return <Show when={p.plan} fallback={<><SnoozeItems ids={p.ids} close={p.close} /><MoreItems id={p.ids[0]!} close={p.close} /></>}>{(plan) => <BulkItems plan={plan()} close={p.close} clear={p.clear!} />}</Show>;
+}
+
+/** What's used less, a step away: More ▸. */
+function MoreItems(p: { id: string; close: () => void }) {
+    const s = () => summary(p.id);
+    return (
+        <Submenu icon={<Ellipsis size={14} />} label="More" width={210}>
+            <TitleItem id={p.id} close={p.close} />
+            <KeepItem id={p.id} close={p.close} />
+            <Show when={s()}>
+                {(s) => (
+                    <button role="menuitem" class="menu-item compact" title={`New session in ${s().projectName}`} onClick={() => (p.close(), newSession(s().cwd, s()))}>
+                        <Plus size={14} /> New session
+                    </button>
+                )}
+            </Show>
+        </Submenu>
+    );
 }
 
 /** The actions on several selected sessions, as menu items (a selected row's context menu). */
@@ -193,14 +212,15 @@ function KeepItem(p: { id: string; close: () => void }) {
         <Show when={s() && !s()!.archived}>
             <button role="menuitemcheckbox" aria-checked={Boolean(s()!.neverSettle)} class="menu-item compact" onClick={() => (p.close(), void neverSettle(p.id, !s()!.neverSettle))}>
                 <Anchor size={14} /> Never auto-settle
-                <span class="snz-tick" aria-hidden="true">{s()!.neverSettle ? "✓" : ""}</span>
+                <Show when={s()!.neverSettle}>
+                    <Check size={14} class="menu-check" />
+                </Show>
             </button>
         </Show>
     );
 }
 
 function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
-    const [open, setOpen] = createSignal(false);
     const rows = () => p.ids.map(summary).filter((s): s is SessionSummary => s !== undefined);
     // Not one waiting for you (it's asking now), nor an archived one (it's out of the list already).
     const snoozable = () => rows().length > 0 && rows().every((s) => !s.archived && s.status !== "waiting");
@@ -217,11 +237,8 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
                 </button>
             </Show>
             <Show when={snoozable()}>
-                <button role="menuitem" class="menu-item compact" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    <AlarmClock size={14} /> <span>{snoozed() ? "Snooze until…" : p.ids.length > 1 ? `Snooze ${sessionCount(p.ids.length)}` : "Snooze"}</span>
-                    <ChevronRight size={14} class={`snz-chev ${open() ? "open" : ""}`} />
-                </button>
-                <Show when={open()}>
+                <Submenu icon={<AlarmClock size={14} />} label={p.ids.length > 1 ? `Snooze ${sessionCount(p.ids.length)}` : "Snooze"} width={240}>
+                    {/* The times as of its opening. */}
                     <For each={snoozeChoices(Date.now())}>
                         {(c) => (
                             <button role="menuitem" class="menu-item compact snz-opt" onClick={() => choose(c.at)}>
@@ -230,10 +247,11 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
                             </button>
                         )}
                     </For>
+                    <div class="menu-sep" />
                     <button role="menuitem" class="menu-item compact snz-opt" onClick={() => (p.close(), askCustom(p.ids))}>
                         Custom…
                     </button>
-                </Show>
+                </Submenu>
             </Show>
         </>
     );

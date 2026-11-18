@@ -469,7 +469,8 @@ for (const layout of ["card", "settled", "archived"] as const) {
                 expect(menu.returnFocus()).toBe(more);
                 expect(menu.point).toBeUndefined();
                 const actions = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
-                expect(actions.length).toBeGreaterThanOrEqual(5);
+                // Rename, Pin, (Settle,) Archive or Restore, Delete: the rest are RowExtras' (Snooze ▸, More ▸).
+                expect(actions.length).toBeGreaterThanOrEqual(4);
                 expect(actions.every((n) => n.props.role === "menuitem")).toBe(true);
                 menu.onClose();
                 expect(f.ids[0]).not.toBe("0");
