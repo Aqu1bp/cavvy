@@ -68,7 +68,7 @@ async function run() {
     await rpc.connect();
     for (let i = 0; rpc.state !== "open"; i++) { if (i > 500) throw new Error("main connection failed"); await new Promise((r) => setTimeout(r, 10)); }
     adoptBrowserState(id, await rpc.call("browser.state", { id }));
-    render(() => <div class="insp-body br-body" style="width:100%"><div class="pane"><BrowserPane handle={{ id } as SessionHandle} /></div></div>, document.getElementById("root")!);
+    render(() => <div class="insp-body br-body" style="width:100%"><div class="pane"><BrowserPane handle={{ id, ready: () => true } as SessionHandle} /></div></div>, document.getElementById("root")!);
     document.getElementById("result")!.dataset.status = "mounted";
 }
 run().catch((e) => { document.getElementById("result")!.textContent = String(e?.stack ?? e); document.getElementById("result")!.dataset.status = "failed"; });
