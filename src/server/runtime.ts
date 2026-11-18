@@ -2154,7 +2154,9 @@ export class Runtime {
         };
         for (const ref of new Set(candidates)) {
             if (await this.setModel(ref, { quiet: true })) return tell();
-            missed ??= ref;
+            // The session's own model, or (a new session) the default it would have started on. An older session that
+            // never recorded one isn't told of a default it didn't use.
+            if (ref === this.session.model || this.session.messageCount === 0) missed ??= ref;
         }
         let listings = this.engine.listings;
         let pick = defaultModelFrom(listings);
