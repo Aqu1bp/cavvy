@@ -1924,6 +1924,15 @@ export class Engine {
     // -----------------------------------------------------------------------
     // A folder's branch: fetch, pull, switch, create (git-sync.ts)
 
+    /**
+     * `cwd`'s branch may have moved (a commit to a new branch, a switch here or outside, noticed by a read): every
+     * session open in it, or in a folder it's in or holds, shows the branch it's on now. A HEAD file read each, no git.
+     */
+    branchMoved(cwd: string) {
+        const near = within(cwd);
+        for (const rt of this.runtimes.values()) if (rt.folders.some((f) => near(f) || within(f)(cwd))) rt.branchMoved();
+    }
+
     /** Folders with a fetch, pull or switch under way (their work tree's top). */
     private gitBusy = new Set<string>();
 
@@ -3821,8 +3830,13 @@ export class Engine {
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
-            case "git.sync":
-                return await gitSyncInfo(this.gitFolder(p.cwd));
+            case "git.sync": {
+                const cwd = this.gitFolder(p.cwd);
+                const info = await gitSyncInfo(cwd);
+                // A read as a turn ends, on focus or after a Git action: what it finds, every session there shows.
+                this.branchMoved(cwd);
+                return info;
+            }
             case "git.branches":
                 return await gitBranches(this.gitFolder(p.cwd));
             case "git.fetch":

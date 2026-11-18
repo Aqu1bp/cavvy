@@ -5399,6 +5399,11 @@ export class Runtime {
         }
     }
 
+    /** The folder's branch may have moved (engine.branchMoved): the header shows the one it's on now. */
+    branchMoved() {
+        if (!this.closed) this.showWorkingIn(this.workingIn);
+    }
+
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[], newBranch?: string): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
@@ -5414,6 +5419,8 @@ export class Runtime {
         this.commitDone = done;
         try {
             const info = await done;
+            // On a new branch: so is every session open in this folder.
+            if (newBranch) this.engine.branchMoved(this.ws.cwd);
             return { ...info, subject: redact(info.subject), ...(info.branch !== undefined ? { branch: redact(info.branch) } : {}) };
         } catch (e) {
             throw redactedError(e);

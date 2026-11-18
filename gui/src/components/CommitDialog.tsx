@@ -6,6 +6,7 @@ import { commitUnavailable } from "../state/changes";
 import { commitRequest, setCommitRequest } from "../state/ui";
 import { mod, os } from "../lib/platform";
 import { plural } from "../lib/format";
+import { modelName } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -198,7 +199,7 @@ export function CommitDialog() {
                                             {naming() ? "Suggesting…" : "Suggest"}
                                         </button>
                                     </div>
-                                    <Show when={nameNote()?.model}>{(m) => <span class="muted small">Suggested by {m()}.</span>}</Show>
+                                    <Show when={nameNote()?.model}>{(m) => <span class="muted small">Suggested by {modelName(m(), commitRequest()?.id)}.</span>}</Show>
                                     <Show when={nameNote()?.error}>{(m) => <span class="commit-warning small">{m()}</span>}</Show>
                                 </Show>
                             </div>
@@ -247,7 +248,7 @@ export function CommitDialog() {
                                 {generating() ? "Generating…" : "Generate message"}
                             </button>
                             <Show when={model()}>
-                                <span class="muted small">Drafted by {model()}.</span>
+                                <span class="muted small">Drafted by {modelName(model()!, commitRequest()?.id)}.</span>
                             </Show>
                         </div>
                         <p class="muted small">Only the checked files are committed; other changes stay as they are.</p>
