@@ -5,7 +5,7 @@
 
 import { applySync, readSynced } from "../servers/sync";
 import { searchServers, withServers } from "./far-search";
-import { answerPeers, homeFarPeers, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
+import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -37,7 +37,7 @@ import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../com
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
-import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
@@ -1972,7 +1972,7 @@ export class Engine {
      * which runs it through its own checks. Answers when it does, when the call is given up here, or when that
      * machine goes away.
      */
-    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
+    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal, decided?: PermissionMode): Promise<ToolResult> {
         const [client, lender] = [...this.lenders].at(-1) ?? [];
         if (!client || !lender) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
         const callId = randomUUID();
@@ -1989,7 +1989,7 @@ export class Engine {
             this.lentCalls.set(callId, { client, done });
             signal.addEventListener("abort", stop, { once: true });
             // With the mode it was decided under: the lender turns it away if its own has changed since.
-            client.send({ type: "offers.call", callId, tool, input, mode: lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
+            client.send({ type: "offers.call", callId, tool, input, mode: decided ?? lender.mode, session: { id: rt.id, title: this.notifyTitle(rt) } });
         });
     }
 
@@ -2220,7 +2220,7 @@ export class Engine {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
-                lendMode: () => defaultMode(loadSettings(homedir(), { trusted: false }), homedir()).mode,
+                lendMode: () => lendingMode(loadSettings(homedir(), { trusted: false }), homedir(), this.bypassAllowed(homedir())),
                 lend: (name, call, signal) => this.lend(name, call, signal),
                 // The user's own machine keeps its skills and commands on its servers.
                 sync: !this.o.away,
@@ -2230,7 +2230,7 @@ export class Engine {
                         // This computer's own rules for the session tools hold for what a server asks of its sessions.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
                         if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about its sessions.";
-                        return findMatch(settings.permissions?.deny ?? [], { toolName: tool }, homedir(), "deny") ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
+                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it on your computer's sessions.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.

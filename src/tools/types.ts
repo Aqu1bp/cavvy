@@ -100,6 +100,8 @@ export interface ToolState {
     simulator?: SimulatorSession;
     /** The way to a machine that lends this one tools it hasn't got (the user's Mac and its simulators: src/tools/lent.ts). */
     lends?: Lends;
+    /** The lender's mode each call of a lent tool was decided under, by the call's id (Agent.prepare), until it's sent. */
+    lentDecided?: Map<string, PermissionMode>;
     /** This session runs tools for a session on another of the user's machines (Runtime.guestOf): nothing is kept here for it, and what's refused doesn't describe this machine. */
     forAnother?: boolean;
     /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */

@@ -6,6 +6,9 @@
 //
 // A message carries its sender's id as the receiving machine would name it, so its answer goes back the same way.
 
+import { homedir } from "os";
+import { findMatch, parseRule } from "../permissions/rules";
+import { MCP_SERVER_NAME } from "../config/name";
 import { checkMessage, PeerError, type Delivery, type FarPeers, type PeerSummary } from "../agent/peers";
 import type { PermissionMode } from "../permissions/modes";
 
@@ -172,3 +175,14 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
 
 /** How long a server waits for the user's computer to answer about a session there. */
 export const PEERS_WAIT_MS = PEERS_MS;
+
+/**
+ * Whether the computer's deny rules keep `tool` (ListSessions, ReadSession, SendToSession) from another machine's
+ * sessions. A rule that names the tool at all denies it, whatever it says of its input (none is given for another
+ * machine's call), under its own name or the one the CLIs call it by.
+ */
+export function peersDenied(deny: string[], tool: string): boolean {
+    const named = deny.map((r) => parseRule(r).tool);
+    const cli = `mcp__${MCP_SERVER_NAME}__${tool.replace(/[A-Z]/g, (c, i) => (i ? "_" : "") + c.toLowerCase())}`;
+    return [tool, cli].some((n) => findMatch(named, { toolName: n }, homedir(), "deny") !== undefined);
+}

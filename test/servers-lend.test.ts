@@ -230,6 +230,26 @@ test("a session there in Bypass is asked about a call that runs here when this m
     expect(told(id)!.asks).toEqual([]);
 });
 
+test("this machine's mode changed while a call was being asked about there: the yes was to the old one, and the call is turned away", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    const seen = new Set<string>();
+    let asked: any;
+    await until("it to ask", async () => Boolean((asked = ((await remote.call("session.open", { id })) as SessionSnapshot).state.interactions[0])));
+    const before = ran.length;
+    await here.call("settings.update", { patch: { defaultMode: "acceptEdits" } });
+    try {
+        await remote.call("session.respond", { id, interactionId: asked.id, response: { kind: "permission", choice: "yes" } });
+        seen.add(asked.id);
+        await until("the call to be answered", async () => JSON.stringify(await lastTurn(remote, id)).includes("permission mode just changed"));
+        expect(ran.length).toBe(before);
+    } finally {
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
+        await remote.call("session.interrupt", { id }).catch(() => undefined);
+    }
+});
+
 test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {
@@ -580,16 +600,21 @@ test("a call is never asked about here, whatever this machine's mode; its deny r
     // A rule of this machine's that denies it is still this machine's to keep.
     const file = join(iso.home, "settings.json");
     const was = readFileSync(file, "utf8");
+    // Written by hand, with nothing telling Cavvy: it holds from the next call, for a session already lent through too.
     writeFileSync(file, JSON.stringify({ ...JSON.parse(was), permissions: { deny: ["SimulatorControl(boot)"] } }));
-    (mine.engine as any).reloadSettings();
     try {
-        const after = ran.length;
-        const denied = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, "20261113-000000-eeeeee");
-        expect([denied.isError, ran.slice(after).some((a) => a[2] === "bootstatus")]).toEqual([true, false]);
+        for (const s of [session, "20261113-000000-eeeeee"]) {
+            const after = ran.length;
+            const denied = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, s);
+            expect([denied.isError, ran.slice(after).some((a) => a[2] === "bootstatus")]).toEqual([true, false]);
+        }
     } finally {
         writeFileSync(file, was);
-        (mine.engine as any).reloadSettings();
     }
+    // And taken out again, it's gone.
+    const again = ran.length;
+    await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+    expect(ran.slice(again).some((a) => a[2] === "bootstatus")).toBe(true);
 });
 
 test("this machine's Cavvy quitting while a call runs here: the session there is told it went away, not that the user said no", async () => {

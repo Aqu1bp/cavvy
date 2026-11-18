@@ -76,7 +76,7 @@ import { findRecipe, signedOutIn, signInRecipes, type SignInRecipe } from "./sig
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
-import { lentMode } from "../tools/lent";
+import { lentAs, lentMode } from "../tools/lent";
 import { narrowerMode } from "./peers";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
@@ -3550,6 +3550,8 @@ export class Agent {
 
         // A tool another machine lends: no freer than that machine's own default (tools/lent.ts).
         const lender = lentMode(tool.name);
+        // Read with it: what the reviewer or the user allows from here on was decided under this one.
+        if (lender && !lent) (this.state.lentDecided ??= new Map()).set(call.id, lentAs());
         const mode = lender ? narrowerMode(this.o.mode.get(), lender) : this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
