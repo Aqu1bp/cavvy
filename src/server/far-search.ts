@@ -6,28 +6,34 @@ import type { SessionSearchHit, SessionSearchResult } from "./protocol";
 /** How long a search waits for a server's answer: one slower than this is left out (the window's search asks again). */
 export const FAR_SEARCH_MS = 1_000;
 
-/** What a search can ask a server (servers/watch.ts MachineWatch.ask). */
+/** What a search can ask a server (servers/watch.ts MachineWatch.ask): `ms`, how long it waits. */
 export interface SearchAsk {
-    ask(method: "sessions.search", params: Record<string, unknown>): Promise<unknown>;
+    ask(method: "sessions.search", params: Record<string, unknown>, ms?: number): Promise<unknown>;
 }
 
-/** What each server found, by its name; one that didn't answer in time, or in a shape a search answers in, found nothing and leaves the search partial. */
+/** A hit as a window shows one: every field it reads, of its kind. */
+function isHit(h: unknown): h is SessionSearchHit {
+    const x = h as Record<string, unknown> | null;
+    return (
+        !!x &&
+        typeof x === "object" &&
+        ["id", "title", "cwd", "projectName", "snippet"].every((k) => typeof x[k] === "string") &&
+        ["seg", "index", "at"].every((k) => typeof x[k] === "number") &&
+        (x.role === "user" || x.role === "assistant") &&
+        typeof x.archived === "boolean"
+    );
+}
+
+/**
+ * What each server found, by its name. One that doesn't answer in time, or answers in another shape, found nothing;
+ * the search is partial only when a server's own search ran out of time (asked again, it goes on from there).
+ */
 export function searchServers(servers: Map<string, SearchAsk>, params: { query: string; limit: number; archived?: boolean }, ms = FAR_SEARCH_MS): Promise<{ hits: SessionSearchHit[]; partial: boolean }[]> {
     return Promise.all(
         [...servers].map(async ([name, w]) => {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-                const r = (await Promise.race([
-                    w.ask("sessions.search", { query: params.query, limit: params.limit, ...(params.archived === undefined ? {} : { archived: params.archived }) }),
-                    new Promise((_, no) => (timer = setTimeout(() => no(new Error("slow")), ms))),
-                ])) as Partial<SessionSearchResult> | undefined;
-                const hits = Array.isArray(r?.hits) ? r.hits.filter((h) => h && typeof h.id === "string" && typeof h.at === "number").map((h) => ({ ...h, machine: name })) : [];
-                return { hits, partial: !r || r.stale === true || r.partial === true };
-            } catch {
-                return { hits: [], partial: true };
-            } finally {
-                clearTimeout(timer);
-            }
+            const r = (await w.ask("sessions.search", { query: params.query, limit: params.limit, ...(params.archived === undefined ? {} : { archived: params.archived }) }, ms).catch(() => undefined)) as Partial<SessionSearchResult> | undefined;
+            if (!r || typeof r !== "object" || r.stale === true || !Array.isArray(r.hits)) return { hits: [], partial: false };
+            return { hits: r.hits.filter(isHit).map((h) => ({ ...h, machine: name })), partial: r.partial === true };
         }),
     );
 }
