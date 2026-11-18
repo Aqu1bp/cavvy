@@ -74,7 +74,7 @@ export function machineFor(sessionId: string | undefined): { machine?: string } 
 }
 /** Another machine's session, by its row, not opened here (its connection still being made, or that machine unreachable). */
 export function awayUnopened(id: string | undefined): boolean {
-    return id !== undefined && !awayOn.has(id) && [...app.sessions, ...app.archived].find((s) => s.id === id)?.machine !== undefined;
+    return id !== undefined && !awayOn.has(id) && machineOf(id) !== machine;
 }
 /** The folder Home shows once `id`, on screen, is gone: its own, unless it's another machine's (it names nothing on the window's); then the window's latest project. */
 export function homeCwdAfter(id: string): string | undefined {
