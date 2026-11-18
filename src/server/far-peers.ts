@@ -6,7 +6,7 @@
 //
 // A message carries its sender's id as the receiving machine would name it, so its answer goes back the same way.
 
-import { PeerError, type Delivery, type FarPeers, type PeerSummary } from "../agent/peers";
+import { checkMessage, PeerError, type Delivery, type FarPeers, type PeerSummary } from "../agent/peers";
 import type { PermissionMode } from "../permissions/modes";
 
 /** What the user's own computer is called on its servers. */
@@ -101,7 +101,8 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
  * there: this computer's sessions (`mac/<id>`) and the other servers' (`<name>/<id>`).
  */
 export async function answerPeers(asker: string, op: string, params: Record<string, unknown>, here: PeerOps, servers: Map<string, ServerAsk>): Promise<unknown> {
-    const others = new Map([...servers].filter(([n]) => n !== asker));
+    // Not one named as this computer is there: its sessions would pass for this computer's.
+    const others = new Map([...servers].filter(([n]) => n !== asker && n !== HOME_NAME));
     const far = homeFarPeers(() => others);
     const limit = Math.max(1, Math.min(Number(params.limit) || 20, 200));
     if (op === "list") {
@@ -119,11 +120,14 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
     if (op === "send") {
         const f = (params.from && typeof params.from === "object" ? params.from : {}) as Record<string, unknown>;
         if (typeof f.id !== "string" || !/^[\w.-]{1,120}$/.test(f.id)) throw new PeerError("That message names no session it's from.");
-        const mode = (["plan", "default", "acceptEdits", "auto", "bypassPermissions"] as const).find((m) => m === f.mode) ?? "bypassPermissions";
+        const mode = (["plan", "default", "acceptEdits", "auto", "bypassPermissions"] as const).find((m) => m === f.mode);
+        if (!mode) throw new PeerError("That message doesn't say what mode its session runs in.");
         // Named as the receiving machine names the asker's sessions: through this computer, by the asker's name.
         const from: From = { id: `${asker}/${f.id}`, title: str(f.title, 300), mode };
-        const message = str(params.message);
-        if (s.on === HOME_NAME) return here.send(s.id, message, from);
+        const message = checkMessage(params.message);
+        // Into one of this computer's: a server's session counts as Auto at most, so one here in Bypass takes no work
+        // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't).
+        if (s.on === HOME_NAME) return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
         const link = others.get(s.on);
         if (!link) throw new PeerError(`No session ${id}: ${s.on} isn't connected right now.`);
         return sentFrom(await link.ask("peers.send", { id: s.id, message, from }).catch(refused));

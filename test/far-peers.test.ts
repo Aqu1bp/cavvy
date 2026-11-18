@@ -59,10 +59,18 @@ test("a server asks through the user's computer: its own sessions and the other 
     // To the Mac: from `box/<id>`, which the Mac names box's sessions by. To lab: the same, through the Mac.
     await far.send(`${HOME_NAME}/m1`, "Done on the server.", { id: "s9", title: "Server work", mode: "bypassPermissions" });
     await far.send("lab/l1", "Your turn.", { id: "s9", title: "Server work", mode: "bypassPermissions" });
-    expect(mac.sent[0]!.from).toEqual({ id: "box/s9", title: "Server work", mode: "bypassPermissions" });
+    // Into the user's computer a server's session counts as Auto at most (its Bypass sessions take no work from one).
+    expect(mac.sent[0]!.from).toEqual({ id: "box/s9", title: "Server work", mode: "auto" });
     expect(lab.sent[0]!.from).toEqual({ id: "box/s9", title: "Server work", mode: "bypassPermissions" });
     // A refusal there reads as one here.
     await expect(far.send(`${HOME_NAME}/nope`, "hi", { id: "s9", title: "t", mode: "auto" })).rejects.toThrow("No session nope.");
+    // No mode, or no message: refused, not taken as the freest.
+    await expect(answerPeers("box", "send", { id: `${HOME_NAME}/m1`, message: "hi", from: { id: "s9", title: "t" } }, mac.ops, servers)).rejects.toThrow("what mode");
+    await expect(far.send(`${HOME_NAME}/m1`, "  ", { id: "s9", title: "t", mode: "auto" })).rejects.toThrow("non-empty");
+    // A server named as the user's computer is: its sessions don't pass for the computer's.
+    const named = machine([row("x1", 60)]);
+    const rows = await answerPeers("box", "list", { limit: 10 }, mac.ops, new Map([...servers, [HOME_NAME, named.link]]));
+    expect((rows as { id: string }[]).map((r) => r.id)).toEqual([`${HOME_NAME}/m1`, "lab/l1"]);
 });
 
 test("a server answers its sessions for the user's computer, and asks it about the others; with none connected, says so", async () => {

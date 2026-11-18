@@ -71,10 +71,14 @@ export async function listSessions(peers: SessionPeers | undefined, input: Recor
     const query = typeof input.query === "string" ? input.query : undefined;
     const limit = typeof input.limit === "number" ? input.limit : undefined;
     const r = listText(peers, { all, query, limit });
-    if (!peers.far) return { text: r.text, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
+    const reach = peers.far;
+    if (!reach) return { text: r.text, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
     // The user's other machines' too, with every project's (their folders are another machine's).
     if (!all) return { text: `${r.text}\nSessions on the user's other machines are listed with all: true.`, summary: r.count ? `${r.count} session${r.count === 1 ? "" : "s"}` : "No other sessions" };
-    const far = await peers.far.list({ query, limit: Math.max(1, Math.min(Math.floor(limit ?? 20), PEER_LIMITS.maxList)) }).catch(() => []);
+    // One limit for both: what's left of it after this machine's.
+    const left = Math.max(1, Math.min(Math.floor(limit ?? 20), PEER_LIMITS.maxList)) - r.count;
+    if (left <= 0) return { text: `${r.text}\nSessions on the user's other machines aren't listed: the limit is reached. Narrow it with query, or raise limit.`, summary: `${r.count} session${r.count === 1 ? "" : "s"}` };
+    const far = await reach.list({ query, limit: left }).catch(() => []);
     const count = r.count + far.length;
     return { text: [r.text, farListText(far)].filter(Boolean).join("\n\n"), summary: count ? `${count} session${count === 1 ? "" : "s"}` : "No other sessions" };
 }
@@ -84,9 +88,10 @@ export async function readSession(peers: SessionPeers | undefined, input: Record
     const id = str(input.id).trim();
     if (id === peers.self) return fail("That's this session.");
     if (id && farId(id)) {
-        if (!peers.far) return unknownId(id);
+        const reach = peers.far;
+        if (!reach) return unknownId(id);
         try {
-            const read = await peers.far.read(id, typeof input.turns === "number" ? input.turns : undefined);
+            const read = await reach.read(id, typeof input.turns === "number" ? input.turns : undefined);
             if (!read) return unknownId(id);
             return { text: read.text, summary: `Read ${read.turns} turn${read.turns === 1 ? "" : "s"} of “${read.title}”` };
         } catch (e) {
@@ -111,8 +116,9 @@ export async function sendToSession(peers: SessionPeers | undefined, input: Reco
     try {
         const message = checkMessage(input.message);
         if (farId(id)) {
-            if (!peers.far) return unknownId(id);
-            const sent = await peers.far.send(id, message);
+            const reach = peers.far;
+            if (!reach) return unknownId(id);
+            const sent = await reach.send(id, message);
             return { text: sent.text, summary: SENT[sent.delivery] };
         }
         const r = await peers.send(id, message);

@@ -122,7 +122,8 @@ export function peerOps(host: PeerHost, server: boolean) {
     };
 }
 
-export function appPeers(host: PeerHost, self: Runtime, far?: FarPeers): SessionPeers {
+/** `far`: the user's other machines' sessions, as they can be reached when asked (none: not from here). */
+export function appPeers(host: PeerHost, self: Runtime, far?: () => FarPeers | undefined): SessionPeers {
     const disk = diskPeers(() => self.id, () => self.ws.cwd);
     const mode = modeName;
     const deliver = (rt: Runtime, text: string): Delivery => deliverTo(host, rt, { id: self.id, title: titleOf(self) }, text);
@@ -171,8 +172,11 @@ export function appPeers(host: PeerHost, self: Runtime, far?: FarPeers): Session
             const rt = host.get(id);
             return rt ? { summary: runtimeSummary(rt), messages: rt.session.messages } : readFromDisk(id);
         },
-        // The user's other machines' sessions, sent to as this one.
-        ...(far ? { far: { list: far.list, read: far.read, send: (id: string, text: string) => far.send(id, text, { id: self.id, title: titleOf(self), mode: self.mode }) } } : {}),
+        // The user's other machines' sessions, sent to as this one: looked for each time (a server added since counts).
+        get far() {
+            const f = far?.();
+            return f && { list: f.list, read: f.read, send: (id: string, text: string) => f.send(id, text, { id: self.id, title: titleOf(self), mode: self.mode }) };
+        },
         send: async (id, text) => {
             const rt = await reach(host, id);
             // Work handed to a session that asks the user less would be done with less asking than here.

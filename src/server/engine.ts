@@ -64,7 +64,8 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { peerOps, type PeerHost } from "./session-peers";
-import { PeerError, type FarPeers } from "../agent/peers";
+import { checkMessage, PeerError, type FarPeers } from "../agent/peers";
+import { findMatch } from "../permissions/rules";
 import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
@@ -2022,8 +2023,12 @@ export class Engine {
                 });
             });
         }
-        // The user's computer: only once it has servers.
-        if (!listServers().length) return undefined;
+        // The user's computer: only while it has servers.
+        try {
+            if (!listServers().length) return undefined;
+        } catch {
+            return undefined;
+        }
         return homeFarPeers(() => this.serverLinks?.connectedServers() ?? new Map());
     }
 
@@ -2208,7 +2213,19 @@ export class Engine {
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
                 // What a session on a server asks about the user's other machines' sessions: this computer answers.
-                peers: (name, op, params) => answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map()),
+                peers: async (name, op, params) => {
+                    // This computer's own rules for the session tools hold for what a server asks too.
+                    const tool = op === "list" ? "ListSessions" : op === "read" ? "ReadSession" : "SendToSession";
+                    let deny: string[] = [];
+                    try {
+                        deny = loadScope("user", homedir()).permissions?.deny ?? [];
+                    } catch {
+                        // An unreadable settings file: nothing is let through on it.
+                        throw new PeerError("Cavvy on your computer couldn't read its settings, so it can't answer.");
+                    }
+                    if (findMatch(deny, { toolName: tool }, homedir(), "deny")) throw new PeerError(`Your computer's settings deny ${tool}, so sessions on other machines can't use it there.`);
+                    return answerPeers(name, op, params, peerOps(this.peerHost(), false), this.serverLinks?.connectedServers() ?? new Map());
+                },
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -3276,7 +3293,10 @@ export class Engine {
                     if (method === "peers.read") return ops.read(str(p.id, "id"), typeof p.turns === "number" ? p.turns : undefined) ?? null;
                     const f = (p.from && typeof p.from === "object" ? p.from : {}) as Record<string, unknown>;
                     const mode = PERMISSION_MODES.find((m) => m === f.mode) ?? "bypassPermissions";
-                    return await ops.send(str(p.id, "id"), str(p.message, "message"), { id: str(f.id, "from.id"), title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
+                    // Named as this server names another machine's session (`mac/<id>`, `box/<id>`): shown in the message.
+                    const from = str(f.id, "from.id");
+                    if (!/^[\w.-]{1,40}\/[\w.-]{1,120}$/.test(from)) throw new RpcError("That message names no session it's from.", "invalid");
+                    return await ops.send(str(p.id, "id"), checkMessage(p.message), { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
                 } catch (e) {
                     if (e instanceof PeerError) throw new RpcError(e.message, "peer");
                     throw e;

@@ -49,6 +49,8 @@ const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
 /** What a server says of its sessions to another machine's agent (src/server/far-peers.ts): a session's last turns, as text. */
 const PEERS_ANSWER = 1024 * 1024;
+/** At most this many of a server's requests about sessions elsewhere are answered at once. */
+const PEERS_AT_ONCE = 4;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
 const MAX_PER_MINUTE = 32 * 1024 * 1024;
@@ -347,6 +349,8 @@ export class MachineWatch {
         let listed = false;
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
         const lending = new Map<string, AbortController>();
+        /** Requests from the server about sessions elsewhere (peers.call) being answered now. */
+        let peersBusy = 0;
         /** The lists asked for when the connection opens: those in play, then the archived. */
         let archivedListed = false;
         const list = (rows: unknown, archived: boolean) => {
@@ -485,13 +489,20 @@ export class MachineWatch {
                 const callId = typeof ev.callId === "string" && ev.callId.length <= 100 ? ev.callId : undefined;
                 if (!callId || !this.o.peers) return;
                 const params = ev.params && typeof ev.params === "object" && !Array.isArray(ev.params) ? (ev.params as Record<string, unknown>) : {};
+                const reply = (r: { result: unknown } | { error: string }) => ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "peers.result", params: { callId, ...r } }));
+                // A few at a time from one server: each may read sessions' history here.
+                if (peersBusy >= PEERS_AT_ONCE) return void reply({ error: "Cavvy on your computer is busy with other requests from this server. Try again in a moment." });
+                peersBusy++;
                 void this.o
                     .peers(typeof ev.op === "string" ? ev.op : "", params)
                     .then(
                         (result) => ({ result: result ?? null }),
                         (e) => ({ error: cut((e as Error).message, 1000) }),
                     )
-                    .then((r) => ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "peers.result", params: { callId, ...r } })));
+                    .then((r) => {
+                        peersBusy--;
+                        reply(r);
+                    });
             } else if (ev.type === "offers.cancel") {
                 if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();
             }
