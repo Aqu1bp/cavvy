@@ -153,7 +153,7 @@ An update that starts and then turns out not to work can be undone: `rollback` p
 
 ## After a restart
 
-When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, `Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.` A question a session was waiting on is gone with the restart; the session goes on and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
+When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, **Continued after a restart**. A question a session was waiting on is gone with the restart; the session is told it was dropped, not refused, and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
 
 What doesn't carry on:
 
