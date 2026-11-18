@@ -64,7 +64,7 @@ export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
-    const [info, { refetch }] = createResource(
+    const [inspected, { refetch }] = createResource(
         // On Home's machine (another's, in a folder of its own).
         () => (app.conn === "open" && app.homeCwd ? { path: app.homeCwd, on: homeOn() } : false),
         ({ path }) =>
@@ -73,6 +73,8 @@ export function Home() {
                 return undefined;
             }),
     );
+    // No folder (none chosen yet, or none on the machine Home came back to): what the last one was isn't this one's.
+    const info = () => (app.homeCwd ? inspected() : undefined);
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => (homeOn() !== undefined ? [] : app.providers.filter((p) => p.agentCli?.installed && !p.configured));
     // Another machine's has its sessions' models (one is open here).
