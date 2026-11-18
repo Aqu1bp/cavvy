@@ -2171,6 +2171,8 @@ export interface Methods {
      * `list` is that list's id: a pick made in a list that's been replaced since picks nothing.
      */
     "browser.choose": { params: { id: string; index?: number; tab?: number; list?: number }; result: null };
+    /** The pane's find bar, in a page of the headless browser: `query` ("" clears what it marked); `step` 0 searches anew, 1 and -1 go to the next and previous match. `active` counts from 1 (0: none). */
+    "browser.find": { params: { id: string; query: string; step?: number; tab?: number }; result: { matches: number; active: number } };
     /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
     "simulator.state": { params: { id: string }; result: SimulatorState };
     /**
