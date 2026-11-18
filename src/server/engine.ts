@@ -2786,6 +2786,8 @@ export class Engine {
             case "sessions.searchWarm":
                 // Not waited for: the first search finds what's been read by then, and reads the rest itself.
                 this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));
+                // And the servers it searches too (far-search.ts), so their first search isn't a cold one.
+                if (!this.o.away && !client.machine) for (const w of this.serverLinks?.connectedServers().values() ?? []) void w.ask("sessions.searchWarm", {}).catch(() => undefined);
                 return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).

@@ -16,19 +16,19 @@ test("each server is asked the same search, and its hits are said to be its; thi
     expect(merged.partial).toBe(false);
 });
 
-test("a server that's slow, fails, answers stale or in another shape finds nothing, and isn't searched again for it; one whose own search ran out of time is", async () => {
+test("a server that fails, answers stale or in another shape finds nothing; one that's slow, or whose own search ran out of time, is asked again", async () => {
     const waited: (number | undefined)[] = [];
     const slow = { ask: (_m: string, _p: unknown, ms?: number) => (waited.push(ms), Promise.reject(new Error("box didn't answer."))) };
     const failing = { ask: () => Promise.reject(new Error("went away")) };
     const stale = { ask: async () => ({ hits: [hit("old", 9)], partial: true, stale: true }) };
     const shapeless = { ask: async () => ({}) };
-    const odd = { ask: async () => ({ hits: [{ id: "x", at: 3 }, null, hit("ok", 1)], partial: false }) };
+    const odd = { ask: async () => ({ hits: [{ id: "x", at: 3 }, null, { ...hit("far", 1), at: 1e20 }, { ...hit("bent", 1), match: [1] }, hit("ok", 1)], partial: false }) };
     const behind = { ask: async () => ({ hits: [hit("b", 2)], partial: true }) };
     const there = await searchServers(new Map<string, any>([["slow", slow], ["failing", failing], ["stale", stale], ["shapeless", shapeless], ["odd", odd], ["behind", behind]]), { query: "x", limit: 5 }, 50);
     // The server's connection gives up on it in that time, freeing its place for other calls.
     expect(waited).toEqual([50]);
-    expect(there.map((t) => [t.hits.map((h) => h.id), t.partial])).toEqual([[[], false], [[], false], [[], false], [[], false], [["ok"], false], [["b"], true]]);
-    expect(withServers({ hits: [hit("m1", 2)], partial: false }, there.slice(0, 5), 5).partial).toBe(false);
+    expect(there.map((t) => [t.hits.map((h) => h.id), t.partial])).toEqual([[[], true], [[], false], [[], false], [[], false], [["ok"], false], [["b"], true]]);
+    expect(withServers({ hits: [hit("m1", 2)], partial: false }, there.slice(1, 5), 5).partial).toBe(false);
     expect(withServers({ hits: [hit("m1", 2)], partial: false }, there, 5).partial).toBe(true);
     const alone = { hits: [hit("m1", 2)], partial: false };
     expect(withServers(alone, [], 5)).toBe(alone);
