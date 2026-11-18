@@ -446,6 +446,17 @@ describe("forked a slice at a time (as the server does)", () => {
         expect(records(b.path)).toEqual(records(a.path));
     });
 
+    test("reads characters that a slice's end falls inside", async () => {
+        const s = original();
+        // Three-byte characters: the 1 MB slices end inside one, in a line that ends in that slice and in one longer
+        // than a slice.
+        const wide = "漢字かな".repeat(30_000);
+        appendFileSync(s.path, `${JSON.stringify({ t: "title", title: `a${wide}` })}\n${JSON.stringify({ t: "title", title: `b${wide}` })}\n${JSON.stringify({ t: "title", title: `c${wide.repeat(4)}` })}\n`);
+        const titles = (lines: { t: string }[]) => lines.filter((l) => l.t === "title").map((l) => (l as unknown as { title: string }).title);
+        const whole = readFileSync(s.path, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+        expect(titles(await readForkSource(s.path))).toEqual(titles(whole));
+    });
+
     test("one whose saved conversation doesn't match isn't made, and leaves nothing behind", async () => {
         const s = original();
         const source = await readForkSource(s.path);
