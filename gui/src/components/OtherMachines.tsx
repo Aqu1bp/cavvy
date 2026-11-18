@@ -13,6 +13,7 @@ import { render } from "solid-js/web";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
 import { home, switchMachine } from "../lib/machines";
+import { serverBehind } from "../lib/server-update";
 import { focused, machine, notify } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { orderSessions } from "../lib/session-order";
@@ -204,7 +205,11 @@ export function watchOthers(hereName: string) {
     const load = () => {
         void from.call("servers.overview", {}).then((r) => {
             servers.clear();
-            for (const m of r.machines) servers.set(m.name, m);
+            for (const m of r.machines) {
+                servers.set(m.name, m);
+                // Only of one that's connected: while it's being reached again, what it ran isn't forgotten.
+                if (m.state === "connected") serverBehind(m.name, m.behind);
+            }
             relist();
         }, reportError);
         if (!home) return;
@@ -223,6 +228,7 @@ export function watchOthers(hereName: string) {
     from.onEvent((e) => {
         if (e.type === "servers.overview") {
             servers.set(e.machine.name, e.machine);
+            if (e.machine.state === "connected") serverBehind(e.machine.name, e.machine.behind);
             relist();
         } else if (e.type === "servers.session") {
             const m = servers.get(e.name);

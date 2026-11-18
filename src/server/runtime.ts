@@ -147,7 +147,7 @@ import { cardOf } from "../../gui/src/lib/cards";
 import { agentHeadOf, headOf, TurnStore, type StoredAgent, type StoredTurn } from "./turn-store";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
-export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
+export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. A tool call that shows as declined at that moment was dropped by the restart, not refused by the user: make it again if you still need it. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
 /**

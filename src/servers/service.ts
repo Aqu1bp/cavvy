@@ -392,6 +392,8 @@ export interface Pairing {
     /** It has its GUI to serve to a browser. */
     gui: boolean;
     build: string;
+    /** When its build's commit was made (seconds), if it says: what orders two builds without a checkout. */
+    builtAt?: number;
     version: string;
     protocol: number;
 }
@@ -427,7 +429,7 @@ export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: 
         typeof p.build === "string" &&
         BUILD_ID.test(p.build);
     if (!ok) throw new ServerError(`Cavvy didn't start on ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
-    return { code: p.code as string, port: p.port as number, run: p.run as string, gui: p.gui === true, build: p.build as string, version: printable(String(p.version ?? ""), 40), protocol: count(p.protocol) };
+    return { code: p.code as string, port: p.port as number, run: p.run as string, gui: p.gui === true, build: p.build as string, ...(typeof p.builtAt === "number" && Number.isSafeInteger(p.builtAt) && p.builtAt > 0 ? { builtAt: p.builtAt } : {}), version: printable(String(p.version ?? ""), 40), protocol: count(p.protocol) };
 }
 
 /** What runs there: undefined when nothing does. Throws NotSetUp when Cavvy isn't there at all. */

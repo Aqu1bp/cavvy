@@ -108,7 +108,7 @@ It all shows in the session on the server: its side panel has the Simulator tab,
 A call is asked about once, in that session, under the stricter of its own permission mode and your Mac's default mode (Plan on your Mac counts as Manual): Bypass is for what runs on the server. With your Mac in Auto, a session there in Bypass or Auto goes through its Auto check; in Manual, starting or acting on a device asks first in its chat. (A Claude Code or Codex session's Simulator calls skip the Auto check, as they do on the Mac itself: see `simulator.md`.) Your Mac doesn't ask again. What it still keeps:
 
 - Its deny rules apply, and `open_url` won't open a `file:` address there for a server.
-- A server running an older Cavvy can't use it until it's updated (`cavvy servers update <name>`).
+- A server running an older Cavvy can't use it until it's updated: **Update** in the app, or `cavvy servers update <name>` from the same Cavvy the app runs (a `cavvy` in your terminal that's an older checkout puts its own, older build there).
 - One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 
 A screenshot comes back to the server and is kept there, so the chat on the server shows it.
@@ -143,7 +143,7 @@ cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. When a server the app is connected to runs another version that isn't newer, the app says so once (`box runs another version of Cavvy`, with **Update**), and the Machines menu keeps an update button on its row; if sessions are working there, it asks before stopping them. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
 
 An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 
@@ -153,7 +153,7 @@ An update that starts and then turns out not to work can be undone: `rollback` p
 
 ## After a restart
 
-When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, `Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.` A question a session was waiting on is gone with the restart; the session goes on and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
+When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, **Continued after a restart**. A question a session was waiting on is gone with the restart; the session is told it was dropped, not refused, and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
 
 What doesn't carry on:
 
