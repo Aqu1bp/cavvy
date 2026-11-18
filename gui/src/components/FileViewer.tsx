@@ -8,6 +8,7 @@ import { AtSign, ChevronLeft, Copy, Hash, RefreshCw, SquareArrowOutUpRight, X } 
 import type { FileContent } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { rpc, toast } from "../state/app";
+import { RpcError } from "../lib/rpc";
 import { prefs } from "../state/prefs";
 import { review, setReview, setViewedImage, shellLayout } from "../state/ui";
 import { openInEditor } from "../state/actions";
@@ -149,6 +150,8 @@ export function FileViewer(p: { handle: SessionHandle }) {
     });
     const [file] = createResource(key, () => rpc.call("fs.read", { sessionId: p.handle.id, path: untrack(target)!.path }));
     const shown = () => (file.state === "errored" ? undefined : file.latest);
+    /** Refused (outside the session's folders) or gone: an editor would be refused it too, and the chat can't use it. */
+    const unopenable = () => file.state === "errored" && file.error instanceof RpcError && (file.error.code === "outside" || file.error.code === "not_found");
     const rel = () => shown()?.rel ?? target()?.path ?? "";
     // Each time it's asked to go to a line (the same one again included).
     const [jump, setJump] = createSignal(0);
@@ -229,13 +232,13 @@ export function FileViewer(p: { handle: SessionHandle }) {
                         />
                     </Show>
                 </Show>
-                <button class="hb" title="Open in editor" aria-label="Open in editor" onClick={editor}>
+                <button class="hb" title="Open in editor" aria-label="Open in editor" disabled={unopenable()} onClick={editor}>
                     <SquareArrowOutUpRight size={15} />
                 </button>
                 <button class="hb" title="Copy path" aria-label="Copy path" disabled={!shown()} onClick={() => void copyPath()}>
                     <Copy size={15} />
                 </button>
-                <button class="hb" title="Add to chat" aria-label="Add to chat" onClick={toChat}>
+                <button class="hb" title="Add to chat" aria-label="Add to chat" disabled={unopenable()} onClick={toChat}>
                     <AtSign size={15} />
                 </button>
                 <button class="hb" title="Refresh" aria-label="Refresh" disabled={file.loading} onClick={() => setReloads((n) => n + 1)}>

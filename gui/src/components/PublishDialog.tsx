@@ -3,6 +3,7 @@ import type { GitPublishInfo, GitPrInfo } from "@shared/protocol";
 import { handleFor, rpc, toast } from "../state/app";
 import { commitUnavailable, refreshGitChanges } from "../state/changes";
 import { openExternal } from "../lib/platform";
+import { modelName } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -96,7 +97,9 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <Show when={view()}>
                         <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
                         <p class="mono small publish-destination">{view()?.destination}</p>
-                        <p class="muted small">{view()?.ahead ?? "Unknown"} ahead · {view()?.behind ?? "Unknown"} behind</p>
+                        <Show when={!view()?.hasUpstream} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{view()?.ahead} ahead · {view()?.behind} behind</p></Show>}>
+                            <p class="muted small">New branch</p>
+                        </Show>
                         <Show when={view()?.protected || view()?.defaultUnknown}>
                             <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
                         </Show>
@@ -120,7 +123,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                 <button class="btn ghost sm" disabled={busy() || generating()} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate title and description"}</button>
                                 <Show when={drafted()?.model}>
                                     {(m) => <>
-                                        <span class="muted small">Drafted by {m()}.</span>
+                                        <span class="muted small">Drafted by {modelName(m(), p.id)}.</span>
                                         <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                     </>}
                                 </Show>

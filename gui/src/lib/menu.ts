@@ -49,12 +49,42 @@ export interface MenuBehavior {
 const ITEMS = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
 const CONTROLS = 'button, input, select, textarea, a[href], [tabindex]';
 
+// ---- Submenus (components/ui/Submenu.tsx) ----
+// A submenu's panel is in a portal, outside its menu's, so the menu knows it by the item that opens it: keys, clicks
+// and focus in it are the menu's own. The item hears "submenu" events: { open: true, focus } (Right, Enter) or
+// { open: false } (Left, Esc).
+
+/** Each open submenu's panel, and the item it's opened from. */
+const submenus = new WeakMap<Element, HTMLElement>();
+const SUBMENU = "[data-submenu]";
+
+/** `sub` is open from `item` (an item of another menu) until the returned function is called. */
+export function ownSubmenu(sub: HTMLElement, item: HTMLElement): () => void {
+    submenus.set(sub, item);
+    return () => submenus.delete(sub);
+}
+
+/** The panel `node` is in: `panel`, or a submenu opened from it (or from one of its submenus); undefined for neither. */
+export function menuOf(panel: HTMLElement, node: unknown): HTMLElement | undefined {
+    const el = node as Element | null | undefined;
+    if (!el) return undefined;
+    if (panel.contains(el)) return panel;
+    const sub = el.closest?.<HTMLElement>(SUBMENU);
+    const item = sub ? submenus.get(sub) : undefined;
+    return item && menuOf(panel, item) ? sub! : undefined;
+}
+
+/** Opens (focused on its first item) or closes the submenu `item` opens. */
+function submenu(item: HTMLElement, open: boolean) {
+    item.dispatchEvent(new CustomEvent("submenu", { detail: { open, focus: open } }));
+}
+
 /** Installed only while the panel is mounted; positioning remains Popover's job. */
 export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => void {
     const doc = panel.ownerDocument;
     const trigger = behavior.returnFocus();
     const typeahead = menuTypeahead();
-    const available = (selector: string) => [...panel.querySelectorAll<HTMLElement>(selector)]
+    const available = (selector: string, scope = panel) => [...scope.querySelectorAll<HTMLElement>(selector)]
         .filter((el) => !el.matches(':disabled, [aria-disabled="true"], [hidden]') && el.getClientRects().length > 0);
     const focus = (el?: HTMLElement) => {
         (el ?? panel).focus({ preventScroll: true });
@@ -79,6 +109,15 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             return;
         }
         e.stopPropagation();
+        // In a submenu: its items, and Left or Escape goes back to the item that opened it.
+        const scope = menuOf(panel, doc.activeElement) ?? panel;
+        const from = scope === panel ? undefined : submenus.get(scope);
+        if (from && (e.key === "Escape" || e.key === "ArrowLeft")) {
+            e.preventDefault();
+            submenu(from, false);
+            focus(from);
+            return;
+        }
         if (e.key === "Escape") {
             e.preventDefault();
             if (behavior.onEscape?.()) return;
@@ -98,11 +137,15 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
         }
         behavior.onKeyDown?.(e);
         if (e.defaultPrevented || behavior.kind !== "menu") return;
-        const items = available(ITEMS);
+        const items = available(ITEMS, scope);
         const current = items.indexOf(doc.activeElement as HTMLElement);
+        const opens = items[current]?.getAttribute("aria-haspopup") === "menu";
         if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
             e.preventDefault();
             focus(items[menuIndex(items.length, current, e.key)]);
+        } else if (opens && (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            submenu(items[current]!, true);
         } else if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             items[current]?.click();
@@ -127,6 +170,6 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
         panel.removeEventListener("click", onClick, true);
         // Actions can open dialogs or focus a rename field. Never steal that focus,
         // nor the destination of an outside click.
-        if (trigger?.isConnected && (panel.contains(doc.activeElement) || doc.activeElement === doc.body)) trigger.focus({ preventScroll: true });
+        if (trigger?.isConnected && (menuOf(panel, doc.activeElement) || doc.activeElement === doc.body)) trigger.focus({ preventScroll: true });
     };
 }

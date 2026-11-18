@@ -57,7 +57,7 @@ import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } f
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
-import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, opensInside, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
@@ -1043,6 +1043,8 @@ export class Engine {
             updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
             messages: rt.session.messageCount,
             status: rt.status,
+            // Stopped, or cut off and closed when it was opened again (the history says so: runtime.ts).
+            ...(rt.status === "idle" && rt.session.messageCount > 0 && rt.lastTurnStatus === "aborted" ? { stopped: true as const } : {}),
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
             pinned: lists.pinned.has(rt.id),
@@ -1062,7 +1064,7 @@ export class Engine {
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", ...(s.stopped ? { stopped: true as const } : {}), pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
             if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
@@ -1923,6 +1925,15 @@ export class Engine {
 
     // -----------------------------------------------------------------------
     // A folder's branch: fetch, pull, switch, create (git-sync.ts)
+
+    /**
+     * `cwd`'s branch may have moved (a commit to a new branch, a switch here or outside, noticed by a read): every
+     * session open in it, or in a folder it's in or holds, shows the branch it's on now. A HEAD file read each, no git.
+     */
+    branchMoved(cwd: string) {
+        const near = within(cwd);
+        for (const rt of this.runtimes.values()) if (rt.folders.some((f) => near(f) || within(f)(cwd))) rt.branchMoved();
+    }
 
     /** Folders with a fetch, pull or switch under way (their work tree's top). */
     private gitBusy = new Set<string>();
@@ -2800,14 +2811,16 @@ export class Engine {
 
     /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
     private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
-        const { cwd } = this.openScope(p);
+        const { cwd, roots } = this.openScope(p);
         const query = typeof p.query === "string" ? p.query.slice(0, 256) : "";
         const limit = Math.max(1, Math.min(200, Number.isInteger(p.limit) ? p.limit : 50));
         const files = p.sessionId !== undefined ? this.runtime(p.sessionId).ws.files : this.workspaces.get(cwd)?.files;
         if (!files) throw new RpcError("That folder isn't open in Cavvy", "not_open");
         // Folders are in the listing too ("src/"): asked for more, so as many files are left.
-        const found = await files.searchSoon(query.trim(), limit * 2);
-        return { paths: found.filter((f) => !f.endsWith("/")).slice(0, limit) };
+        const found = (await files.searchSoon(query.trim(), limit * 2)).filter((f) => !f.endsWith("/"));
+        // A link out of the session's folders, which the viewer would refuse, isn't offered.
+        const opens = await Promise.all(found.map((f) => opensInside(f, cwd, roots)));
+        return { paths: found.filter((_, i) => opens[i]).slice(0, limit) };
     }
 
     /** Search in project: in the session's folder, the window's last search stopped first. */
@@ -3821,8 +3834,13 @@ export class Engine {
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
-            case "git.sync":
-                return await gitSyncInfo(this.gitFolder(p.cwd));
+            case "git.sync": {
+                const cwd = this.gitFolder(p.cwd);
+                const info = await gitSyncInfo(cwd);
+                // A read as a turn ends, on focus or after a Git action: what it finds, every session there shows.
+                this.branchMoved(cwd);
+                return info;
+            }
             case "git.branches":
                 return await gitBranches(this.gitFolder(p.cwd));
             case "git.fetch":

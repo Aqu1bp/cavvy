@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, on, onClea
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
 import { app, awayMachine, handleFor, reportError, rpc, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
 import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
@@ -35,7 +35,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
-    const [open, setOpen] = [() => contextCardOpen() && pane.focused(), setContextCardOpen];
+    const [open, setOpen] = [() => contextCardOpen() && keysHere(pane), setContextCardOpen];
     // Another session picked (by a key, say: a click elsewhere already closes it): the card was this one's.
     createEffect(on(() => app.activeId, () => setOpen(false), { defer: true }));
     const panelId = `composer-usage-${createUniqueId()}`;

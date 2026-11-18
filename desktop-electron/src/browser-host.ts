@@ -43,6 +43,8 @@ const CANVAS_JS = `(() => {
 })()`;
 /** The world CANVAS_JS runs in: not the page's (0), nor Electron's own (999). */
 const CANVAS_WORLD = 1001;
+/** The most `painted` waits for a page to draw at a new size. */
+const PAINT_WAIT_MS = 2000;
 
 interface Tab {
     targetId: string;
@@ -453,6 +455,33 @@ export class BrowserHost {
         const zoom = win && !win.isDestroyed() ? win.webContents.getZoomFactor() : 1;
         const onScreen = pane && { x: content.x + pane.x * zoom, y: content.y + pane.y * zoom, width: pane.width * zoom, height: pane.height * zoom };
         return devToolsBounds({ app, pane: onScreen, work: screen.getDisplayMatching(app).workArea, displays: screen.getAllDisplays().map((d) => d.workArea), saved: readDevToolsPlace() });
+    }
+
+    /**
+     * Whether the tab's page has laid itself out at this size (the webview's, in the window's CSS pixels) and drawn a
+     * frame at it, waited for up to PAINT_WAIT_MS. The GUI keeps a page it has just given another size out of sight
+     * until then: the window otherwise draws its picture at the old size, stretched or cut, for a frame or more.
+     * Looked at in the canvas colour's world, which the page's scripts neither see nor change.
+     */
+    async painted(key: string, size: { width: number; height: number }): Promise<boolean> {
+        const tab = this.tabsByKey.get(key);
+        if (!tab || tab.closed || tab.hidden || tab.wc.isDestroyed()) return false;
+        const zoom = tab.wc.getZoomFactor();
+        const [w, h] = [size.width, size.height].map((n) => Math.round(n));
+        const code = `new Promise((done) => {
+            const end = performance.now() + ${PAINT_WAIT_MS};
+            const look = () => {
+                if (Math.abs(innerWidth * ${zoom} - ${w}) <= 2 && Math.abs(innerHeight * ${zoom} - ${h}) <= 2) requestAnimationFrame(() => requestAnimationFrame(() => done(true)));
+                else if (performance.now() > end) done(false);
+                else requestAnimationFrame(look);
+            };
+            look();
+        })`;
+        try {
+            return (await tab.wc.executeJavaScriptInIsolatedWorld(CANVAS_WORLD, [{ code }])) === true;
+        } catch {
+            return false;
+        }
     }
 
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */

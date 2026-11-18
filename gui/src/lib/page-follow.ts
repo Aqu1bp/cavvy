@@ -57,9 +57,10 @@ export function pageCorners(frame: Edges, within: readonly Rounded[]): string | 
 /**
  * Keeps the page over `box`. `target`: the tab's page to show, undefined while there's none to (no tab, the pane
  * hidden or covered); `sliding`: the panels are sliding; `device`: a size picked in the pane's menu, which the page is
- * given and drawn scaled down to fit the box (centred, never larger than it is). `kick` when any may have changed.
+ * given and drawn scaled down to fit the box (centred, never larger than it is). `grow`: height the page is given beyond the box
+ * for now (it's cut to the box). `kick` when any may have changed.
  */
-export function followPage(box: HTMLElement, target: () => string | undefined, sliding: () => boolean, device: () => Size | undefined = () => undefined): Follow {
+export function followPage(box: HTMLElement, target: () => string | undefined, sliding: () => boolean, device: () => Size | undefined = () => undefined, grow: () => number = () => 0): Follow {
     let placed = "";
     const sizer = pageSizer();
     const follow = followBox(box, () => {
@@ -89,7 +90,9 @@ export function followPage(box: HTMLElement, target: () => string | undefined, s
             setShownBrowser({ targetId: targetId!, box: fitted, by: "pane", page: size, fit: true });
             return;
         }
-        const page = sizer.frame(performance.now(), { width: at.width, height: at.height }, sliding());
+        // `grow`: the page is given the height a bar over it is about to give back, before the bar goes (cut to the box
+        // meanwhile), so it has drawn at it by the time the box takes it (BrowserPane's giveBack).
+        const page = sizer.frame(performance.now(), { width: at.width, height: at.height + grow() }, sliding());
         const frame = pageFrame(seen, page);
         const corners = pageCorners({ left: at.x, top: at.y, right: at.x + frame.width, bottom: at.y + frame.height }, around.map(({ el, edges }) => {
             const style = getComputedStyle(el);

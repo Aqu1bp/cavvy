@@ -8,13 +8,13 @@
 // aren't offered there: Chrome is driven over a pipe and opens no DevTools port for a frontend to reach.
 
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show, type Accessor, type JSX, type Setter } from "solid-js";
-import { Check, ChevronDown, ChevronUp, Ellipsis, Laptop, Maximize, Minus, Plus, RotateCwSquare, Ruler, Scan, Search, Smartphone, SquareTerminal, Tablet, X, ZoomIn, ZoomOut } from "lucide-solid";
+import { Check, ChevronDown, ChevronUp, Ellipsis, Laptop, Maximize, RotateCwSquare, Ruler, Scan, Search, Smartphone, SquareTerminal, Tablet, X, ZoomIn, ZoomOut } from "lucide-solid";
 import type { BrowserTabInfo } from "@shared/protocol";
 import { reportError, rpc } from "../state/app";
-import { hostedTargets } from "../state/browser-host";
+import { hostedTargets, shownBrowser } from "../state/browser-host";
 import { electron, isMod, mod } from "../lib/platform";
-import { DEVICES, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
-import type { PaneStatus } from "../lib/browser";
+import { DEVICES, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
+import type { PaneStatus, Size } from "../lib/browser";
 import { Menu } from "./ui/Menu";
 
 /** Each session's size and zoom while the window is open: the pane shows it again when it comes back. */
@@ -38,10 +38,14 @@ export interface PaneToolsOptions {
     tab: Accessor<BrowserTabInfo | undefined>;
     status: Accessor<PaneStatus>;
     view: Accessor<PageView | undefined>;
+    /** The pane's page box, as it is now: a device's page is drawn scaled down to fit it. */
+    box: Accessor<Size>;
     setView: Setter<PageView | undefined>;
     root: () => HTMLElement | undefined;
     address: () => HTMLInputElement | undefined;
     keyboard: () => HTMLElement | undefined;
+    /** A bar closes, giving its height back to the page: `close` runs once the page can take it without a blank strip. */
+    giveBack: (px: number, close: () => void) => void;
 }
 
 export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element } {
@@ -126,21 +130,26 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         if (tab !== undefined) void rpc.call("browser.find", { id: o.id(), tab, query: "" }).catch(() => undefined);
     };
     const openFind = () => {
+        findOpens++;
         setMenuOpen(false);
         setFinding(true);
         requestAnimationFrame(() => (findInput?.focus(), findInput?.select()));
         // Opened again on what it last looked for: found again, in the page as it is now.
         if (query() && !found()) void search(0);
     };
+    let findBar: HTMLDivElement | undefined;
+    /** Each opening and closing of the bar: one opened again before it has gone stays. */
+    let findOpens = 0;
     const closeFind = () => {
         clearTimeout(typed);
         asked++;
-        setFinding(false);
         setFound(undefined);
         if (query()) clearFound();
         // Back to the page, as a browser's find bar does.
         if (o.native) webview()?.focus();
         else o.keyboard()?.focus({ preventScroll: true });
+        const closing = ++findOpens;
+        o.giveBack(findBar?.offsetHeight ?? 0, () => closing === findOpens && setFinding(false));
     };
     // Another tab: what was found was the one before's.
     createEffect(on(() => o.tab()?.id, () => {
@@ -188,10 +197,50 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         setView({ device: o.view()?.device ?? { width: clamp(box?.width ?? 800), height: clamp(box?.height ?? 600) }, zoom: zoom() });
         requestAnimationFrame(() => (widthInput?.focus(), widthInput?.select()));
     };
+    /** A side typed that a page can't have: kept in its field, marked, with what it takes beside it. */
+    const [refused, setRefused] = createSignal<"width" | "height">();
+    createEffect(on(() => o.view()?.device, () => setRefused(undefined), { defer: true }));
     const typeSide = (which: "width" | "height", text: string) => {
         const d = o.view()?.device;
+        if (!d) return;
         const n = side(text);
-        if (d && n !== undefined && n !== d[which]) setView({ device: { ...d, [which]: n }, zoom: zoom() });
+        if (n === undefined) return setRefused(which);
+        if (refused() === which) setRefused(undefined);
+        if (n !== d[which]) setView({ device: { ...d, [which]: n }, zoom: zoom() });
+    };
+    const sideField = (which: "width" | "height", d: Accessor<Size>, ref?: (el: HTMLInputElement) => void) => (
+        <input
+            ref={ref}
+            class="br-side"
+            type="text"
+            inputMode="numeric"
+            aria-label={which === "width" ? "Width" : "Height"}
+            aria-invalid={refused() === which}
+            aria-describedby={refused() === which ? sideNote : undefined}
+            value={d()[which]}
+            onInput={() => refused() === which && setRefused(undefined)}
+            onChange={(e) => typeSide(which, e.currentTarget.value)}
+            onKeyDown={(e) => {
+                if (e.key === "Enter") typeSide(which, e.currentTarget.value);
+                else if (e.key === "Escape" && refused() === which) {
+                    // Back to the size the page has.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.currentTarget.value = String(d()[which]);
+                    setRefused(undefined);
+                }
+            }}
+        />
+    );
+    const sideNote = `br-side-note-${Math.random().toString(36).slice(2)}`;
+    /** How much smaller than its size a device's page is drawn, as a percentage; undefined when it's drawn at its size. */
+    const shownAt = () => {
+        const d = o.view()?.device;
+        // The desktop app's page is placed clear of the panel's edge handle (lib/page-follow.ts): its scale as placed.
+        const s = o.native ? shownBrowser() : undefined;
+        const placed = s?.by === "pane" && s.fit && s.page ? Math.min(s.box.width / s.page.width, s.box.height / s.page.height) : undefined;
+        const pct = d ? Math.round((placed ?? fitScale(o.box(), d)) * 100) : 100;
+        return pct > 0 && pct < 100 ? pct : undefined;
     };
     // The desktop app's page zooms itself (as its browser would); the headless one is asked for a zoomed size. Set on
     // each tab as it's shown (Chromium keeps a zoom per site, which a page here mustn't pick up unasked), and the one
@@ -256,7 +305,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     const bars = () => (
         <>
             <Show when={finding()}>
-                <div class="br-strip" role="search" aria-label="Find in page">
+                <div ref={findBar} class="br-strip" role="search" aria-label="Find in page">
                     <Search size={13} class="br-strip-ic" />
                     <input
                         ref={findInput}
@@ -293,22 +342,29 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
             </Show>
             <Show when={o.view()}>
                 {(v) => (
-                    <div class="br-strip" aria-label="Page size">
+                    <div class="br-strip br-size" aria-label="Page size">
                         <Show when={v().device} fallback={<span class="br-strip-label">Fill pane</span>}>
                             {(d) => (
                                 <>
-                                    <input ref={widthInput} class="br-side" type="text" inputMode="numeric" aria-label="Width" value={d().width} onChange={(e) => typeSide("width", e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && typeSide("width", e.currentTarget.value)} />
+                                    {sideField("width", d, (el) => (widthInput = el))}
                                     <span class="br-strip-x">×</span>
-                                    <input class="br-side" type="text" inputMode="numeric" aria-label="Height" value={d().height} onChange={(e) => typeSide("height", e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && typeSide("height", e.currentTarget.value)} />
+                                    {sideField("height", d)}
                                     <button class="hb sm" aria-label="Rotate" title="Rotate" onClick={rotate}><RotateCwSquare size={14} /></button>
+                                    <Show
+                                        when={refused()}
+                                        fallback={<Show when={shownAt()}>{(pct) => <span class="br-strip-note" title="Drawn smaller to fit the pane">Shown at {pct()}%</span>}</Show>}
+                                    >
+                                        <span id={sideNote} class="br-strip-note refused" role="alert">{`Between ${MIN_SIDE} and ${MAX_SIDE}`}</span>
+                                    </Show>
                                 </>
                             )}
                         </Show>
-                        <span class="grow" />
-                        <button class="hb sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><Minus size={14} /></button>
-                        <button class="br-strip-zoom" title="Actual size" aria-label={`Zoom ${Math.round(zoom() * 100)}%: actual size`} onClick={() => zoomBy(0)}>{Math.round(zoom() * 100)}%</button>
-                        <button class="hb sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><Plus size={14} /></button>
-                        <button class="hb sm" aria-label="Fill pane at 100%" title={`${viewLabel(v())}: back to filling the pane at 100%`} onClick={() => setView(undefined)}><X size={14} /></button>
+                        <span class="br-strip-end">
+                            <button class="hb sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut size={14} /></button>
+                            <button class="br-strip-zoom" title="Actual size" aria-label={`Zoom ${Math.round(zoom() * 100)}%: actual size`} onClick={() => zoomBy(0)}>{Math.round(zoom() * 100)}%</button>
+                            <button class="hb sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><ZoomIn size={14} /></button>
+                            <button class="hb sm" aria-label="Fill pane at 100%" title={`${viewLabel(v())}: back to filling the pane at 100%`} onClick={() => setView(undefined)}><X size={14} /></button>
+                        </span>
                     </div>
                 )}
             </Show>

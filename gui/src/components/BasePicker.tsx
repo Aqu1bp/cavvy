@@ -129,11 +129,8 @@ export function CommitPicker(p: { value?: GitLogEntry; load: () => Promise<{ com
         <>
             <button ref={anchor} class="tb base rv-pick" title={label() ? `${label()}. Show another commit` : "Show another commit"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
                 <Show when={p.value} fallback={<span class="lbl">Pick a commit</span>}>
-                    {(c) => (
-                        <>
-                            <span class="mono">{c().sha.slice(0, 7)}</span> <span class="lbl truncate">{c().subject}</span>
-                        </>
-                    )}
+                    {/* The subject is in the tooltip and the list: beside the hash, the toolbar has room for a letter or two of it. */}
+                    {(c) => <span class="mono">{c().sha.slice(0, 7)}</span>}
                 </Show>
                 <ChevronDown size={12} class="chev" />
             </button>

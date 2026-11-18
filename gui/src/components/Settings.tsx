@@ -326,7 +326,8 @@ function General() {
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
                 </Row>
                 <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : "The display can still sleep."}>
-                    <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false} onChange={(v) => void update({ keepAwake: v })} />
+                    {/* Unavailable: off, as it acts; the choice is kept for when it works (another computer, a fixed install). */}
+                    <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false && !s().keepAwakeUnavailable} disabled={s().keepAwakeUnavailable} onChange={(v) => void update({ keepAwake: v })} />
                 </Row>
                 {/* On one of the user's servers Bypass can always be chosen: there's nothing to allow. */}
                 <Show when={!s().bypassAlways}>

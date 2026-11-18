@@ -14,7 +14,7 @@ import { archive, archiveSessions, chooseProject, deleteSessions, newSession, op
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { ago, monogram, projectColor, promptTime, since } from "../lib/format";
+import { ago, monogram, projectColor, since, wakeTime } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, isSnoozed, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
@@ -126,11 +126,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
+            {/* Wake now, Snooze ▸ and More ▸ (Regenerate title, Never auto-settle, New session). */}
             <RowExtras ids={[p.s.id]} close={close} />
-            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
-                {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
-                <Plus size={14} /> New session
-            </button>
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
@@ -166,7 +163,7 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = s.making ? "forking" : sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? (s.stopped ? "stopped, unread" : "unread") : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
@@ -187,16 +184,17 @@ function RowLead(p: { s: SessionSummary; picked?: boolean }) {
 
 /**
  * The end of a row, one thing: how it's doing when that's news ("Working 8m", "Done" when it finished and you haven't
- * looked, "Stopped" on an error), otherwise when it last moved ("2m", "1h", "3d"), amber while it waits on you.
+ * looked, "Stopped" on an error or when its turn didn't finish: stopped, or cut off by quitting), otherwise when it last
+ * moved ("2m", "1h", "3d"), amber while it waits on you.
  */
 function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     // Set again only when it changes, not at each tick of the clock it's worked out from.
     const word = createMemo(() =>
-        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : p.s.woke ? "Woke" : undefined,
+        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? (p.s.stopped ? "Stopped" : "Done") : p.s.woke ? "Woke" : undefined,
     );
-    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
+    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" || word() === "Stopped" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
     // Snoozed: when it wakes.
-    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? promptTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
+    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
 
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
@@ -450,8 +448,10 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     const picked = () => p.pick.picked(p.s.id);
+    // Snoozed: when it wakes stays in sight beside More, pointed at or not (Pin is in its menu).
+    const snoozed = () => isSnoozed(p.s);
     return (
-        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""} ${snoozed() ? "snz" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -464,7 +464,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
                     aria-label={rowLabel(p.s, unread(), picked())}
-                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
+                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\n${snoozed() ? `Wakes ${wakeTime(p.s.snoozedUntil!, now(), true)}` : `Updated ${(now(), ago(p.s.updatedAt))}`}`}
                 >
                     <RowLead s={p.s} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
@@ -477,11 +477,13 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                         <RowEnd s={p.s} unread={unread()} />
                     </span>
                     <span class="slim-acts">
-                        <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
-                            <Show when={p.s.pinned} fallback={<Pin size={13} />}>
-                                <PinOff size={13} />
-                            </Show>
-                        </button>
+                        <Show when={!snoozed()}>
+                            <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
+                                <Show when={p.s.pinned} fallback={<Pin size={13} />}>
+                                    <PinOff size={13} />
+                                </Show>
+                            </button>
+                        </Show>
                         <button ref={more} class="hb sm" title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                             <MoreHorizontal size={14} />
                         </button>
@@ -609,6 +611,7 @@ export function Sidebar() {
     let listEl: HTMLElement | undefined;
     let frame = 0;
     const animations = new Set<Animation>();
+    /** Those that end rather than stop where they are when the rail holds still: fades, and the slides of a change asked for. */
     const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
@@ -650,6 +653,8 @@ export function Sidebar() {
         // The first list isn't a change, and one held under the pointer doesn't move. One let go (the user's own
         // settle or pin, with the pointer still here) moves now, so it's decided now, not when the frame comes.
         if (!previous || held()) return next;
+        // Let go for a change the user asked for (snoozing, a snooze's time come): its slides run to their end, held or not.
+        const asked = untrack(() => railFree() || manualLayout());
         // Where each row and heading was, and in what shape (a card or a one-line row).
         const before = new Map<string, { top: number; card: boolean }>();
         for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? [])
@@ -663,7 +668,7 @@ export function Sidebar() {
             const run = (el: HTMLElement, frames: Keyframe[]) => {
                 const animation = el.animate(frames, { duration, easing: "ease-out" });
                 animations.add(animation);
-                if ("opacity" in frames[0]!) fades.add(animation);
+                if ("opacity" in frames[0]! || asked) fades.add(animation);
                 animation.onfinish = () => animations.delete(animation);
             };
             for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? []) {
@@ -691,7 +696,8 @@ export function Sidebar() {
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {
-            // Held, a slide stops where it is; a fade ends, so nothing is left half there.
+            // Held, a slide stops where it is; a fade ends, so nothing is left half there. So does the slide of a change
+            // the user asked for: stopped, it left a row's gap above the rows it was moving up for as long as the pointer stayed.
             if (pause) fades.has(animation) ? animation.finish() : animation.pause();
             else animation.play();
         }
@@ -701,6 +707,11 @@ export function Sidebar() {
         for (const animation of animations) animation.cancel();
         setSidebarOrder(undefined);
     });
+    // A snoozed session waking (its time come, or it needs you) leaves Snoozed then, the pointer on the rail or not: the
+    // user chose the time. The one on screen too: it was held in the shelf, where the rail had it, until the pointer left.
+    createEffect(on(() => app.sessions.filter(isSnoozed).map((s) => s.id), (ids, was) => {
+        if (was?.some((id) => !ids.includes(id))) allowLayout();
+    }, { defer: true }));
     const showMore = (page: "cards" | "settled" | "archived") => {
         if (page === "cards") setShown((n) => n + PAGE);
         else if (page === "settled") setSettledShown((n) => n + PAGE);

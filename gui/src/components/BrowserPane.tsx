@@ -2,7 +2,7 @@
 // (src/browser); the page arrives as frames drawn on a canvas, and clicks, keys and scrolls on the canvas go back to
 // it. A person using the page takes the tab from the agent (until they hand it back). The page is sized to the pane.
 
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -66,6 +66,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // The page's picture
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
+    /** The box's size as last seen, for what the strip says of it (BrowserTools.tsx). */
+    const [paneBox, setPaneBox] = createSignal<Size>({ width: 0, height: 0 });
     /** Where a frame is drawn: a device's page no larger than it is (at its zoom). */
     const placed = (f: Size) => placeFrame(boxSize(), f, view()?.device ? view()!.zoom : undefined);
 
@@ -149,6 +151,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void loadBrowserState(id()).catch(() => undefined);
         const observer = new ResizeObserver(() => {
             fit();
+            setPaneBox(boxSize());
             if (!watching()) return;
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => resized(sized, paneSize(boxSize())) && watch(), RESIZE_MS);
@@ -203,21 +206,48 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         draw();
         if (!native && watching()) watch();
     }, { defer: true }));
-    const tools = paneTools({ id, native, tab, view, setView, root: () => root, address: () => address, keyboard: () => keyboard, status });
 
     // The tab's own page (BrowserHostLayer) is kept over the page box (lib/page-follow.ts, loaded here: only the
     // desktop app has such a page). What moves or hides it besides the box itself: a panel's slide beginning or
     // ending, another tab, the pane covered or uncovered.
+    // `grow`: height a bar over the page is about to give back, which the page takes first (giveBack).
+    const [grow, setGrow] = createSignal(0);
+    let follow: Follow | undefined;
     if (native) {
         onMount(() => {
-            let follow: Follow | undefined;
             void import("../lib/page-follow").then((m) => {
-                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide, () => view()?.device);
+                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide, () => view()?.device, grow);
             }, reportError);
-            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching, view], () => follow?.kick()));
+            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching, view, grow], () => follow?.kick()));
             onCleanup(() => follow?.stop());
         });
     }
+    /**
+     * A bar over the page (find) closes, giving back `px` of height: in the desktop app the page is given that height
+     * first, under the bar, and the bar goes once it has drawn at it. Closed at once, the page drew at the new height a
+     * moment after the box had it, and that strip of the box was blank meanwhile. `close` is the bar going.
+     */
+    let giving = 0;
+    const giveBack = (px: number, close: () => void) => {
+        const target = tab()?.targetId;
+        const mine = ++giving;
+        // A device's page keeps its size (drawn a little larger): nothing to wait for. Nor on a headless page's frames.
+        if (!native || !target || !watching() || view()?.device || px <= 0) return close();
+        setGrow(px);
+        // The follow places it on the next frame, at that height; then it's drawn at it.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            void import("../lib/page-painted").then((m) => m.pagePainted(target)).finally(() => {
+                if (mine !== giving || disposed) return;
+                follow?.kick();
+                batch(() => {
+                    close();
+                    setGrow(0);
+                });
+            });
+        }));
+    };
+
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status });
 
     // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
     // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's
