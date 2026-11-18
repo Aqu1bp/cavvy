@@ -1837,6 +1837,40 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("rewind: each prompt says when it was sent; files alone keep the context; a rewound turn leaves Recorded turns", async () => {
+        const dir = project();
+        await snapshotRepo(dir);
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust: true });
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        for (const n of [1, 2]) {
+            await c.call("session.send", { id, text: "justrun: echo made > shell.txt" });
+            // Allowed once: the same command asks again the second time.
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === n, 15_000);
+        }
+        const targets = await c.call("session.rewindTargets", { id });
+        expect(targets.length).toBe(2);
+        // The same prompt twice: told apart by when it was sent.
+        for (const t of targets) expect(t.at).toBeNumber();
+        expect(targets[0].at).toBeGreaterThanOrEqual(targets[1].at);
+        const context = c.view(id).state.contextTokens;
+        expect(context).toBeGreaterThan(0);
+        const turnsListed = async () => ((await c.call("session.gitChanges", { id, scope: "uncommitted" })).turns ?? []).length;
+        expect(await turnsListed()).toBe(2);
+
+        const first = targets[1];
+        let plan = await c.call("session.rewindPlan", { id, index: first.index });
+        await c.call("session.rewind", { id, index: first.index, planId: plan.planId, code: true, conversation: false });
+        expect(c.view(id).state.contextTokens).toBe(context);
+
+        const second = (await c.call("session.rewindTargets", { id }))[0];
+        plan = await c.call("session.rewindPlan", { id, index: second.index });
+        await c.call("session.rewind", { id, index: second.index, planId: plan.planId, code: false, conversation: true });
+        expect(await turnsListed()).toBe(1);
+        c.close();
+    }, 30_000);
+
     test("rewind leaves a file alone that changed after the plan was shown", async () => {
         const dir = project();
         const c = await client();
@@ -2436,11 +2470,14 @@ describe("using a plan through an installed CLI", () => {
         expect(pr).toMatchObject({ configured: true, source: "your plan" });
 
         // Defaults that name it go back to unset as it's turned off, and the window is told which.
+        const was = await c.call<GuiSettings>("settings.get", {});
         await c.call("settings.update", { patch: { model: "claude-code:default", smallModel: "claude-code:sonnet" } });
         expect(await c.call("providers.removeKey", { provider: "claude-code" })).toEqual({ reset: ["model", "smallModel"] });
         expect((await claudeCode(c)).configured).toBe(false);
         const s = await c.call<GuiSettings>("settings.get", {});
         expect([s.model ?? null, s.smallModel ?? null]).toEqual([null, null]);
+        // As the other tests expect them.
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 
@@ -2448,6 +2485,7 @@ describe("using a plan through an installed CLI", () => {
         const c = await client();
         process.env.PATH = `${bin}:${PATH}`;
         await c.call("providers.connectCli", { provider: "claude-code" });
+        const was = await c.call<GuiSettings>("settings.get", {});
         const { id } = await c.call<{ id: string }>("providers.addInstance", { base: "claude-code", name: "My Router", models: ["router/model-a", "router/model-b"] });
         expect(id).toBe("claude-code@my-router");
         expect((await claudeCode(c)).agentCli.path).toBe(join(bin, "claude"));
@@ -2460,6 +2498,7 @@ describe("using a plan through an installed CLI", () => {
         const { clientFor } = await import("../src/providers/models");
         await expect(clientFor(id)).rejects.toThrow(/^Claude Code · My Router was removed\. Pick another model\.$/);
         await c.call("providers.removeKey", { provider: "claude-code" });
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 

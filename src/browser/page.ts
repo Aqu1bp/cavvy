@@ -85,6 +85,11 @@ const SETTLE_MS = 200;
 const STILL_ECHO_MS = 60;
 const EVAL_MAX_CHARS = 10_000;
 const SCREENSHOT_MAX_BASE64 = 4 * 1024 * 1024;
+/**
+ * The most a new size waits for screenshots under way (setViewport): one held up longer (a page busy, or held by a
+ * dialog) has the size set again once it's taken.
+ */
+const CAPTURE_WAIT_MS = 1500;
 const FULL_PAGE_MAX_HEIGHT = 8000;
 
 /** An object as JSON, with what JSON can't say named: elements, functions, big integers, a second visit to an object. */
@@ -241,6 +246,14 @@ export class Page {
     /** The host the agent was let open in this tab, or a person went to: its ask rules don't stop the page moving about on it. */
     private approvedHost?: string;
     private evaluation = 0;
+    /**
+     * Screenshots under way. Chrome sizes a page for one and, once it's taken, puts back the size the page had when it
+     * began: a size set meanwhile was undone, and the page stayed at the old one (measured with Chrome 157 on Linux:
+     * every time a size came during one). So a size waits for them (setViewport).
+     */
+    private captures = new Set<Promise<unknown>>();
+    /** A size was set while a screenshot was still under way: it's set again once they're all taken. */
+    private resizeAfterCapture = false;
 
     private constructor(
         readonly cdp: CdpClient,
@@ -690,7 +703,35 @@ export class Page {
         // A view in the desktop app is the size the window gives it (Cavvy.viewSize says what that is).
         if (this.o.hosted) return;
         this.viewport = v;
-        await this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });
+        // After any screenshot under way, which would put the old size back (`captures`).
+        if (this.captures.size) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([Promise.allSettled([...this.captures]), new Promise((r) => (timer = setTimeout(r, CAPTURE_WAIT_MS)))]);
+            clearTimeout(timer);
+        }
+        await this.applyViewport();
+    }
+
+    /** The page's size as Chrome lays it out: the latest one set, which another call may have set while this one waited. */
+    private applyViewport() {
+        const v = this.viewport;
+        // One still being taken (held up past the wait, or begun since) would put the old size back: set again after.
+        if (this.captures.size) this.resizeAfterCapture = true;
+        return this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });
+    }
+
+    /** A screenshot of the page (Page.captureScreenshot), counted while it's taken (`captures`). */
+    private capture(params: Record<string, unknown>): Promise<{ data: string }> {
+        const shot = this.send<{ data: string }>("Page.captureScreenshot", params);
+        this.captures.add(shot);
+        const done = () => {
+            this.captures.delete(shot);
+            if (this.captures.size || !this.resizeAfterCapture) return;
+            this.resizeAfterCapture = false;
+            if (!this.closed && !this.o.hosted) void this.applyViewport().catch(() => undefined);
+        };
+        shot.then(done, done);
+        return shot;
     }
 
     // -----------------------------------------------------------------------
@@ -731,7 +772,7 @@ export class Page {
         const v = m.cssVisualViewport;
         const region = o.fullPage ? { x: 0, y: 0, width: Math.ceil(m.cssContentSize.width), height: Math.min(Math.ceil(m.cssContentSize.height), FULL_PAGE_MAX_HEIGHT) } : o.clip ? { ...o.clip, x: o.clip.x + v.pageX, y: o.clip.y + v.pageY } : { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight };
         const shoot = async (format: "png" | "jpeg") => {
-            const r = await this.send<{ data: string }>("Page.captureScreenshot", { format, ...(format === "jpeg" ? { quality: 80 } : {}), clip: { ...region, scale: 1 / this.viewport.scale }, captureBeyondViewport: o.fullPage === true });
+            const r = await this.capture({ format, ...(format === "jpeg" ? { quality: 80 } : {}), clip: { ...region, scale: 1 / this.viewport.scale }, captureBeyondViewport: o.fullPage === true });
             return r.data;
         };
         let data = await shoot("png");
@@ -827,7 +868,7 @@ export class Page {
                   show: (frame) => this.streaming && !this.closed && this.o.hooks.frame(this, frame),
                   still: async () => {
                       if (!this.streaming || this.closed) return undefined;
-                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
+                      const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
                       return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: Bun.hash(data) };
                   },
               })
@@ -865,7 +906,7 @@ export class Page {
         const seen = this.fullFrames;
         this.stillUntil = Infinity;
         try {
-            const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
+            const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
             if (this.streaming && !this.closed && epoch === this.streamEpoch && this.fullFrames === seen) {
                 this.o.hooks.frame(this, { data, width: this.viewport.width, height: this.viewport.height });
             }

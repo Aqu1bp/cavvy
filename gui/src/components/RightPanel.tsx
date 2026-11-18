@@ -23,6 +23,8 @@ import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
 import { uncleared, WorkList } from "./BackgroundTasks";
+import { Transcript } from "./Transcript";
+import { Composer } from "./Composer";
 import { browserUnseen, loadBrowserState, setBrowserShown } from "../state/browser";
 import { loadSimulatorState, setSimulatorShown, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
@@ -228,14 +230,16 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
                     {
                         value: "sidechat",
                         get name() {
-                            return tabName("Side chat", p.handle.view.state.sideChat?.status === "waiting" && "it needs you");
+                            const status = p.handle.view.state.sideChat?.status;
+                            return tabName("Side chat", status === "waiting" ? "it needs you" : status === "running" ? "working" : status === "error" && "it stopped with an error");
                         },
                         title: "Side chat",
                         label: (
                             <>
                                 <MessageSquareText class="seg-i" />
+                                {/* Working: the sidebar's working colour; waiting on you: the usual dot; failed: the error's. */}
                                 <Show when={p.handle.view.state.sideChat?.status}>
-                                    <span class="ct-dot" />
+                                    {(status) => <span class={`ct-dot ${status()}`} title={status() === "running" ? "Working" : status() === "waiting" ? "Needs you" : "Stopped with an error"} />}
                                 </Show>
                             </>
                         ),
@@ -339,7 +343,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={inspectorPane() === "sidechat"}>
                         <div class="pane">
-                            <SideChatPane handle={p.handle} />
+                            <SideChatPane handle={p.handle} views={{ Transcript, Composer }} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>

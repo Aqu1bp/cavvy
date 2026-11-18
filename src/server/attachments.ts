@@ -93,6 +93,7 @@ export function checkFiles(raw: unknown, save?: SaveFile): FilePart[] {
     for (const f of raw as Partial<WireFile>[]) {
         if (typeof f?.name !== "string" || typeof f.data !== "string") throw new RpcError("Each file needs a name and its data");
         const pasted = f.pasted === true;
+        const from = !pasted && f.from === "side-chat" ? f.from : undefined;
         const name = pasted ? "Pasted text" : sanitizeName(f.name);
         // Over every file's cap, don't even decode it.
         if (f.data.length > Math.ceil((ATTACH_LIMITS.totalBytes * 4) / 3) + 4) throw new RpcError(`${name} is too large to attach (files in one message can come to ${formatBytes(ATTACH_LIMITS.totalBytes)} at most).`);
@@ -139,7 +140,7 @@ export function checkFiles(raw: unknown, save?: SaveFile): FilePart[] {
         }
         stored += Buffer.byteLength(text) - bytes.length;
         storedFits();
-        out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}) });
+        out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}), ...(from ? { from } : {}) });
     }
     for (const { part, bytes } of toSave) part.path = save!(part.name, bytes);
     return out;
@@ -156,7 +157,7 @@ export function fileChips(parts: readonly { type: string }[]): FileChip[] {
     return parts.flatMap((p) => {
         if (p.type !== "file") return [];
         const f = p as FilePart;
-        return [{ name: f.name, kind: f.kind, size: f.size, ...(f.kind === "text" ? { lines: f.lines } : {}), ...(f.kind === "text" && f.pasted ? { pasted: true } : {}) }];
+        return [{ name: f.name, kind: f.kind, size: f.size, ...(f.kind === "text" ? { lines: f.lines } : {}), ...(f.kind === "text" && f.pasted ? { pasted: true } : {}), ...(f.kind === "text" && f.from ? { from: f.from } : {}) }];
     });
 }
 
@@ -238,7 +239,7 @@ export function toWire(parts: readonly AttachedPart[] | undefined): { images?: {
             }
         }
         const data = p.kind === "pdf" ? p.data : Buffer.from(p.text, "utf-8").toString("base64");
-        return [{ name: p.name, data, ...(p.kind === "text" && p.pasted ? { pasted: true } : {}) }];
+        return [{ name: p.name, data, ...(p.kind === "text" && p.pasted ? { pasted: true } : {}), ...(p.kind === "text" && p.from ? { from: p.from } : {}) }];
     });
     return { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
 }

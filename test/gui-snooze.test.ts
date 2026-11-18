@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionSummary } from "../src/server/protocol";
 import { isSnoozed, sidebarEntries, sidebarIds } from "../gui/src/lib/session-order";
-import { customProblem, fromLocalInput, localInput, snoozeChoices, wakesText } from "../gui/src/lib/snooze";
+import { customProblem, fromLocalInput, localInput, snoozeChoices } from "../gui/src/lib/snooze";
+import { wakeTime } from "../gui/src/lib/format";
 
 const HOUR = 3_600_000;
 const at = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m - 1, d, h, min).getTime();
@@ -29,13 +30,16 @@ describe("snooze times, in the window's time zone", () => {
         expect(snoozeChoices(at(2026, 11, 30, 12))[2]!.at).toBe(at(2026, 12, 1, 9));
     });
 
-    test("when it wakes, in words", () => {
+    test("when it wakes, in words: one way in the row, its tooltip, the menu and the toast", () => {
         const now = at(2026, 11, 18, 14, 30);
         const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-        expect(wakesText(at(2026, 11, 18, 18), now)).toBe(time(at(2026, 11, 18, 18)));
-        expect(wakesText(at(2026, 11, 19, 9), now)).toBe(`Tomorrow ${time(at(2026, 11, 19, 9))}`);
-        expect(wakesText(at(2026, 11, 23, 9), now)).toStartWith(new Date(at(2026, 11, 23, 9)).toLocaleDateString([], { weekday: "short" }));
-        expect(wakesText(at(2026, 12, 25, 9), now)).toContain(",");
+        expect(wakeTime(at(2026, 11, 18, 18), now)).toBe(time(at(2026, 11, 18, 18)));
+        expect(wakeTime(at(2026, 11, 19, 9), now)).toBe(`Tomorrow ${time(at(2026, 11, 19, 9))}`);
+        expect(wakeTime(at(2026, 11, 19, 9), now, true)).toBe(`tomorrow ${time(at(2026, 11, 19, 9))}`);
+        expect(wakeTime(at(2026, 11, 23, 9), now)).toBe(`${new Date(at(2026, 11, 23, 9)).toLocaleDateString([], { weekday: "short" })} ${time(at(2026, 11, 23, 9))}`);
+        expect(wakeTime(at(2026, 12, 25, 9), now)).toBe(`${new Date(at(2026, 12, 25, 9)).toLocaleDateString([], { month: "short", day: "numeric" })}, ${time(at(2026, 12, 25, 9))}`);
+        // The menu says it the same, but for the day Tomorrow morning names already.
+        expect(snoozeChoices(now).map((c) => c.hint)).toEqual([wakeTime(now + HOUR, now), wakeTime(at(2026, 11, 18, 18), now), time(at(2026, 11, 19, 9)), wakeTime(at(2026, 11, 23, 9), now)]);
     });
 
     test("a custom time: the field's format both ways, and what's refused", () => {

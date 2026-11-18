@@ -898,7 +898,9 @@ export class AcpConnection implements CliConnection {
         // Its own plan file, in plan mode, checked here again (a yes at the gate to one it cut isn't kept): as there, deny rules and Cavvy's protections only.
         const path = typeof req.input.file_path === "string" ? req.input.file_path : undefined;
         const plan = this.host.mode() === "plan" && path && (req.toolName === "Write" || req.toolName === "Edit") && !req.otherPaths?.length && !("operation" in req.input) && this.agent.gate?.planFile?.(path, this.sessionId);
-        const asked: BackendPermission = { ...req, asksAlways: true, ...(plan ? { exempt: true, planFile: path } : {}), ...(this.host.mode() === "bypassPermissions" ? { hooksOnly: true } : {}), ...(id ? { callId: id } : {}) };
+        // In auto, an agent with a gate (Grok) runs its own reviewer, which decided this needs the user (BackendPermission.ownMode).
+        const own = this.host.mode() === "auto" && this.agent.gate ? { ownMode: true } : {};
+        const asked: BackendPermission = { ...req, asksAlways: true, ...own, ...(plan ? { exempt: true, planFile: path } : {}), ...(this.host.mode() === "bypassPermissions" ? { hooksOnly: true } : {}), ...(id ? { callId: id } : {}) };
         let settle!: (outcome: Record<string, unknown>) => void;
         const stopped = new Promise<Record<string, unknown>>((r) => (settle = r));
         turn.waiting.add(settle);

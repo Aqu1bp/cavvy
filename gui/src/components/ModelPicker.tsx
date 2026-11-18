@@ -111,7 +111,7 @@ const FAST_BUSY = "Change speed after this response finishes";
  * account. A model with neither effort nor fast mode opens straight on the models. `effort`, `fast`: the session's,
  * or the next one's. `busy`: a reply is under way, when speed can't change.
  */
-export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
+export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; /** A side chat's: the model picked is for it alone, not the one new sessions start with. */ ownOnly?: boolean; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     let sliderEl: HTMLDivElement | undefined;
     let modelRow: HTMLButtonElement | undefined;
@@ -140,7 +140,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
 
     // This computer's accounts: none offered for another machine's session opened here (its machine has its own).
     const accountInfo = (provider = currentProvider()) => (awayMachine(p.sessionId) !== undefined ? undefined : app.providers.find((p) => p.id === provider)?.agentCli);
-    const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
+    /** The session whose model, effort, speed and account it sets: the one it's for, else the one shown (none on Home). */
+    const target = () => p.sessionId ?? app.activeId;
+    const selectedAccount = (provider = currentProvider()) => target() ? handleFor(target()!)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
     const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
@@ -160,7 +162,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         setShownEffort(() => id);
         const n = ++effortPicks;
         // Refused (disconnected, say): back to the level in force, so picking it again sends again.
-        void setEffort(id).then((ok) => {
+        void setEffort(id, target()).then((ok) => {
             if (!ok && n === effortPicks) setShownEffort(() => p.effort);
         });
     };
@@ -265,8 +267,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         return [accountDetail(a), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
-        const needed = Boolean(app.activeId && handleFor(app.activeId)?.view.state.accountNeeded === provider);
-        if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id);
+        const needed = Boolean(target() && handleFor(target()!)?.view.state.accountNeeded === provider);
+        if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id, target());
     };
     const addAccount = (provider: string) => {
         p.setOpen(false);
@@ -331,7 +333,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
         p.setOpen(false);
-        void setModel(m.ref);
+        void setModel(m.ref, target(), !p.ownOnly);
     };
     const onKey = (e: KeyboardEvent) => {
         if (isMod(e) && /^[1-9]$/.test(e.key)) {
@@ -603,7 +605,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     <div class="mpe">
                         <div class="mpe-h">
                             <Show when={fastOk()}>
-                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast, target())}>
                                     <Zap size={15} stroke-width={2} />
                                 </button>
                             </Show>

@@ -71,6 +71,8 @@ export interface SnapshotTurn {
     changed?: string[];
     /** The other worktrees it worked in (changed, or appeared, during it), as they were when it ended. */
     places?: TurnPlace[];
+    /** The conversation was rewound to before it: no longer one of the session's turns, though what it recorded is kept. */
+    rewound?: true;
 }
 
 export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
@@ -703,6 +705,7 @@ export class TurnSnapshots {
                 }
                 // A record's places are shown as they are; ones that aren't well formed are let go, not the turn.
                 if (r.places !== undefined && !validPlaces(r.places)) delete r.places;
+                if (r.rewound !== undefined && r.rewound !== true) delete r.rewound;
                 this.turns.set(r.id, { ...r, version: 2 });
             } catch { /* A crash may leave the last line torn. */ }
         }
@@ -735,6 +738,20 @@ export class TurnSnapshots {
 
     list(): SnapshotTurn[] {
         return [...this.turns.values()].sort((a, b) => a.id - b.id);
+    }
+
+    /** The session's turns, as the review pane lists them: not those the conversation was rewound to before. */
+    shown(): SnapshotTurn[] {
+        return this.list().filter((t) => !t.rewound);
+    }
+
+    /** The conversation was rewound to before the prompt whose checkpoint is `from`: that turn and the ones after it go. */
+    rewound(from: number) {
+        for (const t of this.list()) {
+            if (t.id < from || t.rewound) continue;
+            t.rewound = true;
+            this.persist(t);
+        }
     }
 
     /** Every path a turn changed (worked out again only when a turn's been added: it's asked after every edit). */
@@ -2764,8 +2781,8 @@ export class TurnSnapshots {
     private async collect(req: { scope: GitScope; turnId?: number; path?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         // A turn's closing capture may still be under way.
         await this.settled();
-        const turns = this.list();
-        const turn = req.scope === "last-turn" ? turns.at(-1) : turns.find((t) => t.id === req.turnId);
+        const turns = this.shown();
+        const turn = req.scope === "last-turn" ? turns.at(-1) : this.turns.get(req.turnId!);
         const out: GitChangesInfo = { repo: true, scope: req.scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, turns: turns.map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })), turnId: turn?.id, snapshotAvailable: false, notes: [] };
         if (!turn) {
             const repo = await git(this.cwd, ["rev-parse", "--show-toplevel"], { privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });

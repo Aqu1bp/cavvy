@@ -12,7 +12,7 @@ import type { MatchResult } from "../../../src/keybindings/core";
 import { ModelPicker, refLabel, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 import { InteractionTab } from "./InteractionDock";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
@@ -25,7 +25,7 @@ import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
 import { putOffSignIn, signInCardFor, signInMark, signInPressed } from "../lib/card-keys";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
-import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
+import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment, type Attachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
 import { expandedDown, expandedHeight, grow, GROW_MS } from "../lib/composer-size";
@@ -52,7 +52,17 @@ const fileDir = (path: string) => path.replace(/\/$/, "").split("/").slice(0, -1
 /** The field grows with its text in CSS (field-sizing: content, composer.css), where the engine has it. */
 const SIZED_BY_CSS = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
+/**
+ * A side chat's (SideChatPane), in the side panel: `of`, the session it's about. Its messages go as they're written (no
+ * commands); its model is its own. With none open yet (no `sessionId`), sending opens one (`open`), and there's no
+ * model or mode to pick until then.
+ */
+export interface ComposerAside {
+    of: string;
+    open?: (text: string, attachments: Attachment[]) => Promise<boolean>;
+}
+
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
@@ -63,7 +73,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let bar: HTMLDivElement | undefined;
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
-    const draftKey = () => p.sessionId ?? homeDraftKey();
+    const draftKey = () => p.sessionId ?? (p.aside ? `aside:${p.aside.of}` : homeDraftKey());
     // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
     const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);
@@ -91,12 +101,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
+    /** The folder its @ menu searches: the session's, a side chat's session's, or Home's. */
+    const cwd = () => st()?.cwd ?? (p.aside ? handleFor(p.aside.of)?.view.state.cwd : app.homeCwd);
     const busy = () => Boolean(st()?.busy);
     // Home's are its machine's (another's, in a folder of its).
     const settings = () => (p.sessionId ? app.settings : homeSettings());
     const mode = (): PermissionModeId => st()?.mode ?? (p.sessionId ? undefined : homeModeOf()) ?? settings().defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || settings().allowBypass);
-    const shell = () => text().startsWith("!");
+    // A side chat runs no shell lines: what's written is what's asked.
+    const shell = () => !p.aside && text().startsWith("!");
     /** Review comments left in this session's diff; they go with the next message. */
     const comments = () => (p.sessionId && !wasDeleted(p.sessionId) ? reviewComments.list(p.sessionId) : []);
     /** A command or a shell line doesn't take them: they wait for the next message. */
@@ -113,7 +126,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const largeHeight = () => {
         if (!ta || !root) return least;
         const stage = root.closest(".stage");
-        if (stage) return expandedHeight({ text: ta.offsetHeight, top: root.getBoundingClientRect().top, columnTop: stage.getBoundingClientRect().top, column: shellLayout().column.h || stage.clientHeight, least });
+        if (stage) return expandedHeight({ text: ta.offsetHeight, top: root.getBoundingClientRect().top, columnTop: stage.getBoundingClientRect().top, column: (!p.aside && shellLayout().column.h) || stage.clientHeight, least });
         const page = root.closest(".home") ?? document.documentElement;
         return expandedDown({ text: ta.offsetHeight, bottom: root.getBoundingClientRect().bottom, pageBottom: page.getBoundingClientRect().bottom, least });
     };
@@ -282,7 +295,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     createEffect(
         on(
             // MCP prompts are commands too: the list is read again when a server's prompts come or go.
-            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
+            // A side chat takes no commands: no / or $ menu.
+            [() => (app.conn === "open" && !p.aside ? cwd() : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
             ([cwd, provider]) => {
                 let current = true;
                 onCleanup(() => { current = false; });
@@ -335,7 +349,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const updateMenu = (refresh = true) => {
         // Typing on in an open menu: its rows stay until the next ones come, so it doesn't blink empty at each key
         // (and pop open again). The @ menu's come from a search; the / and $ menus' at once, below.
-        const files = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command");
+        const files = Boolean(token()) && rowsFrom === cwd() && menu().some((m) => m.kind !== "command");
         const names = (/^\/\S*$/.test(text()) || Boolean(skillAtCursor())) && menu().some((m) => m.kind === "command");
         const typingOn = (files || names) && menuDismissedFor() !== text();
         if (typingOn) staleSearch();
@@ -365,9 +379,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             return;
         }
         const tok = token();
-        const cwd = st()?.cwd ?? app.homeCwd;
+        const folder = cwd();
         // Home (no session yet) searches its folder's files.
-        if (tok && cwd) {
+        if (tok && folder) {
             // "Searching…" only for a search that's slow: a quick answer opens the menu with its rows.
             if (!typingOn) slowTimer = setTimeout(() => version === mentionVersion && !menu().length && setMenuStatus("loading"), 180);
             const sid = p.sessionId;
@@ -377,12 +391,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 try {
                     const [found, resources] = await Promise.all([
                         // Of the folder on the session's machine (another machine's, opened here: rpcFor).
-                        rpcFor(sid).call("fs.mentions", { cwd, query: tok.query }),
+                        rpcFor(sid).call("fs.mentions", { cwd: folder, query: tok.query }),
                         hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
                     clearTimeout(slowTimer);
-                    rowsFrom = cwd;
+                    rowsFrom = folder;
                     const files = found.map((path) => ({ kind: "file" as const, path }));
                     const res = resources.map((r) => ({ kind: "resource" as const, res: r }));
                     // "server:" asks for that server's resources first; otherwise files lead.
@@ -404,7 +418,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     onCleanup(dismissMenu);
     // Home keeps its draft while switching projects. Invalidate both displayed
     // suggestions and in-flight replies immediately, independently of commands.list.
-    createEffect(on(() => st()?.cwd ?? app.homeCwd, () => updateMenu(false), { defer: true }));
+    createEffect(on(cwd, () => updateMenu(false), { defer: true }));
 
     const apply = (item: MenuItem, run: boolean) => {
         if (item.kind === "command" && item.mention) {
@@ -477,7 +491,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // back if the send fails.
         const quick = !picks && sessionId && !busy() && !atts.length && !sentComments.length && !message.trimStart().startsWith("/") && !shell() ? showSending(sessionId, message) : undefined;
         if (quick) sent();
-        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
+        const opening = p.aside && !sessionId ? p.aside.open : undefined;
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : opening ? await opening(message, atts) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, ...(p.aside ? { to: { id: sessionId }, literal: true } : {}), sent, accepted: (id) => {
             if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
             // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
             if (sentComments.length) reviewComments.removeSent(id, sentComments);
@@ -576,7 +591,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 return;
             case "chat:cycleMode":
                 e.preventDefault();
-                void setMode(nextMode(mode(), bypassAllowed()));
+                // A side chat not opened yet has no mode to change.
+                if (p.aside && !p.sessionId) return;
+                void setMode(nextMode(mode(), bypassAllowed()), p.sessionId);
                 return;
             case "chat:submit":
                 e.preventDefault();
@@ -767,22 +784,23 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // Worked out once, here: a prop like `open={a() && b()}` makes a memo each time it's read, and the pickers read it
     // from their listeners too (a click, the page's pointerdown), where nothing owns it: each was kept for good, and with
     // it this composer and its conversation (ui/Popover.tsx).
-    const modelOpen = createMemo(() => modelPickerOpen() && pane.focused());
-    const modeOpen = createMemo(() => modePickerOpen() && pane.focused());
+    const modelOpen = createMemo(() => modelPickerOpen() && keysHere(pane));
+    const modeOpen = createMemo(() => modePickerOpen() && keysHere(pane));
     const pickers = () => (
-        <>
+        // A side chat not opened yet: its model and mode come with it.
+        <Show when={!p.aside || p.sessionId}>
             <ModelPicker
-                sessionId={p.sessionId} current={st()?.model} currentRef={savedRef()} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                sessionId={p.sessionId} ownOnly={Boolean(p.aside)} current={st()?.model} currentRef={savedRef()} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : settings().effort} fast={st() ? st()!.fastMode : settings().fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
-        </>
+            <ModePicker sessionId={p.sessionId} mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+        </Show>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? savedRef()?.split(":")[0]} home={p.variant === "home"} />;
     return (
         <div
             ref={root}
-            class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
+            class={`composer v-${p.variant ?? "session"} ${p.aside ? "aside" : ""} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
             onDragEnter={(e) => {
                 if (!e.dataTransfer?.types.includes("Files")) return;
                 dragDepth++;

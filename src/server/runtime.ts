@@ -2154,7 +2154,9 @@ export class Runtime {
         };
         for (const ref of new Set(candidates)) {
             if (await this.setModel(ref, { quiet: true })) return tell();
-            missed ??= ref;
+            // The session's own model, or (a new session) the default it would have started on. An older session that
+            // never recorded one isn't told of a default it didn't use.
+            if (ref === this.session.model || this.session.messageCount === 0) missed ??= ref;
         }
         let listings = this.engine.listings;
         let pick = defaultModelFrom(listings);
@@ -5050,11 +5052,15 @@ export class Runtime {
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
         const snapshots = this.rewindSnapshots();
+        // When each was sent, from its turn: the same prompt sent twice is told apart by it.
+        const sent = new Map<number, number>();
+        for (const turn of this.view.turns) if (turn.prompt?.index !== undefined && turn.startedAt) sent.set(turn.prompt.index, turn.startedAt);
         return rewindTargets(this.session.messages)
             .reverse()
             .map((t) => {
                 const { tracked, whole, files } = changedBy(snapshots, history, t.checkpoint);
-                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) };
+                const at = sent.get(t.index);
+                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}), ...(at ? { at } : {}) };
             });
     }
 
@@ -5190,6 +5196,9 @@ export class Runtime {
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
         }
         if (rewindConversation) {
+            // The turns from this prompt on leave the review pane's list with the conversation (checkpoints are increasing times).
+            const from = this.session.messages.slice(index).flatMap((m) => (m.role === "user" && m.meta?.checkpoint !== undefined ? [m.meta.checkpoint] : []))[0];
+            if (from !== undefined) this.rewindSnapshots()?.rewound(from);
             if (this.agent) this.agent.rewind(index);
             else {
                 this.session.rewind(index);
@@ -5202,7 +5211,8 @@ export class Runtime {
             if (backends.length && !(code && plan.whole)) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        // Only a conversation rewound has less in it: files restored alone leave the context as it was.
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), ...(rewindConversation ? { contextTokens: 0 } : {}) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
@@ -5409,6 +5419,11 @@ export class Runtime {
         }
     }
 
+    /** The folder's branch may have moved (engine.branchMoved): the header shows the one it's on now. */
+    branchMoved() {
+        if (!this.closed) this.showWorkingIn(this.workingIn);
+    }
+
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[], newBranch?: string): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
@@ -5424,6 +5439,8 @@ export class Runtime {
         this.commitDone = done;
         try {
             const info = await done;
+            // On a new branch: so is every session open in this folder.
+            if (newBranch) this.engine.branchMoved(this.ws.cwd);
             return { ...info, subject: redact(info.subject), ...(info.branch !== undefined ? { branch: redact(info.branch) } : {}) };
         } catch (e) {
             throw redactedError(e);

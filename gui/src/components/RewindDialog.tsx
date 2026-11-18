@@ -4,7 +4,7 @@ import { AlertTriangle, FileMinus2, FilePen, FilePlus2, History } from "lucide-s
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
-import { plural } from "../lib/format";
+import { plural, promptTime } from "../lib/format";
 import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
@@ -155,6 +155,7 @@ export function RewindDialog() {
                                         <History size={14} />
                                         <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
                                         <span class="muted small">{changedLabel(t)}</span>
+                                        <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{promptTime(at())}</time>}</Show>
                                     </button>
                                 )}
                             </For>

@@ -1,6 +1,8 @@
 /* ---- The Side chat pane (SideChatPane), a tab of the side panel ----
-   Its title and actions, its turns, what it asks for, then a field
-   and its model and mode. Loaded with the pane. */
+   The conversation's own views (stage.css: the transcript, and the composer
+   docked over its end) in the panel's column, under the panel's title line.
+   Its widths' steps are its own (data-narrow, as a split's pane). Loaded with
+   the pane. */
 
 .side-chat {
     display: flex;
@@ -8,172 +10,43 @@
     flex: 1;
     min-width: 0;
     min-height: 0;
+    /* Not a pane of the stage's: no fade-in or dim of a split's. */
+    isolation: auto;
+    transition: none;
+    /* The conversation's type, not the panel's smaller one. */
+    font-size: 1rem;
 }
 
-.sc-start,
-.sc-chat {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0;
-    gap: calc(8 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+.side-chat .sc-head h2 {
+    text-transform: none;
+    white-space: nowrap;
 }
 
-.sc-head {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-height: calc(32 * var(--sp));
+/* At its narrowest, Bring back is its arrow. */
+.side-chat[data-narrow~="240"] .sc-back-l {
+    display: none;
 }
 
-.sc-head h2 {
-    margin: 0;
-    font-size: 0.929rem;
-    font-weight: 600;
-}
-
-.sc-head .btn {
+.side-chat .sc-head .btn {
     display: inline-flex;
     align-items: center;
     gap: calc(5 * var(--sp));
 }
 
-.sc-hint {
-    margin: 0;
-    color: var(--fg-3);
-    font-size: 0.893rem;
-}
-
-.sc-turns {
+/* The conversation and its composer fill what's under the title. */
+.sc-body {
+    position: relative;
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
-    margin: 0 calc(-12 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
 }
 
-/* Its turns, a little smaller than the conversation's. */
-.sc-list {
-    display: flex;
-    flex-direction: column;
-    gap: calc(14 * var(--sp));
+/* No title bar over it: the conversation fades out just under the panel's title line. */
+.side-chat .stage {
+    --bar-h: 0px;
+}
+
+/* The empty view's one line, where the panel's other views put theirs. */
+.side-chat .sc-none {
+    padding: 0 calc(18 * var(--sp));
     font-size: 0.929rem;
-}
-
-.sc-chat .ask {
-    flex: none;
-    max-height: 50%;
-}
-
-.sc-ask {
-    position: relative;
-    flex: none;
-}
-
-.sc-ask textarea {
-    display: block;
-    width: 100%;
-    min-height: calc(56 * var(--sp));
-    max-height: calc(160 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(40 * var(--sp)) calc(9 * var(--sp)) calc(11 * var(--sp));
-    border: 0;
-    border-radius: var(--r-well);
-    resize: none;
-    background: var(--well);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
-    font: inherit;
-    font-size: 0.929rem;
-    line-height: 1.45;
-    color: var(--fg);
-    field-sizing: content;
-}
-
-.sc-ask textarea::placeholder {
-    color: var(--fg-3);
-}
-
-.sc-ask textarea:focus {
-    outline: none;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-.sc-send {
-    position: absolute;
-    right: calc(8 * var(--sp));
-    bottom: calc(8 * var(--sp));
-    display: grid;
-    place-items: center;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    border-radius: 50%;
-    background: var(--fg);
-    color: var(--bg);
-}
-
-.sc-send:disabled {
-    opacity: 0.3;
-}
-
-.sc-bar {
-    display: flex;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-}
-
-.sc-select {
-    min-width: 0;
-    max-width: 50%;
-    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
-    border: 0;
-    border-radius: calc(8 * var(--sp));
-    background: transparent;
-    color: var(--fg-2);
-    font: inherit;
-    font-size: 0.857rem;
-}
-
-.sc-select:hover {
-    background: var(--hover);
-}
-
-.sc-turn {
-    display: flex;
-    flex-direction: column;
-    gap: calc(8 * var(--sp));
-}
-
-/* The question, as the conversation shows the user's: on the right, in a bubble. */
-.sc-q {
-    align-self: flex-end;
-    max-width: 88%;
-    padding: calc(7 * var(--sp)) calc(11 * var(--sp));
-    border-radius: calc(14 * var(--sp));
-    background: var(--press);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.sc-a {
-    display: flex;
-    flex-direction: column;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-}
-
-.sc-step {
-    display: flex;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.sc-step.bad {
-    color: var(--danger);
-}
-
-.sc-sum {
-    color: var(--fg-3);
-    opacity: 0.8;
 }

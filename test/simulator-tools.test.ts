@@ -100,9 +100,12 @@ describe("permissions", () => {
             expect(c.check(SimulatorActTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
         }
         expect(c.recentApprovals()).toEqual([]);
-        // Starting the same device is the same thing every time: a yes to it is remembered for the session.
-        c.approve(SimulatorControlTool, { action: "boot", udid: "AAAA" }, W);
-        expect(c.check(SimulatorControlTool, { action: "boot", udid: "AAAA" }, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+        // Starting a device: a yes covers that start; allowed for the session, starting it again isn't asked about.
+        const boot = { action: "boot", udid: "AAAA" };
+        c.approve(SimulatorControlTool, boot, W);
+        expect(c.check(SimulatorControlTool, boot, "default", W)).toMatchObject({ behavior: "ask" });
+        c.approve(SimulatorControlTool, boot, W, { grant: c.withGrant(SimulatorControlTool, boot, c.check(SimulatorControlTool, boot, "default", W), W).grant });
+        expect(c.check(SimulatorControlTool, boot, "default", W)).toMatchObject({ behavior: "allow" });
         // Not what acts on whatever runs there by then: the app ended, the link opened, the device shut down or taken back.
         for (const input of [{ action: "shutdown" }, { action: "terminate", bundleId: "com.example.app" }, { action: "open_url", url: "example://pay" }, { action: "take_control" }, { action: "launch", bundleId: "com.example.app", args: ["-reset"] }]) {
             expect(c.check(SimulatorControlTool, input, "default", W).behavior, input.action).toBe("ask");

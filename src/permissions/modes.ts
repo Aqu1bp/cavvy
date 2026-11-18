@@ -6,6 +6,14 @@ export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "bypa
 
 export const PERMISSION_MODES: PermissionMode[] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
 
+/** How much a mode lets an agent do on its own: higher is stricter. */
+export const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
+
+/** The stricter of two modes. */
+export function stricter(a: PermissionMode, b: PermissionMode): PermissionMode {
+    return STRICTNESS[a] >= STRICTNESS[b] ? a : b;
+}
+
 export const MODE_INFO: Record<PermissionMode, { label: string; short: string; description: string; color: (s: string) => string; symbol: string }> = {
     default: {
         label: "Manual",

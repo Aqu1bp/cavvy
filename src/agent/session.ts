@@ -243,6 +243,8 @@ export interface SessionSummary {
     title: string;
     messages: number;
     model?: string;
+    /** Its last turn didn't finish: stopped, or cut off (Cavvy quit or stopped while it worked). */
+    stopped?: true;
 }
 
 /** A new session's id: when it was made, and a random suffix. */
@@ -1750,9 +1752,23 @@ const WORKED_EVERY_MS = 60_000;
 export const savingRetry = { ms: 5_000 };
 const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
-/** Enough of a line to see its record type. */
+/** Enough of a line to see its record type, and a message's role. */
 const PREFIX_BYTES = 32;
 const MSG_PREFIX = '{"t":"msg"';
+/** A message's role, from its line's start ("u" or "a"). */
+const ROLE_AT = '{"t":"msg","m":{"role":"'.length;
+/** How much of a message line's end is kept: enough for the markers a stop writes (INTERRUPT_ENDS). */
+const LINE_END_BYTES = 128;
+/** How a message a stop writes ends its line: the marker alone, or after the tools' results. */
+const INTERRUPT_ENDS = [/"text":"\[Request interrupted by user\]"\}\],"meta":\{"kind":"interrupt"\}\}\}$/, /"text":"\[Request interrupted by user for tool use\]"\}\],"meta":\{"kind":"tool_results"\}\}\}$/];
+const TOOL_CALL = Buffer.from('"type":"tool_call"');
+
+/** How a message leaves its turn (SessionHead.last). */
+function lastOf(m: Message): SessionHead["last"] {
+    if (m.role === "assistant") return m.content.some((p) => p.type === "tool_call") ? "open" : "done";
+    if (m.meta?.kind === "interrupt" || m.content.some((p) => p.type === "text" && p.text.startsWith("[Request interrupted by user"))) return "stopped";
+    return "open";
+}
 
 interface SessionHead {
     cwd?: string;
@@ -1766,6 +1782,13 @@ interface SessionHead {
     count: number;
     /** When it last worked (worked lines). */
     workedAt?: number;
+    /**
+     * How its last message leaves its last turn: "done" (a reply), "stopped" (the marker a stop writes), "open" (a
+     * prompt or tool calls with nothing after: the turn was cut off, unless it's working now). Unknown after a rewind.
+     */
+    last?: "done" | "stopped" | "open";
+    /** `last` was looked for (heads kept before it was, cache/session-heads.json, have it found from the file's end). */
+    lastRead?: true;
 }
 
 /**
@@ -1827,7 +1850,13 @@ function sessionHead(file: string): SessionHead {
     try {
         const st = fstatSync(fd);
         const had = heads.get(file);
-        if (had && had.ino === st.ino && had.size === st.size && had.mtimeMs === st.mtimeMs) return { ...had.head };
+        if (had && had.ino === st.ino && had.size === st.size && had.mtimeMs === st.mtimeMs) {
+            if (!had.head.lastRead) {
+                had.head = { ...had.head, last: lastFromEnd(fd, had.scanned), lastRead: true };
+                headsDirty = true;
+            }
+            return { ...had.head };
+        }
         // Sessions are appended to: one that's only grown since is read from the end of its last whole line. One
         // replaced, cut or rewritten (the bytes before that point aren't the same) is read again from the start.
         let from = 0;
@@ -1840,6 +1869,11 @@ function sessionHead(file: string): SessionHead {
             }
         }
         const scanned = scanHead(fd, from, head);
+        // Taken on from a head kept before `last` was, with no message since: found from the file's end.
+        if (!head.lastRead) {
+            if (from > 0 && head.last === undefined) head.last = lastFromEnd(fd, scanned);
+            head.lastRead = true;
+        }
         const tail = Buffer.alloc(Math.min(TAIL_BYTES, scanned));
         readSync(fd, tail, 0, tail.length, scanned - tail.length);
         if (heads.size >= 4096 && !heads.has(file)) heads.delete(heads.keys().next().value!);
@@ -1857,13 +1891,28 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
     const chunk = Buffer.alloc(CHUNK_BYTES);
     let parts: Buffer[] = [];
     let len = 0;
-    // The line's last two bytes: a whole message record ends with "}}".
+    // The line's last bytes: a whole message record ends with "}}", and a stop's marker is seen there (SessionHead.last).
     let end = "";
     // Whether the current line is parsed; undefined until its record type is visible.
     let wanted: boolean | undefined;
+    // A message line not parsed: its role, and (a reply's) whether it calls tools, looked for as it streams past.
+    let role = "";
+    let calls = false;
+    let carry = Buffer.alloc(0);
+    const look = (b: Buffer) => {
+        if (calls || role !== "a") return;
+        const at = carry.length ? Buffer.concat([carry, b]) : b;
+        calls = at.includes(TOOL_CALL);
+        carry = Buffer.from(at.subarray(Math.max(0, at.length - TOOL_CALL.length + 1)));
+    };
     const decide = () => {
-        const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
+        const whole = Buffer.concat(parts);
+        const prefix = whole.subarray(0, PREFIX_BYTES).toString("latin1");
         wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent|plan|planLink)"/.test(prefix);
+        if (!wanted && prefix.startsWith(MSG_PREFIX)) {
+            role = prefix[ROLE_AT] ?? "";
+            look(whole);
+        }
         if (!wanted) parts = [Buffer.from(prefix, "latin1")];
     };
     for (let pos = from, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
@@ -1871,7 +1920,8 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
         for (let start = 0; start < n; ) {
             const nl = c.indexOf(10, start);
             const piece = c.subarray(start, nl < 0 ? n : nl);
-            end = (end + piece.subarray(Math.max(0, piece.length - 2)).toString("latin1")).slice(-2);
+            end = (end + piece.subarray(Math.max(0, piece.length - LINE_END_BYTES)).toString("latin1")).slice(-LINE_END_BYTES);
+            if (wanted === false) look(piece);
             if (wanted !== false) {
                 parts.push(Buffer.from(piece)); // chunk is reused
                 len += piece.length;
@@ -1886,17 +1936,47 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
             if (wanted === undefined) decide();
             if (wanted) readHeadLine(Buffer.concat(parts).toString("utf-8"), head);
             // A torn line, which load() skipped (and ended), isn't counted.
-            else if (end === "}}" && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) head.count++;
+            else if (end.endsWith("}}") && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) {
+                head.count++;
+                head.last = role === "a" ? (calls ? "open" : "done") : INTERRUPT_ENDS.some((r) => r.test(end)) ? "stopped" : "open";
+            }
             parts = [];
             len = 0;
             end = "";
             wanted = undefined;
+            role = "";
+            calls = false;
+            carry = Buffer.alloc(0);
             start = nl + 1;
             scanned = pos + start;
         }
     }
     // A torn last line (no newline yet) is ignored, as load() does: read again once it's whole.
     return scanned;
+}
+
+/** How far back from a file's end its last message is looked for when a kept head doesn't say (SessionHead.lastRead). */
+const LAST_FROM_END_BYTES = 256 * 1024;
+
+/** SessionHead.last, from the whole lines in the file's last LAST_FROM_END_BYTES before `end`: undefined if none says. */
+function lastFromEnd(fd: number, end: number): SessionHead["last"] {
+    const from = Math.max(0, end - LAST_FROM_END_BYTES);
+    const buf = Buffer.alloc(end - from);
+    const n = readSync(fd, buf, 0, buf.length, from);
+    const lines = buf.subarray(0, n).toString("utf-8").split("\n");
+    // The first piece may be the end of a line that started before.
+    if (from > 0) lines.shift();
+    let last: SessionHead["last"];
+    for (const raw of lines) {
+        if (raw.startsWith(MSG_PREFIX)) {
+            try {
+                last = lastOf((JSON.parse(raw) as { m: Message }).m);
+            } catch {
+                // torn: as load() does, skipped
+            }
+        } else if (/^\{"t":"(rewind|withdraw|compact)"/.test(raw)) last = undefined;
+    }
+    return last;
 }
 
 function readHeadLine(raw: string, head: SessionHead) {
@@ -1917,15 +1997,20 @@ function readHeadLine(raw: string, head: SessionHead) {
             head.firstAt = head.count;
         }
         head.count++;
+        head.last = lastOf(l.m);
     } else if (l.t === "rewind") {
+        // Its last message is now an earlier one, not seen here.
+        if (l.count < head.count) head.last = undefined;
         head.count = Math.min(head.count, l.count);
         if (head.firstAt !== undefined && head.firstAt >= l.count) head.first = head.firstAt = undefined;
     } else if (l.t === "withdraw" && l.index < head.count) {
+        if (l.index === head.count - 1) head.last = undefined;
         head.count--;
         if (head.firstAt === l.index) head.first = head.firstAt = undefined;
         else if (head.firstAt !== undefined && head.firstAt > l.index) head.firstAt--;
     } else if (l.t === "compact") {
         head.count = 0;
+        head.last = undefined;
         // The conversation's opening prompt still names it after a compaction.
         if (head.first !== undefined) head.firstAt = -1;
     }
@@ -2020,6 +2105,7 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
             title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
             messages: head.count,
             model: head.model,
+            ...(head.last === "stopped" || head.last === "open" ? { stopped: true as const } : {}),
         };
     });
     out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2100,6 +2186,7 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
             title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
             messages: head.count,
             model: head.model,
+            ...(head.last === "stopped" || head.last === "open" ? { stopped: true as const } : {}),
         };
         return !o.match || o.match(s) ? s : undefined;
     }, o.maxRead, o.capped);
