@@ -9,6 +9,7 @@ import type { ConfirmInteraction, SignInAction, SignInInteraction } from "@share
 import { respond } from "../state/actions";
 import { machine as windowMachine, openExternal } from "../lib/platform";
 import { home } from "../lib/machines";
+import { awayMachine, rpc } from "../state/app";
 import { signInPressed } from "../lib/card-keys";
 import { terminalActions } from "../state/ui";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
@@ -76,9 +77,11 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
         const target = it().target;
         // Only for a sign-in the user started in this window just now: a card can't have this machine listen by itself.
         if (!port || !target || Date.now() - signInPressed.at > 60_000) return;
-        if (!windowMachine || !home) return void send({ action: "port", error: "Open this session in the desktop app to finish signing in." });
-        const far = home;
-        const name = windowMachine;
+        // The server: the session's, opened in a window on this computer, or the one the window is on. This
+        // computer's Cavvy brings the port over: the window's own, or the one a window on a server keeps beside it.
+        const name = awayMachine(p.sessionId) || windowMachine;
+        const far = windowMachine ? home : rpc;
+        if (!name || !far) return void send({ action: "port", error: "Open this session in the desktop app to finish signing in." });
         let asking = true;
         far.call("servers.forward", { name, port, target }).then(() => asking && send({ action: "port" }), (e: Error) => asking && send({ action: "port", error: e.message }));
         onCleanup(() => {

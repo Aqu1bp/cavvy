@@ -10,13 +10,13 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, Mat
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, awayMachine, machineFor, reportError, rpc, toast } from "../state/app";
+import { app, awayMachine, machineFor, reportError, revealsIn, rpc, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
 import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { sessionReadReady, useGitChanges } from "../state/changes";
-import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
+import { copyText, openExternal, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
@@ -57,7 +57,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                         )}
                     </Show>
                 </div>
-                <Show when={canReveal}>
+                <Show when={revealsIn(st().id)}>
                     <button role="menuitem" class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
                         <FolderOpen size={14} /> Reveal in Finder
                     </button>

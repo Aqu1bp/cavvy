@@ -9,7 +9,7 @@ import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, Per
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
-import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
+import { canReveal, credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -197,6 +197,8 @@ export function warmFor(id: string) {
     });
 }
 
+/** Whether Finder can show `sessionId`'s files: they're on this computer, and so is the window. */
+export const revealsIn = (sessionId: string) => canReveal && awayMachine(sessionId) === undefined;
 /** The connection to ask about `sessionId` over what isn't named by it (the files in its folder: fs.mentions). */
 export function rpcFor(sessionId: string | undefined): Rpc {
     if (sessionId === undefined) return homeOn() !== undefined ? homeAway()!.link : rpc;
