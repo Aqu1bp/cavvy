@@ -121,7 +121,7 @@ import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
@@ -3585,10 +3585,6 @@ async function launchEditor(argv: string[]): Promise<void> {
     const code = await Promise.race([proc.exited, Bun.sleep(1500).then(() => undefined)]);
     proc.unref();
     if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
-}
-
-function validImage(i: { mediaType: unknown; data: unknown }): boolean {
-    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
 }
 
 /** The fingerprints a window sends back as the user's yes to an unknown host's key. */

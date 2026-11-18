@@ -64,7 +64,7 @@ import { isAgentBackend, type AgentBackendClient, type BackendPermission, type B
 import { agentCli } from "../backends/defs";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
-import { forBackend, pastedTexts, readsPdf } from "../providers/files";
+import { attachedAsText, forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { loadAgentSecrets } from "../providers/agent-env";
@@ -2433,7 +2433,15 @@ export class Agent {
                 const ask = this.o.host.ui.askQuestion;
                 if (!ask) return undefined;
                 const out: string[][] = [];
+                const ui = this.o.host.ui;
                 for (const q of qs) {
+                    // The CLI's answer is text: what's attached goes in it, framed in or where it's saved.
+                    if (q.attach && ui.askQuestionAttaching) {
+                        const r = await ui.askQuestionAttaching(q.question, q.options, Boolean(q.multiSelect), "paths");
+                        if (!r || (!r.answers.length && !r.attached.length)) return undefined;
+                        out.push([...r.answers.map(redact), ...attachedAsText(r.attached)]);
+                        continue;
+                    }
                     const a = await ask(q.question, q.options, Boolean(q.multiSelect));
                     if (!a) return undefined;
                     out.push(a.map(redact));
