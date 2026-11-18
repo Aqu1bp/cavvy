@@ -10,7 +10,8 @@ import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/prot
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
-import { app, reportError, rpc, toast, trustRequest } from "../state/app";
+import { app, homeDraftKey, reportError, rpc, toast, trustRequest } from "../state/app";
+import { composerStorage } from "../lib/drafts";
 import { chooseFolder, openProject } from "../state/actions";
 import { requestComposerFocus, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
@@ -60,6 +61,27 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const dir = () => parent() ?? `${r.main}/.claude/worktrees`;
     const target = () => `${dir().replace(/\/+$/, "")}/${name()}`;
     const errorFor = (f: Field) => (error()?.field === f ? error()!.message : undefined);
+    // Suggest: a name from what the new chat is about (Home's composer), else from what's typed in the field, by the
+    // project's small model, after its branch prefix. Only on a click.
+    const [suggesting, setSuggesting] = createSignal(false);
+    const [suggested, setSuggested] = createSignal<{ model: string; error?: undefined } | { error: string; model?: undefined }>();
+    const about = () => composerStorage.draft(homeDraftKey()).trim() || branch().trim();
+    const suggest = async () => {
+        const text = about();
+        if (!text || suggesting()) return;
+        setSuggesting(true);
+        setSuggested(undefined);
+        try {
+            const got = await rpc.call("projects.suggestBranch", { path: r.cwd, text });
+            if (!open) return;
+            setBranch(got.branch);
+            setSuggested({ model: got.model });
+        } catch (e) {
+            if (open) setSuggested({ error: (e instanceof Error ? e.message : String(e)).split("\n")[0]!.slice(0, 200) });
+        } finally {
+            setSuggesting(false);
+        }
+    };
     const close = () => !busy() && p.onClose();
     let open = true;
     onCleanup(() => (open = false));
@@ -158,7 +180,14 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             >
                 <label class="wt-field">
                     <span class="wt-label">Branch name</span>
-                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
+                    <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
+                    <span class="wt-hint">
+                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? undefined : "Describe the task in the message box, or type a few words here"} onClick={() => void suggest()}>
+                            {suggesting() ? "Suggesting…" : "Suggest a name"}
+                        </button>
+                        <Show when={suggested()?.model}>{(m) => <> · Suggested by {m()}</>}</Show>
+                    </span>
+                    <Show when={suggested()?.error}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                     <Show when={errorFor("branch")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
                 <label class="wt-field">

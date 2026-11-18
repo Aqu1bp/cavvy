@@ -30,7 +30,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, updateSettings, worktreeSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -83,6 +83,7 @@ import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-wo
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, gitPrPrompt, parsePrText, PR_TEXT_SYSTEM } from "./git-generate";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type Segment, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
@@ -98,6 +99,8 @@ import type {
     GitCommitHead,
     GitCommitInfo,
     GitCommitMessageInfo,
+    GitPrTextInfo,
+    GitBranchNameInfo,
     GitPublishRequest,
     GitPrInfo,
     GitScope,
@@ -5396,7 +5399,7 @@ export class Runtime {
         }
     }
 
-    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[], newBranch?: string): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
         const files = this.gitPaths(paths, pathTokens);
@@ -5407,7 +5410,7 @@ export class Runtime {
         }
         this.committing = true;
         this.commitAbort = new AbortController();
-        const done = gitCommit(this.ws.cwd, files, message, { expectedHead: head, signal: this.commitAbort.signal });
+        const done = gitCommit(this.ws.cwd, files, message, { expectedHead: head, signal: this.commitAbort.signal, newBranch });
         this.commitDone = done;
         try {
             const info = await done;
@@ -5474,6 +5477,37 @@ export class Runtime {
         const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
         if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
         return { message, model: modelRef(target.model) };
+    }
+
+    /** The small model that drafts git text, or why there's none: as Generate message has it. */
+    private async draftTarget(what: string): Promise<{ model: ModelInfo; client: ProviderClient }> {
+        if (!this.model || !this.client) throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
+        const target = await this.smallTarget();
+        if (isAgentBackend(target.client)) throw new RpcError(`Set a small model from another provider in Settings to ${what}.`, "no_model");
+        return target;
+    }
+
+    /** A pull request's title and description into `base`, from this branch's commits and diff and the repository's template. */
+    async gitPrText(base?: string): Promise<GitPrTextInfo> {
+        await this.ready;
+        this.checkGitCommit("publishing");
+        const target = await this.draftTarget("generate pull request text");
+        const prompt = await gitPrPrompt(this.ws.cwd, base).catch((e) => { throw redactedError(e); });
+        const reply = await this.complete(PR_TEXT_SYSTEM, prompt, AbortSignal.timeout(60_000), { target, maxTokens: 2048 });
+        const text = parsePrText(reply);
+        if (!text) throw new RpcError("The model returned no title. Try again or write your own.");
+        return { ...text, model: modelRef(target.model) };
+    }
+
+    /** A branch name for `text`, after the worktree.branchPrefix setting. */
+    async gitBranchName(text: string): Promise<GitBranchNameInfo> {
+        await this.ready;
+        if (!text.trim()) throw new RpcError("Write a commit message first.", "invalid");
+        const target = await this.draftTarget("suggest branch names");
+        const reply = await this.complete(BRANCH_NAME_SYSTEM, branchPrompt(text), AbortSignal.timeout(30_000), { target, maxTokens: 100 });
+        const branch = branchName(reply, worktreeSettings(this.settings()).branchPrefix);
+        if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
+        return { branch, model: modelRef(target.model) };
     }
 
     changes(): ChangesInfo {

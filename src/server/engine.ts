@@ -12,7 +12,7 @@ import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
 import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo, worktreeTop } from "./git-sync";
 import { gitPrWorktree, gitPullRequests } from "./git-pr";
-import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
+import { planLimitKey, type AccountInfo, type BackgroundTaskInfo, type GitBranchNameInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
@@ -26,7 +26,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
@@ -38,7 +38,7 @@ import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
 import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
@@ -125,7 +125,9 @@ import { runPluginCli } from "../plugins/cli";
 import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
-import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
+import { modelRef, textOf, type AttachedPart, type ImagePart } from "../providers/types";
+import { isAgentBackend } from "../backends/types";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt } from "./git-generate";
 import { attachmentsDir, checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
 import { sideChatCut, sideChatDir, sideChatsDir } from "../agent/side-chat";
 import { BrowserError } from "../browser/page";
@@ -2769,6 +2771,33 @@ export class Engine {
         return { mediaType, data: bytes.toString("base64") };
     }
 
+    /**
+     * A branch name for Home's New worktree (no session yet): the project's small model (smallModel, else a small model of
+     * its model's provider), as a session's Generate would pick it. Its cost isn't a session's, so it's counted nowhere.
+     */
+    private async suggestBranch(cwd: string, text: string): Promise<GitBranchNameInfo> {
+        if (!text.trim()) throw new RpcError("Describe the work first.", "invalid");
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const none = (other = false) => new RpcError(other ? "Set a small model from another provider in Settings to suggest branch names." : "Set a small model in Settings to suggest branch names.", "no_model");
+        let model = settings.smallModel ? resolveModelInfo(settings.smallModel) : undefined;
+        if (!model) {
+            const main = (settings.model && resolveModelInfo(settings.model)) || (this.fallbackModel && resolveModelInfo(this.fallbackModel)) || defaultModelFrom(this.listings);
+            if (!main) throw none();
+            model = smallModelFor(main.provider, this.listings) ?? main;
+        }
+        const client = await clientFor(model.provider).catch(() => {
+            throw none();
+        });
+        if (isAgentBackend(client)) throw none(true);
+        const res = await client.stream(
+            { model, system: BRANCH_NAME_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: redact(branchPrompt(text)) }] }], tools: [], maxTokens: 100, effort: "low", lightweight: true, signal: AbortSignal.timeout(30_000) },
+            () => {},
+        );
+        const branch = branchName(textOf(res), worktreeSettings(settings).branchPrefix);
+        if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
+        return { branch, model: modelRef(model) };
+    }
+
     /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
     private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
         const { cwd } = this.openScope(p);
@@ -3408,8 +3437,16 @@ export class Engine {
                         throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
                     }
                 }
-                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
+                if (p.newBranch !== undefined && (typeof p.newBranch !== "string" || !p.newBranch || p.newBranch.length > 200 || p.newBranch.startsWith("-") || /[\x00-\x20\x7f]/.test(p.newBranch))) throw new RpcError("newBranch must be a branch name", "invalid");
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[], p.newBranch);
             }
+            case "session.gitPrText":
+                if (p.base !== undefined && (typeof p.base !== "string" || p.base.length > 400 || p.base.includes("\0"))) throw new RpcError("base must be a branch name", "invalid");
+                return this.runtime(p.id).gitPrText(p.base || undefined);
+            case "session.gitBranchName":
+                return this.runtime(p.id).gitBranchName(text(p.text, "text", 20_000));
+            case "projects.suggestBranch":
+                return this.suggestBranch(str(p.path, "path"), text(p.text, "text", 20_000));
             case "session.turn": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");

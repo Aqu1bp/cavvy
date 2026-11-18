@@ -752,6 +752,39 @@ describe("connecting", () => {
         }
     });
 
+    test("drafted pull request text and branch names come from the small model, after the branch prefix", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        git("switch", "-q", "-c", "feat/sso");
+        writeFileSync(join(cwd, "sso.ts"), "export const sso = true;\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Add the SSO flag");
+        mkdirSync(join(cwd, ".github"), { recursive: true });
+        writeFileSync(join(cwd, ".github", "pull_request_template.md"), "## Summary\n\n## Testing\n");
+        try {
+            await rt.ready;
+            // Through the mock model: its draft from the branch's first commit, with the template's sections.
+            const pr = await engine.handle(c, "session.gitPrText", { id, base: "main" }) as { title: string; body: string; model: string };
+            expect(pr.title).toBe("Add the SSO flag");
+            expect(pr.body).toContain("## Summary");
+            expect(pr.body).toContain("`sso.ts`");
+            expect(pr.model).toMatch(/^mock:/);
+            const named = await engine.handle(c, "session.gitBranchName", { id, text: "Fix the login redirect" }) as { branch: string };
+            expect(named.branch).toBe("cavvy/fix-login-redirect");
+            // From Home, with the project's prefix.
+            const home = await engine.handle(c, "projects.suggestBranch", { path: cwd, text: "Add dark mode to settings" }) as { branch: string };
+            expect(home.branch).toBe("cavvy/add-dark-mode-settings");
+            await expect(engine.handle(c, "projects.suggestBranch", { path: cwd, text: "  " })).rejects.toThrow(/Describe the work first/);
+            // No small model a one-off request can use: said, and nothing else changes.
+            rt.client = Object.assign({}, rt.client, { agentBackend: true });
+            rt.model = { ...rt.model!, provider: "claude-code", id: "default" };
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            await expect(engine.handle(c, "session.gitPrText", { id })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate pull request text." });
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("a commit reserves the session while its repository hook runs", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         const git = commitRepo(cwd);

@@ -576,6 +576,21 @@ function goalVerdict(prompt: string): string {
     return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
 }
 
+/** A pull request's title and description, as a small model would draft it from what it's shown. */
+function prText(prompt: string): string {
+    const subject = /^- (.+)$/m.exec(prompt)?.[1]?.trim() ?? "Update the project";
+    const templated = /pull request template:\n/.test(prompt);
+    const files = [...prompt.matchAll(/^ (\S+) +\| /gm)].map((m) => m[1]).slice(0, 4);
+    const summary = `${subject}.${files.length ? ` Touches ${files.map((f) => `\`${f}\``).join(", ")}.` : ""}`;
+    return templated ? `${subject}\n\n## Summary\n\n${summary}\n\n## Testing\n\nNot stated in the commits.` : `${subject}\n\n${summary}`;
+}
+
+/** A branch name from the first words of the work described. */
+function branchFor(prompt: string): string {
+    const words = prompt.replace(/^The work:\n/, "").toLowerCase().match(/[a-z0-9]+/g) ?? ["update"];
+    return words.filter((w) => !["the", "a", "an", "to", "and", "of", "for", "in", "please"].includes(w)).slice(0, 4).join("-") || "update";
+}
+
 /** A title asked again from the conversation so far (Regenerate title): named after the user's latest request in it. */
 function latestAsk(prompt: string): string {
     if (!prompt.startsWith("First request:")) return prompt;
@@ -807,6 +822,9 @@ export function startMockLlm(o: MockOptions = {}) {
             }
             // A permission popup's one-line summary: none from the mock (its canned line said nothing about the action).
             else if (/for a permission popup/.test(system)) step = { text: "" };
+            // Drafted git text (src/server/git-generate.ts): a pull request, from its first commit's subject; a branch name.
+            else if (/Write a GitHub pull request title/.test(system)) step = { text: prText(prompt) };
+            else if (/Suggest a Git branch name/.test(system)) step = { text: branchFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
             else if (/\bfinishat (\d+)\b/.test(prompt)) {

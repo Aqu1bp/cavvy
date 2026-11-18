@@ -1399,6 +1399,18 @@
     gap: calc(8 * var(--sp));
 }
 
+/* Commit to a new branch: its tick box, then its name and Suggest. */
+.commit-branch {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+}
+
+.commit-branch .input.grow {
+    flex: 1;
+    min-width: 0;
+}
+
 .commit-warning {
     color: var(--warn);
 }
