@@ -32,6 +32,9 @@ const opened: { url: string; id: string }[] = [];
 /** Sessions made (session.create), and messages sent (session.send): where each went. */
 const made: { url: string; cwd: string; mode?: string }[] = [];
 const sent: { url: string; id: string; text: string }[] = [];
+/** Account picks (session.setAccount, accounts.setDefault): where each went. */
+const picked: { url: string; method: string; accountId: string }[] = [];
+const cli = (accounts: { id: string; name: string }[]) => [{ id: "claude-code", name: "Claude Code", kind: "agent", configured: true, requiresKey: false, agentCli: { accounts, defaultAccount: "default", installed: true, multiAccount: true } }];
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -55,7 +58,11 @@ class ServerSocket extends Socket {
             opened.push({ url: this.url, id: params.id });
             reply({ seq: 0, epoch: "e", state: { id: params.id, cwd: "/srv/app", busy: false, interactions: [] }, turns: [{ id: `${params.id}-t`, status: "done", startedAt: 1, prompt: { text: "hi" }, blocks: [] }], agents: [] });
         } else if (method === "models.list") reply(onBox ? [{ provider: "boxp", providerName: "Box's", status: "ok", models: [{ ref: "boxp:only-on-box", id: "only-on-box", name: "Only on box", provider: "boxp" }] }] : []);
-        else if (method.startsWith("fs.")) {
+        else if (method === "providers.list") reply(cli(onBox ? [{ id: "default", name: "Default" }, { id: "work", name: "Work on box" }] : [{ id: "default", name: "Default" }]));
+        else if (method === "session.setAccount" || method === "accounts.setDefault") {
+            picked.push({ url: this.url, method, accountId: params.accountId ?? params.id });
+            reply(null);
+        } else if (method.startsWith("fs.")) {
             looked.push({ url: this.url, method });
             reply(method === "fs.mentions" ? [] : {});
         } else if (method === "settings.get") reply(onBox ? { model: "boxp:only-on-box" } : {});
@@ -74,7 +81,7 @@ class ServerSocket extends Socket {
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, providersFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
 const { folderPickerOpen } = await import("../../gui/src/state/ui");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
@@ -109,6 +116,13 @@ try {
     // What its composer offers and looks up is box's: its models, the files in its folder, the paths in what it says.
     assert.deepEqual(modelsFor("b1").flatMap((g) => g.models.map((m) => m.ref)), ["boxp:only-on-box"]);
     assert.deepEqual(modelsFor("l1"), app.models);
+    // Its accounts too: the ones signed in on box, and a pick switches the session there.
+    const names = (id: string | undefined) => providersFor(id).flatMap((p) => p.agentCli?.accounts.map((a) => a.name) ?? []);
+    assert.deepEqual(names("b1"), ["Default", "Work on box"], "box's accounts for box's session");
+    assert.deepEqual(names("l1"), ["Default"], "this computer's for its own");
+    const { setAccount } = await import("../../gui/src/state/actions");
+    await setAccount("claude-code", "work");
+    assert.deepEqual(picked.map((x) => [x.method, x.url.includes("box"), x.accountId]), [["session.setAccount", true, "work"]], "the pick goes to box");
     await rpcFor("b1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
     await rpc.call("fs.exists", { sessionId: "b1", paths: ["README.md"] } as never);
     await rpcFor("l1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
@@ -143,6 +157,11 @@ try {
     // What Home offers and looks up is box's: its models, its settings, the files in its folder.
     assert.deepEqual(modelsFor(undefined).flatMap((g) => g.models.map((m) => m.ref)), ["boxp:only-on-box"]);
     assert.equal(homeSettings().model, "boxp:only-on-box");
+    // And box's accounts: the one picked on its Home is box's default, not this computer's.
+    assert.deepEqual(names(undefined), ["Default", "Work on box"]);
+    picked.length = 0;
+    await setAccount("claude-code", "work");
+    assert.deepEqual(picked.map((x) => [x.method, x.url.includes("box"), x.accountId]), [["accounts.setDefault", true, "work"]], "Home's pick goes to box");
     await rpcFor(undefined).call("fs.mentions", { cwd: "/srv/app", query: "rea" });
     assert.deepEqual(looked.slice(looking).map((l) => l.url.includes("box")), [true], "Home's lookups go to box");
     // Sent: made on box, in its folder, with box's own permission mode (none picked here), and opened here as box's.

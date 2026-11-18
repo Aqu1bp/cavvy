@@ -141,7 +141,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
     // The model picker holds the effort now: it opens on the slider, under the model's name, and the level in force
     // follows the name on the button ("Opus 5.5 xhigh").
     const Picker = component(source(), "ModelPicker", {
-        app, modelsFor: () => app.models, refreshModelsFor: stub, connFor: () => "open", awayMachine: () => undefined, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
+        app, modelsFor: () => app.models, providersFor: () => app.providers, refreshModelsFor: stub, connFor: () => "open", awayMachine: () => undefined, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
         Menu: (p: { open: boolean; children: unknown }) => solid.createMemo(() => (p.open ? p.children : null)),
         menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined,
         now: () => 0, sendsAccountPick: () => false, setAccount: stub, prefs: { favoriteModels: [] }, setPrefs: stub, handleFor: () => undefined, noModel: () => false, refreshModels: stub, setModel: stub,

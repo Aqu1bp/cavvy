@@ -19,7 +19,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true, more: { groups?: any[]; providers?: any[]; limits?: Record<string, any>; away?: string } = {}) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; limits?: Record<string, any>; away?: string } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -97,6 +97,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
         app: { models: [], providers: more.providers ?? [], limits: more.limits ?? {} },
         refreshModelsFor() {}, connFor: () => "open", awayMachine: () => more.away,
         modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
+        // Another machine's session has that machine's providers, never the window's own.
+        providersFor: () => (more.away === undefined ? more.providers : more.machineProviders) ?? [],
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
@@ -254,10 +256,21 @@ test("a subscription's account is a button in its heading, opening its accounts:
     expect(f.doc.activeElement).toBe(button);
 });
 
-test("another machine's session opened here isn't offered this computer's accounts", () => {
+test("another machine's session opened here is offered that machine's accounts, not this computer's, limits or Add account", () => {
     const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
     const accounts = [{ id: "default", name: "Work" }, { id: "p", name: "Personal" }];
-    const f = picker(true, { groups: [{ provider: "cli", providerName: "CLI", models: [cli] }], providers: [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }], away: "box" });
+    const mine = [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }];
+    const groups = [{ provider: "cli", providerName: "CLI", models: [cli] }];
+    // Only this computer's are known: none are offered.
+    const none = picker(true, { groups, providers: mine, away: "box" });
+    none.tabs()[2].click();
+    expect(none.accountButtons()).toBe(0);
+    // Box's own: listed, with nothing of this computer's limits (its "p" isn't box's) and no Add account.
+    const boxes = [{ id: "cli", name: "CLI", agentCli: { accounts: [{ id: "default", name: "Box" }, { id: "p", name: "Second on box" }], defaultAccount: "default" } }];
+    const f = picker(true, { groups, providers: mine, machineProviders: boxes, away: "box", limits: { [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ label: "5-hour", usedPercent: 100, reached: true }], at: 0 } } });
     f.tabs()[2].click();
-    expect(f.accountButtons()).toBe(0);
+    const button = f.accountButton();
+    expect(text(button)).toBe("Box");
+    button.focus(); f.key("Enter");
+    expect(f.accountItems().map(text)).toEqual(["Box", "Second on box"]);
 });
