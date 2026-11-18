@@ -2146,6 +2146,11 @@ export interface Methods {
     /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it (`target`: the sign-in, which this machine must know with that port); until `servers.unforward` or the window goes. */
     "servers.forward": { params: { name: string; port: number; target: string }; result: null };
     "servers.unforward": { params: { name: string; port: number }; result: null };
+    /**
+     * Open a file (at a line) or a folder that's on server `name` in the editor chosen on this machine, which
+     * reaches the server itself over SSH. `path`: absolute there, as the server's Cavvy gave it (fs.exists).
+     */
+    "servers.openInEditor": { params: { name: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */

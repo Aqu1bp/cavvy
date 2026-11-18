@@ -55,7 +55,7 @@ import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } f
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
-import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, remoteEditorArgv, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
@@ -3422,6 +3422,20 @@ export class Engine {
             case "servers.restore":
                 (await this.servers(client)).restore(str(p.name, "name"));
                 return null;
+            case "servers.openInEditor": {
+                if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+                const entry = (await import("../servers/store")).getServer(str(p.name, "name"));
+                if (!entry) throw new RpcError(`No server is called ${p.name}.`, "invalid");
+                const id = this.guiSettings().editor;
+                if (!id) throw new RpcError("Choose an editor in Settings → General → Open files with.", "no_editor");
+                const def = editorById(id);
+                if (!def) throw new RpcError("Unknown editor", "invalid");
+                const found = detectEditor(def, (this.o.editorEnv ?? defaultDetectEnv)());
+                if (!found) throw new RpcError(`${def.name} isn't installed on this computer. Choose another editor in Settings → General.`, "not_installed");
+                const argv = remoteEditorArgv(found, entry.destination, { path: str(p.path, "path"), line: position(p.line, "line", MAX_LINE), col: position(p.col, "col", MAX_COL), folder: p.folder === true });
+                await (this.o.launchEditor ?? launchEditor)(argv);
+                return { editor: def.name };
+            }
             case "servers.forward": {
                 if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
                 const entry = (await import("../servers/store")).getServer(str(p.name, "name"));

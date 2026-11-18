@@ -291,3 +291,45 @@ test("a server says it can't, rather than asking for an editor to be chosen ther
         await away.stop();
     }
 });
+
+test("a server's file opens in this computer's editor, which reaches the server over SSH; editors that can't say so", async () => {
+    const { remoteEditorArgv } = await import("../src/server/editors");
+    writeFileSync(join(iso.home, "servers.json"), JSON.stringify({ servers: [{ name: "box", destination: "dev@box.example", addedAt: "" }] }));
+    await call("settings.update", { patch: { editor: "vscode" } });
+    const before = launched.length;
+    // A file at a line, and a folder: started here, pointed at the server.
+    expect(await call("servers.openInEditor", { name: "box", path: "/srv/app/src/a.ts", line: 12, col: 3 })).toEqual({ editor: "VS Code" });
+    await call("servers.openInEditor", { name: "box", path: "/srv/app", folder: true });
+    const code = join(bin, "code");
+    expect(launched.slice(before)).toEqual([
+        [code, "--remote", "ssh-remote+dev@box.example", "--goto", "--", "/srv/app/src/a.ts:12:3"],
+        [code, "--remote", "ssh-remote+dev@box.example", "--", "/srv/app"],
+    ]);
+    // Not a server of this computer's, not an absolute path, a name that reads as a line.
+    await rejects(call("servers.openInEditor", { name: "lab", path: "/srv/app/a.ts" }), "invalid", /No server is called lab/);
+    await rejects(call("servers.openInEditor", { name: "box", path: "src/a.ts" }), "invalid");
+    await rejects(call("servers.openInEditor", { name: "box", path: "/srv/app/a.ts:7", line: 1 }), "refused");
+    // An editor with no way to a server says which have one; an address that could pass for an option is never one.
+    const found = { def: { id: "sublime", name: "Sublime Text", launchers: ["subl"], apps: [], style: "suffix" }, launcher: "/usr/local/bin/subl" } as never;
+    expect(() => remoteEditorArgv(found, "dev@box.example", { path: "/srv/a.ts", folder: false })).toThrow("Sublime Text can't open a server's files from here. VS Code and Cursor can.");
+    const vs = { def: { id: "vscode", name: "VS Code", launchers: ["code"], apps: [], style: "goto", dashdash: true }, launcher: code } as never;
+    for (const bad of ["-oProxyCommand=x", "box example", "box;rm"]) expect(() => remoteEditorArgv(vs, bad, { path: "/srv/a.ts", folder: false })).toThrow("isn't one an editor can be given");
+    expect(launched.length).toBe(before + 2);
+    // A server's own Cavvy doesn't take it.
+    const away = new Engine({ away: true });
+    try {
+        await rejects(away.handle(c, "servers.openInEditor" as never, { name: "box", path: "/srv/a.ts" } as never), "unsupported");
+    } finally {
+        await away.stop();
+    }
+});
+
+test("the window sends a server session's file to this computer's Cavvy to open, with the path as the server's makes it out", async () => {
+    const src = await Bun.file(new URL("../gui/src/state/actions.ts", import.meta.url)).text();
+    const body = src.slice(src.indexOf("export async function openInEditor"), src.indexOf("export async function openInEditor") + 1800);
+    // The session's server, or the window's own when it's on one; this computer's own sessions go the usual way.
+    expect(body).toContain("const on = awayMachine(sessionId) ?? machine;");
+    expect(body).toContain("if (on && o.gitToken === undefined && !o.editor) {");
+    expect(body).toContain('const there = o.folder ? path : (await rpc.call("fs.exists", { sessionId, paths: [path] }))[0];');
+    expect(body).toContain('await mine.call("servers.openInEditor", { name: on, path: there, line, col: o.col, folder: o.folder });');
+});

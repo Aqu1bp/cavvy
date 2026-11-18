@@ -820,6 +820,17 @@ export async function openInEditor(path: string, line?: number, o: { col?: numbe
     const sessionId = o.sessionId ?? app.activeId;
     if (!sessionId) return;
     try {
+        // On a server (the session's, or the one the window is on): this computer's editor opens it there over SSH,
+        // started by this computer's Cavvy, with the path as the server's Cavvy makes it out. (A file known only by
+        // a token, and Finder, stay the server's to refuse.)
+        const on = awayMachine(sessionId) ?? machine;
+        if (on && o.gitToken === undefined && !o.editor) {
+            const there = o.folder ? path : (await rpc.call("fs.exists", { sessionId, paths: [path] }))[0];
+            if (!there) throw new Error(`${path} isn't a file in this session's folders.`);
+            const mine = machine ? (await import("../lib/machines")).home! : rpc;
+            await mine.call("servers.openInEditor", { name: on, path: there, line, col: o.col, folder: o.folder });
+            return;
+        }
         await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;

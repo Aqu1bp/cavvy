@@ -249,3 +249,22 @@ export function confinePath(path: string, cwd: string, roots: string[]): { path:
     if (!inside) throw new RpcError(`${path} is outside this session's folders, so it isn't opened`, "outside");
     return { path: abs, real, dir };
 }
+
+/**
+ * The argv that opens `path`, a file or folder on one of the user's servers, in `f` on this machine: the editor
+ * itself reaches the server over SSH (`destination`, as this machine's ssh takes it). Only the editors whose
+ * launcher is known to take a remote: VS Code's, and those built on it. Throws RpcError for the rest, and for a
+ * path or destination that could be read as anything else.
+ */
+export function remoteEditorArgv(f: FoundEditor, destination: string, t: OpenTarget): string[] {
+    const { def } = f;
+    if (def.style !== "goto" || !f.launcher) throw new RpcError(`${def.name} can't open a server's files from here. VS Code and Cursor can.`, "unsupported");
+    if (!/^[\w.@:[\]-]{1,255}$/.test(destination) || destination.startsWith("-")) throw new RpcError("That server's address isn't one an editor can be given.", "invalid");
+    if (!t.path.startsWith("/") || t.path.length > 4096 || /[\0-\x1f]/.test(t.path)) throw new RpcError("The path must be absolute", "invalid");
+    const line = t.folder ? undefined : t.line;
+    if (line !== undefined && /:\d+$/.test(t.path)) throw new RpcError(`${def.name} would read the end of ${basename(t.path)} as a line number`, "refused");
+    const at = line === undefined ? t.path : `${t.path}:${line}${t.col === undefined ? "" : `:${t.col}`}`;
+    const remote = ["--remote", `ssh-remote+${destination}`];
+    const end = def.dashdash ? ["--"] : [];
+    return line === undefined ? [f.launcher, ...remote, ...end, t.path] : [f.launcher, ...remote, "--goto", ...end, at];
+}
