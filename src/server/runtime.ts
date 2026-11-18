@@ -302,10 +302,12 @@ function promptsBefore(messages: readonly Message[], end: number): number {
 }
 
 /** `tailFirst`: a compacted session opened the first time has its last segment's turns built first (tests turn it off). */
-export const turnBuilding = {
+export const turnBuilding: { tailFirst: boolean; tailPrompts: number; held?: Promise<unknown> } = {
     tailFirst: true,
     /** A one-segment session built from its logs, with more prompts than this: those last ones' turns built first (tailAt). */
     tailPrompts: 100,
+    /** Tests: the earlier turns (buildHead, buildEarlier) aren't begun until this settles. */
+    held: undefined,
 };
 /**
  * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
@@ -1712,6 +1714,7 @@ export class Runtime {
         // Built anew meanwhile (other turns): these are no longer theirs.
         const turns = this.view.turns;
         try {
+            await turnBuilding.held;
             for (let a = 0; a < last; a++) {
                 await nextSlice();
                 if (this.closed || this.view.turns !== turns) return;
@@ -1748,6 +1751,7 @@ export class Runtime {
         const messages = this.session.messages;
         const notices = this.session.notices;
         try {
+            await turnBuilding.held;
             await this.ui.readAllSoon();
             const head: Turn[] = [];
             // Each part's sub-agents with it (a sub-agent's are of the same turn): all at once took 110-126 ms.

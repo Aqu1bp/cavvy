@@ -481,16 +481,21 @@ test(`${what} opened the first time is named after its first prompt while its ea
         await close(t.id);
         turnBuilding.tailFirst = true;
         for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
+        // Asked while they're still being built: held until it's been asked.
+        let release!: () => void;
+        turnBuilding.held = new Promise<void>((r) => (release = r));
         await call("session.open", { id: t.id, last: 5 });
-        // Asked while they're still being built.
         expect(rt().earlierBuilt).toBeDefined();
         expect(rt().firstPrompt()).toBe(whole);
+        release();
+        turnBuilding.held = undefined;
         await rt().allTurns();
         expect(rt().firstPrompt()).toBe(whole);
         await close(t.id);
     } finally {
         turnBuilding.tailFirst = true;
         turnBuilding.tailPrompts = prompts;
+        turnBuilding.held = undefined;
     }
 }, 120_000);
 
