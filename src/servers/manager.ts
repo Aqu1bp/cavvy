@@ -8,8 +8,8 @@
 // window calls again with the answer.
 
 import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
+import { dirname, join, relative, sep } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
@@ -21,6 +21,7 @@ import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { syncedFolders, syncTo } from "./sync";
 import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
 
 /** A server's sessions as last heard (MachineWatch kept): listed while it can't be reached, from the next launch too. */
@@ -125,7 +126,14 @@ export class ServerLinks {
             onNotice?: (name: string, n: MachineNotice) => void;
             /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
             lends?: () => string[];
+            lendMode?: () => string;
             lend?: (name: string, call: LentCall, signal: AbortSignal) => Promise<LentResult>;
+            /** This machine's skills and commands are kept on its servers (src/servers/sync.ts): the user's own machine. */
+            sync?: boolean;
+            /** How long a change to them settles before servers hear of it. */
+            syncSettleMs?: number;
+            /** Answers what a session on server `name` asks about the user's other machines' sessions (src/server/far-peers.ts). */
+            peers?: (name: string, op: string, params: Record<string, unknown>) => Promise<unknown>;
             source?: BuildSource;
             renewAfterMs?: number;
             watchRetryMs?: number[];
@@ -154,13 +162,17 @@ export class ServerLinks {
                 session: (change) => this.o.onSession?.(name, change),
                 notice: (n) => this.o.onNotice?.(name, n),
                 lends: this.o.lends,
+                lendMode: this.o.lendMode,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
+                sync: this.o.sync ? syncTo : undefined,
+                peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
             });
             this.watches.set(name, w);
             w.start();
         }
+        this.watchSynced();
         return [...this.watches.values()].map((w) => w.overview());
     }
 
@@ -297,7 +309,7 @@ export class ServerLinks {
     private copyOffer(): { copy?: { what: string }; left?: string } {
         let plan;
         try {
-            plan = planCopy(this.userSettings());
+            plan = planCopy(this.userSettings(), { skills: !this.o.sync });
         } catch {
             return {};
         }
@@ -321,7 +333,7 @@ export class ServerLinks {
     /** The one-time copy of settings, memory, skills and commands. What the server took, in words ("" when it had them all). */
     async copy(name: string): Promise<{ took: string; left?: string }> {
         const entry = requireServer(name);
-        const plan = planCopy(this.userSettings());
+        const plan = planCopy(this.userSettings(), { skills: !this.o.sync });
         try {
             const took = describeCopy(countCopied(await sendCopy(entry, plan)));
             const left = describeLeft(plan.left);
@@ -596,6 +608,11 @@ export class ServerLinks {
         if (this.watching) this.watchAll();
     }
 
+    /** The servers connected now, to ask about their sessions (src/server/far-peers.ts), by name. */
+    connectedServers(): Map<string, MachineWatch> {
+        return new Map([...this.watches].filter(([, w]) => w.overview().state === "connected"));
+    }
+
     /** What this machine lends changed (its Simulator turned off or on): each server it's connected to is told now. */
     relend() {
         for (const w of this.watches.values()) w.relend();
@@ -609,11 +626,71 @@ export class ServerLinks {
     stopWatching() {
         this.stopped = true;
         for (const w of this.watches.values()) w.stop();
+        this.unwatchSynced();
+    }
+
+    /** What watches each of this machine's skills and commands folders for changes, while servers are watched (sync). */
+    private syncWatchers = new Map<string, FSWatcher>();
+    private syncTimer?: ReturnType<typeof setTimeout>;
+
+    private syncChanged() {
+        clearTimeout(this.syncTimer);
+        this.syncTimer = setTimeout(() => {
+            for (const w of this.watches.values()) w.resync();
+        }, this.o.syncSettleMs ?? 1500);
+        (this.syncTimer as { unref?: () => void }).unref?.();
+    }
+
+    private watchSynced() {
+        if (!this.o.sync || this.stopped) return;
+        for (const dir of syncedFolders()) this.watchSyncedFolder(dir);
+    }
+
+    /** `dir` and what's in it; not there yet, the nearest folder above it that is, till the next one down is made. */
+    private watchSyncedFolder(dir: string) {
+        if (this.syncWatchers.has(dir) || this.stopped) return;
+        let at = dir;
+        while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+        const there = at === dir;
+        // The name made in `at` that leads to `dir`.
+        const next = there ? "" : relative(at, dir).split(sep)[0]!;
+        try {
+            const w = watch(at, { recursive: there, persistent: false }, (_e, name) => {
+                if (there) return this.syncChanged();
+                if (String(name) !== next || !existsSync(join(at, next))) return;
+                this.unwatchSyncedFolder(dir, w);
+                this.watchSyncedFolder(dir);
+                this.syncChanged();
+            });
+            // Gone (the folder removed): watched again the next time servers are.
+            w.on("error", () => this.unwatchSyncedFolder(dir, w));
+            this.syncWatchers.set(dir, w);
+            // Made while the watch was being set up: down a level now.
+            if (!there && existsSync(join(at, next))) {
+                this.unwatchSyncedFolder(dir, w);
+                this.watchSyncedFolder(dir);
+                this.syncChanged();
+            }
+        } catch {
+            // Can't be watched here: it's brought level each time a server connects.
+        }
+    }
+
+    private unwatchSyncedFolder(dir: string, w: FSWatcher) {
+        w.close();
+        if (this.syncWatchers.get(dir) === w) this.syncWatchers.delete(dir);
+    }
+
+    private unwatchSynced() {
+        clearTimeout(this.syncTimer);
+        for (const w of this.syncWatchers.values()) w.close();
+        this.syncWatchers.clear();
     }
 
     /** The engine is stopping: every connection is closed and signed out. */
     async stopAll() {
         this.stopped = true;
+        this.unwatchSynced();
         for (const w of this.watches.values()) w.stop();
         this.watches.clear();
         for (const t of this.told.values()) clearTimeout(t);

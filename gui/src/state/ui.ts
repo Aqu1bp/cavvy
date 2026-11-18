@@ -101,6 +101,12 @@ export interface SetupRun { ticket: string; label: string; command: string }
  */
 export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
 
+/**
+ * An account's sign-in tab (Settings) is showing: the window's own machine's terminal shows though a session of
+ * another machine is in view, until another session or Home is (App.tsx).
+ */
+export const [terminalLogin, setTerminalLogin] = createSignal(false);
+
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {
     loginAccount?: (provider: string, accountId: string, name: string) => void;

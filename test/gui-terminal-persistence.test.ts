@@ -122,9 +122,9 @@ import { frameDrag } from "../gui/src/lib/drag";
 import { terminalFontSize } from "../gui/src/lib/text-size";
 import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown; props?: Record<string, unknown>; open?: boolean } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
-    const [panelOpen, setPanelOpen] = solid.createSignal(false);
+    const [panelOpen, setPanelOpen] = solid.createSignal(opts.open ?? false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
     const events = new Set<(e: any) => void>();
     const states = new Set<(s: any) => void>();
@@ -132,6 +132,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const terminals: Emulator[] = [];
     const closed: string[] = [];
     const saved: SavedTabs[] = [];
+    /** The machine each save was kept under (lib/terminal.ts tabsKey's `at`). */
+    const savedAt: (string | undefined)[] = [];
     /** What the fit addon fits the screen to (its container's size, in cells), its ResizeObservers, and the frames asked for. */
     const fitted = { cols: 80, rows: 24 };
     const resizes = new Set<() => void>();
@@ -175,8 +177,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const noop = () => ({});
     const deps = {
-        renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
-        loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
+        renderer, ...solid, rpc, app: { get conn() { return conn(); } }, connOn: () => conn(), machine: undefined, setTerminalLogin() {}, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
+        loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs, at?: string) => (saved.push(value), savedAt.push(at)),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
         basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
@@ -193,17 +195,18 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         awayMachine: () => undefined, handleFor: () => undefined, openInEditor() {}, adoptBrowserState() {}, browserState: () => undefined, loadBrowserState: async () => {}, showBrowser() {},
         setComposerAdd() {}, mod: "Ctrl", openExternal() {}, isLongPaste: () => false, pastedText() {},
     };
-    const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
+    const component = new Function(...Object.keys(deps), `${js}; return Object.assign(${name}, { early: terminalOpenedEarly });`)(...Object.values(deps));
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
         dispose = d;
-        component(name === "TerminalPanel" ? { cwd: opts.cwd ?? "/p" } : {
+        // Props as given, getters too (a prop that changes).
+        component(name === "TerminalPanel" ? Object.defineProperties({ cwd: opts.cwd ?? "/p" }, Object.getOwnPropertyDescriptors(opts.props ?? {})) : {
             tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: !!opts.visible,
             onClose: (id: string) => closed.push(id),
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
     });
-    return { calls, terminals, nodes, closed, saved, dispose, setPanelOpen, fitted,
+    return { calls, terminals, nodes, closed, saved, savedAt, dispose, setPanelOpen, fitted, early: component.early as (opened?: boolean) => void,
         /** The screen's container changing size, and the next frame. */
         resized() { for (const fn of resizes) fn(); },
         frame() { for (const fn of frameQueue.splice(0)) fn(); },
@@ -255,6 +258,62 @@ test("real panel waits for a connection and retries interrupted reconciliation",
         m.calls[1]!.resolve([{ id: "server-shell", cwd: "/p", script: { id: "dev", name: "Dev" } }]); await tick();
         expect(m.calls.map((c) => c.method)).toEqual(["terminal.list", "terminal.list", "terminal.attach"]);
         expect(m.saved.at(-1)?.tabs[0]?.script?.name).toBe("Dev");
+    } finally { m.dispose(); }
+});
+
+test("another machine's panel opens its shells over that machine's connection and keeps its tabs under it; one not in view opens none", async () => {
+    // The connection to the other machine: what's asked of it, answered at once.
+    const there: { method: string; params: any }[] = [];
+    const link = {
+        state: "open",
+        call(method: string, params: any) { there.push({ method, params }); return Promise.resolve(method === "terminal.list" ? [] : null); },
+        onEvent: () => () => {}, onState: () => () => {},
+    };
+    const m = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, current: true } });
+    try {
+        await tick(); await tick();
+        m.setPanelOpen(true); await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list", "terminal.open"]);
+        expect(there[1]!.params.cwd).toBe("/p");
+        // Nothing went to the window's own machine, and the tabs are kept under the other one.
+        expect(m.calls).toEqual([]);
+        expect(new Set(m.savedAt)).toEqual(new Set(["box"]));
+    } finally { m.dispose(); }
+    // The same panel while a session of another machine is in view: it lists its own shells, and opens none.
+    there.length = 0;
+    const hidden = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, current: false } });
+    try {
+        await tick(); await tick();
+        hidden.setPanelOpen(true); await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list"]);
+    } finally { hidden.dispose(); }
+    // Open already as it loads (this computer's tabs, back after a reload): no shell till the user opens the panel.
+    there.length = 0;
+    const late = mounted("TerminalPanel", { open: true, saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, current: true } });
+    try {
+        await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list"]);
+        late.setPanelOpen(false); late.setPanelOpen(true); await tick(); await tick();
+        expect(there.map((c) => c.method)).toEqual(["terminal.list", "terminal.open"]);
+    } finally { late.dispose(); }
+});
+
+test("opened while the session in view is still connecting: its machine's panel starts a shell once it's that one", async () => {
+    const there: string[] = [];
+    const link = { state: "open", call(method: string) { there.push(method); return Promise.resolve(method === "terminal.list" ? [] : null); }, onEvent: () => () => {}, onState: () => () => {} };
+    const [current, setCurrent] = solid.createSignal(false);
+    const [hidden, setHidden] = solid.createSignal(true);
+    const m = mounted("TerminalPanel", { saved: { tabs: [], next: 1, open: false }, props: { on: "box", link, get current() { return current(); }, get hidden() { return hidden(); } } });
+    try {
+        await tick(); await tick();
+        // As App.tsx does when the terminal opens with no panel current yet.
+        m.setPanelOpen(true); m.early(); await tick();
+        expect(there).toEqual(["terminal.list"]);
+        // Its session opened under Settings: not till Settings is left.
+        setCurrent(true); await tick(); await tick();
+        expect(there).toEqual(["terminal.list"]);
+        setHidden(false); await tick(); await tick();
+        expect(there).toEqual(["terminal.list", "terminal.open"]);
     } finally { m.dispose(); }
 });
 
@@ -436,4 +495,22 @@ test("a window keeps each machine's terminal tabs apart: back from a server, thi
     expect(tabsKey(undefined)).toBe("cavvy.terminals");
     expect(tabsKey("box")).toBe("cavvy.terminals.box");
     expect(tabsKey("box")).not.toBe(tabsKey("lab"));
+    // In a window on a server, this computer's tabs ("" there, awayMachine's name for it) are kept under its own name,
+    // not the server's.
+    expect(tabsKey("")).toBe("cavvy.terminals");
+});
+
+test("the machines a window keeps terminal tabs for are read back from where they're kept", async () => {
+    const { tabMachines } = await import("../gui/src/lib/terminal");
+    const tabs = JSON.stringify({ tabs: [{ id: "t", cwd: "/p", number: 1, terminal: "t" }], next: 2, open: false });
+    // A machine visited with no tab left (none kept for it) isn't one.
+    const store = new Map<string, string>([["cavvy.terminals", tabs], ["cavvy.terminals.box", tabs], ["cavvy.terminals.lab", JSON.stringify({ tabs: [], next: 1, open: false })], ["cavvy.other", tabs]]);
+    const old = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { get length() { return store.size; }, key: (i: number) => [...store.keys()][i] ?? null, getItem: (k: string) => store.get(k) ?? null } });
+    try {
+        expect(tabMachines().sort()).toEqual(["", "box"]);
+    } finally {
+        if (old) Object.defineProperty(globalThis, "sessionStorage", old);
+        else Reflect.deleteProperty(globalThis, "sessionStorage");
+    }
 });

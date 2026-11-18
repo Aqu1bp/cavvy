@@ -12,7 +12,7 @@ function dialogs() {
     const scope = {
         node, Show: "Show", Portal: "Portal", X: "X",
         createUniqueId: () => `title-${++id}`,
-        onMount() {}, onCleanup() {}, document: { activeElement: null },
+        onMount() {}, onCleanup() {}, createSignal: (v: unknown) => [() => v, () => undefined], document: { activeElement: null },
     };
     return new Function(...Object.keys(scope), `${js}; return DialogInner;`)(...Object.values(scope));
 }

@@ -14,13 +14,13 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, laz
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, Copy, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, Space, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, reportError, revealsIn, rpc, toast } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
-import { canReveal, copyText, revealPath } from "../lib/platform";
+import { copyText, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
 import { incompleteLine } from "../lib/turn-places";
 import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
@@ -1049,7 +1049,7 @@ function DiffReader(p: { handle: SessionHandle }) {
             onToggle={(all) => toggle(k, all)}
             // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
             onOpen={own() && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => void openInEditor(absolute(f().path), undefined, { gitToken: f().pathToken }) : undefined}
-            onReveal={canReveal ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
+            onReveal={revealsIn(id()) ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
             full={fetchFull}
             whole={shownScope() !== "cavvy" ? (x) => fetchFull(x, true) : undefined}
             onCopy={(abs) => void copyPath(f(), abs)}

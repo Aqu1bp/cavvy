@@ -23,10 +23,16 @@ const page = (account: boolean, names = THREE) => `<!doctype html><style>:root{-
 
 test.skipIf(!chrome)("with an account shown beside them, every provider's tab is shown whole", async () => {
     const profile = mkdtempSync(join(tmpdir(), "cavvy-picker-tabs-"));
-    const browser = Bun.spawn([chrome!, "--headless", "--no-first-run", ...(process.getuid?.() === 0 || process.env.CI ? ["--no-sandbox"] : []), `--user-data-dir=${profile}`, "--remote-debugging-port=0"], { stdout: "ignore", stderr: "ignore" });
+    // Its own home: another test file in the same process may have left HOME at a folder that's gone.
+    const browser = Bun.spawn([chrome!, "--headless", "--no-first-run", ...(process.getuid?.() === 0 || process.env.CI ? ["--no-sandbox"] : []), `--user-data-dir=${profile}`, "--remote-debugging-port=0"], { stdout: "ignore", stderr: Bun.file(join(profile, "chrome.log")), env: { ...process.env, HOME: profile } });
     try {
         let port: string | undefined;
-        for (let i = 0; i < 300 && !port; i++) { port = /^(\d+)\n/.exec(await Bun.file(join(profile, "DevToolsActivePort")).text().catch(() => ""))?.[1]; await sleep(100); }
+        for (let i = 0; i < 300 && !port && browser.exitCode === null; i++) { port = /^(\d+)\n/.exec(await Bun.file(join(profile, "DevToolsActivePort")).text().catch(() => ""))?.[1]; await sleep(100); }
+        // Not started: what it said, rather than a bad address.
+        if (!port) {
+            browser.kill();
+            throw new Error(`Chrome didn't start (exit ${await browser.exited}): ${(await Bun.file(join(profile, "chrome.log")).text().catch(() => "")).slice(-2000)}`);
+        }
         const version = (await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.json())) as { webSocketDebuggerUrl: string };
         const ws = new WebSocket(version.webSocketDebuggerUrl);
         await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });

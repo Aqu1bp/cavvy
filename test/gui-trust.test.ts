@@ -10,6 +10,7 @@ function dialog(purpose?: "mcp-approval") {
         node, Show: "Show", ShieldAlert: "ShieldAlert", Dialog: "Dialog",
         createResource: () => [() => ({ needsTrust: [".mcp.json", ".cavvy/settings.json"] })],
         trustRequest: () => request,
+        app: {}, machine: undefined,
         setTrustRequest: (next: unknown) => { request = next; },
         trustAndContinue: async (...args: unknown[]) => { decisions.push(args); },
         reportError: (error: unknown) => { throw error; },
@@ -39,7 +40,7 @@ test("MCP trust still grants explicit trust, and opening a folder still offers I
     const opening = dialog();
     const ignore = elements(opening.tree, "button")[0]!;
     expect(ignore.children.join("")).toBe("Ignore its configuration");
-    expect(JSON.stringify(opening.tree)).toContain("can run commands on this computer");
+    expect(JSON.stringify(opening.tree)).toContain('can run commands on \",\"this computer\"');
     expect(JSON.stringify(opening.tree)).not.toContain("Trust it to approve its MCP servers.");
     await ignore.props.onClick();
     expect(opening.decisions).toEqual([["/project", false]]);

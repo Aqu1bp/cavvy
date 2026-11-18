@@ -36,6 +36,8 @@ interface Target {
     /** The page's size in CSS pixels (Emulation.setDeviceMetricsOverride). */
     view: { width: number; height: number };
     casting: boolean;
+    /** How far the page is scrolled down, by the wheel (Input.dispatchMouseEvent). */
+    scrollY?: number;
 }
 const targets = new Map<string, Target>();
 const log: { method: string; params: unknown; sessionId?: string }[] = [];
@@ -103,7 +105,14 @@ function answer(method: string, params: any, sessionId?: string): unknown {
             setTimeout(() => navigate(t!, t!.url, false), 0);
             return {};
         case "Page.getLayoutMetrics":
-            return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 1280, clientHeight: 800 }, cssContentSize: { width: 1280, height: 2000 } };
+            return { cssVisualViewport: { pageX: 0, pageY: t?.scrollY ?? 0, clientWidth: 1280, clientHeight: 800 }, cssContentSize: { width: 1280, height: 2000 } };
+        case "Input.dispatchMouseEvent":
+            if (params.type === "mouseWheel" && t) {
+                t.scrollY = Math.max(0, (t.scrollY ?? 0) + params.deltaY);
+                // scrolled: it draws again, as Chrome does
+                if (t.casting) setTimeout(() => frame(t), 0);
+            }
+            return {};
         case "Page.captureScreenshot":
             return { data: params.format === "jpeg" ? JPEG : PNG };
         case "Emulation.setDeviceMetricsOverride":

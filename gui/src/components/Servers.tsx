@@ -28,8 +28,12 @@ const runsOn = () => {
 /** To `name` (undefined: this computer): Home on the window's own machine, in its latest project, or the window there. */
 const goTo = (name: string | undefined) => {
     if (runsOn() === name) return;
-    if (name === machine) newSession(app.projects[0]?.path ?? app.hello?.startCwd, { machine });
-    else switchMachine(name);
+    if (name === machine) {
+        const cwd = app.projects[0]?.path ?? app.hello?.startCwd;
+        newSession(cwd, { machine });
+        // No project here yet: none is shown, not the folder of the machine it left.
+        if (!cwd) setApp("homeCwd", undefined);
+    } else switchMachine(name);
 };
 
 /** The sidebar's list of machines is open, under the button that opened it. */

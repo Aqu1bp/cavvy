@@ -6,7 +6,7 @@ import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMo
 import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc } from "../state/app";
+import { app, awayMachine, connOn, reportError, rpcFor } from "../state/app";
 import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { panelHold, settingsTab } from "../state/ui";
 import { electron, machine } from "../lib/platform";
@@ -22,8 +22,6 @@ import { hostedTargets } from "../state/browser-host";
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
  * lays over the pane's page box (placed below), and the person uses it directly. The bar, tabs and notes stay here.
  */
-// The desktop app shows this computer's pages in views of its own; a server's are pictures sent from there, as in a browser.
-const native = electron !== undefined && !machine;
 
 /** The pane's size is sent this long after it stops changing (dragging the panel's edge resizes it every frame). */
 const RESIZE_MS = 120;
@@ -33,9 +31,16 @@ function decode(data: string | Uint8Array<ArrayBuffer>): Promise<ImageBitmap> {
     return createImageBitmap(new Blob([bytes]));
 }
 
+/**
+ * The pane of a session's browser. One on another machine than the window's (a server's, in a window on this computer)
+ * is watched over that machine's connection (the panel is made again for each session: App).
+ */
 export function BrowserPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
-    const stream = rpc.browserStream();
+    const its = awayMachine(p.handle.id);
+    // The desktop app shows this computer's pages in views of its own; a server's are pictures sent from there, as in a browser.
+    const native = electron !== undefined && !machine && its === undefined;
+    const stream = rpcFor(p.handle.id).browserStream();
     const [connected, setConnected] = createSignal(stream.state === "open");
     const state = () => browserState(id());
     const tab = () => currentTab(state());
@@ -132,7 +137,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // Watching: the server sizes the page to the pane and streams it while the pane shows.
 
-    const watching = () => visible() && !settingsTab() && app.conn === "open" && connected();
+    // Once the session is open on its machine again after a reconnect: watched before, it's refused there.
+    const watching = () => visible() && !settingsTab() && connOn(its) === "open" && connected() && p.handle.ready();
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const watch = () => {
         if (native) return;

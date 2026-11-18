@@ -6,6 +6,7 @@
 
 import { Rpc, type Credentials } from "./rpc";
 import { windowKey } from "./platform";
+import { keepOwnTabs, keyOn, leaveTabs, takeLeftTabs } from "./terminal";
 import type { ConnectResult } from "@shared/protocol";
 
 /** Why a machine's Cavvy couldn't be reached: what servers.connect said, when it didn't sign the window in. */
@@ -60,7 +61,9 @@ export function linkTo(name: string | undefined, via: Rpc, own: Rpc | undefined,
         unproven = true;
         return { url: r.url, token: r.token };
     };
-    link = new Rpc(credentials, windowKey);
+    // A server's shells left by a window that went are this window's now, under that window's key (lib/terminal.ts).
+    if (name) takeLeftTabs(name, windowKey);
+    link = new Rpc(credentials, name ? () => keyOn(name, windowKey) : windowKey);
     const made = link;
     made.retriesCredentials = true;
     made.onState((s) => { if (s === "open") unproven = false; });
@@ -97,7 +100,7 @@ export function dropLink(name: string | undefined) {
  * Once it's open (now, when it is). Waiting to try again (it couldn't be reached), it's tried now: the user asked.
  * Rejected as soon as that try fails, with why, rather than after every try it makes by itself.
  */
-export function opened(link: Rpc): Promise<void> {
+export function opened(link: Rpc, name?: string): Promise<void> {
     if (link.state === "open") return Promise.resolve();
     if (link.idle) link.reconnectNow();
     return new Promise((resolve, reject) => {
@@ -108,8 +111,15 @@ export function opened(link: Rpc): Promise<void> {
             } else if (s !== "connecting") {
                 off();
                 const problem = problems.get(link);
-                reject(new LinkError(problem?.message ?? "Couldn't reach that machine's Cavvy.", problem));
+                reject(new LinkError(problem?.message ?? `Couldn't reach Cavvy on ${name || "this computer"}.`, problem));
             }
         });
     });
+}
+
+// A window that goes (closed, or the app quitting) leaves word of its shells on servers for the next one.
+// Back after a reload, it keeps what it left itself.
+if (typeof window !== "undefined") {
+    keepOwnTabs(windowKey);
+    window.addEventListener?.("pagehide", () => leaveTabs(windowKey));
 }

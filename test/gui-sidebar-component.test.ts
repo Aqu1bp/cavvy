@@ -86,7 +86,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         })),
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : key === "foldedDays" ? setFoldedDays(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
-        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
+        handleFor: () => undefined, limitsFor: () => ({}), providersFor: () => [], isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         besideInFront: () => undefined, inSplit: () => false, setDraggedSession() {}, SESSION_DRAG: "application/x-cavvy-session",
         isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", keyText: (k: string) => k.replaceAll("+", ""), withShortcut: (label: string) => label,

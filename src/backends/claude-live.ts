@@ -45,7 +45,7 @@ import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
 import type { AgentCliStatus } from "./index";
 import { cliNotice } from "./notice-data";
-import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
 import { EXIT_DRAIN_MS, PromptRefused, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
@@ -1895,7 +1895,7 @@ export class ClaudeConnection implements CliConnection {
             // On extra usage it isn't a stop: the turn goes on, and it costs.
             const credits = creditsNote(this.limits, "extra usage");
             this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.cfg.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
-        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
+        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${nearLimitWords(w?.usedPercent, which)}${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     // ---- control

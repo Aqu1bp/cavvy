@@ -43,9 +43,9 @@ const roomy = {
 };
 
 /** ErrorCards.tsx loaded once: its places share which of them shows. */
-function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, shellLayout: () => WindowLayout = () => windowLayout(roomy)) {
+function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, shellLayout: () => WindowLayout = () => windowLayout(roomy), dialogOpen: () => boolean = () => false) {
     const ToastItem = component(strip(read("Toasts")), "ToastItem", { ...s.deps, CircleCheck: icon, Info: icon, TriangleAlert: icon, X: icon });
-    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, ToastItem, CircleAlert: icon, Copy: icon, X: icon });
+    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, dialogOpen, ToastItem, CircleAlert: icon, Copy: icon, X: icon });
     return (place: string) => mountWith(ErrorCards, place);
 }
 
@@ -199,6 +199,27 @@ test("the composer covered (a maximized terminal, a short diff reader): the wind
     } finally {
         composer.dispose();
         windowCards.dispose();
+    }
+});
+
+test("a dialog open: the window's shows the errors (over it), in a session and in Settings, until it closes", () => {
+    const s = store();
+    s.add("Port in use");
+    const [dialog, setDialog] = solid.createSignal(false);
+    const [settings, setSettings] = solid.createSignal<string>();
+    const place = cardsModule(s, settings, undefined, dialog);
+    const at = [place("composer"), place("settings"), place("window")];
+    const showsAt = () => at.map((p) => p.cards().length);
+    try {
+        expect(showsAt()).toEqual([1, 0, 0]);
+        setDialog(true);
+        expect(showsAt()).toEqual([0, 0, 1]);
+        setSettings("general");
+        expect(showsAt()).toEqual([0, 0, 1]);
+        setDialog(false);
+        expect(showsAt()).toEqual([0, 1, 0]);
+    } finally {
+        for (const p of at) p.dispose();
     }
 });
 

@@ -8,7 +8,7 @@ import { ArrowDown, ArrowUp, Check, CloudDownload, FolderGit2, GitBranch, GitPul
 import type { GitBranchEntry, GitBranchList, GitPrListInfo, GitPrWorktree, GitSyncInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import type { SessionHandle } from "../state/app";
-import { app, createSession, handleFor, requestTrust, rpc, setApp, toast } from "../state/app";
+import { app, connFor, createSession, handleFor, homeAt, linkedMachine, requestTrust, rpc, setApp, toast, type HomeAt } from "../state/app";
 import { changedOutside, refreshGitChanges, sessionReadReady } from "../state/changes";
 import { withShortcut } from "../state/keybindings";
 import { gitDialog, requestComposerFocus, setGitDialog } from "../state/ui";
@@ -22,6 +22,16 @@ const afterGit = () => {
     setMoved((n) => n + 1);
     refreshGitChanges();
 };
+
+/**
+ * The machine the dialog's folder is on, as it was when the dialog opened: the session's (another machine's, opened
+ * here), else Home's. `link` takes its calls; a pull request's session is made there too.
+ */
+function folderAt(sessionId: string | undefined): HomeAt & { link: typeof rpc } {
+    const home = homeAt();
+    const at = sessionId === undefined ? home : { ...home, there: linkedMachine(sessionId) };
+    return { ...at, link: at.there?.link ?? rpc };
+}
 
 /** "↑2 ↓3" as words, for the chip's label and the dialog. */
 export function syncWords(s: GitSyncInfo | undefined): string {
@@ -108,9 +118,11 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     /** What the last action said: its outcome, or git's reason it couldn't. */
     const [note, setNote] = createSignal<{ text: string; level: "info" | "warn" | "error" }>();
     const where = { cwd: p.cwd, ...(p.sessionId ? { sessionId: p.sessionId } : {}) };
-    const [sync, { mutate: setSync, refetch: refetchSync }] = createResource(() => app.conn === "open" && moved() + 1, () => rpc.call("git.sync", where).catch(() => undefined));
+    // The folder's machine: another machine's session, or Home on one, is asked there.
+    const { link: rpc } = folderAt(p.sessionId);
+    const [sync, { mutate: setSync, refetch: refetchSync }] = createResource(() => connFor(p.sessionId) === "open" && moved() + 1, () => rpc.call("git.sync", where).catch(() => undefined));
     const [list, { refetch }] = createResource(
-        () => app.conn === "open",
+        () => connFor(p.sessionId) === "open",
         (): Promise<GitBranchList & { error?: string }> => rpc.call("git.branches", where).catch((e: unknown) => ({ local: [], remote: [], error: e instanceof Error ? e.message : String(e) })),
     );
     let input: HTMLInputElement | undefined;
@@ -276,15 +288,15 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
 }
 
 /** A new session in the pull request's worktree, its composer holding the pull request to work on. */
-async function openPrSession(made: GitPrWorktree): Promise<void> {
+async function openPrSession(made: GitPrWorktree, at: HomeAt): Promise<void> {
     try {
-        const h = await createSession(made.path, app.homeMode);
+        const h = await createSession(made.path, at);
         setApp("activeId", h.id);
         h.addDraft({ text: `Pull request #${made.pr.number}: ${made.pr.title}\n${made.pr.url}\n\n` });
         requestComposerFocus();
     } catch (e) {
         // The worktree has project configuration of its own: trusted first, then the session.
-        if (e instanceof RpcError && e.code === "needs_trust") return requestTrust(made.path, () => void openPrSession(made));
+        if (e instanceof RpcError && e.code === "needs_trust") return requestTrust(made.path, () => void openPrSession(made, at), undefined, undefined, at.there?.link ?? rpc, at.there?.on);
         throw e;
     }
 }
@@ -298,8 +310,11 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
     const [busy, setBusy] = createSignal<string>();
     const [failure, setFailure] = createSignal<{ text: string; code?: string; folder?: string; ref?: string }>();
     const where = { cwd: p.cwd, ...(p.sessionId ? { sessionId: p.sessionId } : {}) };
+    // The folder's machine: the worktree and its session are made there.
+    const at = folderAt(p.sessionId);
+    const rpc = at.link;
     const [list, { refetch }] = createResource(
-        () => app.conn === "open",
+        () => connFor(p.sessionId) === "open",
         (): Promise<GitPrListInfo | undefined> =>
             rpc.call("git.pullRequests", where).catch((e: unknown) => {
                 setFailure({ text: e instanceof Error ? e.message : String(e), code: e instanceof RpcError ? e.code : undefined });
@@ -322,7 +337,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             setGitDialog(undefined);
             toast(made.reused ? `Opened #${made.pr.number} in ${made.branch}` : `Checked out #${made.pr.number} on ${made.branch}`, "success");
             afterGit();
-            await openPrSession(made);
+            await openPrSession(made, at);
         } catch (e) {
             setFailure({ text: e instanceof Error ? e.message : String(e), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined, ref });
         } finally {

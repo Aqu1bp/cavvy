@@ -19,9 +19,10 @@ const TRASH = [
     { id: "a", title: "Why does the login test fail", deletedAt: 1 },
 ];
 
-function mount(answer: (method: string, params: any) => Promise<any>) {
+/** `there`: what the servers list as deleted (asked apart from this machine's own); none unless given. */
+function mount(answer: (method: string, params: any) => Promise<any>, there: () => Promise<any[]> = async () => []) {
     const [open, setOpen] = solid.createSignal(false);
-    const calls = { rpc: [] as [string, any][], opened: [] as string[], errors: [] as unknown[] };
+    const calls = { rpc: [] as [string, any][], opened: [] as string[], errors: [] as unknown[], from: [] as [string, string][] };
     const RecentlyDeleted = component(source, "RecentlyDeleted", {
         Dialog,
         Spinner: () => null,
@@ -31,7 +32,8 @@ function mount(answer: (method: string, params: any) => Promise<any>) {
         ago: (ms: number) => (ms === 1 ? "now" : "5m"),
         activate: async (id: string) => void calls.opened.push(id),
         reportError: (e: unknown) => void calls.errors.push(e),
-        rpc: { call: (method: string, params: any) => (calls.rpc.push([method, params]), answer(method, params)) },
+        restoredFrom: (id: string, on: string) => void calls.from.push([id, on]),
+        rpc: { call: (method: string, params: any) => (method === "sessions.trash" && params?.servers ? there() : (calls.rpc.push([method, params]), answer(method, params))) },
     });
     const root = node("root");
     const dispose = renderer.render(() => RecentlyDeleted(), root);
@@ -99,6 +101,38 @@ test("Restore puts it back and offers Open, which closes the dialog and opens it
         expect(d.calls.errors.map((e) => (e as Error).message)).toEqual(["Couldn't restore"]);
         expect(has(d.rows()[0]!, "back")).toBe(false);
         expect(button(d.rows()[0]!, "Restore")!.props.disabled).toBe(false);
+    } finally {
+        d.dispose();
+    }
+});
+
+test("what was deleted on a server is listed with this machine's, says where, and is restored and opened there", async () => {
+    let servers!: (rows: any[]) => void;
+    const d = mount(async (method) => (method === "sessions.trash" ? [] : null), () => new Promise((r) => (servers = r)));
+    try {
+        d.setOpen(true);
+        await settle();
+        // This machine has none, and the servers haven't said: not "Nothing deleted" yet.
+        expect(byClass(d.root, "deleted-empty").map(text)).toEqual([""]);
+        servers([{ id: "b1", title: "On the server", projectName: "app", deletedAt: 5, machine: "box" }]);
+        await settle();
+        expect(d.rows().map((r) => text(byClass(r, "deleted-meta")[0]!))).toEqual(["box · app · Deleted 5m ago"]);
+        button(d.rows()[0]!, "Restore")!.props.onClick();
+        await settle();
+        expect(d.calls.rpc.at(-1)).toEqual(["servers.relay", { name: "box", method: "session.restore", params: { id: "b1" } }]);
+        button(d.rows()[0]!, "Open")!.props.onClick();
+        expect([d.calls.from, d.calls.opened]).toEqual([[["b1", "box"]], ["b1"]]);
+    } finally {
+        d.dispose();
+    }
+});
+
+test("a server that didn't say what's deleted there is named, not taken for none", async () => {
+    const d = mount(async (method) => (method === "sessions.trash" ? [] : null), async () => ({ rows: [], silent: ["box"] }) as any);
+    try {
+        d.setOpen(true);
+        await settle();
+        expect(byClass(d.root, "deleted-empty").map(text)).toEqual(["Not shown: box."]);
     } finally {
         d.dispose();
     }

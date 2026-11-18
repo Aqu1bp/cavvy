@@ -32,7 +32,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const compiled = transformSync(source, { filename: "UsageView.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const scope = { renderer, ...solid, ...usage, ...limits, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
-        app: { limits: limitReports, providers }, refreshLimits: async () => { limitRefreshes++; },
+        app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
         RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null,

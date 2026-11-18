@@ -1,7 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitBranch, GitFork, GitPullRequest, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
-import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
+import { machine as windowMachine, os } from "../lib/platform";
+import { activate, app, handleFor, reportError, restoredFrom, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs } from "../state/prefs";
 import { openGit, terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
@@ -13,6 +14,11 @@ import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
 import { entryScore, groupSections, keepSelection, messagesShown } from "../lib/palette-order";
+
+/** "box · " before a server's session's project; nothing for this computer's. */
+const atMachine = (machine?: string) => (machine ? `${machine} · ` : "");
+/** A message hit's machine, as it's named in a window on a server: its own server's by name, this computer's ("") too. */
+const hitMachine = (machine?: string) => (!windowMachine ? machine : machine === undefined ? windowMachine : machine || (os === "macos" ? "This Mac" : "This computer"));
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -71,7 +77,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
     const [hits, setHits] = createSignal<{ query: string; hits: SessionSearchHit[] }>({ query: "", hits: [] });
     const [searching, setSearching] = createSignal(false);
     // Past the server's budget: reading older sessions still, or stopped before all were read.
-    const [older, setOlder] = createSignal<"more" | "incomplete">();
+    const [older, setOlder] = createSignal<"more" | "servers" | "incomplete">();
     let asked = 0;
     let wait: ReturnType<typeof setTimeout> | undefined;
     createEffect(
@@ -95,15 +101,18 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
             wait = setTimeout(async () => {
                 try {
                     await searchRounds(
-                        () => rpc.call("sessions.search", { query, limit: MAX_HITS }),
+                        (rest) => rpc.call("sessions.search", { query, limit: MAX_HITS, ...(rest ? { rest } : {}) }),
                         () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
+                            // A message is selected: every message stays in sight, so later hits that join them
+                            // (a slow server's) can't push it out from under the selection.
+                            if (results()[sel()]?.section === "Messages") setAllMessages(true);
                             setHits({ query, hits: r.hits });
-                            setOlder(r.more ? "more" : r.incomplete ? "incomplete" : undefined);
+                            setOlder(r.servers ? "servers" : r.more ? "more" : r.incomplete ? "incomplete" : undefined);
                         },
                     );
                 } catch {
-                    if (mine === asked) setHits({ query: "", hits: [] });
+                    if (mine === asked) (setHits({ query: "", hits: [] }), setOlder(undefined));
                 } finally {
                     if (mine === asked) setSearching(false);
                 }
@@ -121,6 +130,8 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         setSettingsTab(undefined);
         setAgentFocus(undefined);
         setJumpTarget({ sessionId: h.id, seg: h.seg, index: h.index, role: h.role, query });
+        // One on a server, maybe not in the list: opened from there.
+        if (h.machine !== undefined) restoredFrom(h.id, h.machine);
         void activate(h.id, h.cwd);
     };
 
@@ -165,7 +176,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
             { id: "theme-dark", section: "Theme", label: "Theme: Dark", keywords: "appearance color scheme", icon: <Moon size={15} />, run: () => setPrefs("scheme", "dark") },
             { id: "theme-system", section: "Theme", label: "Theme: Match system", keywords: "appearance color scheme auto", icon: <Sun size={15} />, run: () => setPrefs("scheme", "system") },
         );
-        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, end: `${s.machine ? `${s.machine} · ` : ""}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
+        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, end: `${atMachine(s.machine)}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
         for (const p of app.projects) out.push({ id: `p-${p.path}`, section: "Projects", label: `New session in ${p.name}`, desc: tildify(p.path, app.hello?.homeDir), keywords: p.path, icon: <FolderGit2 size={15} />, run: () => void openProject(p.path) });
         return out;
     });
@@ -189,13 +200,19 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         // Fresh answers are authoritative, even if a capped session list missed
         // an Undo. The generation check above drops answers predating deletion.
         // What was said, as it reads (no Markdown syntax), with the session it's in under it.
-        const messages: Entry[] = said.hits.map((h, i) => {
+        // Named by what it is, not where it stands: hits that arrive later (a slow server's) move it, and the
+        // selection goes with it. Several in one message are told apart by their order there.
+        const seen = new Map<string, number>();
+        const messages: Entry[] = said.hits.map((h) => {
             const sn = plainSnippet(h.snippet, h.match);
+            const at = `m-${JSON.stringify([h.machine ?? "", h.id, h.seg, h.index])}`;
+            const nth = seen.get(at) ?? 0;
+            seen.set(at, nth + 1);
             return {
-                id: `m-${h.id}-${h.seg}-${h.index}-${i}`,
+                id: `${at}-${nth}`,
                 section: "Messages",
                 label: sn.text,
-                desc: `${h.title} · ${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
+                desc: `${h.title} · ${atMachine(hitMachine(h.machine))}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
                 icon: h.role === "user" ? <User size={15} /> : <Bot size={15} />,
                 snippet: sn,
                 run: () => openHit(h, said.query),
@@ -262,7 +279,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
                 <kbd>Esc</kbd>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For each={results()} fallback={<div class="pal-empty">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -293,7 +310,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
                     )}
                 </For>
                 <Show when={results().length && older()}>
-                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
+                    <div class="pal-note">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
                 </Show>
             </div>
         </Dialog>

@@ -100,3 +100,12 @@ export function startMode(asked: PermissionMode | undefined, settings: Settings,
     if (asked) return { mode: asked, ignoredBypass: false };
     return defaultMode(settings, cwd, bypassAllowed, server);
 }
+
+/**
+ * The mode this machine holds another machine's calls to (a server's session using its Simulator): its default, and
+ * Manual where that's a Bypass that isn't turned on here, as for its own sessions (Runtime).
+ */
+export function lendingMode(settings: Settings, cwd: string, bypassOn: boolean): PermissionMode {
+    const mode = defaultMode(settings, cwd).mode;
+    return mode === "bypassPermissions" && !bypassOn ? "default" : mode;
+}
