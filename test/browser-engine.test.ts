@@ -376,9 +376,9 @@ describe("a session's browser", () => {
     const ctx = (state: any, signal = new AbortController().signal) => ({ state, settings: {}, signal }) as any;
 
     /** A session with its tool state, as the agent and the pane see it. */
-    function open(over: { refuse?: (url: string) => string | undefined; dir?: string; pool?: { idleMs?: number; startupMs?: number } } = {}) {
+    function open(over: { refuse?: (url: string) => string | undefined; dir?: string; pool?: { idleMs?: number; startupMs?: number }; far?: boolean } = {}) {
         const dir = over.dir ?? root;
-        const session = new BrowserSession({ root: dir, settings: () => ({}), refuse: over.refuse, pool: { startupMs: 20_000, ...over.pool } });
+        const session = new BrowserSession({ root: dir, settings: () => ({}), refuse: over.refuse, pool: { startupMs: 20_000, ...over.pool }, far: over.far });
         sessions.push(session);
         const state: any = { cwd: dir, projectRoot: dir, fileState: new Map(), todos: [], shells: new Map(), browser: session };
         const run = (tool: { run: (i: any, c: any) => Promise<any> }, input: Record<string, unknown>, signal?: AbortSignal) => tool.run(input, ctx(state, signal));
@@ -751,6 +751,25 @@ describe("a session's browser", () => {
         expect(alive(pid)).toBe(true);
         session.unwatch(key);
         await until(() => !alive(pid), "it to end once nobody watched", 15_000);
+    });
+
+    test("a pane watched over a network: the page is drawn at 1x, and the still when it stops at the pane's scale", async () => {
+        for (const far of [true, false]) {
+            const { session, nav } = open({ far });
+            await nav({ url: "http://localhost:4000/" });
+            const fake = await fakeChromeAt(profile);
+            const key = {};
+            session.watch(key, () => undefined, { width: 300, height: 500, scale: 2 });
+            const sized = async () => (await fake.sent("Emulation.setDeviceMetricsOverride")).map((c) => [c.params.width, c.params.deviceScaleFactor]).at(-1);
+            await until(async () => (await sized())?.[0] === 300, "the page to take the pane's size");
+            expect(await sized()).toEqual([300, far ? 1 : 2]);
+            if (far) {
+                await until(async () => (await fake.sent("Page.captureScreenshot")).some((c) => c.params.clip), "the still");
+                expect((await fake.sent("Page.captureScreenshot")).map((c) => c.params.clip).filter(Boolean).at(-1)).toEqual({ x: 0, y: 0, width: 300, height: 500, scale: 2 });
+            }
+            session.unwatch(key);
+            await session.dispose();
+        }
     });
 
     test("a browser that dies is a tool error, and the next call starts another", async () => {
