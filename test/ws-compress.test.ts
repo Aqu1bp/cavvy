@@ -99,3 +99,17 @@ test.skipIf(process.platform !== "linux")("a slow stream goes to another machine
     expect(remote.chars / remote.messages).toBeGreaterThanOrEqual(120);
     expect(local.chars / local.messages).toBeLessThan(30);
 }, 30_000);
+
+test("compression is agreed with a window on another machine only: this machine's would compress what it sends", async () => {
+    const opened = async (host: string) => {
+        const server = await startServer({ host, port: 0, token: TOKEN });
+        stops.push(() => server.stop?.());
+        const ws = new WebSocket(`ws://${host}:${server.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
+        await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error("no connection")); });
+        const agreed = ws.extensions;
+        ws.close();
+        return agreed;
+    };
+    expect(await opened("127.0.0.1")).toBe("");
+    expect(await opened("127.0.0.2")).toContain("permessage-deflate");
+});
