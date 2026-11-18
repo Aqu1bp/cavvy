@@ -13,6 +13,8 @@ export interface SearchProgress {
     more: boolean;
     /** It stopped with sessions not read: the hits may not be all of them. */
     incomplete: boolean;
+    /** What's on its way is the servers' (these are this machine's own), not older sessions read here. */
+    servers?: boolean;
 }
 
 /**
@@ -27,7 +29,7 @@ export async function searchRounds(ask: (rest?: boolean) => Promise<SessionSearc
         // This machine's own, its servers still to answer: shown meanwhile (the first time: later, what's shown
         // already has the servers'), and the rest asked for. That's the same round.
         if (r.pending) {
-            if (i === 1) show({ hits: r.hits, more: true, incomplete: false });
+            if (i === 1) show({ hits: r.hits, more: true, incomplete: false, servers: true });
             r = await ask(true);
             if (!current() || r.stale) return;
         }

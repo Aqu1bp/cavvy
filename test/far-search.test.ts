@@ -79,7 +79,7 @@ test("a slow server doesn't hold what this machine found: it's answered at once 
 test("the palette shows this machine's hits while the servers answer, then asks for the rest in the same round", async () => {
     const { searchRounds } = await import("../gui/src/lib/search");
     const asked: (boolean | undefined)[] = [];
-    const shown: { hits: string[]; more: boolean }[] = [];
+    const shown: { hits: string[]; more: boolean; servers?: boolean }[] = [];
     const answers = [
         { hits: [hit("m1", 9)], partial: false, pending: true },
         { hits: [hit("m1", 9), hit("b1", 5)], partial: true },
@@ -87,9 +87,24 @@ test("the palette shows this machine's hits while the servers answer, then asks 
         { hits: [hit("m1", 9)], partial: false, pending: true },
         { hits: [hit("m1", 9), hit("b1", 5), hit("b0", 1)], partial: false },
     ];
-    await searchRounds(async (rest) => (asked.push(rest), answers.shift()!), () => true, (p) => void shown.push({ hits: p.hits.map((h) => h.id), more: p.more }));
+    await searchRounds(async (rest) => (asked.push(rest), answers.shift()!), () => true, (p) => void shown.push({ hits: p.hits.map((h) => h.id), more: p.more, ...(p.servers ? { servers: true } : {}) }));
     expect(asked).toEqual([undefined, true, undefined, true]);
-    expect(shown).toEqual([{ hits: ["m1"], more: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
+    // The first is said to be waiting on the servers, not on older sessions.
+    expect(shown).toEqual([{ hits: ["m1"], more: true, servers: true }, { hits: ["m1", "b1"], more: true }, { hits: ["m1", "b1", "b0"], more: false }]);
+});
+
+test("a message hit keeps its name when later hits move it, so the selection stays on it", async () => {
+    const src = await Bun.file(new URL("../gui/src/components/CommandPalette.tsx", import.meta.url)).text();
+    // By its machine, session and place in it; several in one message by their order there. Not by its row.
+    expect(src).toContain("const at = `m-${JSON.stringify([h.machine ?? \"\", h.id, h.seg, h.index])}`;");
+    // And a selected message isn't folded away by hits that join it.
+    expect(src).toContain('if (results()[sel()]?.section === "Messages") setAllMessages(true);');
+    expect(src).toContain("id: `${at}-${nth}`,");
+    expect(src).not.toContain("-${h.index}-${i}`");
+    const { keepSelection } = await import("../gui/src/lib/palette-order");
+    const before = [{ id: "m--a-0-1-0" }, { id: "m--b-0-2-0" }];
+    const after = [{ id: "m-box-x-0-0-0" }, { id: "m--a-0-1-0" }, { id: "m-box-y-0-0-0" }, { id: "m--b-0-2-0" }];
+    expect([keepSelection(before, after, 0, false), keepSelection(before, after, 1, false)]).toEqual([1, 3]);
 });
 
 test("for a window on one of its servers, the user's computer searches its own sessions and the other servers'", async () => {
