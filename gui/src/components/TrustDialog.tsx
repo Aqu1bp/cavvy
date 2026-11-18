@@ -1,6 +1,7 @@
 import { createResource, createUniqueId, Show } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
-import { app, reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
+import { machine } from "../lib/platform";
+import { app, awayMachine, homeOn, reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
 import { trustAndContinue } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 
@@ -42,7 +43,7 @@ export function TrustDialog() {
                 </Show>
                 <Show when={trustRequest()?.purpose === "agent" && trustRequest()?.reason}>{(reason) => <p class="muted">{reason()}</p>}</Show>
                 <Show when={!upgrade() && info()?.needsTrust.length}>
-                    <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on this computer and let the agent act without asking.</p>
+                    <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on {(awayMachine(app.activeId) ?? homeOn() ?? machine) || "this computer"} and let the agent act without asking.</p>
                 </Show>
                 <div class="trust-actions">
                     <button class="btn secondary" onClick={() => upgrade() ? cancel() : void decide(false)}>

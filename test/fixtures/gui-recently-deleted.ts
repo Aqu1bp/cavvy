@@ -126,3 +126,14 @@ test("what was deleted on a server is listed with this machine's, says where, an
         d.dispose();
     }
 });
+
+test("a server that didn't say what's deleted there is named, not taken for none", async () => {
+    const d = mount(async (method) => (method === "sessions.trash" ? [] : null), async () => ({ rows: [], silent: ["box"] }) as any);
+    try {
+        d.setOpen(true);
+        await settle();
+        expect(byClass(d.root, "deleted-empty").map(text)).toEqual(["Not shown: box."]);
+    } finally {
+        d.dispose();
+    }
+});

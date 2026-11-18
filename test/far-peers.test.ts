@@ -158,3 +158,10 @@ test("the worktree a removal leaves Home in is read before the dialog closes", a
     expect(remove.split("p.request").length).toBe(2);
     expect(remove).toContain("homeOn() === on && app.homeCwd === here) await openProject(main, true);");
 });
+
+test("a send another machine refuses names the session as it was asked for", async () => {
+    const refuse = { ask: async () => Promise.reject(new Error("Session s1 runs in Bypass permissions mode, so it can't be sent work from there.")) };
+    const from = { id: "a", title: "A", mode: "default" as const };
+    expect(await homeFarPeers(() => new Map([["box", refuse]])).send("box/s1", "hi", from).catch((e: Error) => e.message)).toBe("Session box/s1 runs in Bypass permissions mode, so it can't be sent work from there.");
+    expect(await serverFarPeers(() => Promise.reject(new Error("Session s1 runs in Bypass permissions mode."))).send("mac/s1", "hi", from).catch((e: Error) => e.message)).toBe("Session mac/s1 runs in Bypass permissions mode.");
+});

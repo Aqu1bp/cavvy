@@ -229,7 +229,7 @@ export function Plugins() {
                 {confirm()?.body}
             </ConfirmDialog>
             <Show when={details()} keyed>
-                {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
+                {(d) => <PluginDetails plugin={d.pl} markets={markets()} on={where() || windowMachine} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
             <Show when={servers().length}>
                 <div class="pg-bar">
@@ -243,13 +243,13 @@ export function Plugins() {
                     value={view()}
                     onChange={show}
                     options={[
-                        { value: "installed", label: <>Installed <Show when={!loading()}><span class="plg-n">{installed().length}</span></Show></> },
-                        { value: "discover", label: <>Discover <Show when={!loading()}><span class="plg-n">{available().length}</span></Show></> },
-                        { value: "marketplaces", label: <>Marketplaces <Show when={!loading()}><span class="plg-n">{markets().length}</span></Show></> },
+                        { value: "installed", label: <>Installed <Show when={!loading() && info()}><span class="plg-n">{installed().length}</span></Show></> },
+                        { value: "discover", label: <>Discover <Show when={!loading() && info()}><span class="plg-n">{available().length}</span></Show></> },
+                        { value: "marketplaces", label: <>Marketplaces <Show when={!loading() && info()}><span class="plg-n">{markets().length}</span></Show></> },
                     ]}
                 />
                 <span class="grow" />
-                <Show when={view() !== "marketplaces" && !loading()}>
+                <Show when={view() !== "marketplaces" && !loading() && info()}>
                     <label class="pg-search">
                         <Search size={14} />
                         <input ref={searchEl} aria-label="Search plugins" placeholder={view() === "installed" ? "Search installed plugins" : `Search ${plural(available().length, "plugin")}`} value={query()} onInput={(e) => setQuery(e.currentTarget.value)} spellcheck={false} autocomplete="off" />
@@ -263,6 +263,14 @@ export function Plugins() {
             </div>
             <Show when={!loading()} fallback={<div class="pg-load" role="status"><Spinner size={14} /> Reading your marketplaces…</div>}>
                 <Switch>
+                    {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
+                    <Match when={!info()}>
+                        {empty(Puzzle, where() ? `Couldn't load ${where()}'s plugins` : "Couldn't load plugins", undefined, () => (
+                            <button class="btn secondary sm" onClick={() => (setLoading(true), void load())}>
+                                Try again
+                            </button>
+                        ))}
+                    </Match>
                     <Match when={view() === "marketplaces"}>
                         <div class="pg-add">
                             <label>
@@ -414,7 +422,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
 }
 
 /** A plugin's details: its full summary, who makes it, and where to install it. */
-function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<void> }) {
+function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; on?: string; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<void> }) {
     const [scope, setScope] = createSignal<PluginScope>("user");
     const pl = p.plugin;
     const cat = categoryOf(pl.category);
@@ -482,7 +490,7 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
             </Show>
             <p class="pg-warn">
                 <Info size={13} />
-                It can run commands on this computer.
+                It can run commands on {p.on || "this computer"}.
             </p>
             <div class="dialog-actions">
                 <span class="grow" />
@@ -583,7 +591,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: "It's removed from this project and from your own settings.",
+                                body: pl().scopes.project || pl().scopes.local ? "It's removed from this project and from your own settings." : "It's removed from your own settings.",
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),

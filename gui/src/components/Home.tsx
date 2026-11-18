@@ -243,7 +243,7 @@ export function Home() {
                             <p>
                                 <b>{basename(app.homeCwd ?? "")}</b> has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
-                                ) that can run commands on this computer.
+                                ) that can run commands on {(homeOn() ?? machine) || "this computer"}.
                             </p>
                             <div class="ask-row">
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>

@@ -181,6 +181,8 @@ export function McpDialog() {
                     win.opener = null;
                     win.location.href = url;
                 }
+                // The desktop app opens no blank window: the page is asked for now, and it opens it in the browser.
+                else if (!win) window.open(url, "_blank", "noopener");
                 return () => {
                     setSignInLink({ name: s.name, url });
                     toast(`Sign in to ${s.label} in your browser.`);

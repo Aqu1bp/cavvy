@@ -71,6 +71,10 @@ function readOf(id: string, v: unknown): Read {
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
 };
+/** As `refused`, naming the session as this machine names it (`<machine>/<id>`), not by the id it has there. */
+const refusedOf = (id: string) => (e: unknown): never => {
+    throw new PeerError((e instanceof Error ? e.message : String(e)).replace(/^Session \S+ /, () => `Session ${id} `));
+};
 
 /** Newest first, at most `limit`. */
 const newest = (rows: PeerSummary[], limit: number) => rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
@@ -103,7 +107,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
         send: async (id, message, from) => {
             const s = at(id);
             // Named as the server names this computer's sessions.
-            return sentTo(id, await s.link.ask("peers.send", { id: s.id, message, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refused));
+            return sentTo(id, await s.link.ask("peers.send", { id: s.id, message, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refusedOf(id)));
         },
     };
 }
@@ -186,7 +190,7 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
             );
         },
         read: async (id, turns) => readOf(id, await call("read", { id, turns }).catch(refused)),
-        send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refused)),
+        send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refusedOf(id))),
     };
 }
 
