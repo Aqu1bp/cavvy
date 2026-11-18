@@ -369,6 +369,9 @@ export function unreadableMcpApprovals(cwd: string, s?: Settings): string | unde
 
 const unreadableWhenLoaded = new WeakMap<Settings, string>();
 
+/** Whether these settings were loaded while the user's or the folder's local file was there but unreadable or blank (being written): they may lack rules it holds. */
+export const loadedUnreadable = (s: Settings): boolean => unreadableWhenLoaded.has(s);
+
 /** A copy of loaded settings (a run's own on top of them) was loaded as they were: what couldn't be read then counts for it too. */
 export function asLoaded(copy: Settings, loaded: Settings): Settings {
     const file = unreadableWhenLoaded.get(loaded);

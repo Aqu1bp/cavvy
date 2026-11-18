@@ -735,7 +735,7 @@ export class Runtime {
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
         // On a server: tools it hasn't got and another of the user's machines lends it (its Mac's simulators). Kept for
         // as long as the session, so a call made after the Mac has left is told that, not that there are no simulators.
-        if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
+        if (engine.away) this.toolState.lends = { call: (tool, input, signal, decided) => engine.borrow(this, tool, input, signal, decided) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         // The user's servers, for an agent to set one up or add one: from their own machine only (a server reaches no other machine of theirs).
@@ -5622,6 +5622,9 @@ export class Runtime {
         this.lending++;
         this.lastLent = Date.now();
         try {
+            // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't
+            // be read just now, or is blank, is being written: it isn't one with fewer rules, and nothing is taken from it.
+            if (!this.ws.reloadReadable()) return { text: "Cavvy on your Mac couldn't read its settings just now. Call it again.", isError: true };
             return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;

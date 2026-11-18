@@ -116,3 +116,18 @@ test("a server answers its sessions for the user's computer, and asks it about t
         await engine.stop();
     }
 });
+
+test("a deny rule that names a session tool at all keeps it from another machine's sessions", async () => {
+    const { peersDenied } = await import("../src/server/far-peers");
+    for (const rule of ["SendToSession", "SendToSession(*)", "SendToSession(box/*)", "mcp__cavvy__send_to_session", "mcp__cavvy__*"]) expect([rule, peersDenied([rule], "SendToSession")]).toEqual([rule, true]);
+    for (const rule of ["ReadSession", "Bash(send*)", "SendToSessions", "mcp__other__send_to_session"]) expect([rule, peersDenied([rule], "SendToSession")]).toEqual([rule, false]);
+    expect(peersDenied(["mcp__cavvy__list_sessions"], "ListSessions")).toBe(true);
+    expect(peersDenied([], "ReadSession")).toBe(false);
+});
+
+test("a Bypass default that isn't turned on here holds another machine's calls as Manual does", async () => {
+    const { lendingMode } = await import("../src/permissions/modes");
+    const bypass = { permissions: { defaultMode: "bypassPermissions" } } as never;
+    expect(lendingMode(bypass, "/tmp", false)).toBe("default");
+    expect(lendingMode({ permissions: { defaultMode: "auto" } } as never, "/tmp", false)).toBe("auto");
+});

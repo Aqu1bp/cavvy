@@ -111,8 +111,9 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
                 </div>}</For>
             </div>
         </section>
-        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1)}>
-            <UsageAccounts accounts={accounts()} metric={m()} total={total()} hl={setHl} />
+        {/* Also for one account alone when it's another machine's (`<id>@<server>`): its row says where that usage was. */}
+        <Show when={SOURCES.some((s) => s !== "api" && accountCount(s) > 1) || accounts().some((a) => a.source !== "api" && a.accountId.includes("@"))}>
+            <UsageAccounts accounts={accounts()} names={p.data.names} metric={m()} total={total()} hl={setHl} />
         </Show>
         <UsageChart data={p.data} metric={m()} />
         <h3 class="set-h">By token type</h3>
@@ -142,10 +143,10 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
 }
 
 /** What each account gave, under a heading per source; the bars are shares of the whole range, so accounts compare across sources. */
-function UsageAccounts(p: { accounts: AccountTotal[]; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
+function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary gives: another machine's accounts, and this computer's in a window that isn't on it. */ names?: Record<string, string>; metric: Metric; total: number; hl: (s?: UsageSource) => void }) {
     const info = (a: AccountTotal) => app.providers.find((x) => x.id === a.provider);
     const account = (a: AccountTotal) => info(a)?.agentCli?.accounts?.find((x) => x.id === a.accountId);
-    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
+    const name = (a: AccountTotal) => (a.source === "api" ? a.providerName : p.names?.[`${a.source}:${a.accountId}`] ?? account(a)?.name ?? (a.accountId === "default" ? "Default" : a.accountId));
     const meta = (a: AccountTotal) => {
         if (a.source === "api") return "API key";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
@@ -283,6 +284,7 @@ export function UsageView() {
             <Show when={loading() && !data()}><p class="set-note" role="status">Loading usage…</p></Show>
             <Show when={!error() && data()}>{d => <div class={`usage-body ${stale() ? "busy" : ""}`}>
                 <Show when={d().truncated}><div class="u-partial" role="status"><Info size={14} /><span>Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
+                <Show when={d().uncounted?.length}><div class="u-partial" role="status"><Info size={14} /><span>Not counted: {d().uncounted!.join(", ")}.</span></div></Show>
                 <Show when={d().rows.length} fallback={noModel() && !d().truncated ? <div class="set-group u-state"><b>No model connected.</b><button class="btn secondary sm" onClick={() => setSettingsTab("providers")}>Connect a model</button></div> : <div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
                     <UsageDashboard data={d()} metric={view() === "tokens" ? "tokens" : "cost"} />
                 </Show>
