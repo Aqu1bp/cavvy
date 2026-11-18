@@ -73,6 +73,12 @@
     color: var(--fg-2);
 }
 
+/* The size and zoom: too narrow for one row, the zoom goes to a second. */
+.br-strip.br-size {
+    flex-wrap: wrap;
+    row-gap: calc(4 * var(--sp));
+}
+
 .br-strip .hb {
     border-radius: var(--pill);
 }
@@ -100,10 +106,32 @@
 
 .br-strip input.br-side {
     width: calc(50 * var(--sp));
-    min-width: 0;
+    min-width: calc(40 * var(--sp));
+    flex: 0 1 auto;
     padding: 0 calc(4 * var(--sp));
     text-align: center;
     font-variant-numeric: tabular-nums;
+}
+
+/* A side the page can't have, kept as typed (as the app's other fields mark a refused value). */
+.br-strip input.br-side[aria-invalid="true"] {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+
+/* After the size: how small it's drawn to fit, or what a side takes. The first thing to give way when the pane is narrow. */
+.br-strip-note {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding-left: calc(4 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.br-strip-note.refused {
+    color: var(--danger);
 }
 
 .br-strip-count,
