@@ -165,7 +165,7 @@ export function Home() {
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
             {/* Worktrees are made on the window's own machine. */}
-            <Show when={app.homeCwd && info()?.git && homeOn() === undefined}>
+            <Show when={app.homeCwd && info()?.git}>
                 <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
             </Show>
             <span class="grow" />
