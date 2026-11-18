@@ -484,11 +484,19 @@ interface PendingNote {
 const PLAN_NOTE =
     "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.";
 
+/**
+ * What a mode means, for a model whose tools Cavvy checks. An agent CLI runs in its own counterpart of the mode
+ * (BackendPermission.ownMode), which asks for other things than Cavvy's does: it hears the mode's name only.
+ */
+function modeMeaning(to: PermissionMode, own: boolean): string {
+    return own ? "." : `: ${MODE_INFO[to].description}`;
+}
+
 /** What the model hears when the mode went from `from` (as it last heard) to `to`. */
-function modeNote(from: string, to: PermissionMode): string {
+function modeNote(from: string, to: PermissionMode, own = false): string {
     if (to === "plan") return PLAN_NOTE;
     if (from === "plan") return `Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`;
-    return `The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`;
+    return `The user switched the permission mode to "${MODE_INFO[to].label}"${modeMeaning(to, own)}`;
 }
 
 /** Which state a note (a reminder's text) reports, this version's wording or an earlier one's. */
@@ -673,7 +681,7 @@ export class Agent {
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         // Each in the mode it works out under the new one: a read-only one stays read-only, one whose definition sets a mode keeps it (childMode).
         for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(c.o.mode.get());
-        this.noteState("mode", from, to, (origin) => modeNote(origin, to));
+        this.noteState("mode", from, to, (origin) => modeNote(origin, to, isAgentBackend(this.client)));
     }
 
     /** The user picked another model (`from` is the one before, provider:id). */
@@ -1239,7 +1247,7 @@ export class Agent {
         // The mode may have changed in the dropped turns: say what it is now.
         const mode = this.o.mode.get();
         this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
-        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}` });
+        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}"${modeMeaning(mode, isAgentBackend(this.client))}` });
         // So may the model, if a dropped prompt told it of a switch (a switch since is still queued).
         const switched = dropped.some((m) => m.role === "user" && promptNotes(m).some((n) => stateKind(n) === "model"));
         if (switched && !this.pendingReminders.some((r) => r.kind === "model")) {
