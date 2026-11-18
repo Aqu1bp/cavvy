@@ -416,9 +416,9 @@ export function App() {
                 if (coming === q.id) coming = undefined;
                 return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
             }
-            // Said at once, before loading or drawing anything: the app then waits for the answer, however long drawing
-            // it takes, rather than asking in the system's box. Asked again while it's up: it still has it.
-            electron?.quitReply?.(q.id, "asked");
+            // Asked: said at once, before loading or drawing anything, and nothing shown. The app tells it to show the
+            // question only while nothing else asks it (desktop-electron/src/quit-ask.ts): one question up at a time.
+            if (!q.show) return void electron?.quitReply?.(q.id, "asked");
             if (quitAsk()?.id === q.id || coming === q.id) return;
             coming = q.id;
             QuitDialog.preload().then(

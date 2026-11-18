@@ -9,6 +9,8 @@ export interface QuitAsk {
     id: number;
     title: string;
     detail: string;
+    /** Put it up (the app says so once the page has said it has it, and only then). Without: just say it has it. */
+    show?: boolean;
 }
 
 /** The Electron desktop app's bridge (desktop-electron/src/preload.ts). */
@@ -36,7 +38,7 @@ export interface ElectronBridge {
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     /** Whether the window can be seen (not minimized or hidden) and has the focus, each time either changes. */
     onWindowState?(fn: (s: { seen: boolean; focused: boolean }) => void): () => void;
-    /** The app asks whether to quit (sessions working, work unsaved): components/QuitDialog.tsx shows it. `end`: take it down. */
+    /** The app asks whether to quit (sessions working, work unsaved): components/QuitDialog.tsx shows it when told to. `end`: drop it. */
     onQuitAsk?(fn: (q: QuitAsk | { id: number; end: true }) => void): () => void;
     /** The page has the question ("asked", at once), then its answer, or "unable": it couldn't put it up. */
     quitReply?(id: number, answer: "asked" | "quit" | "cancel" | "unable"): void;
