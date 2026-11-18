@@ -21,7 +21,7 @@ macOS and Linux only for now: the permission hook is a shell script that needs `
   | Accept edits | As Manual, and an edit inside the workspace goes without asking. |
   | Plan | Edits, writes and commands that aren't read-only are refused. |
   | Auto | There's no reviewer for `agy`: edits inside the workspace go without asking, and anything else a rule doesn't approve is asked about. The mode menu says so. |
-  | Bypass | Only deny rules refuse. |
+  | Bypass | Only deny rules refuse; a catastrophic command (`rm -rf ~`, `mkfs`) asks. |
 
   - A command is checked as `Bash`, a write as a `Write` of its content (a yes covers that content only), an edit as an `Edit` of the text it replaces, a read as `Read`, a web search as `WebSearch`, a fetch as `WebFetch`, an MCP tool by its `mcp__server__tool` name. Its own bookkeeping (waiting on a command, its task list, its subagents' messages to each other) goes without asking unless a deny rule names it. Any other tool of its own (the browser, image generation, schedules) is checked by its own name, `Antigravity_` and agy's name for it (`Antigravity_generate_image`, `Antigravity_open_browser_url`): asked about in Manual, refused in Plan. A yes for the session covers that tool only, and a rule names one the same way.
   - You see the same permission prompt as for any other agent, with the diff of a write or an edit. A no refuses the call, and the model reads why (Cavvy's reason, or what you said). A no without a word also stops the turn.

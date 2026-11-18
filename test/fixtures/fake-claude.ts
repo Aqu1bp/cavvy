@@ -1214,7 +1214,7 @@ async function turn(content: any[], uuid?: string) {
         return result("success");
     }
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
-    else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, ".claude", "settings.json"), content: "{}" });
+    else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, process.env.FAKE_CONFIG_FILE ?? ".claude/settings.json"), content: "{}" });
     else if (scenario === "read-secret") go = await use("toolu_r", "Read", { file_path: join(cwd, "secret.txt") });
     else if (scenario === "rm") go = await use("toolu_rm", "Bash", { command: "rm victim.txt", description: "Remove it" });
     else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: process.env.FAKE_COMMAND ?? "npm test", description: "Run tests" });
