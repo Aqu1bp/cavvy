@@ -25,6 +25,8 @@ bun run desktop:update     # macOS: the latest main into /Applications, restarte
 
 Once installed that way, the app updates itself: it checks `origin/main` every few hours, and when there's something new a download icon shows beside Settings. One click runs `desktop:update` in the background (its output in `~/.cavvy/logs/app-update.log`) while you keep working, and Cavvy restarts once the new build is installed; it asks first only if sessions are working. Settings → About lists what's new. `bun run gui:demo --update` walks through it with a stand-in build.
 
+Quitting (⌘Q, the menu, or closing the last window) while sessions on this computer are working (a reply, a question for you, queued messages, shells or tasks running) asks first, since quitting stops them; sessions on your servers carry on and don't count. With nothing working it quits at once, and if the server doesn't answer within 1.5 seconds it quits without asking. An update's restart doesn't ask again: Update already did.
+
 Building it needs only Bun: the first build downloads Electron. It's built for macOS; Electron runs on Linux and Windows too, but their builds aren't set up yet. To distribute it on macOS, sign and notarize the app, server included.
 
 ## Using it

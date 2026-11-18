@@ -2649,7 +2649,12 @@ export class Engine {
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
             case "server.unsaved":
-                return { sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })) };
+                return {
+                    sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })),
+                    // What quitting the desktop app would stop: this computer's sessions that are working (a response, a
+                    // question, queued messages, shells or tasks running). None once an update restarts the app: Update asked first.
+                    working: this.updates.get().updating?.restarting ? 0 : [...this.runtimes.values()].filter((rt) => !rt.guest && !rt.idle).length,
+                };
             case "server.memory":
                 return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":
