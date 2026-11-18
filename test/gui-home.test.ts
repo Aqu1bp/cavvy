@@ -353,13 +353,13 @@ test("Home shows the error cards above the trust and connect cards", () => {
 
 // ---- The worktree picker ----------------------------------------------------------------------------
 
-function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | undefined, loading: boolean) {
+function picker(cwd: string, listed: { path: string; on?: string; worktrees: unknown[] } | undefined, loading: boolean, on?: string) {
     const opened: string[] = [];
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
         Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, homeOn: () => undefined, rpcFor: () => ({}),
+        app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}),
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
@@ -379,6 +379,9 @@ test("the worktree picker never offers another project's worktrees while this on
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
     expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…"]);
+    // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
+    expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
+    expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(3);
 });
 
 // ---- The limit pill ---------------------------------------------------------------------------------

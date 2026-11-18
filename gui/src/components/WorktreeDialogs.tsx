@@ -50,7 +50,8 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const r = p.request;
     // Home's machine, as it was when the dialog opened: the repository is there.
     const rpc = rpcFor(undefined);
-    const away = homeOn() !== undefined;
+    const on = homeOn();
+    const away = on !== undefined;
     const [branch, setBranch] = createSignal("");
     const [base, setBase] = createSignal(r.base);
     /** Follows the branch name until edited. */
@@ -142,8 +143,12 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             p.onClose();
             if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} Run it from the project scripts menu.`, "warn");
             else toast(`Created worktree ${made.branch}`, "success");
-            await openProject(made.path, true);
-            requestComposerFocus();
+            // Home went to another machine meanwhile (a session opened from the palette): the path isn't that one's.
+            if (homeOn() === on) {
+                await openProject(made.path, true);
+                requestComposerFocus();
+            }
+            // Not opened: says the setup script didn't run.
             if (made.setup) startSetup(made, made.setup);
         } catch (e) {
             setError(errorOf(e));
@@ -301,6 +306,7 @@ export interface RemoveWorktreeRequest {
 export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClose: () => void }) {
     const w = p.request.worktree;
     const rpc = rpcFor(undefined);
+    const on = homeOn();
     const [busy, setBusy] = createSignal(false);
     const [error, setError] = createSignal<FormError>();
     /** Ignored files Git would delete with it: removal waits for the user to agree to exactly these. */
@@ -326,7 +332,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             p.onClose();
             toast(`Removed worktree ${tildify(w.path, app.hello?.homeDir)}`, "success");
             // Asked rather than compared: the new chat may have reached it through a symlink.
-            const here = app.homeCwd;
+            const here = homeOn() === on && app.homeCwd;
             if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(p.request.main, true);
         } catch (e) {
             setError(errorOf(e));
