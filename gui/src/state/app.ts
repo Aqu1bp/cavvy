@@ -457,6 +457,20 @@ export function onRenew(h: SessionHandle, fn: () => (() => void) | void): () => 
     };
 }
 
+/** What's shown of each session, told when its turns are replaced (a rewind's reset) after they're applied. */
+const resetting = new Map<string, Set<() => void>>();
+
+/** `fn` runs once `h`'s turns have been replaced by the server's (a reset op). Returns what stops it. */
+export function onReset(h: SessionHandle, fn: () => void): () => void {
+    let set = resetting.get(h.id);
+    if (!set) resetting.set(h.id, (set = new Set()));
+    set.add(fn);
+    return () => {
+        set.delete(fn);
+        if (!set.size && resetting.get(h.id) === set) resetting.delete(h.id);
+    };
+}
+
 /** No longer open here. */
 function letGo(h: SessionHandle) {
     handles.delete(h.id);
@@ -540,6 +554,7 @@ function flush(h: SessionHandle) {
             }),
         ),
     );
+    if (ops.some((op) => op.op === "reset")) for (const fn of resetting.get(h.id) ?? []) fn();
 }
 
 function schedule(h: SessionHandle) {
