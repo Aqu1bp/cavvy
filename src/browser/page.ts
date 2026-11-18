@@ -830,7 +830,13 @@ export class Page {
                   still: async () => {
                       if (!this.streaming || this.closed) return undefined;
                       const { width, height, scale } = this.viewport;
-                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false, clip: { x: 0, y: 0, width, height, scale: stillScale / scale } });
+                      // Drawn again at the pane's scale: a clip, which is in the page's coordinates, so where it's scrolled to.
+                      let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
+                      if (stillScale !== scale) {
+                          const { cssVisualViewport: v } = await this.send<{ cssVisualViewport: { pageX: number; pageY: number } }>("Page.getLayoutMetrics");
+                          clip = { x: v.pageX, y: v.pageY, width, height, scale: stillScale / scale };
+                      }
+                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false, ...(clip ? { clip } : {}) });
                       return { frame: { data, width, height }, key: Bun.hash(data) };
                   },
               })

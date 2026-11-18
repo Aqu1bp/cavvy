@@ -764,9 +764,11 @@ describe("a session's browser", () => {
             await until(async () => (await sized())?.[0] === 300, "the page to take the pane's size");
             expect(await sized()).toEqual([300, far ? 1 : 2]);
             if (far) {
-                await until(async () => (await fake.sent("Page.captureScreenshot")).some((c) => c.params.clip), "the still");
-                expect((await fake.sent("Page.captureScreenshot")).map((c) => c.params.clip).filter(Boolean).at(-1)).toEqual({ x: 0, y: 0, width: 300, height: 500, scale: 2 });
-            }
+                // Scrolled: the still is of where the page is now.
+                await session.input({ kind: "wheel", x: 10, y: 10, deltaX: 0, deltaY: 400 }, 1);
+                await until(async () => (await fake.sent("Page.captureScreenshot")).some((c) => c.params.clip?.y === 400), "the still of where it's scrolled to", 5000);
+                expect((await fake.sent("Page.captureScreenshot")).map((c) => c.params.clip).filter(Boolean).at(-1)).toEqual({ x: 0, y: 400, width: 300, height: 500, scale: 2 });
+            } else expect((await fake.sent("Page.captureScreenshot")).some((c) => c.params.clip)).toBe(false);
             session.unwatch(key);
             await session.dispose();
         }
