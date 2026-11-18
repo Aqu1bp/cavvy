@@ -70,20 +70,37 @@ const TABS_KEY = "cavvy.terminals";
  * the tabs it had on each (kept under one name, the other machine's list would drop them as unknown).
  */
 export const tabsKey = (at: string | undefined = machine) => (at ? `${TABS_KEY}.${at}` : TABS_KEY);
+/** The machines this window keeps terminal tabs (or closes still to send) for, by tabsKey's names ("" this computer). */
+export function tabMachines(): string[] {
+    const out: string[] = [];
+    try {
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i) ?? "";
+            const on = key === TABS_KEY ? "" : key.startsWith(`${TABS_KEY}.`) ? key.slice(TABS_KEY.length + 1) : undefined;
+            if (on === undefined) continue;
+            const saved = parseTabs(sessionStorage.getItem(key));
+            if (saved.tabs.length || saved.closed?.length) out.push(on);
+        }
+    } catch {}
+    return out;
+}
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
-/** sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's). */
-export function loadTabs(): SavedTabs {
+/**
+ * sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's).
+ * `at`: the machine the shells run on (tabsKey), the window's own unless said.
+ */
+export function loadTabs(at: string | undefined = machine): SavedTabs {
     try {
-        return parseTabs(sessionStorage.getItem(tabsKey()));
+        return parseTabs(sessionStorage.getItem(tabsKey(at)));
     } catch {
         return EMPTY;
     }
 }
 
-export function saveTabs(saved: SavedTabs) {
+export function saveTabs(saved: SavedTabs, at: string | undefined = machine) {
     try {
-        sessionStorage.setItem(tabsKey(), JSON.stringify(saved));
+        sessionStorage.setItem(tabsKey(at), JSON.stringify(saved));
     } catch {}
 }
 

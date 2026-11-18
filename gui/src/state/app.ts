@@ -43,6 +43,14 @@ export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversU
 const away = new Map<string, Rpc>();
 /** And the machine each is on ("" for this computer). */
 const awayOn = new Map<string, string>();
+/** Counts each session recorded in `away`: what reads them (linkedMachine) is run again. */
+const [awayCount, setAwayCount] = createSignal(0);
+/** The machine `id` is opened here from and the connection to it, once it's recorded (another machine's session). */
+export function linkedMachine(id: string): { on: string; link: Rpc } | undefined {
+    awayCount();
+    const link = away.get(id);
+    return link && { on: awayOn.get(id)!, link };
+}
 rpc.route = (method, params) => {
     // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`. Others'
     // ids (an account's, a terminal's) aren't sessions', whatever they're called.
@@ -167,6 +175,7 @@ export function sameMachine(from: string, made: string) {
     if (!link) return;
     away.set(made, link);
     awayOn.set(made, awayOn.get(from)!);
+    setAwayCount((n) => n + 1);
 }
 /** The last row the pointer came to (warmFor): coming to it again asks nothing more. */
 let warmed: string | undefined;
@@ -182,7 +191,7 @@ export function warmFor(id: string) {
     const on = at.machine;
     void linkFor(on).catch(() => {
         // Not reached: it isn't kept trying for a row only pointed at. A click tries again, and says why.
-        if (![...awayOn.values()].includes(on ?? "")) dropLink(on);
+        if (![...awayOn.values()].includes(on ?? "") && !heldLinks.has(on ?? "")) dropLink(on);
     });
 }
 
@@ -221,7 +230,10 @@ export function problemFor(sessionId: string | undefined): (LinkProblem & { mach
 }
 /** The state of the connection `sessionId` is shown over: its machine's, or the window's own. */
 export function connFor(sessionId: string | undefined): ConnectionState {
-    const on = awayMachine(sessionId);
+    return connOn(awayMachine(sessionId));
+}
+/** The state of the connection to machine `on` (awayMachine's names; undefined: the window's own). */
+export function connOn(on: string | undefined): ConnectionState {
     return on === undefined ? app.conn : (linkStates[on] ?? "connecting");
 }
 /**
@@ -253,8 +265,27 @@ function tellShown() {
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
 
+/** Machines whose connection a terminal panel holds (machineLink): kept, though none of their sessions is open here. */
+const heldLinks = new Set<string>();
+
+/**
+ * The connection to machine `on` (awayMachine's names: "" this computer, in a window on a server), made if it isn't,
+ * and kept: not waited on, so one that can't be reached yet keeps trying by itself (a terminal panel waits for it).
+ */
+export function machineLink(on: string): Promise<Rpc> {
+    heldLinks.add(on);
+    return linkMade(on || undefined);
+}
+
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
 async function linkFor(name: string | undefined): Promise<Rpc> {
+    const link = await linkMade(name);
+    await opened(link);
+    return link;
+}
+
+/** The connection to `name`'s Cavvy, made and listened to if it isn't: not waited on. */
+async function linkMade(name: string | undefined): Promise<Rpc> {
     // This computer's Cavvy says where a server's is. In a window on a server it's another connection of the window's.
     const home = machine ? (await import("../lib/machines")).home : undefined;
     const on = name ?? "";
@@ -284,7 +315,6 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
             tellShown();
         });
     }
-    await opened(link);
     return link;
 }
 rpc.retriesCredentials = isDesktop;
@@ -1187,6 +1217,7 @@ export async function createSession(cwd: string, at: HomeAt = homeAt()): Promise
     if (there) {
         away.set(snap.state.id, there.link);
         awayOn.set(snap.state.id, there.on);
+        setAwayCount((n) => n + 1);
     }
     return adopt(snap);
 }
@@ -1254,6 +1285,7 @@ export function forkMakingOf(id: string): string | undefined {
 function linked(id: string, on: string | undefined, link: Rpc) {
     away.set(id, link);
     awayOn.set(id, on ?? "");
+    setAwayCount((n) => n + 1);
     if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
     // And its settings: Home on it (a new session from this one) starts with them.
     if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
