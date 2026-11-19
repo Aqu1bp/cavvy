@@ -712,6 +712,31 @@ describe("searching session files", () => {
         }
     });
 
+    test("what's kept is let go of a while after the last search, not under one", async () => {
+        const limits = { ...SEARCH_LIMITS };
+        try {
+            const s = write([prompt("tango idle words"), reply("ok")]);
+            const only = (id: string) => id === s.id;
+            SEARCH_LIMITS.idleMs = 500;
+            clearSearchCache();
+            await warmSearch();
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+            // Searched again before it's let go of: kept as long again from then.
+            await Bun.sleep(300);
+            expect((await searchSessions("tango idle", { include: only })).hits).toHaveLength(1);
+            await Bun.sleep(300);
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+            await Bun.sleep(500);
+            expect(searchCacheSize()).toEqual({ docs: 0, chars: 0, turnTimes: 0, records: 0 });
+            // And found again, read anew.
+            expect((await searchSessions("tango idle", { include: only })).hits).toHaveLength(1);
+            expect(searchCacheSize().docs).toBeGreaterThan(0);
+        } finally {
+            Object.assign(SEARCH_LIMITS, limits);
+            clearSearchCache();
+        }
+    });
+
     test("GUI logs with no turn in them still count against the cache's limit", async () => {
         const limits = { ...SEARCH_LIMITS };
         try {
