@@ -31,6 +31,8 @@ function askAtHome(tries = 0) {
     const end = ta.value.trimEnd().length;
     const text = (end ? "\n" : "") + ASK;
     ta.focus();
+    // Asked already (Make one again): it's there to finish.
+    if (ta.value.trimEnd().endsWith(ASK.trimEnd())) return ta.setSelectionRange(ta.value.length, ta.value.length);
     ta.setSelectionRange(end, ta.value.length);
     // Typed, so the composer takes it as its own (and Undo undoes it); where that's not offered, put in and told.
     if (!document.execCommand?.("insertText", false, text)) {
