@@ -385,6 +385,8 @@ export class LspPool {
             executable: exe,
             root: this.root,
             onDiagnostics: (d) => {
+                // From a server that was let go of (one still shutting down): what it said went with it.
+                if (this.running.get(server.name) !== r) return;
                 const p = { seq: 0, version: typeof d.version === "number" ? d.version : undefined, diagnostics: d.diagnostics, at: performance.now() };
                 // About text that was replaced since: reporting it would have the agent fix what it already fixed.
                 if (this.outdated(r, d.uri, p.version)) return;

@@ -581,6 +581,16 @@ describe("diagnostics after an edit", () => {
         expect((await m.afterEdit(join(root, "a.ts"), "ERROR: y"))?.files[0]?.items[0]?.message).toBe("y");
     });
 
+    test("what a stopped server says while it shuts down isn't kept", async () => {
+        const root = project();
+        const m = manager(root, { fake: fakeServer({ FAKE_LSP_SHUTDOWN_SAYS: "z.ts" }) }, { timing: { idleMs: 200 } });
+        await m.afterEdit(join(root, "a.ts"), "clean");
+        await Bun.sleep(1200);
+        expect(m.status()).toEqual([]);
+        const published = (m as unknown as { pool: { published: Map<string, unknown> } }).pool.published;
+        expect([...published.keys()].filter((uri) => uri.endsWith("/z.ts"))).toEqual([]);
+    });
+
     test("the idle time counts from when an edit's check ends, so a slow start isn't cut off", async () => {
         const root = project();
         const m = manager(root, { fake: fakeServer({ FAKE_LSP_DELAY: "500" }) }, { timing: { idleMs: 200 } });
