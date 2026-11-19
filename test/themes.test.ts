@@ -70,6 +70,9 @@ describe("checking a theme", () => {
         // Quoted, in an attribute or in CSS, a reference to itself is still one.
         expect(svgProblem(`<svg><rect fill="url('#g')" style="fill:url(&quot;#g&quot;)"/><style>rect{fill:url( "#g" )}</style></svg>`)).toBeUndefined();
         expect(svgProblem(`<svg><rect style="fill:url(&quot;https://x&quot;)"/></svg>`)).toContain("url()");
+        // A quote or a closing tag spelled by a reference is inside the CSS, not its end.
+        expect(svgProblem(`<svg><rect style="font-family:&quot;a&quot;; animation:a 1s"/></svg>`)).toContain("animates itself");
+        expect(svgProblem(`<svg><style>/* &lt;/style&gt; */ rect{animation:a 1s}</style></svg>`)).toContain("animates itself");
         expect(svgProblem(`<svg><rect fill="url('https://x')"/></svg>`)).toContain("url()");
     });
 
@@ -332,6 +335,9 @@ describe("a scene's motion", () => {
         const early = opacities({ ...flash, keyframes: [{ at: 0, opacity: 0 }, { at: 0.01, opacity: 1 }, { at: 0.05, opacity: 0 }, { at: 1, opacity: 0 }] });
         expect(early[0]).toBe(0);
         expect(Math.max(...early)).toBe(1);
+        // The motion's own ends aren't picked for a stop in between: a half-second move passes through its middle.
+        const xs = [...layerAnimation({ duration: 0.5, loop: "repeat", easing: "linear", keyframes: [{ at: 0, x: 0 }, { at: 1, x: 100 }] }, "m").keyframes.matchAll(/translate\(([\d.-]+)/g)].map((x) => Number(x[1]));
+        expect(xs).toEqual([0, 50, 100]);
     });
 
     test("steps each layer as seldom as it can without its steps showing", async () => {

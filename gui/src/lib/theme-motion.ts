@@ -101,6 +101,7 @@ function sampledAt(m: Motion, stretches: number): number[] {
     const most = new Map<number, number>();
     for (const k of times(m.keyframes)) {
         // The first and last stops stay where the motion starts and ends (shown through a delay, and joined by a repeat).
+        if (k <= 0 || k >= 1) continue;
         const i = Math.min(stretches - 1, Math.max(1, Math.round(k * stretches)));
         if (Math.abs(k - i / stretches) < 1e-9) continue;
         const d = apart(poseAt(m, k), poseAt(m, i / stretches));

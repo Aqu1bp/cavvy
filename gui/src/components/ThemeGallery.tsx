@@ -8,7 +8,7 @@ import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
-import { app, homeOn, machineFor, reportError, toast } from "../state/app";
+import { app, homeCwdAfter, homeOn, reportError, toast } from "../state/app";
 import { refreshThemes, themeRpc } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
@@ -258,8 +258,8 @@ export function ThemeGallery(): JSX.Element {
                                 setSettingsTab(undefined);
                                 // On this Mac, in one of its folders, whatever machine the session or Home on screen is on: its
                                 // sessions have the theme tools.
-                                const elsewhere = homeOn() !== undefined || machineFor(app.activeId) !== undefined;
-                                newSession(elsewhere ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined, {});
+                                const cwd = app.activeId !== undefined ? homeCwdAfter(app.activeId) : homeOn() !== undefined ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined;
+                                newSession(cwd, {});
                                 requestAnimationFrame(() => askAtHome());
                             }}
                         >

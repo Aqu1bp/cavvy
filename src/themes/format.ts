@@ -145,7 +145,8 @@ export function svgProblem(svg: string): string | undefined {
     if (new RegExp(`<${PREFIX}(?:animate\\w*|set|discard)[\\s/>]`, "i").test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
     const embedded = embedsMoving(t);
     if (embedded) return embedded;
-    for (const css of styles(t)) {
+    // Cut out of the text as written: a decoded quote or "</style>" inside one isn't where it ends.
+    for (const css of styles(raw).map(decodeRefs)) {
         // An escape can spell any word in CSS.
         if (css.includes("\\")) return "has a backslash in its CSS, which a layer doesn't need";
         const plain = withoutComments(css);
