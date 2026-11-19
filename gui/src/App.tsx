@@ -3,7 +3,7 @@ import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, awayUnopened, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, awayUnopened, themeEvents, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { tabMachines } from "./lib/terminal";
 import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
@@ -11,6 +11,9 @@ import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
+
+/** Loaded with the first theme chosen: a window with none carries none of it. */
+const ThemeBackdrop = lazy(themeEvents);
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
@@ -380,6 +383,9 @@ export function App() {
     const commitShown = createMemo<boolean>((was) => was || Boolean(commitRequest()), false);
     const rewindShown = createMemo<boolean>((was) => was || rewindOpen(), false);
     const imageShown = createMemo<boolean>((was) => was || Boolean(viewedImage()), false);
+    /** Whether a theme has been chosen since the window started: from then on the scene stays, empty while none is. */
+    let themed = false;
+    const sceneWanted = () => (themed ||= Boolean(prefs.themeId));
     const folderShown = createMemo<boolean>((was) => was || Boolean(folderPickerOpen()), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
@@ -594,6 +600,8 @@ export function App() {
             data-tmax={layout().terminal.maximized ? "on" : "off"}
             data-settings={settingsTab() ? "on" : "off"}
         >
+            {/* A theme's scene, behind everything: loaded only once a theme is chosen, and kept so the last one fades out when it's turned off. */}
+            {sceneWanted() && <ThemeBackdrop />}
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
                     {/* The window's edges move it, under the rail and the sheet (and so does its whole top strip: lib/window-drag.ts). */}

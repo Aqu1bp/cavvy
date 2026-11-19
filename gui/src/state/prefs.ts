@@ -32,9 +32,25 @@ media?.addEventListener("change", (e) => setSystemDark(e.matches));
 /** `n` px at text size 14, at the text size showing: what calc(n * var(--sp)) is in CSS (tokens.css). */
 export const sp = (n: number) => scaled(n, prefs.fontSize);
 
+/**
+ * The one scheme the theme showing is made for (state/theme.ts): the window follows it while it shows. theme-boot.js
+ * puts it on <html> before the first paint, only ever "light" or "dark". (The state's also loaded without a page: tests,
+ * the terminal's shared code.)
+ */
+export const [forcedScheme, setForcedScheme] = createSignal(globalThis.document?.documentElement.dataset.themeOnly as "light" | "dark" | undefined);
+
+/** The scheme of the theme on screen, while one is (state/theme.ts): the window turns light or dark with its crossfade, not before. */
+export const [heldScheme, setHeldScheme] = createSignal<"light" | "dark" | undefined>(undefined);
+
+
+/** The scheme the window's own setting asks for, whatever a theme makes it. */
+export function chosenScheme(): "light" | "dark" {
+    return prefs.scheme === "system" ? (systemDark() ? "dark" : "light") : prefs.scheme;
+}
+
 /** The scheme actually showing. */
 export function activeTheme(): "light" | "dark" {
-    return prefs.scheme === "system" ? (systemDark() ? "dark" : "light") : prefs.scheme;
+    return forcedScheme() ?? chosenScheme();
 }
 
 createRoot(() => {
@@ -42,7 +58,7 @@ createRoot(() => {
     // native window hears only of a change of scheme (each time is a call to the app).
     let shown: Appearance | undefined;
     createEffect(() => {
-        const next = appearanceOf(prefs, systemDark());
+        const next = appearanceOf(prefs, systemDark(), forcedScheme() ?? heldScheme());
         showAppearance(document.documentElement, next, shown);
         // A code block's line is another height at another text size (lib/code-metrics.ts).
         if (shown && next.style["--font-scale"] !== shown.style["--font-scale"]) noteCodeMetrics();

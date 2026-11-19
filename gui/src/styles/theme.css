@@ -1,0 +1,20 @@
+/* What a theme needs before its own code loads (theme-backdrop.css and theme-gallery.css come with it). */
+
+/* Until a scene has drawn (it loads after the window), the theme's own background, not the desktop or a blank page. */
+/* Doubled to outweigh base.css's .app.tauri.os-macos. */
+:root[data-themed="scene"],
+:root[data-themed="scene"] .app.app {
+    background: var(--sheet);
+}
+
+.ap-note {
+    margin: 0;
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.ap-tile:disabled {
+    cursor: default;
+    opacity: 0.5;
+}

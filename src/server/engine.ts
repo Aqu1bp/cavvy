@@ -97,6 +97,7 @@ import type {
     GuiSettings,
     HelloResult,
     KeybindingsFile,
+    ThemeReport,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
@@ -123,6 +124,9 @@ import type {
     PluginsInfo,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
+import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
+import { ID as THEME_ID, type ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { listPlugins } from "../plugins/install";
 import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
@@ -221,6 +225,8 @@ export interface EngineClient {
     window?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
+    /** The theme its window shows (null: none), as it last said, and when. */
+    theme?: { id: string | null; scheme: "light" | "dark"; at: number };
     /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
     machine?: string;
     /** Sessions of servers this machine lends to that this window shows (offers.session), by `name\0id`: it hears how what's lent them changes. */
@@ -461,6 +467,9 @@ export class Engine {
 
     private readonly unregisterAccountRoots: () => void;
     private stopKeybindings?: () => void;
+    private stopThemes?: () => void;
+    /** Agents waiting to hear how a theme they asked for came out (showTheme), by request. */
+    private themeReports = new Map<string, (r: ThemeReport) => void>();
     /** The desktop app updating itself from main: only the installed app does. */
     private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
@@ -485,6 +494,8 @@ export class Engine {
         void Promise.resolve(pathSettling).then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        // And a save of a theme: one an agent is working on changes on screen as it's written.
+        this.stopThemes = watchThemes(() => this.broadcast({ type: "themes.changed", themes: listThemes() }));
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
@@ -592,6 +603,7 @@ export class Engine {
         clearInterval(this.purgeTimer);
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
+        this.stopThemes?.();
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
@@ -632,6 +644,53 @@ export class Engine {
     /** The session's browser changed: the windows that have it open hear of it. */
     sendBrowser(sessionId: string, state: BrowserState) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
+    }
+
+    /**
+     * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
+     * undefined when there's no window, `{ sent }` alone when none answered in time.
+     */
+    /**
+     * This machine's windows: the ones that show a theme. A window on a server is one too, by its own connection here
+     * (gui/src/lib/machines.ts home): it shows this machine's themes, whichever machine its sessions are on.
+     */
+    private themeWindowClients() {
+        return [...this.clients].filter((c) => c.window !== undefined);
+    }
+
+    themeWindows(): number {
+        return this.themeWindowClients().length;
+    }
+
+    /**
+     * The theme this machine's windows show (null: none), as the one that changed last says; undefined with no window.
+     * A window that hasn't said shows none: one with a theme says so as it starts (gui/src/state/theme-events.ts).
+     */
+    themeShowing(): { id: string | null; scheme?: "light" | "dark" } | undefined {
+        const windows = this.themeWindowClients();
+        if (!windows.length) return undefined;
+        let last: EngineClient["theme"];
+        for (const c of windows) if (c.theme && (!last || c.theme.at >= last.at)) last = c.theme;
+        return last ? { id: last.id, scheme: last.scheme } : { id: null };
+    }
+
+    async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
+        const windows = this.themeWindowClients();
+        if (!windows.length) return { sent: 0 };
+        const request = randomUUID();
+        const report = new Promise<ThemeReport | undefined>((done) => {
+            const timer = setTimeout(() => {
+                this.themeReports.delete(request);
+                done(undefined);
+            }, waitMs);
+            this.themeReports.set(request, (r) => {
+                clearTimeout(timer);
+                this.themeReports.delete(request);
+                done(r);
+            });
+        });
+        for (const c of windows) c.send({ type: "theme.apply", id, ...(entry ? { entry } : {}), ...(replaced ? { replaced } : {}), request });
+        return { sent: windows.length, report: await report };
     }
 
     sessionShown(sessionId: string): boolean {
@@ -2666,6 +2725,7 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "theme", description: "Pick a theme for the window" },
             { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
@@ -2889,6 +2949,23 @@ export class Engine {
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "themes.list":
+                return listThemes();
+            case "themes.remove":
+                return { text: removeTheme(str(p.id, "id")) };
+            case "themes.restore":
+                restoreTheme(str(p.id, "id"), str(p.text, "text"), undefined, p.replace === true);
+                return null;
+            case "themes.report": {
+                const r = p as unknown as ThemeReport;
+                if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}), ...(typeof r.picture === "string" && r.picture.length < 2_000_000 && /^[A-Za-z0-9+/]+=*$/.test(r.picture) ? { picture: r.picture } : {}) });
+                return null;
+            }
+            case "themes.showing": {
+                const id = typeof p.id === "string" && THEME_ID.test(p.id) ? p.id : null;
+                client.theme = { id, scheme: p.scheme === "light" ? "light" : "dark", at: Date.now() };
+                return null;
+            }
             case "keybindings.create": {
                 const path = keybindingsPath();
                 return { created: ensureKeybindingsFile(path), path };
