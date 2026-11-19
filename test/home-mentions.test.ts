@@ -27,3 +27,17 @@ test("Home's @ lists a folder's files with no session there, and opens no worksp
     expect(await engine.handle(client, "fs.mentions", { cwd: join(cwd, "README.md"), query: "" })).toEqual([]);
     expect(await engine.handle(client, "fs.mentions", { cwd: join(cwd, "missing"), query: "" })).toEqual([]);
 });
+
+test("a workspace opened in the folder takes Home's index of it", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const client = { subs: new Set<string>(), send: () => {} };
+    expect(await engine.handle(client, "fs.mentions", { cwd, query: "main" })).toContain("src/main.ts");
+    const home = (engine as unknown as { homeFiles: Map<string, unknown> }).homeFiles;
+    const index = home.get(cwd);
+    expect(index).toBeDefined();
+    const ws = engine.workspaceFor(cwd);
+    expect(ws.files as unknown).toBe(index);
+    expect(home.has(cwd)).toBe(false);
+    expect(await engine.handle(client, "fs.mentions", { cwd, query: "main" })).toContain("src/main.ts");
+    await ws.mcp.closeAll();
+});

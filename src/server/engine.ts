@@ -315,10 +315,12 @@ export class Workspace {
         private engine: Engine,
         readonly cwd: string,
         public trusted: boolean,
+        /** The folder's file names as Home's @-mentions listed them already (Engine.homeFiles), if it did. */
+        files?: FileIndex,
     ) {
         this.settings = loadSettings(cwd, { trusted });
         this.mcp = this.startMcp();
-        this.files = new FileIndex(cwd);
+        this.files = files ?? new FileIndex(cwd);
         this.commands = loadCustomCommands(cwd, trusted);
         this.skills = loadSkills(cwd, trusted);
     }
@@ -929,7 +931,9 @@ export class Engine {
             trustForSession(p);
             trusted = true;
         }
-        const ws = new Workspace(this, p, trusted);
+        // Home's index of the folder becomes the workspace's (fs.mentions): not listed and kept twice.
+        const ws = new Workspace(this, p, trusted, this.homeFiles.get(p));
+        this.homeFiles.delete(p);
         this.workspaces.set(p, ws);
         return ws;
     }
