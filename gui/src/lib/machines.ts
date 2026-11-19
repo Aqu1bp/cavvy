@@ -7,7 +7,7 @@ import { reconcile } from "solid-js/store";
 import type { ServerProblem, SessionSearchResult, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, pendingPicked, rpc, setApp, setConnNote } from "../state/app";
+import { app, pendingPicked, rpc, setApp, setConnNote, themeEvents } from "../state/app";
 import { PICKED_KEY } from "./picked";
 import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -48,6 +48,8 @@ if (home) {
         if (e.type === "servers.progress" && e.name === machine && machineIssue()?.kind === "connecting") setMachineIssue({ kind: "connecting", text: e.text, percent: e.percent });
         // The app is this computer's: its update is shown in a window on a server too.
         if (e.type === "app.update") setApp("update", reconcile(e.info));
+        // This computer's themes: the window shows them, whatever server it's on (state/theme-events.ts).
+        if (e.type === "themes.changed" || e.type === "theme.apply") void themeEvents().then((m) => m.onThemeEvent(e));
     });
     // Asked for again whenever this computer's Cavvy is reached: what it said while it wasn't didn't arrive.
     home.onState((s) => s === "open" && void home.call("app.update.get", {}).then((u) => setApp("update", reconcile(u)), () => undefined));

@@ -1546,6 +1546,9 @@ function recheckUpdate() {
     rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
 }
 
+/** What the server says about themes is handled there, loaded with the first of it or the first theme shown (App.tsx). */
+export const themeEvents = () => import("./theme-events");
+
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
     const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
@@ -1751,6 +1754,11 @@ function onEvent(ev: ServerEvent) {
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);
             return;
+        case "themes.changed":
+        case "theme.apply":
+            // A window on a server hears this computer's themes on its connection here (lib/machines.ts), not the server's.
+            if (!machine) void themeEvents().then((m) => m.onThemeEvent(ev));
+            return;
         case "app.update":
             // In a window on a server, this computer's Cavvy says (lib/machines.ts): the server's has no app to update.
             if (!machine) setApp("update", reconcile(ev.info));
@@ -1869,7 +1877,7 @@ export function start() {
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
-                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined), prefs.themeId && themeEvents().then((m) => m.refreshThemes(), () => undefined)]);
                 // The models are asked for with the lists (the composer names its model from them, offers its efforts,
                 // and a pick brought from another machine is checked against them), but after them, and not waited
                 // for: the machine answers in the order it's asked, and the first screen waits for the lists (asked
