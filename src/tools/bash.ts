@@ -1172,9 +1172,10 @@ export class OutputRing {
         if (this.length <= limit) return 0;
         this.joined = undefined;
         let drop = this.length - limit;
-        // Only redacted, complete lines enter the ring; evict whole lines for readability.
+        // Only redacted, complete lines enter the ring; evict whole lines for readability. Not up to a newline that
+        // ends the text: that would leave nothing, where the end of its last line is better than nothing.
         const nl = this.newline(drop);
-        if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
+        if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE && nl + 1 < this.length) drop = nl + 1;
         this.length -= drop;
         for (let left = drop; left; ) {
             const rest = this.parts[this.first]!.length - this.skip;
