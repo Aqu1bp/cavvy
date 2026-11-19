@@ -19,6 +19,7 @@ import { eachLine, linesFromEnd } from "../util/lines";
 import { digestOf, digestWith, type MessagesDigest } from "./history-digest";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
+import { ownCopy } from "../util/strings";
 
 export { redactedJson };
 
@@ -1788,7 +1789,8 @@ const FIRST_CHARS = 2000;
 function shortFirst(t: string | undefined): string | undefined {
     if (!t || t.length <= FIRST_CHARS) return t;
     // Nothing but a reminder: its start, as before, not nothing (a head with no first prompt looks on for one).
-    return t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trimStart().slice(0, FIRST_CHARS) || t.slice(0, FIRST_CHARS);
+    // A copy: a slice would keep the whole prompt.
+    return ownCopy(t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trimStart().slice(0, FIRST_CHARS) || t.slice(0, FIRST_CHARS));
 }
 /**
  * The same, on disk (cache/session-heads.json): a list of a thousand sessions after a restart reads one file and stats

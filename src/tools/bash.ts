@@ -14,6 +14,7 @@ import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandb
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 import { finalSearch } from "../permissions/bash-safety";
 import { SESSION_VAR } from "../util/session-processes";
+import { ownCopy } from "../util/strings";
 
 export { childEnv };
 
@@ -1210,6 +1211,13 @@ export class OutputRing {
         return -1;
     }
 
+    /** What's kept, as a string of its own: a trimmed part still holds all of what it was cut from. */
+    compact() {
+        this.joined = ownCopy(this.text);
+        this.parts = [this.joined];
+        this.first = this.skip = 0;
+    }
+
     get text(): string {
         if (this.joined === undefined) {
             const live = this.parts.slice(this.first);
@@ -1252,6 +1260,7 @@ function settleFinished(shell: BackgroundShell) {
     }
     const drop = ring.trim(FINISHED_KEPT);
     if (drop) shell.readOffset = Math.max(0, shell.readOffset - drop);
+    ring.compact();
 }
 
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
