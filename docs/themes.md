@@ -38,7 +38,7 @@ The full guide an agent reads is `THEME_GUIDE` in `src/themes/tools.ts`.
 
 ## Motion and cost
 
-**Settings → Appearance → Animate** rests the scene, as does macOS's Reduce motion: every layer stays at its first keyframe. After two minutes with no pointer, key or scroll in the window, the scene stops where it is and carries on from there at the next one: an agent can run for hours with nobody watching. A minimised or covered window draws nothing at all. With Reduce transparency the background lies over most of the scene. A theme with no scene costs nothing beyond its colours. The scene's code loads only when a theme is chosen.
+**Settings → Appearance → Animate** rests the scene, as does macOS's Reduce motion: every layer stays at its first keyframe. After two minutes with no pointer, key or scroll in the window, the scene stops where it is and carries on from there at the next one: an agent can run for hours with nobody watching. While another app is in front, the scene holds still; a minimised or covered window draws nothing at all. With Reduce transparency the background lies over most of the scene. A theme with no scene costs nothing beyond its colours. The scene's code loads only when a theme is chosen.
 
 ## Files
 

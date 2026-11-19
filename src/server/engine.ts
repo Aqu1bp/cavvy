@@ -620,20 +620,28 @@ export class Engine {
      * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
      * undefined when there's no window, `{ sent }` alone when none answered in time.
      */
-    /** This machine's windows: the ones that show a theme. */
+    /**
+     * This machine's windows: the ones that show a theme. A window on a server is one too, by its own connection here
+     * (gui/src/lib/machines.ts home): it shows this machine's themes, whichever machine its sessions are on.
+     */
     private themeWindowClients() {
-        return [...this.clients].filter((c) => c.machine === undefined && c.window !== undefined);
+        return [...this.clients].filter((c) => c.window !== undefined);
     }
 
     themeWindows(): number {
         return this.themeWindowClients().length;
     }
 
-    /** The theme this machine's windows show (null: none), as the one that changed last says; undefined with no window. */
-    themeShowing(): { id: string | null; scheme: "light" | "dark" } | undefined {
+    /**
+     * The theme this machine's windows show (null: none), as the one that changed last says; undefined with no window.
+     * A window that hasn't said shows none: one with a theme says so as it starts (gui/src/state/theme-events.ts).
+     */
+    themeShowing(): { id: string | null; scheme?: "light" | "dark" } | undefined {
+        const windows = this.themeWindowClients();
+        if (!windows.length) return undefined;
         let last: EngineClient["theme"];
-        for (const c of this.themeWindowClients()) if (c.theme && (!last || c.theme.at >= last.at)) last = c.theme;
-        return last && { id: last.id, scheme: last.scheme };
+        for (const c of windows) if (c.theme && (!last || c.theme.at >= last.at)) last = c.theme;
+        return last ? { id: last.id, scheme: last.scheme } : { id: null };
     }
 
     async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {

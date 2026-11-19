@@ -8,8 +8,8 @@ import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
-import { reportError, rpc, toast } from "../state/app";
-import { refreshThemes } from "../state/theme-events";
+import { reportError, toast } from "../state/app";
+import { refreshThemes, themeRpc } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
 import { applyTheme, builtinTheme, keptTheme, loadAllBuiltins, themeName, userThemes } from "../state/theme";
@@ -147,14 +147,14 @@ async function remove(id: string, name: string) {
     deletedAt = performance.now();
     const wasOn = prefs.themeId === id;
     try {
-        const { text } = await rpc.call("themes.remove", { id });
+        const { text } = await (await themeRpc()).call("themes.remove", { id });
         if (wasOn) applyTheme(undefined);
         if (text === undefined) return;
         toast(`Deleted ${name}`, "info", {
             label: "Undo",
             run: () =>
-                void rpc
-                    .call("themes.restore", { id, text })
+                void themeRpc()
+                    .then((r) => r.call("themes.restore", { id, text }))
                     .then(() => refreshThemes())
                     .then(() => wasOn && applyTheme(id))
                     .catch(reportError),
@@ -173,7 +173,7 @@ export function ThemeGallery(): JSX.Element {
         <div class="tg-grid" role="group" aria-label="Theme">
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
-                <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={machine ? undefined : () => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
+                <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={() => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
                 {/* A session on a server has no theme tools: themes are made in this Mac's own sessions. */}
                 <Show when={!machine}>
                     <div class="tg-tile">

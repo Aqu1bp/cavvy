@@ -146,9 +146,26 @@ function swap(apply: () => void, animate: boolean) {
     t.ready.catch(() => undefined);
     t.updateCallbackDone.catch(() => undefined);
     fading = t.finished.catch(() => undefined);
+    // While it fades, the page under it takes no clicks (they land on <html>): a press ends the fade, and its click
+    // goes where it was pressed.
+    const press = () => {
+        t.skipTransition();
+        addEventListener("click", retarget, { capture: true, once: true });
+    };
+    addEventListener("pointerdown", press, { capture: true });
     void fading.finally(() => {
+        removeEventListener("pointerdown", press, { capture: true });
         if (--swapping === 0) delete root.dataset.themeSwitch;
     });
+}
+
+/** The click of a press that ended a crossfade: it landed on <html>, and goes to what's under the pointer now. */
+function retarget(e: MouseEvent) {
+    if (e.target !== document.documentElement) return;
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    if (!under || under === document.documentElement) return;
+    e.stopImmediatePropagation();
+    under.dispatchEvent(new MouseEvent("click", e));
 }
 
 function putUp(s: Shown | undefined) {

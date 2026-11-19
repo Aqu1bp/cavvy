@@ -977,7 +977,7 @@ svg.lucide {
 }
 
 /* A theme put up (state/theme.ts swap): the window as it was fades into the window as it is, colours and scene at
-   once. A snapshot crossfade, once per switch; what's under it takes clicks meanwhile. */
+   once. A snapshot crossfade, once per switch; a press during it ends it (state/theme.ts swap). */
 :root[data-theme-switch]::view-transition-old(root),
 :root[data-theme-switch]::view-transition-new(root) {
     animation-duration: 450ms;

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { ServerEvent } from "../src/server/protocol";
 import { BUILTINS } from "../src/themes/builtin";
 import { contrast, mix, over, parseHex, type Rgb } from "../src/themes/color";
 import { checkTheme, lookFor, onlyScheme, svgProblem, withNamespace, type Theme } from "../src/themes/format";
@@ -436,6 +437,10 @@ describe("the theme tools", () => {
         expect(bad.isError).toBe(true);
         expect(bad.text).not.toContain("sk-live");
         expect(bad.text).not.toContain("API_TOKEN");
+        // Some other JSON file: said not to be a theme, and nothing of it said back.
+        writeFileSync(join(project, "providers.json"), JSON.stringify({ custom: [{ baseUrl: "http://127.0.0.1:1/v1" }], agents: {} }));
+        const other = await themeSet({ id: "x", file: "providers.json" }, { ui, state });
+        expect(other.text).toBe("Not saved: file isn't a theme (it has no light or dark look).");
         writeFileSync(join(project, "notes.txt"), "{}");
         expect((await themeSet({ id: "x", file: "notes.txt" }, { ui, state })).text).toContain(".json");
         expect((await themeSet({ id: "x", file: "missing.json" }, { ui, state })).text).toContain("no file");
@@ -514,13 +519,39 @@ describe("the theme tools", () => {
         expect(all).toContain("How to make a Cavvy theme");
     });
 
+    test("a window on a server still shows this computer's themes: it counts, says what it shows and is sent them", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        expect(engine.themeShowing()).toBeUndefined();
+        const heard: ServerEvent[] = [];
+        // Its connection here, as lib/machines.ts makes it: the window's key, and the server it's on.
+        const onServer = { send: (e: ServerEvent) => heard.push(e), subs: new Set<string>(), window: "w1", machine: "vps" };
+        engine.clients.add(onServer);
+        // Hasn't said what it shows: none.
+        expect(engine.themeWindows()).toBe(1);
+        expect(engine.themeShowing()).toEqual({ id: null });
+        await engine.handle(onServer, "themes.showing", { id: "orbit", scheme: "dark" });
+        expect(engine.themeShowing()).toEqual({ id: "orbit", scheme: "dark" });
+        const shown = engine.showTheme("night-rain", undefined, undefined, 2000);
+        const apply = heard.find((e) => e.type === "theme.apply") as Extract<ServerEvent, { type: "theme.apply" }> | undefined;
+        expect(apply?.id).toBe("night-rain");
+        await engine.handle(onServer, "themes.report", { request: apply!.request, shown: true, scheme: "dark" });
+        expect((await shown).report?.shown).toBe(true);
+        // A connection with no window (the terminal, a script) isn't one.
+        engine.clients.delete(onServer);
+        engine.clients.add({ send() {}, subs: new Set<string>() });
+        expect(engine.themeWindows()).toBe(0);
+    });
+
     test("ThemeList starts with the theme the windows show, so the agent needn't ask", async () => {
         const { themeList } = await tools();
         saveTheme("listed", checkTheme(minimal({ name: "Listed" })).theme!, join(home, "themes"));
-        const first = async (now: { id: string | null; scheme: "light" | "dark" } | undefined) => (await themeList({}, { ui: { themeShowing: () => now } })).text.split("\n")[0];
+        const first = async (now: { id: string | null; scheme?: "light" | "dark" } | undefined) => (await themeList({}, { ui: { themeShowing: () => now } })).text.split("\n")[0];
         expect(await first({ id: "night-rain", scheme: "dark" })).toBe("Showing now: night-rain (Night Rain), its dark look.");
         expect(await first({ id: "listed", scheme: "dark" })).toBe("Showing now: listed (Listed), its dark look.");
         expect(await first({ id: null, scheme: "light" })).toBe("Showing now: no theme (Cavvy's own light look).");
+        // A window that hasn't said: it has no theme (one with a theme says as it starts).
+        expect(await first({ id: null })).toBe("Showing now: no theme (Cavvy's own look).");
         expect(await first(undefined)).toBe("No Cavvy window is open, so no theme is showing.");
         // Where there are no windows to ask (the terminal), it says nothing of it.
         expect((await themeList({}, { ui: {} })).text.split("\n")[0]).toBe("Built in (can't be changed; copy one under a new id):");

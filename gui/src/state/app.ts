@@ -1550,7 +1550,8 @@ function onEvent(ev: ServerEvent) {
             return;
         case "themes.changed":
         case "theme.apply":
-            void themeEvents().then((m) => m.onThemeEvent(ev));
+            // A window on a server hears this computer's themes on its connection here (lib/machines.ts), not the server's.
+            if (!machine) void themeEvents().then((m) => m.onThemeEvent(ev));
             return;
         case "app.update":
             setApp("update", reconcile(ev.info));

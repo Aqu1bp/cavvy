@@ -6,7 +6,7 @@ import { createSignal } from "solid-js";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, pendingPicked, setConnNote } from "../state/app";
+import { app, pendingPicked, setConnNote, themeEvents } from "../state/app";
 import { PICKED_KEY } from "./picked";
 import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -42,6 +42,8 @@ if (home) {
     home.retriesCredentials = true;
     home.onEvent((e) => {
         if (e.type === "servers.progress" && e.name === machine && machineIssue()?.kind === "connecting") setMachineIssue({ kind: "connecting", text: e.text, percent: e.percent });
+        // This computer's themes: the window shows them, whatever server it's on (state/theme-events.ts).
+        if (e.type === "themes.changed" || e.type === "theme.apply") void themeEvents().then((m) => m.onThemeEvent(e));
     });
     void home.connect();
 }

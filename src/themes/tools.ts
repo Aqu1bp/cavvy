@@ -138,7 +138,7 @@ function showingLine(ui: ToolContext["ui"] | undefined, mine: ThemeEntry[]): str
     if (!ui?.themeShowing) return undefined;
     const now = ui.themeShowing();
     if (!now) return "No Cavvy window is open, so no theme is showing.";
-    if (!now.id) return `Showing now: no theme (Cavvy's own ${now.scheme} look).`;
+    if (!now.id) return `Showing now: no theme (Cavvy's own ${now.scheme ? `${now.scheme} ` : ""}look).`;
     const name = builtin(now.id)?.name ?? mine.find((e) => e.id === now.id)?.theme?.name;
     return `Showing now: ${now.id}${name ? ` (${name})` : ""}, its ${now.scheme} look.`;
 }
@@ -271,6 +271,9 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
         if (file) {
             const read = themeFromFile(file, ctx.state);
             if (read.problem) return { text: `Not saved: ${read.problem}`, isError: true };
+            // Some other JSON file: whether it's a theme, and nothing of what it holds (themeFromFile).
+            const o = read.raw as Record<string, unknown> | null;
+            if (!o || typeof o !== "object" || Array.isArray(o) || !["light", "dark"].some((k) => o[k] && typeof o[k] === "object")) return { text: "Not saved: file isn't a theme (it has no light or dark look).", isError: true };
             raw = read.raw;
         }
         if (typeof raw === "string") {

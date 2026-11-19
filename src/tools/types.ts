@@ -164,8 +164,8 @@ export interface UiBridge {
     showTheme?(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced): Promise<{ sent: number; report?: ThemeReport }>;
     /** How many of this machine's windows would show a theme now. */
     themeWindows?(): number;
-    /** The theme those windows show (null: none) and in which scheme; undefined with no window. */
-    themeShowing?(): { id: string | null; scheme: "light" | "dark" } | undefined;
+    /** The theme those windows show (null: none) and in which scheme, where known; undefined with no window. */
+    themeShowing?(): { id: string | null; scheme?: "light" | "dark" } | undefined;
 }
 
 export interface ToolContext {
