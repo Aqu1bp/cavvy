@@ -164,20 +164,27 @@ function swap(apply: () => void, animate: boolean) {
 let pressedAt: { x: number; y: number } | undefined;
 
 /**
- * The click of a press that ended a crossfade: it landed on <html>, and goes to what was pressed, as a click does only
- * when it's let go over the same thing (a drag onto a button isn't a click on it). A text box pressed is focused.
+ * The click of a press that ended a crossfade: it landed on <html>, and goes where a click goes, to the innermost
+ * thing both the press and the let-go were on (a drag from the message box onto Send clicks neither). A text box
+ * pressed is focused, as a press does.
  */
 function retarget(e: MouseEvent) {
     const at = pressedAt;
     pressedAt = undefined;
     if (e.target !== document.documentElement || !at) return;
-    const under = document.elementFromPoint(e.clientX, e.clientY);
-    if (!under || under === document.documentElement || document.elementFromPoint(at.x, at.y) !== under) return;
+    const pressed = document.elementFromPoint(at.x, at.y);
+    let on = document.elementFromPoint(e.clientX, e.clientY);
+    while (on && pressed && !on.contains(pressed)) on = on.parentElement;
+    if (!on || !pressed || on === document.documentElement || on === document.body) return;
     e.stopImmediatePropagation();
-    const field = under.closest<HTMLElement>("input, textarea, select, [contenteditable]:not([contenteditable=false])");
+    const field = pressed.closest<HTMLElement>("input, textarea, select, [contenteditable]:not([contenteditable=false])");
     if (field && document.activeElement !== field) field.focus();
-    under.dispatchEvent(new MouseEvent("click", e));
+    on.dispatchEvent(new MouseEvent("click", e));
 }
+
+/** The theme the window started with, and whether one has gone up since. */
+const startedWith = prefs.themeId;
+let anyUp = false;
 
 function putUp(s: Shown | undefined) {
     clearTimeout(fallback);
@@ -187,8 +194,13 @@ function putUp(s: Shown | undefined) {
     // The same look again (its contrast or glass changed): no crossfade for that. Nothing there before and nothing
     // drawn now (a start with a theme without a scene): its colours are on <html> already (theme-boot.js).
     const same = before && s && sceneKey(before) === sceneKey(s);
-    swap(() => setUp(s), !same && Boolean(before || s?.look.layers?.length));
+    // The scene of the theme the window started with: its colours have been up from the first paint, and the window
+    // is still filling in under it, which a crossfade would show twice (its snapshot and the moved page); it just comes.
+    const starting = !before && !anyUp && s?.id === startedWith;
+    if (s) anyUp = true;
+    swap(() => setUp(s), !same && !starting && Boolean(before || s?.look.layers?.length));
 }
+
 
 /** ThemeBackdrop: the scene for `key` is drawn, and can go up. */
 export function sceneReady(key: string) {
