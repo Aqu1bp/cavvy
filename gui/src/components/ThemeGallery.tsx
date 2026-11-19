@@ -8,7 +8,7 @@ import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
-import { app, homeCwdAfter, homeOn, reportError, toast } from "../state/app";
+import { app, homeCwdAfter, homeOn, reportError, setApp, toast } from "../state/app";
 import { refreshThemes, themeRpc } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
@@ -258,8 +258,11 @@ export function ThemeGallery(): JSX.Element {
                                 setSettingsTab(undefined);
                                 // On this Mac, in one of its folders, whatever machine the session or Home on screen is on: its
                                 // sessions have the theme tools.
-                                const cwd = app.activeId !== undefined ? homeCwdAfter(app.activeId) : homeOn() !== undefined ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined;
+                                const shown = app.activeId !== undefined || homeOn() !== undefined;
+                                const cwd = app.activeId !== undefined ? homeCwdAfter(app.activeId) : shown ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined;
                                 newSession(cwd, {});
+                                // No project here yet: none is shown, not another machine's folder.
+                                if (shown && !cwd) setApp("homeCwd", undefined);
                                 requestAnimationFrame(() => askAtHome());
                             }}
                         >

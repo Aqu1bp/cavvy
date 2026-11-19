@@ -72,7 +72,7 @@ describe("checking a theme", () => {
         expect(svgProblem(`<svg><rect style="fill:url(&quot;https://x&quot;)"/></svg>`)).toContain("url()");
         // A quote or a closing tag spelled by a reference is inside the CSS, not its end.
         expect(svgProblem(`<svg><rect style="font-family:&quot;a&quot;; animation:a 1s"/></svg>`)).toContain("animates itself");
-        expect(svgProblem(`<svg><style>/* &lt;/style&gt; */ rect{animation:a 1s}</style></svg>`)).toContain("animates itself");
+        expect(svgProblem(`<svg><style>/* &#60;/style&#62; */ rect{animation:a 1s}</style></svg>`)).toContain("animates itself");
         expect(svgProblem(`<svg><rect fill="url('https://x')"/></svg>`)).toContain("url()");
     });
 
