@@ -416,7 +416,7 @@ describe("agyTool", () => {
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "settings.json") })).not.toHaveProperty("free");
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "x", "y.json") })).not.toHaveProperty("free");
         // Cavvy's MCP folder beside the gate's holds the session's token: no file tool reads it.
-        for (const [tool, a] of [["view_file", { AbsolutePath: "/g-mcp/id/.agents/mcp_config.json" }], ["list_dir", { DirectoryPath: "/g-mcp/id" }], ["grep_search", { Query: "Bearer", SearchPath: "/g-mcp" }], ["find_by_name", { Pattern: "*.json", SearchDirectory: "/g-mcp" }]] as const)
+        for (const [tool, a] of [["view_file", { AbsolutePath: "/g-mcp/id/.agents/mcp_config.json" }], ["list_dir", { DirectoryPath: "/g-mcp/id" }], ["grep_search", { Query: "Bearer", SearchPath: "/g-mcp" }], ["find_by_name", { Pattern: "*.json", SearchDirectory: "/g-mcp" }], ["grep_search", { Query: "Bearer", SearchPath: "/" }]] as const)
             expect(t(tool, a)).toMatchObject({ refuse: expect.stringContaining("permission hook") });
         expect(t("write_file", { Path: "/g/x" })).toMatchObject({ refuse: expect.stringContaining("permission hook") });
         expect(t("generate_image", {})).toMatchObject({ toolName: "Antigravity_generate_image", input: { tool: "generate_image" }, own: true });

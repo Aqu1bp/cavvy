@@ -132,11 +132,6 @@ export function mcpDir(id: string, o: Pick<OrchestratorServer, "name" | "url" | 
     return dir;
 }
 
-/** The session's MCP folder goes (it holds its token). */
-export function dropMcpDir(id: string) {
-    rmSync(join(`${gateDir()}-mcp`, id), { recursive: true, force: true });
-}
-
 /** What the model is told when its conversation starts: which folder is its own. */
 export function sessionStartAnswer(cwd: string, gate: string): Record<string, unknown> {
     return {
@@ -271,6 +266,8 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
     const inGate = (p: string) => Boolean(gate) && (canonical(p) === gate || canonical(p).startsWith(gate + "/") || canonical(p).startsWith(gate + "-"));
     // Cavvy's MCP folders: their config holds the session's token, so no file tool reads them.
     const inMcp = (p: string) => Boolean(gate) && (canonical(p) + "/").startsWith(gate + "-mcp/");
+    // A search from a folder holding them would reach them too.
+    const overMcp = (p: string) => inMcp(p) || Boolean(gate) && (gate + "-mcp/").startsWith(canonical(p).replace(/\/$/, "") + "/");
     const gateRefusal: AgyTool = { toolName: "", input: {}, refuse: `That folder only holds ${APP_TITLE}'s permission hook. Work in ${cwd}.` };
     if (str(args.CommandLine) || name === "run_command") {
         const command = str(args.CommandLine) ?? str(args.Command);
@@ -319,14 +316,14 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         const pattern = path("Query", "Pattern", "query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchPath", "SearchDirectory", "Path", "DirectoryPath");
-        if (dir && inMcp(at(dir))) return gateRefusal;
+        if (dir && overMcp(at(dir))) return gateRefusal;
         return { toolName: "Grep", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "find_by_name") {
         const pattern = path("Pattern", "Query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchDirectory", "SearchPath", "Path", "DirectoryPath");
-        if (dir && inMcp(at(dir))) return gateRefusal;
+        if (dir && overMcp(at(dir))) return gateRefusal;
         return { toolName: "Glob", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "search_web") {
