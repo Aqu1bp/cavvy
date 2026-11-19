@@ -3,6 +3,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeLog } from "./helpers/fake-env";
@@ -410,6 +411,9 @@ describe("agyTool", () => {
         expect(t("read_url_content", { Url: "https://x.test" })).toEqual({ toolName: "WebFetch", input: { url: "https://x.test" } });
         expect(t("call_mcp_tool", { ServerName: "gh", ToolName: "issue", Arguments: { n: 1 } })).toEqual({ toolName: "mcp__gh__issue", input: { n: 1 } });
         expect(t("command_status", {})).toMatchObject({ free: true });
+        // An MCP tool's description, which agy keeps in its own folder: its bookkeeping.
+        expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "browser_navigate.json") })).toMatchObject({ toolName: "Read", free: true });
+        expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "settings.json") })).not.toHaveProperty("free");
         expect(t("write_file", { Path: "/g/x" })).toMatchObject({ refuse: expect.stringContaining("permission hook") });
         expect(t("generate_image", {})).toMatchObject({ toolName: "Antigravity_generate_image", input: { tool: "generate_image" }, own: true });
         expect(t("send_message", { Message: "done" })).toMatchObject({ toolName: "Antigravity_send_message", free: true });

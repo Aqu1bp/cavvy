@@ -15,7 +15,7 @@
 //     to sort after the session's folder, and SessionStart tells the model which is which.
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { isAbsolute, join, resolve } from "path";
 import { APP_TITLE } from "../../config/paths";
 import { canonical } from "../../util/files";
@@ -299,7 +299,11 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
     }
     if (/^(read_file|view_file|view_file_outline|view_code_item)$/.test(name)) {
         const file = path("Path", "AbsolutePath", "File", "FilePath");
-        return file ? { toolName: "Read", input: { file_path: at(file) } } : undefined;
+        if (!file) return undefined;
+        // An MCP tool's description, which agy keeps as a file and has the model read before its first call of it
+        // (agy 1.5.12): its own bookkeeping.
+        const description = canonical(at(file)).startsWith(canonical(join(homedir(), ".gemini", "antigravity-cli", "mcp")) + "/");
+        return { toolName: "Read", input: { file_path: at(file) }, ...(description ? { free: true } : {}) };
     }
     if (name === "list_dir") {
         const dir = path("DirectoryPath", "Path", "Directory") ?? cwd;
