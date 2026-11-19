@@ -17,6 +17,7 @@ export type { BackgroundTaskInfo } from "../backends/live/info";
 export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
+import type { Scheme as ThemeScheme, ThemeEntry } from "../themes/format";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -2019,6 +2020,13 @@ export type ServerEvent =
     | { type: "limits"; limits: PlanLimits }
     /** The keybindings file was saved, created or deleted. */
     | { type: "keybindings.changed"; keybindings: KeybindingsFile }
+    /** A theme file in ~/.cavvy/themes was saved, added or deleted: the whole list, checked. */
+    | { type: "themes.changed"; themes: ThemeEntry[] }
+    /**
+     * An agent asked to show a theme (or none, null). `entry`: the one it just saved, ahead of the folder's watch.
+     * The window answers with themes.report under `request` once it's drawn it.
+     */
+    | { type: "theme.apply"; id: string | null; entry?: ThemeEntry; request: string; replaced?: ThemeReplaced }
     /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
     | { type: "app.update"; info: AppUpdateInfo };
 
@@ -2057,6 +2065,31 @@ export interface KeybindingsFile {
     text?: string;
     /** It exists but couldn't be read. */
     error?: string;
+}
+
+export type { ThemeEntry };
+
+/** A theme of the user's an agent's theme was saved over (theme.apply): its name, and its file's text for Undo. */
+export interface ThemeReplaced {
+    name: string;
+    text: string;
+}
+
+/** How a theme came out in a window, for the agent that asked for it (theme.apply). */
+export interface ThemeReport {
+    request: string;
+    /** It's showing (false: the window couldn't find or load it). */
+    shown: boolean;
+    scheme?: ThemeScheme;
+    /** How much of the theme's background lies over its scene so text reads, 0–1: on average, and where it's most. */
+    veil?: number;
+    veilMost?: number;
+    /** Layers (by index in the look shown) that couldn't be drawn. */
+    failed?: number[];
+    /** The window rests the scene (reduced motion, or the theme's Animate is off). */
+    still?: boolean;
+    /** The window with the theme on, the app sketched over it with made-up text: a JPEG, in base64. */
+    picture?: string;
 }
 
 export interface HelloResult {
@@ -2239,6 +2272,16 @@ export interface Methods {
     "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
     "keybindings.get": { params: Record<string, never>; result: KeybindingsFile };
+    /** The user's themes in ~/.cavvy/themes, each checked. */
+    "themes.list": { params: Record<string, never>; result: ThemeEntry[] };
+    /** Deletes one; answers what its file held, for Undo. */
+    "themes.remove": { params: { id: string }; result: { text?: string } };
+    /** Puts back a deleted one (Undo). */
+    "themes.restore": { params: { id: string; text: string; replace?: boolean }; result: null };
+    /** A window's answer to theme.apply. */
+    "themes.report": { params: ThemeReport; result: null };
+    /** The theme a window shows now (null: none) and in which scheme: sent as it changes, for ThemeList. */
+    "themes.showing": { params: { id: string | null; scheme: ThemeScheme }; result: null };
     /** Creates the keybindings file from the template when there's none; true when it did. */
     "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };

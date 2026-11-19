@@ -74,6 +74,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 | [Desktop app and GUI](docs/desktop.md) | Building, installing and updating, using it, the terminal panel, project scripts, security |
 | [Changes, worktrees and comparing models](docs/git.md) | The review pane, committing and pushing, pull requests, worktrees, one task on several models |
 | [Browser](docs/browser.md) | The browser tools and the Browser pane |
+| [Themes](docs/themes.md) | Colours and animated scenes for the window, made by agents |
 | [Simulator](docs/simulator.md) | iOS simulators the agent drives, and the Simulator pane |
 | [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
 | [Other sessions](docs/other-sessions.md) | The agent listing, reading, messaging and starting your other sessions |

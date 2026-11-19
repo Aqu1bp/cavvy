@@ -5,6 +5,9 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import { THEME_TOOLS } from "../themes/tools";
+import type { ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
@@ -2585,11 +2588,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -2648,6 +2651,8 @@ export class Runtime {
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                     askSignIn: (req, then) => this.askSignIn(req, then),
                     confirm: (req, signal) => this.confirm(req, signal),
+                    // Themes show in this machine's windows: a server's sessions have none of their own.
+                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced) => this.engine.showTheme(id, entry, replaced), themeWindows: () => this.engine.themeWindows(), themeShowing: () => this.engine.themeShowing() }),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),

@@ -1,0 +1,92 @@
+/* A theme's scene behind the window (ThemeBackdrop.tsx). Under everything, and nothing in it takes a click.
+   The stage is 1600 × 1000, scaled to cover the window; each layer moves on the compositor alone
+   (lib/theme-motion.ts), and the veil, the theme's background, lies over all of it. */
+
+/* Each layer's play state (lib/theme-motion.ts): decoration, so only while Cavvy can be seen and has the focus
+   (lib/loops.ts), and with nobody at the window it stops where it is (ThemeBackdrop.tsx away). */
+.theme-backdrop {
+    --scene-play: var(--decor);
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    contain: strict;
+    background: var(--sheet);
+}
+
+.theme-backdrop[hidden] {
+    display: none;
+}
+
+/* Drawn out of sight; put up with the theme's colours, in one crossfade (base.css: data-theme-switch). */
+.tb-scene {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+}
+
+.tb-scene.on {
+    opacity: 1;
+}
+
+.tb-stage {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1600px;
+    height: 1000px;
+    transform: translate(-50%, -50%) scale(var(--tb-scale, 1));
+}
+
+.tb-layer {
+    position: absolute;
+    transition: opacity 800ms var(--ease-in-out);
+}
+
+.tb-layer.away {
+    opacity: 0;
+}
+
+.tb-pic {
+    display: block;
+    width: 100%;
+    height: 100%;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.tb-veil {
+    position: absolute;
+    inset: 0;
+    background-size: 100% 100%;
+}
+
+.theme-backdrop[data-away] {
+    --scene-play: paused;
+}
+
+/* Animate off, or the system asks for less motion: every layer rests at its first keyframe. */
+.theme-backdrop[data-still] .tb-pic {
+    animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tb-pic {
+        animation: none !important;
+    }
+
+    .tb-layer {
+        transition: none;
+    }
+}
+
+/* Reduce transparency: the scene stays, faintly, under an almost solid window. */
+@media (prefers-reduced-transparency: reduce) {
+    .tb-veil::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: var(--sheet);
+        opacity: 0.9;
+    }
+}

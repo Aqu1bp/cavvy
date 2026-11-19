@@ -70,6 +70,7 @@ import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { inputKeysOf } from "../backends/served-tools";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
+import { THEME_INSTRUCTIONS, THEME_TOOL_NAMES, servedThemeName, themeServerTools } from "../themes/tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, SERVERS_ELSEWHERE_INSTRUCTIONS, servedServerName, serverServerTools } from "../tools/server-tools";
@@ -1765,7 +1766,9 @@ export class Agent {
         const peers = !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
         const servers = !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
-        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
+        // Cavvy's own window: where there's one on this machine to show a theme in.
+        const theming = Boolean(this.o.host.ui.showTheme);
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers && !theming) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         /** Tools whose calls run Cavvy's checks themselves (runServed, authorizeServedTool). */
@@ -1824,6 +1827,10 @@ export class Agent {
         }
         // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
         else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        if (theming) {
+            tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
+            instructions.push(THEME_INSTRUCTIONS);
+        }
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
             tools.push(...selfChecked(sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives)));
@@ -3181,7 +3188,7 @@ export class Agent {
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name) ?? servedThemeName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
@@ -3922,7 +3929,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES, ...THEME_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];
