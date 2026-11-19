@@ -414,6 +414,7 @@ describe("agyTool", () => {
         // An MCP tool's description, which agy keeps in its own folder: its bookkeeping.
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "browser_navigate.json") })).toMatchObject({ toolName: "Read", free: true });
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "settings.json") })).not.toHaveProperty("free");
+        expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "instructions.md") })).toMatchObject({ toolName: "Read", free: true });
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "x", "y.json") })).not.toHaveProperty("free");
         // Cavvy's MCP folder beside the gate's holds the session's token: no file tool reads it.
         for (const [tool, a] of [["view_file", { AbsolutePath: "/g-mcp/id/.agents/mcp_config.json" }], ["list_dir", { DirectoryPath: "/g-mcp/id" }], ["grep_search", { Query: "Bearer", SearchPath: "/g-mcp" }], ["find_by_name", { Pattern: "*.json", SearchDirectory: "/g-mcp" }], ["grep_search", { Query: "Bearer", SearchPath: "/" }]] as const)

@@ -300,11 +300,11 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         const file = path("Path", "AbsolutePath", "File", "FilePath");
         if (!file) return undefined;
         if (inMcp(at(file))) return gateRefusal;
-        // An MCP tool's description (<server>/<tool>.json), which agy keeps as a file and has the model read before its
-        // first call of it (agy 1.5.12): its own bookkeeping. Not through a link elsewhere.
+        // An MCP server's tool descriptions and instructions (<server>/<tool>.json, <server>/instructions.md): agy keeps
+        // them as files and has the model read them before its first call (agy 1.5.12). Not through a link elsewhere.
         const descriptions = join(homedir(), ".gemini", "antigravity-cli", "mcp") + "/";
         const read = canonical(at(file));
-        const description = read.startsWith(descriptions) && /^[^/]+\/[^/]+\.json$/.test(read.slice(descriptions.length));
+        const description = read.startsWith(descriptions) && /^[^/]+\/([^/]+\.json|instructions\.md)$/.test(read.slice(descriptions.length));
         return { toolName: "Read", input: { file_path: at(file) }, ...(description ? { free: true } : {}) };
     }
     if (name === "list_dir") {
