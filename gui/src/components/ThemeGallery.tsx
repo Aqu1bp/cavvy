@@ -41,7 +41,7 @@ function askAtHome(tries = 0) {
 
 let serial = 0;
 
-/** A look's scene at rest, scaled to `width`; its layers move while `moving`. */
+/** A look's scene at rest, scaled to the tile (theme-gallery.css), about `width` wide; its layers move while `moving`. */
 function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element {
     const n = ++serial;
     const scale = p.width / STAGE.width;
@@ -53,7 +53,7 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
             </Show>
-            <span class="tg-stage" style={{ transform: `scale(${scale})` }}>
+            <span class="tg-stage">
                 <For each={(p.look.layers ?? []).filter((l) => l.when !== "working")}>
                     {(layer) => {
                         const i = p.look.layers!.indexOf(layer);
@@ -116,13 +116,16 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
             <button class="tg-pick" aria-pressed={on()} aria-disabled={p.problem ? true : undefined} title={p.problem} onClick={() => !p.problem && applyTheme(p.id)}>
                 <span class="tg-pv">
                     <Face look={shown()?.look} scheme={shown()?.scheme ?? chosenScheme()} moving={hover() && prefs.themeMotion} />
+                </span>
+                {/* Beside the name, not on the picture: anywhere on it, it lands on some scene's moon or characters. */}
+                <span class="tg-label">
+                    <span class="tg-name">{p.name}</span>
                     <Show when={only()}>
                         <span class="tg-kind" title={only() === "dark" ? "Dark only" : "Light only"}>
-                            {only() === "dark" ? <Moon size={10} /> : <Sun size={10} />}
+                            {only() === "dark" ? <Moon size={12} /> : <Sun size={12} />}
                         </span>
                     </Show>
                 </span>
-                <span class="tg-name">{p.name}</span>
                 <Show when={p.problem}>
                     <span class="tg-err">Has an error</span>
                 </Show>
