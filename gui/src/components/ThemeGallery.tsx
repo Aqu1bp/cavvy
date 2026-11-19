@@ -8,7 +8,7 @@ import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
-import { app, homeCwdAfter, reportError, toast } from "../state/app";
+import { app, homeOn, machineFor, reportError, toast } from "../state/app";
 import { refreshThemes, themeRpc } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
@@ -77,6 +77,14 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
         drawn = { look, width };
     };
     createEffect(on([() => p.look, settled], ([look]) => void draw(look).catch(() => undefined)));
+    /** The moving layers scaled to the tile as it is now; false while it has no size. */
+    const fit = () => {
+        const width = still.getBoundingClientRect().width;
+        if (!stage || !width) return false;
+        stage.style.transform = `scale(${width / STAGE.width})`;
+        return true;
+    };
+    createEffect(on(settled, () => p.moving && fit(), { defer: true }));
     /** The layers are decoded (while it moves): they show and the still doesn't, swapped in one change. */
     const [live, setLive] = createSignal(false);
     createEffect(
@@ -85,8 +93,10 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
             (moving) => {
                 setLive(false);
                 if (!moving) return;
-                // A frame on, the layers are in the page: shown in place of the still once each is decoded.
+                // A frame on, the layers are in the page: scaled to the tile, and shown in place of the still once each
+                // is decoded.
                 requestAnimationFrame(() => {
+                    if (!fit()) return;
                     const imgs = [...(stage?.querySelectorAll("img") ?? [])];
                     void Promise.all(imgs.map((i) => i.decode().catch(() => undefined))).then(() => p.moving && setLive(true));
                 });
@@ -98,7 +108,7 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
             <canvas class="tg-still" ref={still} />
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
-                <span class="tg-stage" ref={stage} style={{ transform: `scale(${still.getBoundingClientRect().width / STAGE.width})` }}>
+                <span class="tg-stage" ref={stage}>
                     <For each={(p.look.layers ?? []).filter((l) => l.when !== "working")}>
                         {(layer) => {
                             const i = p.look.layers!.indexOf(layer);
@@ -246,8 +256,10 @@ export function ThemeGallery(): JSX.Element {
                             class="tg-pick tg-make"
                             onClick={() => {
                                 setSettingsTab(undefined);
-                                // On this Mac, whatever machine the session on screen is on: its sessions have the theme tools.
-                                newSession(app.activeId ? homeCwdAfter(app.activeId) : undefined, undefined);
+                                // On this Mac, in one of its folders, whatever machine the session or Home on screen is on: its
+                                // sessions have the theme tools.
+                                const elsewhere = homeOn() !== undefined || machineFor(app.activeId) !== undefined;
+                                newSession(elsewhere ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined, {});
                                 requestAnimationFrame(() => askAtHome());
                             }}
                         >

@@ -186,9 +186,13 @@ function retarget(e: MouseEvent) {
 const startedWith = prefs.themeId;
 let anyUp = false;
 
+/** What goes up next: a crossfade's update puts up the latest choice, not the one it started for. */
+let wanted: Shown | undefined;
+
 function putUp(s: Shown | undefined) {
     clearTimeout(fallback);
     drawing = undefined;
+    wanted = s;
     const before = untrack(up);
     if (before === s) return;
     // The same look again (its contrast or glass changed): no crossfade for that.
@@ -197,7 +201,7 @@ function putUp(s: Shown | undefined) {
     // is still filling in under it, which a crossfade would show twice (its snapshot and the moved page); it just comes.
     const starting = !before && !anyUp && s?.id === startedWith;
     if (s) anyUp = true;
-    swap(() => setUp(s), !same && !starting);
+    swap(() => setUp(wanted), !same && !starting);
 }
 
 

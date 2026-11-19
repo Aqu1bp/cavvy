@@ -91,8 +91,8 @@ export interface LayerAnimation {
 }
 
 /**
- * Where in the pass each of a motion's `stretches` + 1 stops is sampled: at its own place, or at a keyframe within half
- * a stretch of it that differs from it most. A keyframe between two stops (a flash that peaks and is gone within a
+ * Where in the pass each of a motion's `stretches` + 1 stops is sampled: at its own place, or at the keyframe nearest
+ * it that differs from it most (the first and last stops keep their own). A keyframe between two stops (a flash that peaks and is gone within a
  * stretch) is then shown, up to half a stretch early or late, instead of never.
  */
 function sampledAt(m: Motion, stretches: number): number[] {
@@ -100,9 +100,10 @@ function sampledAt(m: Motion, stretches: number): number[] {
     const apart = (a: Pose, b: Pose) => Math.max(Math.abs(a.opacity - b.opacity), Math.abs(a.x - b.x) / 100, Math.abs(a.y - b.y) / 100, Math.abs(a.rotate - b.rotate) / 90, Math.abs(a.scale - b.scale));
     const most = new Map<number, number>();
     for (const k of times(m.keyframes)) {
-        const i = Math.round(k * stretches);
-        if (Math.abs(k - at[i]!) < 1e-9) continue;
-        const d = apart(poseAt(m, k), poseAt(m, at[i]!));
+        // The first and last stops stay where the motion starts and ends (shown through a delay, and joined by a repeat).
+        const i = Math.min(stretches - 1, Math.max(1, Math.round(k * stretches)));
+        if (Math.abs(k - i / stretches) < 1e-9) continue;
+        const d = apart(poseAt(m, k), poseAt(m, i / stretches));
         if (d > (most.get(i) ?? 0)) {
             most.set(i, d);
             at[i] = k;

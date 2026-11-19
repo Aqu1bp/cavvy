@@ -193,11 +193,14 @@ function percentDecoded(s: string): string {
 
 /** The text with XML character references (&#97; &#x61;) as the characters they stand for. */
 function decodeRefs(t: string): string {
-    // Any number of leading zeros, as the parser reads them.
-    return t.replace(/&#(?:x0*([0-9a-f]{1,6})|0*([0-9]{1,7}));/gi, (ref, hex: string | undefined, dec: string | undefined) => {
-        const code = hex ? parseInt(hex, 16) : Number(dec);
-        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
-    });
+    // Any number of leading zeros, as the parser reads them; and the quotes, which an attribute's value spells so.
+    return t
+        .replace(/&#(?:x0*([0-9a-f]{1,6})|0*([0-9]{1,7}));/gi, (ref, hex: string | undefined, dec: string | undefined) => {
+            const code = hex ? parseInt(hex, 16) : Number(dec);
+            return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
+        })
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'");
 }
 
 /** The CSS in an SVG: each <style> element's text and each style="…" attribute's value. Linear in the text. */

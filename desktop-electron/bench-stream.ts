@@ -229,12 +229,14 @@ try {
     // being there (gui/src/lib/away.ts) partway through.
     if (args.includes("--touch")) await js(`setInterval(() => dispatchEvent(new PointerEvent("pointermove")), 30000), 1`);
     // --window focus|unfocus|cover|minimize|hide: the window's state while it's measured (gui/src/lib/loops.ts pauses
-    // what loops by it). focus, the default: Cavvy in front with the window focused. unfocus: Finder in front, the
-    // window beside it. cover: a Finder window over it.
-    const windowState = arg("--window") ?? "focus";
+    // what loops by it), set before every phase. focus: Cavvy in front with the window focused. unfocus: Finder in front,
+    // the window beside it. cover: a Finder window over it. Not given, the window is left as each phase puts it.
+    const windowState = arg("--window");
     const inMain = async (code: string) => main && (await main.cdp("Runtime.evaluate", { expression: `(() => { const { app, BrowserWindow } = process.mainModule.require("electron"); const w = BrowserWindow.getAllWindows()[0]; ${code} })()`, returnByValue: true })).result?.result?.value;
     const osa = (script: string) => Bun.spawnSync(["osascript", "-e", script]);
     const putWindow = async () => {
+        // Not given: each phase's own (the hidden, minimized and unfocused ones set theirs before they start).
+        if (!windowState) return;
         if (windowState === "minimize") return void (await inMain("w.minimize()"));
         if (windowState === "hide") return void (await inMain("app.hide()"));
         await inMain("app.focus({ steal: true }); w.show(); w.focus()");

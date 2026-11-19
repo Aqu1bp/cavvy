@@ -68,7 +68,8 @@ describe("checking a theme", () => {
         expect(svgProblem('<svg><script/></svg>')).toContain("<script>");
         expect(svgProblem('<svg><rect fill="url(#g)"/><use href="#a"/><image href="data:image/png;base64,AA"/></svg>')).toBeUndefined();
         // Quoted, in an attribute or in CSS, a reference to itself is still one.
-        expect(svgProblem(`<svg><rect fill="url('#g')"/><style>rect{fill:url( "#g" )}</style></svg>`)).toBeUndefined();
+        expect(svgProblem(`<svg><rect fill="url('#g')" style="fill:url(&quot;#g&quot;)"/><style>rect{fill:url( "#g" )}</style></svg>`)).toBeUndefined();
+        expect(svgProblem(`<svg><rect style="fill:url(&quot;https://x&quot;)"/></svg>`)).toContain("url()");
         expect(svgProblem(`<svg><rect fill="url('https://x')"/></svg>`)).toContain("url()");
     });
 
@@ -323,8 +324,14 @@ describe("a scene's motion", () => {
     test("a keyframe between two of its stops still shows: a flash isn't sampled away", () => {
         // Dark, a flash at 0.1 of a 6 s pass, dark again by 0.14: the stops fall every 0.25 s (1/24 of the pass).
         const flash = { duration: 6, loop: "repeat" as const, easing: "linear" as const, keyframes: [{ at: 0, opacity: 0 }, { at: 0.08, opacity: 0 }, { at: 0.1, opacity: 1 }, { at: 0.14, opacity: 0 }, { at: 1, opacity: 0 }] };
-        const opacities = [...layerAnimation(flash, "f").keyframes.matchAll(/opacity:([\d.]+)/g)].map((m) => Number(m[1]));
-        expect(Math.max(...opacities)).toBe(1);
+        const opacities = (m: typeof flash) => [...layerAnimation(m, "f").keyframes.matchAll(/opacity:([\d.]+)/g)].map((x) => Number(x[1]));
+        expect(Math.max(...opacities(flash))).toBe(1);
+        // Keyframes crowding one stop: the one that differs from it most is shown.
+        expect(Math.max(...opacities({ ...flash, keyframes: [{ at: 0, opacity: 0 }, { at: 0.11, opacity: 0.6 }, { at: 0.12, opacity: 1 }, { at: 0.124, opacity: 0 }, { at: 1, opacity: 0 }] }))).toBe(1);
+        // Near the start: the first stop stays the motion's first pose (shown through a delay).
+        const early = opacities({ ...flash, keyframes: [{ at: 0, opacity: 0 }, { at: 0.01, opacity: 1 }, { at: 0.05, opacity: 0 }, { at: 1, opacity: 0 }] });
+        expect(early[0]).toBe(0);
+        expect(Math.max(...early)).toBe(1);
     });
 
     test("steps each layer as seldom as it can without its steps showing", async () => {
