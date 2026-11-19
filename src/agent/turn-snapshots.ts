@@ -713,6 +713,9 @@ export class TurnSnapshots {
     }
 
     static for(session: Session, cwd: string): TurnSnapshots | undefined {
+        // One let go of makes no recorder, nor opens its history again: its history may have been let go of since
+        // (FileHistory.release) and its own stopped recorder isn't found under one opened anew.
+        if (session.isReleased) return TurnSnapshots.existing(session);
         const history = FileHistory.for(session);
         if (!history) return undefined;
         // A reopened Session is a new owner. A late read from the released
@@ -722,6 +725,12 @@ export class TurnSnapshots {
         let snapshots = sessions.get(session);
         if (!snapshots) sessions.set(session, (snapshots = new TurnSnapshots(history.dir, cwd)));
         return snapshots;
+    }
+
+    /** The session's recorder if it has one, without making one (to stop it). */
+    static existing(session: Session): TurnSnapshots | undefined {
+        const history = FileHistory.existing(session);
+        return history ? instances.get(history)?.get(session) : undefined;
     }
 
     private validTime(value: unknown): boolean {

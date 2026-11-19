@@ -486,6 +486,11 @@ export class Session {
         letGo(this.file);
     }
 
+    /** release() was called: this copy writes nothing more. */
+    get isReleased(): boolean {
+        return this.released;
+    }
+
     private claim() {
         if (this.holding) return;
         hold(this.file);

@@ -15,6 +15,7 @@ import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
+import { FileHistory } from "../agent/checkpoints";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
@@ -1438,6 +1439,9 @@ export class Engine {
                     this.closing.delete(id);
                     this.closingIn.delete(id);
                 }
+                // Its files' history isn't kept for as long as the server runs, unless it's opened again meanwhile
+                // (the same history then) or its turn is still stopping (still saving to it).
+                if (!rt.closedMidTurn) void FileHistory.release(rt.session, () => !this.stopping && !this.runtimes.has(id) && !this.closing.has(id)).catch(() => undefined);
             });
         this.closing.set(id, done);
         this.closingIn.set(id, rt.folders);
