@@ -499,8 +499,12 @@ export class LiveCliSession {
         this.stale = false;
         this.proc = proc;
         const exited = proc.exited.then(async (code) => {
-            await Promise.race([proc.stderrEnded, Bun.sleep(EXIT_DRAIN_MS)]);
-            throw new StartError(this.exitMessage(proc, code));
+            // All it wrote is read first: its exit can be seen before its last output, and why it ended may be there.
+            // In its own words then, as when the connection's own failure comes before this.
+            // Only while this one is starting: after, nothing waits on this, and the adapter's connection may be another's.
+            const starting = gen === this.generation && this._state === "starting";
+            const said = await Promise.race([Promise.all([starting ? this.adapter.endReason?.().catch(() => undefined) : undefined, proc.stderrEnded]).then(([why]) => why), Bun.sleep(EXIT_DRAIN_MS).then(() => undefined)]);
+            throw new StartError(said ?? this.exitMessage(proc, code));
         });
         exited.catch(() => {});
         // Stopped (or closed) while starting: what's started here is let go.

@@ -454,6 +454,12 @@ export class ClaudeConnection implements CliConnection {
         })());
     }
 
+    /** Why Claude Code said it's ending (a session it can't resume), once all it wrote is read. */
+    async endReason(): Promise<string | undefined> {
+        await this.done.catch(() => {});
+        return this.failure;
+    }
+
     async open(o: { resumeId?: string; fork?: boolean; settings: LiveSettings }): Promise<{ sessionId: string }> {
         await this.initialize();
         await this.attach();
@@ -2083,6 +2089,10 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         liveDebug("claude", "spawned", { pid: proc.pid });
         await conn.initialize();
         return conn;
+    }
+
+    endReason(): Promise<string | undefined> {
+        return this.conn?.endReason() ?? Promise.resolve(undefined);
     }
 
     status(accountId: string | undefined, signal?: AbortSignal) {
