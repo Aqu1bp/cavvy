@@ -36,9 +36,15 @@ export async function imagesKeyOf(images: readonly { mediaType: string; data: st
 }
 
 export class ImageCache<T = string> {
-    private entries = new Map<string, Promise<T[]>>();
+    /** Each request, and its size once it's in (0 until then). */
+    private entries = new Map<string, { p: Promise<T[]>; size: number }>();
+    private total = 0;
 
-    constructor(private max: number) {}
+    /**
+     * Up to `max` entries and, with `sizeOf`, `maxSize` in all (the most recent one is kept even when it alone is
+     * over), the least recently used dropped first.
+     */
+    constructor(private max: number, private maxSize = Infinity, private sizeOf?: (value: T) => number) {}
 
     get(key: string, load: () => Promise<T[]>): Promise<T[]> {
         const hit = this.entries.get(key);
@@ -46,23 +52,47 @@ export class ImageCache<T = string> {
             // Most recently used last: the first entry is the one to drop.
             this.entries.delete(key);
             this.entries.set(key, hit);
-            return hit;
+            return hit.p;
         }
         const p = load();
-        this.entries.set(key, p);
-        p.catch(() => {
-            if (this.entries.get(key) === p) this.entries.delete(key);
-        });
-        while (this.entries.size > this.max) this.entries.delete(this.entries.keys().next().value!);
+        const entry = { p, size: 0 };
+        this.entries.set(key, entry);
+        p.then(
+            (values) => {
+                if (this.entries.get(key) !== entry || !this.sizeOf) return;
+                for (const v of values) entry.size += this.sizeOf(v);
+                this.total += entry.size;
+                this.trim(entry);
+            },
+            () => {
+                if (this.entries.get(key) === entry) this.drop(key);
+            },
+        );
+        this.trim(entry);
         return p;
     }
 
     /** What's kept for `key`, without making it the most recent. */
     peek(key: string): Promise<T[]> | undefined {
-        return this.entries.get(key);
+        return this.entries.get(key)?.p;
     }
 
     get size(): number {
         return this.entries.size;
+    }
+
+    private drop(key: string) {
+        const e = this.entries.get(key);
+        if (!e) return;
+        this.entries.delete(key);
+        this.total -= e.size;
+    }
+
+    /** Drops the least recently used past the limits, never `keep`. */
+    private trim(keep: { p: Promise<T[]> }) {
+        for (const [key, e] of this.entries) {
+            if (this.entries.size <= this.max && this.total <= this.maxSize) return;
+            if (e !== keep) this.drop(key);
+        }
     }
 }
