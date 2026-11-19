@@ -1594,8 +1594,10 @@ export class Runtime {
             const patch: AgentHead = {};
             for (const [k, v] of Object.entries(head)) {
                 const json = JSON.stringify(v);
-                if (json !== undefined && logged.head.get(k) !== json) {
-                    logged.head.set(k, json);
+                // Kept to compare against: a long value (its prompt, its report) as a hash of it.
+                const seen = json === undefined || json.length <= 256 ? json : `#${json.length}:${Bun.hash(json).toString(36)}`;
+                if (seen !== undefined && logged.head.get(k) !== seen) {
+                    logged.head.set(k, seen);
                     (patch as Record<string, unknown>)[k] = v;
                 }
             }
