@@ -2293,8 +2293,9 @@ export class ClaudeLive {
             }
         } finally {
             stopSteering?.();
+            // Ended, or failed to start: its settings are kept, not its prompt, images and documents.
+            if (adapter.current?.t === t) adapter.current = { t: settledTurn(t) };
         }
-        if (adapter.current?.t === t) adapter.current = { t: settledTurn(t) };
         liveDebug("claude", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code didn't answer the stop in time. The turn ended here; its process is kept, with what it runs in the background. If it stays busy, restart it with /tasks restart (that stops its background work)." });
         if (r.deferred) t.sink.emit({ type: "notice", level: "info", message: `New Claude Code settings apply once its background work ends (${plural(r.deferred.tasks, "task")} running). /tasks restart applies them now, stopping it.` });
