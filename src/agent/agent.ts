@@ -1844,7 +1844,8 @@ export class Agent {
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
             inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
-            unasked: tools.filter((t) => checksItself.has(t.name) || t.annotations?.readOnlyHint === true).map((t) => t.name),
+            checksItself: [...checksItself],
+            readOnly: tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
@@ -3285,7 +3286,7 @@ export class Agent {
     }
 
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
-        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
         const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
@@ -4160,13 +4161,13 @@ const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: anothe
 const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool Cavvy has no tool of its own for (rules still match its name). */
-function backendTool(name: string, title?: string): Tool<any> {
+function backendTool(name: string, title?: string, readOnly = false): Tool<any> {
     return {
         name,
         description: "",
         parameters: { type: "object" },
         category: name.startsWith("mcp__") ? "mcp" : "execute",
-        readOnly: false,
+        readOnly,
         title: () => title ?? name,
         run: async () => ({ content: "" }),
     };

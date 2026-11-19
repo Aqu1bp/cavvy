@@ -392,11 +392,17 @@ describe("Cavvy's browser tools, which OpenCode has none of", () => {
             expect(p.asked).toEqual([]);
             expect(answers()).toEqual([reject]);
             expect(scheduler.list()).toEqual([]);
-            // Reading them only (schedule_list) goes unasked, Plan or not.
+            // Reading them (schedule_list) is checked as read-only: Plan lets it run, and a deny rule still holds.
             rmSync(LOG, { force: true });
             await p.run("[[mcp:schedule_list {}]]");
+            expect(p.asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__schedule_list"]);
             expect(answers()).toEqual([once]);
             expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "schedule_list", isError: false });
+            rmSync(LOG, { force: true });
+            const denied = await browsing({ scheduler, settings: { permissions: { deny: ["mcp__cavvy__schedule_list"] } }, ask: () => ({ allow: true }) });
+            await denied.run("[[mcp:schedule_list {}]]");
+            expect(denied.asked).toEqual([]);
+            expect(answers()).toEqual([reject]);
         } finally {
             scheduler.dispose();
         }
