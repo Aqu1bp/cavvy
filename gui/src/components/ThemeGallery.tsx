@@ -2,7 +2,7 @@
 // pointed at. A click shows it; the user's own can be deleted (with Undo). The last tile starts a session that asks
 // an agent for a new one.
 
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Moon, Plus, Sun } from "lucide-solid";
 import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
@@ -14,7 +14,7 @@ import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
 import { applyTheme, builtinTheme, keptTheme, loadAllBuiltins, themeName, userThemes } from "../state/theme";
 import { setSettingsTab } from "../state/ui";
-import { svgUrl } from "../lib/theme-draw";
+import { drawLayers, loadLayers, svgUrl } from "../lib/theme-draw";
 import { machine } from "../lib/platform";
 import "../styles/theme-gallery.css";
 
@@ -41,45 +41,91 @@ function askAtHome(tries = 0) {
 
 let serial = 0;
 
-/** A look's scene at rest, scaled to the tile (theme-gallery.css), about `width` wide; its layers move while `moving`. */
+/** Bumped when the window has settled after a resize (ThemeGallery): the stills are drawn again at their new size. */
+const [settled, setSettled] = createSignal(0);
+
+/**
+ * A look's scene at rest, scaled to the tile (theme-gallery.css), about `width` wide; its layers move while `moving`.
+ * At rest it's one picture (a canvas drawn once at the tile's size), not each layer: with them all, every step of a
+ * window's resize drew the gallery's hundred-odd layers again (measured: 2.6 s of GPU work in a 2.8 s resize). The
+ * layers are put up only while it moves, and the picture hidden once they're drawn.
+ */
 function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element {
     const n = ++serial;
     const scale = p.width / STAGE.width;
     // As often as each layer's steps would show this small: a tile's preview steps less often than the window's scene.
     const frames = sceneFrames(p.look.layers ?? [], scale * devicePixelRatio);
     const anims = (p.look.layers ?? []).map((l, i) => (l.motion ? layerAnimation(l.motion, `tg${n}_${i}`, l.opacity ?? 1, frames[i]) : undefined));
+    let still!: HTMLCanvasElement;
+    let stage: HTMLSpanElement | undefined;
+    /** What the still was drawn from, and how wide, so a settle that changed little doesn't draw it again. */
+    let drawn: { look: Look; width: number } | undefined;
+    let drawing = 0;
+    const draw = async (look: Look) => {
+        const width = Math.round(still.getBoundingClientRect().width * devicePixelRatio);
+        if (!width || (drawn?.look === look && Math.abs(drawn.width - width) <= width * 0.1)) return;
+        const run = ++drawing;
+        const layers = look.layers ?? [];
+        const { images } = await loadLayers(layers);
+        if (run !== drawing) return;
+        still.width = width;
+        still.height = Math.round((width * STAGE.height) / STAGE.width);
+        const ctx = still.getContext("2d");
+        if (!ctx) return;
+        ctx.imageSmoothingQuality = "high";
+        drawLayers(ctx, layers, images, STAGE.width / width, (l) => l.when !== "working");
+        drawn = { look, width };
+    };
+    createEffect(on([() => p.look, settled], ([look]) => void draw(look).catch(() => undefined)));
+    /** The layers are decoded (while it moves): they show and the still doesn't, swapped in one change. */
+    const [live, setLive] = createSignal(false);
+    createEffect(
+        on(
+            () => p.moving,
+            (moving) => {
+                setLive(false);
+                if (!moving) return;
+                // A frame on, the layers are in the page: shown in place of the still once each is decoded.
+                requestAnimationFrame(() => {
+                    const imgs = [...(stage?.querySelectorAll("img") ?? [])];
+                    void Promise.all(imgs.map((i) => i.decode().catch(() => undefined))).then(() => p.moving && setLive(true));
+                });
+            },
+        ),
+    );
     return (
-        <span class="tg-scene" aria-hidden="true" data-loop-keeps ref={(el) => onCleanup(alignOnStart(el))}>
+        <span class="tg-scene" aria-hidden="true" data-loop-keeps data-live={live() ? "" : undefined} ref={(el) => onCleanup(alignOnStart(el))}>
+            <canvas class="tg-still" ref={still} />
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
+                <span class="tg-stage" ref={stage}>
+                    <For each={(p.look.layers ?? []).filter((l) => l.when !== "working")}>
+                        {(layer) => {
+                            const i = p.look.layers!.indexOf(layer);
+                            const pose = restPose(layer);
+                            const [ox, oy] = layer.origin ?? [0.5, 0.5];
+                            return (
+                                <img
+                                    src={svgUrl(layer.svg)}
+                                    alt=""
+                                    draggable={false}
+                                    data-grid={anims[i] ? gridOf(frames[i]!) : undefined}
+                                    style={{
+                                        left: `${layer.x ?? 0}px`,
+                                        top: `${layer.y ?? 0}px`,
+                                        width: `${layer.width ?? STAGE.width}px`,
+                                        height: `${layer.height ?? STAGE.height}px`,
+                                        "transform-origin": `${ox * 100}% ${oy * 100}%`,
+                                        transform: transformOf(pose),
+                                        opacity: String((layer.opacity ?? 1) * pose.opacity),
+                                        ...(p.moving && anims[i] ? { animation: anims[i]!.animation } : {}),
+                                    }}
+                                />
+                            );
+                        }}
+                    </For>
+                </span>
             </Show>
-            <span class="tg-stage">
-                <For each={(p.look.layers ?? []).filter((l) => l.when !== "working")}>
-                    {(layer) => {
-                        const i = p.look.layers!.indexOf(layer);
-                        const pose = restPose(layer);
-                        const [ox, oy] = layer.origin ?? [0.5, 0.5];
-                        return (
-                            <img
-                                src={svgUrl(layer.svg)}
-                                alt=""
-                                draggable={false}
-                                data-grid={anims[i] ? gridOf(frames[i]!) : undefined}
-                                style={{
-                                    left: `${layer.x ?? 0}px`,
-                                    top: `${layer.y ?? 0}px`,
-                                    width: `${layer.width ?? STAGE.width}px`,
-                                    height: `${layer.height ?? STAGE.height}px`,
-                                    "transform-origin": `${ox * 100}% ${oy * 100}%`,
-                                    transform: transformOf(pose),
-                                    opacity: String((layer.opacity ?? 1) * pose.opacity),
-                                    ...(p.moving && anims[i] ? { animation: anims[i]!.animation } : {}),
-                                }}
-                            />
-                        );
-                    }}
-                </For>
-            </span>
         </span>
     );
 }
@@ -167,22 +213,19 @@ async function remove(id: string, name: string) {
     }
 }
 
-/** How long after the window's last resize the previews are drawn again at their size. */
+/** How long after the window's last resize the stills are drawn again at their size. */
 const SETTLE_MS = 200;
 
 export function ThemeGallery(): JSX.Element {
-    let grid!: HTMLDivElement;
     onMount(() => {
         void loadAllBuiltins();
         void refreshThemes().catch(() => undefined);
-        // While the window is resized, each preview is one layer that's only moved and scaled, not its scene drawn
-        // again at every step (measured: 2.6 s of GPU work in a 2.8 s resize, 0.9 s in 1.3 s with it). Once it
-        // settles they're drawn again, sharp at their new size (theme-gallery.css).
+        // While the window is resized each still is only scaled; once it settles they're drawn again, sharp at their
+        // new size (Picture).
         let settle: ReturnType<typeof setTimeout> | undefined;
         const resized = () => {
-            grid.dataset.resizing = "";
             clearTimeout(settle);
-            settle = setTimeout(() => delete grid.dataset.resizing, SETTLE_MS);
+            settle = setTimeout(() => setSettled((k) => k + 1), SETTLE_MS);
         };
         addEventListener("resize", resized);
         onCleanup(() => {
@@ -191,7 +234,7 @@ export function ThemeGallery(): JSX.Element {
         });
     });
     return (
-        <div class="tg-grid" ref={grid} role="group" aria-label="Theme">
+        <div class="tg-grid" role="group" aria-label="Theme">
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
                 <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={() => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>

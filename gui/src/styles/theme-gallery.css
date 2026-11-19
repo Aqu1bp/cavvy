@@ -112,9 +112,18 @@
     transform: scale(calc(100cqw / 1600px));
 }
 
-/* While the window is resized (ThemeGallery.tsx): one layer each, moved and scaled as it is. */
-.tg-grid[data-resizing] .tg-stage {
-    will-change: transform;
+/* The scene at rest as one picture (ThemeGallery.tsx Picture), hidden under its layers once they're up while it moves. */
+.tg-still {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.tg-scene[data-live] .tg-still,
+.tg-scene:not([data-live]) .tg-stage {
+    visibility: hidden;
 }
 
 .tg-stage > img {
