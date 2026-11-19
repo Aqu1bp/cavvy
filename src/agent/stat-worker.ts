@@ -7,23 +7,28 @@
 import { closeSync, constants, lstatSync, openSync, readdirSync, unlinkSync, watch, type FSWatcher, type Stats } from "fs";
 import { randomBytes } from "crypto";
 import { join, relative } from "path";
-import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
-import { LATE, scanIndex, scanPaths } from "./index-scan";
+import { KIND, SHARED_AT, type StatRequest, type StatReply, type IndexRequest, type PathsRequest, type SharedIndexBytes } from "./stat-files";
+import { LATE, scanIndex, scanPaths, type SharedIndex } from "./index-scan";
 
 declare const self: Worker;
 
-/** Tracked lists by id, the latest few: a session's capture sends its list once per version of the index. */
-const lists = new Map<string, string[]>();
+/**
+ * Each folder's tracked list, the latest only (by id), for the latest few folders: a session's capture sends its list
+ * once per version of the index. An empty one isn't kept: it's sent each time.
+ */
+const lists = new Map<string, { id: string; tracked: string[] }>();
+const MAX_LISTS = 16;
 
 const gone = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 
 function stat(req: StatRequest): StatReply {
-    if (req.tracked) {
-        lists.delete(req.trackedId);
-        lists.set(req.trackedId, req.tracked);
-        while (lists.size > 16) lists.delete(lists.keys().next().value!);
+    if (req.tracked?.length) {
+        lists.delete(req.root);
+        lists.set(req.root, { id: req.trackedId, tracked: req.tracked });
+        while (lists.size > MAX_LISTS) lists.delete(lists.keys().next().value!);
     }
-    const tracked = lists.get(req.trackedId);
+    const kept = lists.get(req.root);
+    const tracked = req.tracked && !req.tracked.length ? req.tracked : kept?.id === req.trackedId ? kept.tracked : undefined;
     if (!tracked) return { id: req.id, missing: true };
     const n = tracked.length + req.untracked.length;
     const kinds = new Uint8Array(n);
@@ -217,17 +222,45 @@ function onWatch(r: WatchRequest) {
     mark();
 }
 
+/** The index read once for every part of a scan (stat-files.ts readShared): the first part waits, until `deadline`, for the others to be through with it. */
+function sharedIndex(s: SharedIndexBytes, part: { k: number; n: number } | undefined, deadline: number | undefined): SharedIndex {
+    const others = (part?.n ?? 1) - 1;
+    const through = new Int32Array(s.sab, 0, 1);
+    const until = deadline ?? Date.now() + 60_000;
+    return {
+        buf: Buffer.from(s.sab, SHARED_AT, s.length),
+        mtimeMs: s.mtimeMs,
+        othersDone: () => {
+            for (;;) {
+                const done = Atomics.load(through, 0);
+                if (done >= others) return true;
+                const left = until - Date.now();
+                if (left <= 0) return false;
+                Atomics.wait(through, 0, done, left);
+            }
+        },
+    };
+}
+
 self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest | WatchRequest>) => {
     if ("watch" in e.data) return onWatch(e.data);
     let reply: StatReply;
+    const r = e.data;
+    const shared = "indexFile" in r && !("paths" in r) ? r.shared : undefined;
     try {
-        const r = e.data;
         // Asked of a busy worker and nothing waits for it now: not done, so what's asked after it isn't held up too.
         if (r.deadline !== undefined && Date.now() >= r.deadline) throw new Error(LATE);
         reply = "paths" in r ? { id: r.id, paths: scanPaths(r.root, r.indexFile, r.hashBytes, r.paths, r.msExact) }
-            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact, r.part, r.deadline) } : stat(r);
+            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact, r.part, r.deadline, shared && sharedIndex(shared, r.part, r.deadline)) } : stat(r);
     } catch (err) {
         reply = { id: e.data.id, error: String((err as Error)?.message ?? err) };
+    } finally {
+        // Through with the shared index, however it went: the first part may blank what this one read.
+        if (shared && "part" in r && r.part && r.part.k !== 0) {
+            const through = new Int32Array(shared.sab, 0, 1);
+            Atomics.add(through, 0, 1);
+            Atomics.notify(through, 0);
+        }
     }
     // Handed over, not copied.
     self.postMessage(reply, { transfer: reply.kinds && reply.stamps ? [reply.kinds.buffer as ArrayBuffer, reply.stamps.buffer as ArrayBuffer] : [] });

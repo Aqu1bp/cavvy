@@ -37,8 +37,8 @@ test("the worker finds what this thread does: files, links, folders, what's miss
 
 for (const version of [2, 4]) {
     test(`an index (version ${version}) scanned in parts finds what one scan does; its content key moves only with what it records`, async () => {
-        const { scanIndex, scanPaths } = await import("../src/agent/index-scan");
-        const { scanIndexFiles } = await import("../src/agent/stat-files");
+        const { scanIndex, scanPaths, LATE } = await import("../src/agent/index-scan");
+        const { scanIndexFiles, statWorkersForTests } = await import("../src/agent/stat-files");
         const repo = join(root, `index-v${version}`);
         mkdirSync(repo, { recursive: true });
         const git = (args: string[], input?: string) => {
@@ -67,10 +67,35 @@ for (const version of [2, 4]) {
             const parts = Array.from({ length: n }, (_, k) => scanIndex(repo, index, 20, k === n - 1 ? ["new.txt"] : [], true, { k, n }));
             expect({ differs: parts.flatMap((p) => p.differs), gone: parts.flatMap((p) => p.gone), key: parts[0]!.contentKey }).toEqual({ differs: whole.differs, gone: whole.gone, key: whole.contentKey });
         }
-        // On the workers, side by side, as a capture asks.
+        // Most entries are as the index records them: blanked stat fields would make them differ.
+        expect(whole.differs.length).toBeLessThan(10);
+        // Read once and shared: the first part blanks the others' stat fields only once they're through, here only
+        // once it's done with its own; not in time, it's late.
+        const { mtimeMs } = statSync(index);
+        for (const n of [2, 3]) {
+            const buf = readFileSync(index);
+            const rest: ReturnType<typeof scanIndex>[] = [];
+            const others = () => {
+                for (let k = 1; k < n; k++) rest.push(scanIndex(repo, index, 20, k === n - 1 ? ["new.txt"] : [], true, { k, n }, undefined, { buf, mtimeMs }));
+                return true;
+            };
+            const first = scanIndex(repo, index, 20, [], true, { k: 0, n }, undefined, { buf, mtimeMs, othersDone: others });
+            if (!rest.length) others();
+            const parts = [first, ...rest];
+            expect({ differs: parts.flatMap((p) => p.differs), gone: parts.flatMap((p) => p.gone), key: first.contentKey }).toEqual({ differs: whole.differs, gone: whole.gone, key: whole.contentKey });
+            expect(() => scanIndex(repo, index, 20, [], true, { k: 0, n }, undefined, { buf: readFileSync(index), mtimeMs, othersDone: () => false })).toThrow(LATE);
+        }
+        // On the workers, side by side, as a capture asks; and split into parts sharing what was read.
         const viaWorkers = await scanIndexFiles(repo, index, 20, ["new.txt"], true, Date.now() + 10_000);
         expect(viaWorkers.differs).toEqual(whole.differs);
         expect(viaWorkers.contentKey).toBe(whole.contentKey);
+        statWorkersForTests({ entriesPerWorker: 10 });
+        try {
+            const inParts = await scanIndexFiles(repo, index, 20, ["new.txt"], true, Date.now() + 10_000);
+            expect({ differs: inParts.differs, gone: inParts.gone, key: inParts.contentKey, tree: inParts.cacheTree }).toEqual({ differs: whole.differs, gone: whole.gone, key: whole.contentKey, tree: whole.cacheTree });
+        } finally {
+            statWorkersForTests({ entriesPerWorker: 25_000 });
+        }
         // Only some paths: the same entries, and the same key; asked again (by offset, the file being the same), the same.
         const asked = ["d1/e1/f1.txt", "d2", "d3/e0/f3.txt", "d4/e1/f4.txt", "new.txt"];
         const first = scanPaths(repo, index, 20, asked, true);
@@ -163,4 +188,58 @@ test("a missing file doesn't decide how this system's file times compare (a new 
     writeFileSync(join(root, "an-index"), "x");
     // Asked of a file that is there, it's looked at: Bun's millisecond times are exact.
     expect(msTimesExact(join(root, "an-index"))).toBe(true);
+});
+
+test("the worker keeps one tracked list for each folder: a new one takes the last one's place", async () => {
+    const w = new Worker(new URL("../src/agent/stat-worker.ts", import.meta.url).href);
+    let id = 0;
+    const ask = (req: Record<string, unknown>) => new Promise<{ missing?: boolean; kinds?: Uint8Array }>((resolve) => {
+        w.onmessage = (e) => resolve(e.data);
+        w.postMessage({ id: ++id, untracked: [], ...req });
+    });
+    try {
+        const other = join(root, "elsewhere");
+        expect((await ask({ root, trackedId: "a", tracked: ["a.txt"] })).kinds?.length).toBe(1);
+        expect((await ask({ root: other, trackedId: "a", tracked: ["x", "y"] })).kinds?.length).toBe(2);
+        expect((await ask({ root, trackedId: "a" })).kinds?.length).toBe(1);
+        expect((await ask({ root, trackedId: "b", tracked: ["a.txt", "dir"] })).kinds?.length).toBe(2);
+        // The folder's last list is gone; another folder's is kept.
+        expect((await ask({ root, trackedId: "a" })).missing).toBe(true);
+        expect((await ask({ root, trackedId: "b" })).kinds?.length).toBe(2);
+        expect((await ask({ root: other, trackedId: "a" })).kinds?.length).toBe(2);
+        // An empty one is used as sent, and leaves the folder's kept.
+        expect((await ask({ root, trackedId: "untracked", tracked: [], untracked: ["a.txt"] })).kinds?.length).toBe(1);
+        expect((await ask({ root, trackedId: "b" })).kinds?.length).toBe(2);
+    } finally {
+        w.terminate();
+    }
+});
+
+test("an idle stat worker is let go of, and started again when it's next asked", async () => {
+    const { scanIndexPaths, statWorkersForTests } = await import("../src/agent/stat-files");
+    const repo = join(root, "idle");
+    mkdirSync(repo, { recursive: true });
+    const env = { PATH: process.env.PATH!, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+    expect(Bun.spawnSync(["git", "init", "-q"], { cwd: repo, env }).exitCode).toBe(0);
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    expect(Bun.spawnSync(["git", "add", "a.txt"], { cwd: repo, env }).exitCode).toBe(0);
+    const index = join(repo, ".git/index");
+    const ask = async () => {
+        const stats = await statFiles(repo, `${repo}:idle`, ["a.txt"], [], Date.now() + 10_000, () => {});
+        const looked = await scanIndexPaths(repo, index, 20, ["a.txt"], true, Date.now() + 10_000);
+        return [stats.kinds[0], looked.states.map((s) => [s.path, s.tracked])];
+    };
+    statWorkersForTests({ idleMs: 50 });
+    try {
+        const first = await ask();
+        expect(first).toEqual([KIND.file, [["a.txt", true]]]);
+        expect(statWorkersForTests()).toEqual({ stat: true, lookups: true });
+        await Bun.sleep(300);
+        expect(statWorkersForTests()).toEqual({ stat: false, lookups: false });
+        // Asked again: new workers, sent the list again, answering the same.
+        expect(await ask()).toEqual(first);
+        expect(statWorkersForTests()).toEqual({ stat: true, lookups: true });
+    } finally {
+        statWorkersForTests({ idleMs: 60_000 });
+    }
 });

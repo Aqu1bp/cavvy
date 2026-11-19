@@ -7,7 +7,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "fs";
 
 /** Opens the index without following a link, or waiting on a pipe: one that isn't a file is no index. */
-const INDEX_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+export const INDEX_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 /** The index file's bytes, and its stat as they were read. */
 function readIndexFile(path: string): { buf: Buffer; st: Stats } | undefined {
@@ -130,17 +130,32 @@ const stampOf = (st: Stats) => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st
 /** What a scan past its deadline throws. */
 export const LATE = "late";
 
+/**
+ * The index's bytes, read once for every part of a scan (stat-files.ts), and its time as they were read. The other
+ * parts read their entries' stat fields from the same bytes: the first part, which blanks them for the content key,
+ * blanks theirs only once `othersDone` says they're through (false: not in time).
+ */
+export interface SharedIndex {
+    buf: Buffer;
+    mtimeMs: number;
+    othersDone?: () => boolean;
+}
+
 /** `deadline`: past it, it stops (throws LATE): nothing waits for what it would find. */
-export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }, deadline?: number): IndexScan {
+export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }, deadline?: number, shared?: SharedIndex): IndexScan {
     const out: IndexScan = { differs: [], gone: [], attributes: [] };
-    const read = readIndexFile(indexFile);
-    if (!read) return { ...out, unusable: "unreadable" };
-    const { buf, st: written } = read;
+    let buf: Buffer, indexMs: number;
+    if (shared) ({ buf, mtimeMs: indexMs } = shared);
+    else {
+        const read = readIndexFile(indexFile);
+        if (!read) return { ...out, unusable: "unreadable" };
+        buf = read.buf;
+        indexMs = read.st.mtimeMs;
+    }
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return { ...out, unusable: "unreadable" };
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return { ...out, unusable: "version" };
-    // The index's own time: an entry stamped at or after it may be racily clean.
-    const indexMs = written.mtimeMs;
+    // indexMs, the index's own time: an entry stamped at or after it may be racily clean.
     const folders = new Map<string, boolean>();
     const inside = (rel: string): boolean => {
         const i = rel.lastIndexOf("/");
@@ -167,6 +182,14 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
     const end = buf.length - hashBytes;
     const content = part.k === 0 ? new ContentKey(buf) : undefined;
     const from = Math.floor((count * part.k) / part.n), to = Math.floor((count * (part.k + 1)) / part.n);
+    // Shared with the other parts: the entries past this part's are blanked once they're through with them (each entry
+    // takes more than 42 + hashBytes bytes, so no more than that many fit).
+    const later = content && shared?.othersDone ? new Uint32Array(Math.max(0, Math.min(count - to, Math.floor(buf.length / (42 + hashBytes))))) : undefined;
+    let laterCount = 0;
+    const blank = (at: number, entry: number) => {
+        if (later && entry >= to && laterCount < later.length) later[laterCount++] = at;
+        else content?.add(at);
+    };
     let pos = 12;
     // A version 4 index's path is the last one's, cut and added to: built here, in place.
     let built = Buffer.alloc(4096), builtLength = 0;
@@ -174,7 +197,7 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
     let before = -1;
     for (let n = 0; n < count; n++) {
         // The last entry's stat fields are read: blanked for the content key.
-        if (before >= 0) content?.add(before);
+        if (before >= 0) blank(before, n - 1);
         const start = (before = pos);
         if (start + 40 + hashBytes + 2 > end) return { ...out, unusable: "unreadable" };
         const flags = buf.readUInt16BE(start + 40 + hashBytes);
@@ -236,13 +259,17 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
             && st.mtimeMs < indexMs;
         if (!same) out.differs.push({ path, tracked: true, kind: kindOf(st), stamp: stampOf(st) });
     }
-    if (before >= 0) content?.add(before);
+    if (before >= 0) blank(before, count - 1);
     // A split index keeps its entries in a shared file: what's here isn't all of them.
     for (let p = pos; p + 8 <= end;) {
         const signature = buf.toString("latin1", p, p + 4), size = buf.readUInt32BE(p + 4);
         if (signature === "link") return { ...out, unusable: "split" };
         if (signature === "TREE" && part.k === 0) out.cacheTree = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes);
         p += 8 + size;
+    }
+    if (laterCount) {
+        if (!shared!.othersDone!()) throw new Error(LATE);
+        for (let i = 0; i < laterCount; i++) content!.add(later![i]!);
     }
     out.contentKey = content?.key(pos);
     if (part.k !== part.n - 1) return out;
