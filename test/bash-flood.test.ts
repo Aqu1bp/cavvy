@@ -105,8 +105,9 @@ describe("a background flood", () => {
         const last = (await BashOutputTool.run({ bash_id: id }, ctx)).content;
         expect(last).toContain("FINAL_MARKER");
         expect(last).toContain("exited with code 0");
-        // The ring holds the last BG_BUFFER characters, evicted at line boundaries.
-        expect(shell.output.length).toBeLessThanOrEqual(1_000_000);
+        // The ring holds the last BG_BUFFER characters, evicted at line boundaries; once it ended and was read, the last 64 KiB.
+        expect(shell.output.length).toBeLessThanOrEqual(64 * 1024);
+        expect(shell.output.length).toBeGreaterThan(60 * 1024);
         expect(shell.output.endsWith("FINAL_MARKER\n")).toBe(true);
         expect(shell.output.split("\n").slice(0, -2).every((l) => l === "GET /a 200" || l === "POST /b 500")).toBe(true);
     }, 60_000);

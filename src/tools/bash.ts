@@ -1164,8 +1164,14 @@ export class OutputRing {
         this.parts.push(text);
         this.length += text.length;
         this.joined = undefined;
-        if (this.length <= BG_BUFFER) return 0;
-        let drop = this.length - BG_BUFFER;
+        return this.trim(BG_BUFFER);
+    }
+
+    /** Only the last `limit` characters kept: how many were evicted from the front. */
+    trim(limit: number): number {
+        if (this.length <= limit) return 0;
+        this.joined = undefined;
+        let drop = this.length - limit;
         // Only redacted, complete lines enter the ring; evict whole lines for readability.
         const nl = this.newline(drop);
         if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
@@ -1229,6 +1235,21 @@ export function appendOutput(shell: BackgroundShell, text: string) {
         ring = own;
     }
     const drop = ring.append(text);
+    if (drop) shell.readOffset = Math.max(0, shell.readOffset - drop);
+}
+
+/** What's kept in memory of a finished background shell's output once it's been read: the rest is in its output file. */
+const FINISHED_KEPT = 64 * 1024;
+
+/** A background shell that ended and was read: its sandbox hint as its whole output gives it, and only the end of that kept. */
+function settleFinished(shell: BackgroundShell) {
+    const ring = rings.get(shell);
+    if (shell.exitCode === null || !ring || ring.length <= FINISHED_KEPT) return;
+    if (shell.sandboxHint) {
+        const hint = shell.sandboxHint();
+        shell.sandboxHint = () => hint;
+    }
+    const drop = ring.trim(FINISHED_KEPT);
     if (drop) shell.readOffset = Math.max(0, shell.readOffset - drop);
 }
 
@@ -1372,6 +1393,8 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
         const status = sh.exitCode === null ? "running" : `exited with code ${sh.exitCode}`;
         const outputHint = sh.sandboxed ? sh.sandboxHint?.() : undefined;
         const hint = outputHint ? `\n${outputHint}` : "";
+        // Ended, and what it printed has been read (from the preview and its output file, never the ring).
+        if (saved) settleFinished(sh);
         return {
             content: `<status>${status}</status>\n<output>\n${fresh || "(no new output)"}\n</output>${outputNote ? `\n\n${outputNote}` : ""}${hint}`,
             isError: false,
