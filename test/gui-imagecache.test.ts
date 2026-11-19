@@ -66,6 +66,18 @@ describe("ImageCache", () => {
         expect(asked).toEqual(["aaaa", "bbbb", "cccc", "d".repeat(20), "aaaa"]);
     });
 
+    test("an older load that ends late doesn't push out newer ones", async () => {
+        const cache = new ImageCache<string>(10, 10, (v) => v.length);
+        let finish!: (v: string[]) => void;
+        const slow = cache.get("old", () => new Promise((r) => (finish = r)));
+        await cache.get("new", async () => ["12345"]);
+        finish(["123456789"]);
+        await slow;
+        await Promise.resolve();
+        expect(cache.peek("new")).toBeDefined();
+        expect(cache.peek("old")).toBeUndefined();
+    });
+
     test("a failure frees nothing it didn't hold", async () => {
         const c = new ImageCache<string>(10, 10, (v) => v.length);
         await c.get("a", () => Promise.resolve(["aaaaaa"]));

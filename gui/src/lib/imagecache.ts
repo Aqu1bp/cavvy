@@ -62,13 +62,13 @@ export class ImageCache<T = string> {
                 if (this.entries.get(key) !== entry || !this.sizeOf) return;
                 for (const v of values) entry.size += this.sizeOf(v);
                 this.total += entry.size;
-                this.trim(entry);
+                this.trim();
             },
             () => {
                 if (this.entries.get(key) === entry) this.drop(key);
             },
         );
-        this.trim(entry);
+        this.trim();
         return p;
     }
 
@@ -88,11 +88,15 @@ export class ImageCache<T = string> {
         this.total -= e.size;
     }
 
-    /** Drops the least recently used past the limits, never `keep`. */
-    private trim(keep: { p: Promise<T[]> }) {
-        for (const [key, e] of this.entries) {
-            if (this.entries.size <= this.max && this.total <= this.maxSize) return;
-            if (e !== keep) this.drop(key);
+    /**
+     * Drops the least recently used past the limits, never the most recently used (an older one whose load ends late
+     * goes before the newer ones, as it would have had it come in time).
+     */
+    private trim() {
+        let left = this.entries.size;
+        for (const key of this.entries.keys()) {
+            if (--left === 0 || (this.entries.size <= this.max && this.total <= this.maxSize)) return;
+            this.drop(key);
         }
     }
 }
