@@ -7,6 +7,9 @@
 //   [[unasked]]        a run_command of `touch unasked.txt` that runs without the gate
 //   [[hang]]           waits until SIGINT
 //   [[slow]]           a run_command of `sleep 1` that takes a second, through the gate
+//   [[mcp:TOOL JSON]]  call_mcp_tool of TOOL on the first server in a --add-dir folder's .agents/mcp_config.json (as
+//                      agy 1.5.12 reads them: serverUrl and headers), through the gate ({mcp} logged: what it found;
+//                      {mcpResult}: the tool's answer)
 //   [Image attached: <path>. ...] / [PDF attached: ...]   read_file of each, through the gate
 //   anything else      replies "hi"
 // Before each model call it runs the PreInvocation hooks; a userMessage they inject is a user_input step, and the reply
@@ -88,7 +91,7 @@ async function hooks(event: string, input: Record<string, unknown>): Promise<any
     return answers;
 }
 
-async function tool(name: string, args: Record<string, unknown>, run: () => string, gated = true) {
+async function tool(name: string, args: Record<string, unknown>, run: () => string | Promise<string>, gated = true) {
     const i = ++step;
     const parameters = Object.fromEntries(Object.entries(args).filter(([k]) => k !== "Content"));
     out({ event: "step_update", step_update: { conversation_id: conversation, step_index: i, state: "ACTIVE", step_type: "tool", tool_name: name, tool_info: { name, parameters } } });
@@ -101,7 +104,7 @@ async function tool(name: string, args: Record<string, unknown>, run: () => stri
         await Bun.sleep(300);
         return message;
     }
-    const output = run();
+    const output = await run();
     out({ event: "step_update", step_update: { conversation_id: conversation, step_index: i, state: "DONE", step_type: "tool", tool_name: name, tool_info: { name, parameters, output } } });
     return output;
 }
@@ -173,11 +176,28 @@ for (;;) {
         const write = /\[\[write:([^\]]+)\]\]/.exec(text);
         const run = /\[\[run:([^\]]+)\]\]/.exec(text);
         const own = /\[\[tool:([^\]]+)\]\]/.exec(text);
+        const mcp = /\[\[mcp:(\S+)(?: (\{.*?\}))?\]\]/.exec(text);
         if (write) {
             const path = isAbsolute(write[1]!) ? write[1]! : resolve(cwd, write[1]!);
             said = await tool("write_file", { Path: path, Content: "x" }, () => (writeFileSync(path, "x"), "Created file"));
         } else if (run) said = await tool("run_command", { CommandLine: run[1], WaitMsBeforeAsync: 5000 }, () => "Command exited with code 0.");
         else if (own) said = await tool(own[1]!, {}, () => "ok");
+        else if (mcp) {
+            const servers = gates.flatMap((d) => {
+                const p = join(d, ".agents", "mcp_config.json");
+                return existsSync(p) ? Object.entries(JSON.parse(readFileSync(p, "utf8")).mcpServers ?? {}) : [];
+            }) as [string, { serverUrl: string; headers?: Record<string, string> }][];
+            log({ mcp: servers.map(([n, s]) => ({ name: n, url: s.serverUrl, auth: Boolean(s.headers?.Authorization) })) });
+            const [server, cfg] = servers[0] ?? ["none", { serverUrl: "" }];
+            const args = mcp[2] ? JSON.parse(mcp[2]) : {};
+            said = await tool("call_mcp_tool", { ServerName: server, ToolName: mcp[1], Arguments: args }, async () => {
+                const r = await fetch(cfg.serverUrl, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...cfg.headers }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: mcp[1], arguments: args } }) });
+                const body: any = await r.json().catch(() => ({}));
+                const text = (body.result?.content ?? []).map((c: any) => c.text ?? "").join("") || body.error?.message || `HTTP ${r.status}`;
+                log({ mcpResult: { tool: mcp[1], text, isError: Boolean(body.result?.isError || body.error) } });
+                return text;
+            });
+        }
         else if (text.includes("[[slow]]")) said = await tool("run_command", { CommandLine: "sleep 1" }, () => (Bun.sleepSync(1000), "Command exited with code 0."));
         else if (/\[(Image|PDF) attached: /.test(text)) {
             const outs: string[] = [];

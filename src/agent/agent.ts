@@ -1743,8 +1743,6 @@ export class Agent {
     private orchestrator(): OrchestratorServer | undefined {
         if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        // Antigravity's CLI takes no MCP server from Cavvy (its own come from its settings).
-        if (agentCli(caller)?.protocol === "agy-stream-json") return undefined;
         // An ACP agent (OpenCode, Grok) gets them too, through session/new's mcpServers.
         const acp = agentCli(caller)?.protocol === "acp";
         const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());

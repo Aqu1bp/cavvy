@@ -474,3 +474,64 @@ describe("in the app's server", () => {
         }
     });
 });
+
+describe("Cavvy's tools, which agy takes from a workspace folder's .agents/mcp_config.json", () => {
+    const { fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+    const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+    const savedBrowser = process.env.CAVVY_BROWSER;
+    const made: InstanceType<typeof Agent>[] = [];
+    beforeEach(() => {
+        process.env.CAVVY_BROWSER = fakeChromeProgram();
+        forgetChromeLookup();
+    });
+    afterEach(async () => {
+        for (const a of made.splice(0)) await a.state.browser?.dispose();
+        process.env.CAVVY_BROWSER = savedBrowser;
+        forgetChromeLookup();
+    });
+    async function browsing(o: Parameters<typeof makeAgent>[0] = {}) {
+        const a = await makeAgent(o);
+        made.push(a.agent);
+        return a;
+    }
+    const mcpResult = () => logLines().find((l) => l.mcpResult)?.mcpResult;
+
+    test("the session's own folder names Cavvy's server with its token; it goes when the session does", async () => {
+        const a = await browsing({ ask: () => ({ allow: true }) });
+        expect(await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]')).toBe("done");
+        const argv = spawns()[0]!;
+        const dir = argv[argv.indexOf(gate.gateDir()) + 2]!;
+        expect(argv[argv.indexOf(gate.gateDir()) + 1]).toBe("--add-dir");
+        expect(dir.startsWith(`${gate.gateDir()}-mcp/`)).toBe(true);
+        const cfg = JSON.parse(readFileSync(join(dir, ".agents", "mcp_config.json"), "utf8"));
+        expect(cfg.mcpServers.cavvy).toEqual({ serverUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/), headers: { Authorization: expect.stringMatching(/^Bearer /) } });
+        expect(statSync(join(dir, ".agents", "mcp_config.json")).mode & 0o777).toBe(0o600);
+        const c = await clientFor("antigravity");
+        await (c as any).release(a.session.id);
+        await (c as any).shutdown?.();
+        expect(existsSync(dir)).toBe(false);
+    });
+
+    test("reading a local page runs unasked, through the gate, and the row is Cavvy's", async () => {
+        const a = await browsing({ ask: () => ({ allow: true }) });
+        expect(await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]')).toBe("done");
+        expect(mcpResult()).toMatchObject({ tool: "browser_navigate", isError: false, text: expect.stringContaining('button "Click me"') });
+        expect(a.asked).toEqual([]);
+        expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "BrowserNavigate", input: { url: "http://localhost:4000/" } } });
+    });
+
+    test("acting on the page is asked about by Cavvy, once, as BrowserAct; Plan refuses it", async () => {
+        const a = await browsing({ ask: () => ({ allow: false }) });
+        await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]');
+        rmSync(LOG, { force: true });
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        // The user's no: the click doesn't happen.
+        expect(a.asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+        expect(mcpResult()?.isError ?? true).toBe(true);
+        rmSync(LOG, { force: true });
+        a.setMode("plan");
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        expect(a.asked).toHaveLength(1);
+        expect(mcpResult()).toMatchObject({ tool: "browser_act", isError: true, text: expect.stringMatching(/plan mode/i) });
+    });
+});
