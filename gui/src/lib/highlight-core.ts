@@ -131,15 +131,15 @@ function remember<T>(cache: Cache<T>, key: string, value: T, chars: number): T {
         cache.chars -= had.chars;
     }
     chars += key.length;
+    // Too big to keep at all: nothing's let go of for it.
+    if (chars > MAX_CACHE_CHARS) return value;
     for (const [k, v] of cache.map) {
         if (cache.map.size < MAX_CACHE && cache.chars + chars <= MAX_CACHE_CHARS) break;
         cache.map.delete(k);
         cache.chars -= v.chars;
     }
-    if (chars <= MAX_CACHE_CHARS) {
-        cache.map.set(key, { value, chars });
-        cache.chars += chars;
-    }
+    cache.map.set(key, { value, chars });
+    cache.chars += chars;
     return value;
 }
 
