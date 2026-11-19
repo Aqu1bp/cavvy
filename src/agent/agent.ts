@@ -1844,7 +1844,7 @@ export class Agent {
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
             inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
-            checksItself: [...checksItself],
+            unasked: tools.filter((t) => checksItself.has(t.name) || t.annotations?.readOnlyHint === true).map((t) => t.name),
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,

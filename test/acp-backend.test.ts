@@ -392,6 +392,11 @@ describe("Cavvy's browser tools, which OpenCode has none of", () => {
             expect(p.asked).toEqual([]);
             expect(answers()).toEqual([reject]);
             expect(scheduler.list()).toEqual([]);
+            // Reading them only (schedule_list) goes unasked, Plan or not.
+            rmSync(LOG, { force: true });
+            await p.run("[[mcp:schedule_list {}]]");
+            expect(answers()).toEqual([once]);
+            expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "schedule_list", isError: false });
         } finally {
             scheduler.dispose();
         }

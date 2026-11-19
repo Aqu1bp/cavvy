@@ -358,10 +358,10 @@ export interface OrchestratorServer {
     /** Each tool's argument names: a call naming others isn't one of these tools (served-tools.ts). */
     inputKeys?: Record<string, string[]>;
     /**
-     * The tools that run Cavvy's checks (rules, mode, hooks) themselves when called: a backend can let the CLI's call
-     * of one go unasked. The others (delegate, schedules, watches) are checked as any tool call, before they run.
+     * The tools a backend can let the CLI's call of go unasked: they run Cavvy's checks (rules, mode, hooks) themselves
+     * when called, or only read. The others (delegate, schedule_create, watches) are checked as any tool call, first.
      */
-    checksItself?: string[];
+    unasked?: string[];
     /** For the backend's system prompt, where its MCP server instructions don't reach the model. */
     instructions: string;
     /** How long a call may take, in seconds (a delegate call can wait an hour). */

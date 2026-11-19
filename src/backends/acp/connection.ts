@@ -875,7 +875,7 @@ export class AcpConnection implements CliConnection {
         // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
         const o = this.orchestrator();
         const served = servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput }, o);
-        if (once && served && o?.checksItself?.includes(served.tool)) {
+        if (once && served && o?.unasked?.includes(served.tool)) {
             liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
             return { outcome: { outcome: "selected", optionId: once } };
         }
@@ -1009,7 +1009,7 @@ export class AcpConnection implements CliConnection {
         // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
         const o = this.orchestrator();
         const served = own && servedToolName(own.toolName, o);
-        if (served && servedToolArgs(o, served, own.input) && o?.checksItself?.includes(served)) return { allow: true, decided: false };
+        if (served && servedToolArgs(o, served, own.input) && o?.unasked?.includes(served)) return { allow: true, decided: false };
         const label = main ? undefined : (this.children.get(call.sessionId) ?? call.subagentType ?? `${this.def.name} subagent`);
         /** One the mode doesn't decide: unasked, and Plan doesn't refuse it, but deny rules and Cavvy's protections do. */
         const exempt = async (r: GateTool, decided: boolean, planFile?: string): Promise<GateDecision> => {
