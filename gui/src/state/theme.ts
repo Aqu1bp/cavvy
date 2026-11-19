@@ -148,8 +148,9 @@ function swap(apply: () => void, animate: boolean) {
     fading = t.finished.catch(() => undefined);
     // While it fades, the page under it takes no clicks (they land on <html>): a press ends the fade, and its click
     // goes where it was pressed.
-    const press = () => {
+    const press = (e: PointerEvent) => {
         t.skipTransition();
+        pressedAt = { x: e.clientX, y: e.clientY };
         addEventListener("click", retarget, { capture: true, once: true });
     };
     addEventListener("pointerdown", press, { capture: true });
@@ -159,12 +160,22 @@ function swap(apply: () => void, animate: boolean) {
     });
 }
 
-/** The click of a press that ended a crossfade: it landed on <html>, and goes to what's under the pointer now. */
+/** Where the press that ended a crossfade was. */
+let pressedAt: { x: number; y: number } | undefined;
+
+/**
+ * The click of a press that ended a crossfade: it landed on <html>, and goes to what was pressed, as a click does only
+ * when it's let go over the same thing (a drag onto a button isn't a click on it). A text box pressed is focused.
+ */
 function retarget(e: MouseEvent) {
-    if (e.target !== document.documentElement) return;
+    const at = pressedAt;
+    pressedAt = undefined;
+    if (e.target !== document.documentElement || !at) return;
     const under = document.elementFromPoint(e.clientX, e.clientY);
-    if (!under || under === document.documentElement) return;
+    if (!under || under === document.documentElement || document.elementFromPoint(at.x, at.y) !== under) return;
     e.stopImmediatePropagation();
+    const field = under.closest<HTMLElement>("input, textarea, select, [contenteditable]:not([contenteditable=false])");
+    if (field && document.activeElement !== field) field.focus();
     under.dispatchEvent(new MouseEvent("click", e));
 }
 
