@@ -41,6 +41,10 @@ What changed:
   pages report `visible` and their timers keep running: the saving is that they're not drawn.
   Two early runs (`diag`, `diag-b`) slept all tabs yet they used full CPU again; the cause isn't found. The app now
   checks sleeping tabs' processes every 5 s and puts a busy one back to sleep; it hasn't had to in 3 runs since.
+- **Long-asleep tabs are discarded** (src/browser-host.ts, src/tab-rest.ts): after 10 minutes unseen and unused, a
+  sleeping web page is replaced by a blank page and loaded again when it's woken; the server isn't shown the blank
+  page. Not a page that asks before it's left, nor one with a popup or tab of its own open. Not measured yet: how much
+  of the ~114 MB a frozen page keeps this gives back (`bench.ts` with `CAVVY_ELECTRON_DISCARD_MS` shortened).
 - **The pane and floating view follow their box only when it can move** (gui/src/lib/follow-box.ts), not every frame.
 - **Packaged build** (pack.ts): asar archive, server as one binary, V8 code cache for the UI. Lowest idle footprint;
   the code cache made no measurable startup difference at this UI's size.

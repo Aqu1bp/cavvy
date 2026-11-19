@@ -16,12 +16,14 @@
 // A tab nobody can see and nobody has used for a while is frozen: its timers, animations and scripts stop (it costs no
 // CPU) and it's told to give back what memory it can. One playing sound is only hidden, so it goes on playing without
 // being drawn (tab-rest.ts). Any command for it, or a pane showing it, wakes it first, so the agent never finds it
-// different. Not one still loading.
+// different. Not one still loading. One left frozen for long is discarded: its page let go (a blank page in its place)
+// and loaded again as it's woken, as Chrome does with background tabs. To the server it stays the page it was, asleep:
+// nothing of the blank page reaches it, so what the agent was let do on that site still holds when it's back.
 
 import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
 import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
-import { nextRest } from "./tab-rest";
+import { DISCARD_AFTER_MS, nextRest } from "./tab-rest";
 
 /**
  * The colour a browser paints a page's canvas: its root's background, else its body's, else the canvas of the colour
@@ -87,6 +89,12 @@ interface Tab {
     hidden: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
+    /** Its page was let go (a blank page in its place): where it was, loaded again as it's woken. */
+    discarded?: { url: string };
+    /** Its page refused to be left (a leave-the-page prompt): it isn't discarded again. */
+    undiscardable?: boolean;
+    /** Its page being loaded again, after it was discarded: what's sent to it waits for it. */
+    restoring?: Promise<void>;
 }
 
 interface Channel {
@@ -131,6 +139,10 @@ const TAB_IN_CHECKS_MS = [30, 120];
 const TAB_IN_QUIET_MS = 500;
 /** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
 const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
+/** A tab unseen and unused this long is discarded (checks may shorten it with CAVVY_ELECTRON_DISCARD_MS). */
+const DISCARD_WAIT_MS = Number(process.env.CAVVY_ELECTRON_DISCARD_MS ?? DISCARD_AFTER_MS);
+/** How long a discarded tab's page may take to be left, or loaded again, before what waits for it goes on. */
+const RELOAD_WAIT_MS = 15_000;
 /** How often, at most, the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as
  *  idle: well within the ten minutes it waits. */
 const IN_USE_EVERY_MS = 60_000;
@@ -138,6 +150,11 @@ const IN_USE_EVERY_MS = 60_000;
 const VISIBILITY_MS = 100;
 /** A popup opened this soon after the person used the page is theirs (a window); later, or by the agent, a tab. */
 const PERSON_POPUP_MS = 5000;
+/** `p`, or a rejection once `ms` have passed. */
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([p, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("timed out")), ms)))]).finally(() => clearTimeout(timer));
+}
 /** Where a popup window may go: web pages, and the blank page a script fills in. */
 const popupUrl = (url: string) => /^https?:\/\//i.test(url) || url === "about:blank";
 /** A popup window: the page's own size (window.open's features), locked down as the tabs are. */
@@ -162,7 +179,7 @@ export class BrowserHost {
     private closing = false;
     /** The tabs a pane or the floating view shows (by the GUI's keys): never frozen. */
     private onScreen = new Set<string>();
-    readonly stats = { frozen: 0, woken: 0, refused: 0, resleeps: 0, hideSent: 0, showSent: 0, hiddenPlaying: 0, lastShown: [] as string[] };
+    readonly stats = { frozen: 0, woken: 0, refused: 0, resleeps: 0, hideSent: 0, showSent: 0, hiddenPlaying: 0, discarded: 0, restored: 0, lastShown: [] as string[] };
 
     constructor(private window: () => BrowserWindow | undefined) {
         setInterval(() => this.freezeIdle(), 5000).unref();
@@ -256,10 +273,14 @@ export class BrowserHost {
                     loading: live && tab.wc.isLoading(),
                     audible: live && tab.wc.isCurrentlyAudible(),
                     cpuPercent: live && tab.frozen ? (cpu.get(tab.wc.getOSProcessId()) ?? 0) : 0,
+                    discarded: tab.discarded !== undefined,
+                    discardable: live && this.discardable(tab),
                 },
                 FREEZE_AFTER_MS,
+                DISCARD_WAIT_MS,
             );
             if (step === "freeze") void this.freeze(tab);
+            else if (step === "discard") void this.discard(tab);
             else if (step === "hide") this.hide(tab);
             // Asleep, but its page is busy again (Chromium drawing it once more): put it back to sleep.
             else if (step === "resleep") void this.resleep(tab);
@@ -328,9 +349,74 @@ export class BrowserHost {
         }
     }
 
-    /** Running and drawn again before anything reaches it. */
+    /**
+     * Whether `tab`'s page may be let go: a web page (not one still to be set up), with no popup of the person's or tab
+     * it opened still open (they'd lose their opener), that didn't refuse to be left before.
+     */
+    private discardable(tab: Tab): boolean {
+        if (tab.undiscardable || tab.pendingUrl || tab.popups.size > 0 || !/^https?:\/\//i.test(tab.wc.getURL())) return false;
+        for (const t of this.tabsById.values()) if (t.openerId === tab.targetId && !t.closed) return false;
+        return true;
+    }
+
+    /**
+     * Lets a frozen tab's page go: a blank page in its place, so its page process gives back what it held. Its page
+     * may refuse (a leave-the-page prompt, kept from the person here: it may hold unsaved work): it's then left as it
+     * was, and not tried again.
+     */
+    private async discard(tab: Tab) {
+        const wc = tab.wc;
+        const mine = { url: wc.getURL() };
+        tab.discarded = mine;
+        let refused = false;
+        const refuse = () => {
+            refused = true;
+        };
+        wc.once("will-prevent-unload", refuse);
+        try {
+            await wc.debugger.sendCommand("Page.setWebLifecycleState", { state: "active" });
+            await within(wc.loadURL("about:blank"), RELOAD_WAIT_MS);
+        } catch {
+            // Told apart below, by where the page is.
+        } finally {
+            wc.off("will-prevent-unload", refuse);
+        }
+        // Woken meanwhile: being loaded again.
+        if (tab.closed || wc.isDestroyed() || tab.discarded !== mine) return;
+        if (refused || tab.undiscardable || wc.getURL() !== "about:blank") {
+            // Still its page: as it was, asleep (unless woken meanwhile).
+            tab.discarded = undefined;
+            tab.undiscardable = true;
+            if (tab.frozen) await wc.debugger.sendCommand("Page.setWebLifecycleState", { state: "frozen" }).catch(() => undefined);
+            return;
+        }
+        if (!tab.discarded) return;
+        await wc.debugger.sendCommand("HeapProfiler.collectGarbage").catch(() => undefined);
+        if (tab.discarded !== mine) return;
+        await wc.debugger.sendCommand("Page.setWebLifecycleState", { state: "frozen" }).catch(() => undefined);
+        this.stats.discarded++;
+    }
+
+    /** A discarded tab's page loaded again where it was; the blank page it waited on, and the entry it left, out of its history. */
+    private async restore(tab: Tab, url: string) {
+        const wc = tab.wc;
+        await wc.debugger.sendCommand("Page.setWebLifecycleState", { state: "active" }).catch(() => undefined);
+        await within(wc.loadURL(url), RELOAD_WAIT_MS).catch(() => undefined);
+        if (tab.closed || wc.isDestroyed()) return;
+        // [... page, blank, page again]: back goes where it went before the page was let go.
+        const history = wc.navigationHistory;
+        const at = history.getActiveIndex();
+        if (at >= 2 && history.getEntryAtIndex(at - 1)?.url === "about:blank" && history.getEntryAtIndex(at - 2)?.url === url) {
+            history.removeEntryAtIndex(at - 1);
+            history.removeEntryAtIndex(at - 2);
+        }
+        this.stats.restored++;
+    }
+
+    /** Running and drawn again before anything reaches it; a discarded one loaded again first. */
     private async wake(tab: Tab) {
         tab.usedAt = Date.now();
+        if (tab.restoring) return tab.restoring;
         if (tab.closed || !tab.hidden) return;
         tab.hidden = false;
         if (!tab.frozen) {
@@ -343,6 +429,17 @@ export class BrowserHost {
         tab.frozen = false;
         this.toGui({ type: "sleep", key: tab.key, asleep: false });
         this.stats.showSent++;
+        const discarded = tab.discarded;
+        if (discarded) {
+            // From here what the page does reaches the server again: to it, the page loading where it was.
+            tab.discarded = undefined;
+            tab.restoring = this.restore(tab, discarded.url).finally(() => {
+                tab.restoring = undefined;
+            });
+            await tab.restoring;
+            this.stats.woken++;
+            return;
+        }
         await tab.wc.debugger.sendCommand("Page.setWebLifecycleState", { state: "active" }).catch(() => undefined);
         await new Promise((r) => setTimeout(r, VISIBILITY_MS));
         this.stats.woken++;
@@ -664,12 +761,21 @@ export class BrowserHost {
                 tab.children.set(p.sessionId, from);
                 this.childOf.set(p.sessionId, tab);
             } else if (method === "Target.detachedFromTarget" && p.sessionId) this.forgetFrame(tab, p.sessionId);
+            // Discarded, the blank page in its place isn't the server's to see: only its frames going, and loads it
+            // must answer (a page's last requests as it's left).
+            if (tab.discarded && method === "Page.javascriptDialogOpening") {
+                // A leave-the-page prompt as it's let go: it stays, and isn't let go again.
+                tab.undiscardable = true;
+                void wc.debugger.sendCommand("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
+                return;
+            }
+            if (tab.discarded && !method.startsWith("Target.") && !method.startsWith("Fetch.")) return;
             this.event(channel, method, params, from ?? tab.sid);
         });
         wc.debugger.on("detach", () => this.closeTab(tab, true));
         wc.once("destroyed", () => this.closeTab(tab, true));
         const changed = () => {
-            if (!tab.closed) this.event(channel, "Target.targetInfoChanged", { targetInfo: { targetId: tab.targetId, type: "page", title: wc.getTitle(), url: wc.getURL(), attached: true } });
+            if (!tab.closed && !tab.discarded) this.event(channel, "Target.targetInfoChanged", { targetInfo: { targetId: tab.targetId, type: "page", title: wc.getTitle(), url: wc.getURL(), attached: true } });
         };
         wc.on("page-title-updated", changed);
         wc.on("did-navigate", changed);
@@ -678,7 +784,7 @@ export class BrowserHost {
         // yet (a strip as its pane widens, until it draws at the new width) is the page's colour, not a white line.
         let canvasColor = "";
         const canvas = () => {
-            if (tab.closed || wc.isDestroyed()) return;
+            if (tab.closed || tab.discarded || wc.isDestroyed()) return;
             void wc.executeJavaScriptInIsolatedWorld(CANVAS_WORLD, [{ code: CANVAS_JS }]).then(
                 (color: unknown) => {
                     if (typeof color !== "string" || color === canvasColor || tab.closed) return;
