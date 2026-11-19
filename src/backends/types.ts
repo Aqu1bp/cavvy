@@ -442,6 +442,14 @@ export interface AgentBackendClient extends ProviderClient {
  */
 export type BackgroundStop = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 
+/**
+ * An ended turn as a backend keeps it for what comes between turns (wakes, a restart): its settings, host and sink,
+ * without what it sent (the prompt, its images and files), which would otherwise stay in memory until the next turn.
+ */
+export function settledTurn(t: BackendTurn): BackendTurn {
+    return { ...t, prompt: "", images: [], documents: undefined, request: undefined, requestAfter: undefined, preamble: undefined, goalContext: undefined };
+}
+
 export function isAgentBackend(c: ProviderClient | undefined): c is AgentBackendClient {
     return Boolean(c && (c as Partial<AgentBackendClient>).agentBackend === true);
 }

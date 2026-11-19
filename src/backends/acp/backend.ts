@@ -187,6 +187,7 @@ export class AcpBackend implements AgentBackendClient {
         const key = t.sessionKey;
         // The mode now, not t.mode: a Stop hook's continuation reuses the turn it went on from, readied before a switch.
         const run: AcpRun = { t, mode: t.session.mode(), part: new AbortController() };
+        const current = { cwd: t.cwd, orchestrator: t.orchestrator, readOnly: t.readOnly };
         const onAbort = () => run.part.abort();
         t.signal.addEventListener("abort", onAbort, { once: true });
         if (t.signal.aborted) onAbort();
@@ -202,7 +203,8 @@ export class AcpBackend implements AgentBackendClient {
             }
             run.live = live;
             const adapter = live.adapter as AcpAdapter;
-            adapter.current = t;
+            // Only what its process reads between turns: not the prompt and its images, kept until the next turn.
+            adapter.current = current;
             const rec = new TurnRecord(t.sink);
             // A message the user sends to steer the turn goes as it's queued (the connection sends it into the running
             // turn), recorded after what was said before it; one taken that never went goes with the next turn.
@@ -230,7 +232,7 @@ export class AcpBackend implements AgentBackendClient {
         } finally {
             stopSteering?.();
             const adapter = run.live?.adapter as AcpAdapter | undefined;
-            if (adapter?.current === t) adapter.steering = undefined;
+            if (adapter?.current === current) adapter.steering = undefined;
             this.runs.delete(run);
             t.signal.removeEventListener("abort", onAbort);
         }
