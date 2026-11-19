@@ -45,6 +45,8 @@ class AgyAdapter implements AgentCliAdapter {
     steering?: SteerSource;
     /** The session's token for the gate: the hook calls back with it, so its calls reach this session only. */
     private token = randomUUID();
+    /** Its MCP folder's name: in agy's arguments, which the gate's token stays out of. */
+    private mcpId = randomUUID();
     /** Its attachments: kept while the session is, so a conversation resumed in a new process can still read them. */
     private attached: Attachments = { names: new Map(), count: 0 };
 
@@ -56,7 +58,7 @@ class AgyAdapter implements AgentCliAdapter {
         if (cant) throw new Error(cant);
         const gate = gateDir();
         // Cavvy's MCP server (the browser, delegation, …): not for a read-only turn's process.
-        const args = agyArgs(this.def.id, cfg, gate, mcpDir(this.token, this.orchestrator()));
+        const args = agyArgs(this.def.id, cfg, gate, mcpDir(this.mcpId, this.orchestrator()));
         const env = { [GATE_URL_ENV]: gateUrl(), [GATE_TOKEN_ENV]: this.token };
         const fingerprint = spawnFingerprint({ bin, args, cwd: cfg.cwd, env });
         // -p= last: it takes the next argument for its prompt otherwise.
@@ -74,7 +76,7 @@ class AgyAdapter implements AgentCliAdapter {
 
     /** The session is over: its MCP folder and its attachments go. */
     dispose() {
-        dropMcpDir(this.token);
+        dropMcpDir(this.mcpId);
         if (!this.attached.count) return;
         rmSync(filesDir(this.token), { recursive: true, force: true });
         this.attached = { names: new Map(), count: 0 };

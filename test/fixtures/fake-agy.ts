@@ -23,7 +23,7 @@ import { randomUUID } from "crypto";
 
 const argv = process.argv.slice(2);
 const log = (o: unknown) => process.env.FAKE_LOG && appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
-log({ argv, gateEnv: Boolean(process.env.CAVVY_AGY_GATE && process.env.CAVVY_AGY_TOKEN) });
+log({ argv, gateEnv: Boolean(process.env.CAVVY_AGY_GATE && process.env.CAVVY_AGY_TOKEN), tokenInArgs: argv.some((x) => Boolean(process.env.CAVVY_AGY_TOKEN) && x.includes(process.env.CAVVY_AGY_TOKEN!)) });
 
 if (argv[0] === "models") {
     console.log("Fetching available models...");

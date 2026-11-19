@@ -414,6 +414,10 @@ describe("agyTool", () => {
         // An MCP tool's description, which agy keeps in its own folder: its bookkeeping.
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "browser_navigate.json") })).toMatchObject({ toolName: "Read", free: true });
         expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "settings.json") })).not.toHaveProperty("free");
+        expect(t("view_file", { AbsolutePath: join(homedir(), ".gemini", "antigravity-cli", "mcp", "cavvy", "x", "y.json") })).not.toHaveProperty("free");
+        // Cavvy's MCP folder beside the gate's holds the session's token: no file tool reads it.
+        for (const [tool, a] of [["view_file", { AbsolutePath: "/g-mcp/id/.agents/mcp_config.json" }], ["list_dir", { DirectoryPath: "/g-mcp/id" }], ["grep_search", { Query: "Bearer", SearchPath: "/g-mcp" }], ["find_by_name", { Pattern: "*.json", SearchDirectory: "/g-mcp" }]] as const)
+            expect(t(tool, a)).toMatchObject({ refuse: expect.stringContaining("permission hook") });
         expect(t("write_file", { Path: "/g/x" })).toMatchObject({ refuse: expect.stringContaining("permission hook") });
         expect(t("generate_image", {})).toMatchObject({ toolName: "Antigravity_generate_image", input: { tool: "generate_image" }, own: true });
         expect(t("send_message", { Message: "done" })).toMatchObject({ toolName: "Antigravity_send_message", free: true });
@@ -510,6 +514,8 @@ describe("Cavvy's tools, which agy takes from a workspace folder's .agents/mcp_c
         const cfg = JSON.parse(readFileSync(join(dir, ".agents", "mcp_config.json"), "utf8"));
         expect(cfg.mcpServers.cavvy).toEqual({ serverUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/), headers: { Authorization: expect.stringMatching(/^Bearer /) } });
         expect(statSync(join(dir, ".agents", "mcp_config.json")).mode & 0o777).toBe(0o600);
+        // Named apart from the gate's token, which stays out of agy's arguments.
+        expect(logLines().find((l) => l.argv)?.tokenInArgs).toBe(false);
         const c = await clientFor("antigravity");
         await (c as any).release(a.session.id);
         await (c as any).shutdown?.();

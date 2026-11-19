@@ -119,9 +119,9 @@ export function filesDir(token: string): string {
  * .agents/mcp_config.json, and fills in no variables there, so each session has its own with its token (only this
  * user's, beside the gate folder, gone with the session). None without a server: then there's nothing to add.
  */
-export function mcpDir(token: string, o: Pick<OrchestratorServer, "name" | "url" | "authorization"> | undefined): string | undefined {
+export function mcpDir(id: string, o: Pick<OrchestratorServer, "name" | "url" | "authorization"> | undefined): string | undefined {
     const parent = `${gateDir()}-mcp`;
-    const dir = join(parent, token);
+    const dir = join(parent, id);
     if (!o) {
         rmSync(dir, { recursive: true, force: true });
         return undefined;
@@ -133,8 +133,8 @@ export function mcpDir(token: string, o: Pick<OrchestratorServer, "name" | "url"
 }
 
 /** The session's MCP folder goes (it holds its token). */
-export function dropMcpDir(token: string) {
-    rmSync(join(`${gateDir()}-mcp`, token), { recursive: true, force: true });
+export function dropMcpDir(id: string) {
+    rmSync(join(`${gateDir()}-mcp`, id), { recursive: true, force: true });
 }
 
 /** What the model is told when its conversation starts: which folder is its own. */
@@ -269,6 +269,8 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
     const path = (...keys: string[]) => keys.map((k) => str(args[k])).find(Boolean);
     // The gate folder, and Cavvy's folders beside it (its MCP folders, attachments).
     const inGate = (p: string) => Boolean(gate) && (canonical(p) === gate || canonical(p).startsWith(gate + "/") || canonical(p).startsWith(gate + "-"));
+    // Cavvy's MCP folders: their config holds the session's token, so no file tool reads them.
+    const inMcp = (p: string) => Boolean(gate) && (canonical(p) + "/").startsWith(gate + "-mcp/");
     const gateRefusal: AgyTool = { toolName: "", input: {}, refuse: `That folder only holds ${APP_TITLE}'s permission hook. Work in ${cwd}.` };
     if (str(args.CommandLine) || name === "run_command") {
         const command = str(args.CommandLine) ?? str(args.Command);
@@ -300,25 +302,31 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
     if (/^(read_file|view_file|view_file_outline|view_code_item)$/.test(name)) {
         const file = path("Path", "AbsolutePath", "File", "FilePath");
         if (!file) return undefined;
-        // An MCP tool's description, which agy keeps as a file and has the model read before its first call of it
-        // (agy 1.5.12): its own bookkeeping.
-        const description = canonical(at(file)).startsWith(canonical(join(homedir(), ".gemini", "antigravity-cli", "mcp")) + "/");
+        if (inMcp(at(file))) return gateRefusal;
+        // An MCP tool's description (<server>/<tool>.json), which agy keeps as a file and has the model read before its
+        // first call of it (agy 1.5.12): its own bookkeeping. Not through a link elsewhere.
+        const descriptions = join(homedir(), ".gemini", "antigravity-cli", "mcp") + "/";
+        const read = canonical(at(file));
+        const description = read.startsWith(descriptions) && /^[^/]+\/[^/]+\.json$/.test(read.slice(descriptions.length));
         return { toolName: "Read", input: { file_path: at(file) }, ...(description ? { free: true } : {}) };
     }
     if (name === "list_dir") {
         const dir = path("DirectoryPath", "Path", "Directory") ?? cwd;
+        if (inMcp(at(dir))) return gateRefusal;
         return { toolName: "LS", input: { path: at(dir) } };
     }
     if (name === "grep_search" || name === "codebase_search") {
         const pattern = path("Query", "Pattern", "query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchPath", "SearchDirectory", "Path", "DirectoryPath");
+        if (dir && inMcp(at(dir))) return gateRefusal;
         return { toolName: "Grep", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "find_by_name") {
         const pattern = path("Pattern", "Query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchDirectory", "SearchPath", "Path", "DirectoryPath");
+        if (dir && inMcp(at(dir))) return gateRefusal;
         return { toolName: "Glob", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "search_web") {
