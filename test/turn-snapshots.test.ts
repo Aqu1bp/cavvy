@@ -1658,4 +1658,50 @@ describe("per-turn snapshots", () => {
         expect(await pruneFileHistory({ now })).toContain(dir);
         expect(existsSync(dir)).toBe(false);
     });
+
+    test("a split index: each capture, from what git lists, finds what a fresh session does", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n", "d/e.txt": "e\n" });
+        git(cwd, ["update-index", "--split-index"]);
+        expect(readdirSync(join(cwd, ".git")).some((f) => f.startsWith("sharedindex."))).toBe(true);
+        await snapshots.begin(1, "first");
+        write(cwd, "a.txt", "a, changed\n");
+        await snapshots.end();
+        await snapshots.begin(2, "second");
+        write(cwd, "b.txt", "b, changed\n");
+        rmSync(join(cwd, "c.txt"));
+        write(cwd, "new.txt", "new\n");
+        await snapshots.end();
+        await snapshots.begin(3, "third");
+        write(cwd, "d/e.txt", "e, changed\n");
+        await snapshots.end();
+        expect(snapshots.list().map((t) => [t.end!.incomplete, [...(t.changed ?? [])].sort()])).toEqual([[false, ["a.txt"]], [false, ["b.txt", "c.txt", "new.txt"]], [false, ["d/e.txt"]]]);
+        const fresh = new TurnSnapshots(join(dirname(dir), "fresh"), cwd);
+        await fresh.begin(1, "fresh");
+        expect(fresh.list()[0]!.start.tree).toBe(snapshots.list().at(-1)!.end!.tree!);
+        await fresh.stop();
+        await snapshots.stop();
+    });
+});
+
+test("files known to be stored as they are: kept up to a number of paths, every repository's together, those used longest ago let go of first", async () => {
+    const { storedAsIsIn, asIsRoots } = await import("../src/agent/turn-snapshots");
+    const mine = (r: string) => r.startsWith("/as-is/");
+    const a = storedAsIsIn("/as-is/a", 10);
+    for (let i = 0; i < 6; i++) a.paths.add(`a${i}`);
+    const b = storedAsIsIn("/as-is/b", 10);
+    for (let i = 0; i < 4; i++) b.paths.add(`b${i}`);
+    // Used again: the latest.
+    expect(storedAsIsIn("/as-is/a", 10)).toBe(a);
+    const c = storedAsIsIn("/as-is/c", 10);
+    for (let i = 0; i < 3; i++) c.paths.add(`c${i}`);
+    expect(asIsRoots().filter(mine)).toEqual(["/as-is/b", "/as-is/a", "/as-is/c"]);
+    // 13 paths: b, used longest ago, is let go of.
+    expect(storedAsIsIn("/as-is/c", 10)).toBe(c);
+    expect(asIsRoots().filter(mine)).toEqual(["/as-is/a", "/as-is/c"]);
+    // One alone over the budget is kept: it's the one asked for.
+    for (let i = 0; i < 20; i++) c.paths.add(`more${i}`);
+    expect(storedAsIsIn("/as-is/c", 10)).toBe(c);
+    expect(asIsRoots().filter(mine)).toEqual(["/as-is/c"]);
+    expect(storedAsIsIn("/as-is/b", 10).paths.size).toBe(0);
+    expect(asIsRoots().filter(mine)).toEqual(["/as-is/b"]);
 });
