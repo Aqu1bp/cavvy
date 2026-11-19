@@ -115,6 +115,8 @@ export class PathCache {
                 for (const p of batch) busy.delete(p);
                 // Asked before forget(): under the old editor, so the replies ask again.
                 if (gen !== this.generation) return void (answered = true);
+                // The session was let go of meanwhile (delete): nothing's kept for it.
+                if (this.known.get(sessionId) !== m) return;
                 if (!found) return void batch.forEach((p) => this.set(this.failed, sessionId).add(p));
                 const live = this.map(sessionId);
                 batch.forEach((p, i) => live.set(p, found[i] ?? null));
@@ -154,6 +156,14 @@ export class PathCache {
         this.known.clear();
         this.failed.clear();
         this.changed();
+    }
+
+    /** The session is gone (deleted): everything kept for it goes. Shown again (Undo), its replies ask again. */
+    delete(sessionId: string) {
+        this.known.delete(sessionId);
+        this.asking.delete(sessionId);
+        this.failed.delete(sessionId);
+        this.held.delete(sessionId);
     }
 
     /** Files may have been created: missing answers are dropped, and replies showing those paths ask again. */
