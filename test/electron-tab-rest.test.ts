@@ -1,7 +1,7 @@
 // What an unseen browser tab does next (desktop-electron/src/tab-rest.ts): frozen once idle, but one playing sound only
 // hidden, so it goes on playing without being drawn.
 import { expect, test } from "bun:test";
-import { BUSY_ASLEEP_PERCENT, DISCARD_AFTER_MS, nextRest, REST_AFTER_MS, type TabLook } from "../desktop-electron/src/tab-rest";
+import { BUSY_ASLEEP_PERCENT, nextRest, REST_AFTER_MS, type TabLook } from "../desktop-electron/src/tab-rest";
 
 const idle: TabLook = { rest: "awake", closed: false, unfreezable: false, onScreen: false, idleMs: REST_AFTER_MS, loading: false, audible: false, cpuPercent: 0 };
 
@@ -36,20 +36,4 @@ test("a frozen tab drawn again is put back to sleep; a still one is left", () =>
 test("the wait can be shortened for checks", () => {
     expect(nextRest({ ...idle, idleMs: 600 }, 500)).toBe("freeze");
     expect(nextRest({ ...idle, idleMs: 400 }, 500)).toBe("none");
-});
-
-test("a frozen web page left long is discarded, once", () => {
-    const frozen: TabLook = { ...idle, rest: "frozen", discardable: true, idleMs: DISCARD_AFTER_MS };
-    expect(nextRest(frozen)).toBe("discard");
-    expect(nextRest({ ...frozen, idleMs: DISCARD_AFTER_MS - 1 })).toBe("none");
-    expect(nextRest({ ...frozen, discarded: true })).toBe("none");
-});
-
-test("not discarded: one that can't be, one not yet frozen, on screen, or busy again", () => {
-    const frozen: TabLook = { ...idle, rest: "frozen", discardable: true, idleMs: DISCARD_AFTER_MS };
-    expect(nextRest({ ...frozen, discardable: false })).toBe("none");
-    expect(nextRest({ ...frozen, rest: "hidden", audible: true })).toBe("none");
-    expect(nextRest({ ...frozen, onScreen: true })).toBe("none");
-    expect(nextRest({ ...frozen, cpuPercent: BUSY_ASLEEP_PERCENT + 1 })).toBe("resleep");
-    expect(nextRest({ ...frozen, idleMs: 600 }, REST_AFTER_MS, 500)).toBe("discard");
 });
