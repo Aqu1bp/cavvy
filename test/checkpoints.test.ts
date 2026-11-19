@@ -719,10 +719,18 @@ describe("cleanup", () => {
         expect(TurnSnapshots.existing(session)).toBeUndefined();
         expect(TurnSnapshots.for(session, proj)).toBeUndefined();
         expect(FileHistory.existing(session)).toBeUndefined();
-        // Opened again, it's read from disk.
-        const again = FileHistory.for(session)!;
-        expect(again).not.toBe(history);
-        expect(again.originals()).toEqual([{ path: a, hash: null }]);
+        // Nor a late read of it (a badge's count): it finds nothing rather than reopening it, to be kept for good.
+        expect(FileHistory.for(session)).toBeUndefined();
+        expect(FileHistory.existing(session)).toBeUndefined();
+        // Opened again (a new owner of the session), it's read from disk.
+        const owner = Session.load(session.path);
+        try {
+            const again = FileHistory.for(owner)!;
+            expect(again).not.toBe(history);
+            expect(again.originals()).toEqual([{ path: a, hash: null }]);
+        } finally {
+            owner.release();
+        }
     });
 });
 

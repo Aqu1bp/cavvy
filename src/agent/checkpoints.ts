@@ -116,6 +116,9 @@ export class FileHistory {
 
     /** The history of a saved session (one instance per session in this process). */
     static for(session: Session): FileHistory | undefined {
+        // One let go of (its Runtime closed) opens nothing again: a late read (a badge's count) finds what's still open,
+        // else nothing, rather than reopening a history that would then be kept for as long as the server runs.
+        if (session.isReleased) return FileHistory.existing(session);
         const dir = historyDir(session);
         if (!dir) return undefined;
         let h = open.get(dir);
