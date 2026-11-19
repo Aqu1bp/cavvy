@@ -327,3 +327,57 @@ describe("the server's lists", () => {
         }
     });
 });
+
+describe("Cavvy's browser tools, which OpenCode has none of", () => {
+    const { fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+    const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+    const savedBrowser = process.env.CAVVY_BROWSER;
+    const made: InstanceType<typeof Agent>[] = [];
+    beforeEach(() => {
+        process.env.CAVVY_BROWSER = fakeChromeProgram();
+        forgetChromeLookup();
+    });
+    afterEach(async () => {
+        for (const a of made.splice(0)) await a.state.browser?.dispose();
+        process.env.CAVVY_BROWSER = savedBrowser;
+        forgetChromeLookup();
+    });
+    async function browsing(o: Parameters<typeof makeAgent>[0] = {}) {
+        const a = await makeAgent(o);
+        made.push(a.agent);
+        return a;
+    }
+
+    test("go to OpenCode on Cavvy's MCP server: reading a local page runs unasked, OpenCode's own ask is answered yes, and the row is Cavvy's", async () => {
+        const a = await browsing({ ask: () => ({ allow: true }) });
+        expect(await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]')).toBe("done");
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_navigate", isError: false, text: expect.stringContaining('button "Click me"') });
+        expect(answers()).toEqual([once]);
+        expect(a.asked).toEqual([]);
+        expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "BrowserNavigate", input: { url: "http://localhost:4000/" } }, title: "BrowserNavigate(http://localhost:4000/)" });
+    });
+
+    test("acting on the page is asked about by Cavvy, once, as BrowserAct; a no reaches OpenCode as the tool's error", async () => {
+        const a = await browsing({ ask: () => ({ allow: false }) });
+        await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]');
+        rmSync(LOG, { force: true });
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        expect(a.asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+        expect(answers()).toEqual([once]);
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true });
+    });
+
+    test("Plan mode refuses acting on the page, though OpenCode approves Cavvy's tools", async () => {
+        const a = await browsing({ mode: "plan", ask: () => ({ allow: true }) });
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        expect(a.asked).toEqual([]);
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true });
+    });
+
+    test("a command named like the tool is checked as what it is", async () => {
+        const a = await browsing({ ask: () => ({ allow: false }) });
+        await a.run("[[run:cavvy_browser_navigate]]");
+        expect(a.asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Bash", "cavvy_browser_navigate"]]);
+        expect(answers()).toEqual([reject]);
+    });
+});

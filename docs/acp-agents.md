@@ -27,6 +27,7 @@ Supported: OpenCode and Grok Build.
 - `esc` stops the turn (`session/cancel`). The process stays for the next one.
 - **Steer** (a message you send while the turn runs) goes to OpenCode at once, as a second prompt. It leaves Cavvy's queue then, and shows in the transcript where it joined the turn. OpenCode folds it into the running turn: the model reads it at its next step, after the tool running now, or with one more step after the answer it's writing. Both prompts end together, as one Cavvy turn, and their tokens are counted once. Images and text files go with it. `esc` stops both.
 - Usage is recorded in tokens, and in dollars only when OpenCode reports a cost in USD.
+- **Cavvy's tools.** The agent gets the tools Claude Code and Codex get from Cavvy, on Cavvy's MCP server: the browser, the simulator, delegation to other models, secrets, sign-ins, schedules, pull request watches, your other sessions, your servers, and EnterWorktree and ExitWorktree (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)). Cavvy checks each call by your rules and mode as it runs, as it checks its own, so the agent's own ask about it is answered yes. A call that only looks like one of these by name (a command called `cavvy_browser_navigate`) is checked as what it is.
 
 ### The agent's credentials
 
@@ -35,7 +36,7 @@ Cavvy never reads, copies or stores OpenCode's sign-in. It starts your installed
 ### What isn't available
 
 - Several accounts, or plan limits: OpenCode runs with its own default sign-in.
-- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls. Only EnterWorktree and ExitWorktree are offered, on Cavvy's MCP server (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)): Cavvy checks each call as it runs, so the agent's own ask about it is answered yes, and Grok's gate lets it go.
+- Cavvy's hooks on the agent's own tool calls (they run on calls of Cavvy's tools).
 - `/compact` (OpenCode keeps its own context, and Cavvy doesn't auto-compact it), forking its session (a fork starts its own with the conversation), importing OpenCode's sessions, and its usage logs.
 - OpenCode's own slash commands, an ACP agent registry, and running another ACP command of your choice.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.
@@ -71,6 +72,7 @@ Cavvy never reads, copies or stores OpenCode's sign-in. It starts your installed
 - Changing the mode during a turn: Grok can't leave auto mode mid-turn, so switching from Auto to a stricter mode stops its turn and resumes it under the new one. A looser mode applies from the next turn.
 - What Grok asks about itself (`session/request_permission`) goes through the same rules. A yes is "allow once": "don't ask again" saves a Cavvy rule, never one of Grok's. A request Cavvy can't check is refused. When such an ask is refused, Grok ends its turn there, so say what to do instead in your next message.
 - Not covered: a search or listing of a folder is checked by its folder, so `Read` deny rules don't stop Grok's own searches or listings of the files inside a folder you allow. A project's `.grok/` and `.claude/` settings follow Grok's own folder trust, not Cavvy's, and Grok's own hooks run as they're set up. A subagent Grok runs in the background can't run anything once the turn has ended: Cavvy refuses its calls then.
+- **Cavvy's tools.** The agent gets the tools Claude Code and Codex get from Cavvy, on Cavvy's MCP server: the browser, the simulator, delegation to other models, secrets, sign-ins, schedules, pull request watches, your other sessions, your servers, and EnterWorktree and ExitWorktree (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)). Cavvy checks each call by your rules and mode as it runs, as it checks its own, so the agent's own ask about it is answered yes, and Grok's gate lets it go. A call that only looks like one of these by name (a command called `cavvy_browser_navigate`) is checked as what it is.
 
 ### Other details
 
@@ -86,7 +88,7 @@ Cavvy never reads, copies or stores Grok's sign-in (`~/.grok/auth.json`). It sta
 ### What isn't available
 
 - Several accounts, or plan limits: Grok runs with its own default sign-in.
-- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls. Only EnterWorktree and ExitWorktree are offered, on Cavvy's MCP server (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)): Cavvy checks each call as it runs, so the agent's own ask about it is answered yes, and Grok's gate lets it go.
+- Cavvy's hooks on the agent's own tool calls (they run on calls of Cavvy's tools).
 - `/compact` (Grok keeps its own context, and Cavvy doesn't auto-compact it), forking its session (a fork starts its own with the conversation), importing Grok's sessions, and its usage logs.
 - Grok's own slash commands, an ACP agent registry, and running another ACP command of your choice.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.

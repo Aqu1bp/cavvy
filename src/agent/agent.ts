@@ -68,6 +68,7 @@ import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { inputKeysOf } from "../backends/served-tools";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
@@ -1744,28 +1745,28 @@ export class Agent {
         const caller = this.model.provider;
         // Antigravity's CLI takes no MCP server from Cavvy (its own come from its settings).
         if (agentCli(caller)?.protocol === "agy-stream-json") return undefined;
-        // An ACP agent (OpenCode, Grok) gets the worktree tools only: Cavvy's others aren't offered to it.
+        // An ACP agent (OpenCode, Grok) gets them too, through session/new's mcpServers.
         const acp = agentCli(caller)?.protocol === "acp";
-        const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
-        const store = acp ? undefined : this.state.secrets;
+        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
         // Where there's someone to sign in (not a -p run).
-        const signIn = acp ? undefined : this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
-        const scheduling = !acp && Boolean(this.state.scheduler);
+        const signIn = this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
+        const scheduling = Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
-        const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
         const monitoring = watching && caller === "codex";
-        // Neither has a browser to show Cavvy's pane: its tools go to both.
-        const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
-        // Nor a simulator: its tools go to both, on a Mac with Xcode.
-        const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
+        // None has a browser to show Cavvy's pane: its tools go to all.
+        const browsing = offered(BrowserNavigateTool, this.o.settings());
+        // Nor a simulator: its tools go to all, on a Mac with Xcode.
+        const simulating = offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
-        const peers = !acp && !this.oneShot ? this.state.peers : undefined;
+        const peers = !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
-        const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
+        const servers = !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
         if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
@@ -1821,7 +1822,7 @@ export class Agent {
             instructions.push(SERVER_INSTRUCTIONS);
         }
         // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
-        else if (!acp && !this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
             tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
@@ -1839,6 +1840,7 @@ export class Agent {
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
+            inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,

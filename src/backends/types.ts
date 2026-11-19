@@ -355,6 +355,8 @@ export interface OrchestratorServer {
     /** The Authorization header (holds the token). */
     authorization: string;
     tools: string[];
+    /** Each tool's argument names: a call naming others isn't one of these tools (served-tools.ts). */
+    inputKeys?: Record<string, string[]>;
     /** For the backend's system prompt, where its MCP server instructions don't reach the model. */
     instructions: string;
     /** How long a call may take, in seconds (a delegate call can wait an hour). */
