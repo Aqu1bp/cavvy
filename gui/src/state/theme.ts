@@ -186,8 +186,8 @@ function retarget(e: MouseEvent) {
 const startedWith = prefs.themeId;
 let anyUp = false;
 
-/** What goes up next: a crossfade's update puts up the latest choice, not the one it started for (null: what's up stays). */
-let wanted: Shown | undefined | null;
+/** What goes up next: a crossfade's update puts up the latest choice, not the one it started for. */
+let wanted: Shown | undefined;
 
 function putUp(s: Shown | undefined) {
     clearTimeout(fallback);
@@ -222,10 +222,8 @@ createRoot(() =>
         const key = sceneKey(s);
         const now = untrack(onScreen);
         if (now && sceneKey(now) === key) return putUp(s);
-        // Drawn first (ThemeBackdrop calls sceneReady); the colours go up without it if it's slow to draw. A crossfade
-        // still to run for an earlier choice keeps what's up: its scene is no longer kept.
+        // Drawn first (ThemeBackdrop calls sceneReady); the colours go up without it if it's slow to draw.
         drawing = key;
-        wanted = untrack(up);
         clearTimeout(fallback);
         fallback = setTimeout(() => sceneReady(key), PENDING_MS);
     }),
