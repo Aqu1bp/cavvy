@@ -276,11 +276,14 @@ export async function scanIndexFiles(root: string, indexFile: string, hashBytes:
     // Side by side only with cores to spare: run so, stat calls cost a little more each, which a busy machine pays for.
     const spare = Math.floor(navigator.hardwareConcurrency - (loadavg()[0] ?? 0));
     const want = Math.min(MAX_WORKERS, Math.max(1, spare), Math.ceil((await entriesIn(indexFile)) / entriesPerWorker));
+    // Several: the index read once, here, for all of them (a million-file one is over 100 MB), not by each. Read
+    // before the workers are picked: nothing is awaited between picking them and asking them (asks counts them busy
+    // from then), so an idle one isn't let go of on the way.
+    const read = want > 1 ? await readShared(indexFile) : undefined;
     const ws = want > 1 ? pool(want) : [started()].filter((w): w is Worker => !!w);
     if (ws.length) {
         const n = ws.length;
-        // Several: the index read once, here, for all of them (a million-file one is over 100 MB), not by each.
-        const shared = n > 1 ? await readShared(indexFile) : undefined;
+        const shared = n > 1 ? read : undefined;
         const replies = await Promise.all(ws.map((w, k) => ask(w, { root, indexFile, hashBytes, untracked: k === n - 1 ? untracked : [], msExact, part: { k, n }, ...(shared ? { shared } : {}) }, deadline)));
         if (replies.some((r) => r.error === "late")) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
         if (replies.every((r) => r.scan)) {
