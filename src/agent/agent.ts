@@ -1770,6 +1770,9 @@ export class Agent {
         if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
+        /** Tools whose calls run Cavvy's checks themselves (runServed, authorizeServedTool). */
+        const checksItself = new Set<string>();
+        const selfChecked = (added: ServerTool[]) => (added.forEach((t) => checksItself.add(t.name)), added);
         if (delegating) {
             tools.push(
                 ...orchestratorTools({
@@ -1785,12 +1788,12 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...selfChecked(secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) })));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         if (signIn) {
             // Under the CLI's limit for one of Cavvy's tools (toolTimeoutSec below): a call still waiting then answers "still waiting", and the card stays.
-            tools.push(...signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) }));
+            tools.push(...selfChecked(signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) })));
             instructions.push(SIGN_IN_INSTRUCTIONS);
         }
         if (scheduling) {
@@ -1802,30 +1805,30 @@ export class Agent {
             instructions.push(WATCH_INSTRUCTIONS);
         }
         if (monitoring) {
-            tools.push(...monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(MONITOR_INSTRUCTIONS);
         }
         if (browsing) {
-            tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(BROWSER_INSTRUCTIONS);
         }
         if (simulating) {
-            tools.push(...simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SIMULATOR_INSTRUCTIONS);
         }
         if (worktrees) {
-            tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(WORKTREE_INSTRUCTIONS);
         }
         if (servers) {
-            tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
         // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
         else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
-            tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
+            tools.push(...selfChecked(sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives)));
             instructions.push(sessionInstructions(drives));
         }
         this.serverTools = tools;
@@ -1841,6 +1844,7 @@ export class Agent {
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
             inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
+            checksItself: [...checksItself],
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,

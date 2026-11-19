@@ -873,7 +873,9 @@ export class AcpConnection implements CliConnection {
         }
         const known = id ? turn.tools.get(id) : undefined;
         // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
-        if (once && servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput }, this.orchestrator())) {
+        const o = this.orchestrator();
+        const served = servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput }, o);
+        if (once && served && o?.checksItself?.includes(served.tool)) {
             liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
             return { outcome: { outcome: "selected", optionId: once } };
         }
@@ -884,7 +886,8 @@ export class AcpConnection implements CliConnection {
             turn.tools.set(id, t);
             this.startTool(turn, t);
         }
-        const req = permissionFor(this.def, toolCall, known, this.cwd);
+        // One of Cavvy's tools that doesn't check itself (delegate, schedules): asked about by its own name, so rules naming it apply.
+        const req = served ? { toolName: served.name, input: served.input, title: str(toolCall?.title) } : permissionFor(this.def, toolCall, known, this.cwd);
         if (!req) {
             this.emit({ type: "notice", level: "warn", message: `Refused something ${this.def.name} asked about: ${APP_TITLE} can't tell what it would do, so it can't check it against your rules.` });
             turn.refused = true;
@@ -1006,7 +1009,7 @@ export class AcpConnection implements CliConnection {
         // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
         const o = this.orchestrator();
         const served = own && servedToolName(own.toolName, o);
-        if (served && servedToolArgs(o, served, own.input)) return { allow: true, decided: false };
+        if (served && servedToolArgs(o, served, own.input) && o?.checksItself?.includes(served)) return { allow: true, decided: false };
         const label = main ? undefined : (this.children.get(call.sessionId) ?? call.subagentType ?? `${this.def.name} subagent`);
         /** One the mode doesn't decide: unasked, and Plan doesn't refuse it, but deny rules and Cavvy's protections do. */
         const exempt = async (r: GateTool, decided: boolean, planFile?: string): Promise<GateDecision> => {

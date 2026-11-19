@@ -55,7 +55,7 @@ afterEach(async () => {
     await (c as any).shutdown?.();
 });
 
-async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
+async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[]; scheduler?: import("../src/agent/schedule").Scheduler } = {}) {
     const settings = o.settings ?? {};
     const events: AgentEvent[] = [];
     const asked: PermissionRequest[] = [];
@@ -71,7 +71,7 @@ async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: P
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), scheduler: o.scheduler },
         host: {
             drainQueued: () => o.queued?.splice(0) ?? [],
             emit: (e) => events.push(e),
@@ -369,9 +369,32 @@ describe("Cavvy's browser tools, which OpenCode has none of", () => {
 
     test("Plan mode refuses acting on the page, though OpenCode approves Cavvy's tools", async () => {
         const a = await browsing({ mode: "plan", ask: () => ({ allow: true }) });
+        await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]');
+        rmSync(LOG, { force: true });
         await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
         expect(a.asked).toEqual([]);
-        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true });
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true, text: expect.stringMatching(/plan mode/i) });
+    });
+
+    test("one of Cavvy's tools that doesn't check itself (schedule_create) is asked about before it runs, and Plan refuses it", async () => {
+        const { Scheduler } = await import("../src/agent/schedule");
+        const scheduler = new Scheduler({ idle: () => false, fire: () => {} });
+        try {
+            const call = '[[mcp:schedule_create {"cron":"*/5 * * * *","prompt":"check"}]]';
+            const a = await browsing({ scheduler, ask: () => ({ allow: false }) });
+            await a.run(call);
+            expect(a.asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__schedule_create"]);
+            expect(answers()).toEqual([reject]);
+            expect(scheduler.list()).toEqual([]);
+            rmSync(LOG, { force: true });
+            const p = await browsing({ scheduler, mode: "plan", ask: () => ({ allow: true }) });
+            await p.run(call);
+            expect(p.asked).toEqual([]);
+            expect(answers()).toEqual([reject]);
+            expect(scheduler.list()).toEqual([]);
+        } finally {
+            scheduler.dispose();
+        }
     });
 
     test("a command named like the tool is checked as what it is", async () => {
