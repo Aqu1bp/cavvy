@@ -20,6 +20,8 @@ import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
+    /** One of Cavvy's own served tools that only reads (schedule_list, models): checked as read-only, so Plan allows it. */
+    readOnly?: boolean;
     /**
      * Asked by a background sub-agent of the CLI's (its work outlives the turn): the turn's end or Esc doesn't
      * withdraw it; the session's end does.
@@ -355,6 +357,15 @@ export interface OrchestratorServer {
     /** The Authorization header (holds the token). */
     authorization: string;
     tools: string[];
+    /** Each tool's argument names: a call naming others isn't one of these tools (served-tools.ts). */
+    inputKeys?: Record<string, string[]>;
+    /**
+     * The tools that run Cavvy's checks (rules, mode, hooks) themselves when called: a backend can let the CLI's call
+     * of one go unasked. The others (delegate, schedules, watches) are checked as any tool call, before they run.
+     */
+    checksItself?: string[];
+    /** The tools that only read (their readOnlyHint): checked as read-only (BackendPermission.readOnly). */
+    readOnly?: string[];
     /** For the backend's system prompt, where its MCP server instructions don't reach the model. */
     instructions: string;
     /** How long a call may take, in seconds (a delegate call can wait an hour). */

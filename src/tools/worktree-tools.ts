@@ -13,7 +13,6 @@ import { randomBytes } from "crypto";
 import { resolve } from "path";
 import type { Tool, ToolContext, ToolState } from "./types";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
-import { APP_NAME } from "../config/name";
 import { checkFolder, createWorktreeWithHooks } from "../server/worktrees";
 import { sessionWorktree, workingWorktree } from "../server/session-worktrees";
 import { redact } from "../util/redact";
@@ -157,27 +156,7 @@ export function servedWorktreeFor(tool: string): string | undefined {
     return WORKTREE_SERVER_TOOLS.find((t) => SERVED[t]!.name === tool);
 }
 
-/** Whether a call's arguments are only the served tool's own (name, path): a call of another tool names other things. */
-export function servedWorktreeArgs(tool: string, input: Record<string, unknown>): boolean {
-    const own = Object.keys((SERVED[tool]?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties ?? {});
-    return Object.keys(input).every((k) => own.includes(k));
-}
-
 /** Whether a call (by the name its backend gave it) is of a served worktree tool, which Cavvy runs its own hooks for. */
 export function servedWorktreeTool(server: string | undefined, toolName: unknown): boolean {
     return Boolean(server) && typeof toolName === "string" && WORKTREE_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
-}
-
-/**
- * The served worktree tool a call is of, by the name its agent CLI gives Cavvy's MCP server tools: Codex's
- * mcp__cavvy__enter_worktree, Grok's cavvy__enter_worktree, OpenCode's cavvy_enter_worktree.
- */
-export function servedWorktreeName(name: unknown): string | undefined {
-    if (typeof name !== "string") return undefined;
-    for (const prefix of [`mcp__${APP_NAME}__`, `${APP_NAME}__`, `${APP_NAME}_`]) {
-        if (!name.startsWith(prefix)) continue;
-        const tool = name.slice(prefix.length);
-        if (WORKTREE_SERVER_TOOLS.includes(tool)) return tool;
-    }
-    return undefined;
 }

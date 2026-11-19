@@ -29,7 +29,8 @@ import { RESUME_FAILED, type SteerSource } from "../acp/connection";
 import { liveDebug } from "../live/debug";
 import { EXIT_DRAIN_MS, PromptRefused } from "../live/session";
 import type { CliConnection, CliEventSink, LiveSettings, TurnInput } from "../live/types";
-import type { BackendPermission, PermissionAnswer, SessionHost, SteerMessage } from "../types";
+import { servedToolArgs, servedToolName } from "../served-tools";
+import type { BackendPermission, OrchestratorServer, PermissionAnswer, SessionHost, SteerMessage } from "../types";
 import { GATE_DEADLINE_MS, OWN_TOOL, agyTool, onGate, sessionStartAnswer, type AgyTool } from "./gate";
 
 /** How long to wait for it to say it's ready (it takes 5 to 8 seconds), and how often to look for a sign-in prompt meanwhile. */
@@ -111,6 +112,8 @@ export class AgyConnection implements CliConnection {
         private gate: { dir: string; token: string; files: string; attached: Attachments },
         /** The turn running's, set by the backend with each: the messages queued to steer it. */
         private steering: () => SteerSource | undefined = () => undefined,
+        /** Cavvy's MCP server this turn, if it has one: calls of its tools are Cavvy's own. */
+        private orchestrator: () => OrchestratorServer | undefined = () => undefined,
     ) {
         this.caps = { ...def.caps };
         this.ready = new Promise<string>((resolve, reject) => ((this.readyResolve = resolve), (this.readyReject = reject)));
@@ -505,10 +508,16 @@ export class AgyConnection implements CliConnection {
         const req: AgyTool = own ?? { toolName: OWN_TOOL + name, input: { tool: name, ...args }, ask: `${this.def.name} asks to use ${name}` };
         // Its row, from the gate (an ask makes it wait). The stream may have started it first, without what it writes.
         const row = main ? this.startRow(turn, step, own, name, args) : undefined;
+        // Cavvy's own tool (the browser, EnterWorktree…): one that checks itself when it runs goes; the others are asked
+        // about by their own name, the read-only ones as such.
+        const o = this.orchestrator();
+        const served = own && servedToolArgs(o, servedToolName(own.toolName, o) ?? "", own.input) ? servedToolName(own.toolName, o) : undefined;
+        if (served && o?.checksItself?.includes(served)) return { allow: true };
         const path = typeof req.input.file_path === "string" ? req.input.file_path : undefined;
         if (row && own?.diff && path && !row.diff) row.diff = { path: path.startsWith(this.cwd + "/") ? relative(this.cwd, path) : path, ...own.diff };
         const bypass = this.host.mode() === "bypassPermissions";
         const asked: BackendPermission = {
+            ...(served && o?.readOnly?.includes(served) ? { readOnly: true } : {}),
             toolName: req.toolName,
             input: req.input,
             ...(req.ask ? { title: req.ask } : {}),

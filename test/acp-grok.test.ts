@@ -868,7 +868,7 @@ describe("Grok through the Agent loop and Cavvy's rules", () => {
                     : undefined,
             },
         });
-        return { events, asked, setMode: (m: PermissionMode) => (mode = m), run: (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal }) };
+        return { agent, events, asked, setMode: (m: PermissionMode) => (mode = m), run: (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal }) };
     }
 
     test("manual asks the user; a deny rule refuses without asking; acceptEdits approves a workspace write", async () => {
@@ -1180,5 +1180,37 @@ describe("Grok through the Agent loop and Cavvy's rules", () => {
         } finally {
             delete process.env.GROK_HOME;
         }
+    });
+
+    describe("Cavvy's browser tools, which Grok has none of", () => {
+        const { fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+        const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+        const savedBrowser = process.env.CAVVY_BROWSER;
+        const made: InstanceType<typeof Agent>[] = [];
+        beforeEach(() => {
+            process.env.CAVVY_BROWSER = fakeChromeProgram();
+            forgetChromeLookup();
+        });
+        afterEach(async () => {
+            for (const a of made.splice(0)) await a.state.browser?.dispose();
+            process.env.CAVVY_BROWSER = savedBrowser;
+            forgetChromeLookup();
+        });
+
+        test("its gate and its own ask let them go; Cavvy checks each call as it runs", async () => {
+            const a = await makeAgent({ ask: () => ({ allow: false }) });
+            made.push(a.agent);
+            expect(await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]')).toBe("done");
+            expect(hookAnswers()).toEqual([{}]);
+            expect(answers().map((x) => x.outcome?.optionId)).toEqual(["allow-once"]);
+            expect(a.asked).toEqual([]);
+            expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ isError: false, text: expect.stringContaining('button "Click me"') });
+            expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "BrowserNavigate", input: { url: "http://localhost:4000/" } } });
+            // Acting is Cavvy's to ask about: the user's no reaches Grok as the tool's error.
+            rmSync(LOG, { force: true });
+            await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+            expect(a.asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+            expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ isError: true });
+        });
     });
 });

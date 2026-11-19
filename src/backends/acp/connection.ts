@@ -20,13 +20,13 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "fs";
 import { isAbsolute, resolve } from "path";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../../config/paths";
-import { servedWorktreeArgs, servedWorktreeName } from "../../tools/worktree-tools";
 import { stableStringify } from "../../permissions/classifier";
 import type { PermissionMode } from "../../permissions/modes";
 import type { Usage } from "../../providers/types";
 import type { ToolDisplay } from "../../tools/types";
 import { titleFor } from "../claude-code";
 import type { JsonLinesProcess } from "../cli";
+import { servedToolArgs, servedToolName } from "../served-tools";
 import type { AgentCliDef, CliCapabilities } from "../defs";
 import { liveDebug } from "../live/debug";
 import { PromptRefused } from "../live/session";
@@ -271,11 +271,6 @@ export class AcpConnection implements CliConnection {
         const o = this.orchestrator();
         if (!o || !this.init.agentCapabilities?.mcpCapabilities?.http) return [];
         return [{ type: "http", name: o.name, url: o.url, headers: [{ name: "Authorization", value: o.authorization }] }];
-    }
-
-    /** Whether Cavvy's MCP server offers this tool of its own (enter_worktree) this turn. */
-    private offered(tool: string | undefined): boolean {
-        return tool !== undefined && Boolean(this.orchestrator()?.tools.includes(tool));
     }
 
     private noteSession(r: any) {
@@ -655,7 +650,7 @@ export class AcpConnection implements CliConnection {
     private startTool(turn: Turn, t: ToolState, as?: { name: string; input: Record<string, unknown> }) {
         if (t.call) return;
         this.flushText(turn);
-        const { name, input } = as ?? cavvyTool(t, this.cwd);
+        const { name, input } = as ?? cavvyTool(t, this.cwd, this.orchestrator());
         t.call = { name, input, title: name === t.title || !CAVVY_TOOLS.has(name) ? (t.title ?? name) : titleFor(name, input), started: Date.now() };
         this.emit({ type: "tool_start", call: { type: "tool_call", id: t.id, name, input }, title: t.call.title });
     }
@@ -877,8 +872,10 @@ export class AcpConnection implements CliConnection {
             return { outcome: { outcome: "selected", optionId: once } };
         }
         const known = id ? turn.tools.get(id) : undefined;
-        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
-        if (once && this.offered(servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput })?.tool)) {
+        // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
+        const o = this.orchestrator();
+        const served = servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput }, o);
+        if (once && served && o?.checksItself?.includes(served.tool)) {
             liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
             return { outcome: { outcome: "selected", optionId: once } };
         }
@@ -889,7 +886,8 @@ export class AcpConnection implements CliConnection {
             turn.tools.set(id, t);
             this.startTool(turn, t);
         }
-        const req = permissionFor(this.def, toolCall, known, this.cwd);
+        // One of Cavvy's tools that doesn't check itself (delegate, schedules): asked about by its own name, so rules naming it apply.
+        const req = served ? { toolName: served.name, input: served.input, title: str(toolCall?.title), ...(o?.readOnly?.includes(served.tool) ? { readOnly: true } : {}) } : permissionFor(this.def, toolCall, known, this.cwd);
         if (!req) {
             this.emit({ type: "notice", level: "warn", message: `Refused something ${this.def.name} asked about: ${APP_TITLE} can't tell what it would do, so it can't check it against your rules.` });
             turn.refused = true;
@@ -1008,9 +1006,10 @@ export class AcpConnection implements CliConnection {
         const main = call.sessionId === this.sessionId;
         const own = gate.tool(call, this.cwd);
         if (own?.refuse) return { allow: false, reason: own.refuse };
-        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
-        const served = own && servedWorktreeName(own.toolName);
-        if (served && servedWorktreeArgs(served, own.input) && this.offered(served)) return { allow: true, decided: false };
+        // Cavvy's own tool (the browser, EnterWorktree…), while its server offers it: checked when it runs, as Cavvy's own call is.
+        const o = this.orchestrator();
+        const served = own && servedToolArgs(o, servedToolName(own.toolName, o) ?? "", own.input) ? servedToolName(own.toolName, o) : undefined;
+        if (served && o?.checksItself?.includes(served)) return { allow: true, decided: false };
         const label = main ? undefined : (this.children.get(call.sessionId) ?? call.subagentType ?? `${this.def.name} subagent`);
         /** One the mode doesn't decide: unasked, and Plan doesn't refuse it, but deny rules and Cavvy's protections do. */
         const exempt = async (r: GateTool, decided: boolean, planFile?: string): Promise<GateDecision> => {
@@ -1035,6 +1034,7 @@ export class AcpConnection implements CliConnection {
         }
         const bypass = mode === "bypassPermissions";
         const asked: BackendPermission = {
+            ...(served && o?.readOnly?.includes(served) ? { readOnly: true } : {}),
             toolName: req.toolName,
             input: req.input,
             ...(req.title ? { title: req.title } : {}),
@@ -1105,27 +1105,28 @@ function pathsOf(raw: Record<string, any> | undefined, locations: { path: string
 }
 
 /**
- * A call of Cavvy's own MCP tools (its worktree tools), by its MCP name: Grok's goes through its use_tool (the tool's
- * name and arguments in its input), OpenCode's is named for the tool. Cavvy checks it as it runs, as its own call.
+ * A call of Cavvy's own MCP tools (the ones its server offers this turn), by its MCP name: Grok's goes through its
+ * use_tool (the tool's name and arguments in its input), OpenCode's is named for the tool. Cavvy checks it as it runs,
+ * as its own call.
  */
-function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">): { tool: string; name: string; input: Record<string, unknown> } | undefined {
+function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">, o: OrchestratorServer | undefined): { tool: string; name: string; input: Record<string, unknown> } | undefined {
     const raw = t.rawInput ?? {};
-    const viaUse = servedWorktreeName(raw.tool_name);
+    const viaUse = servedToolName(raw.tool_name, o);
     if (viaUse) {
         const input = raw.tool_input && typeof raw.tool_input === "object" && !Array.isArray(raw.tool_input) ? raw.tool_input : {};
-        return servedWorktreeArgs(viaUse, input) ? { tool: viaUse, name: `mcp__${APP_NAME}__${viaUse}`, input } : undefined;
+        return servedToolArgs(o, viaUse, input) ? { tool: viaUse, name: `mcp__${APP_NAME}__${viaUse}`, input } : undefined;
     }
     // By its name only as an MCP tool's call is (kind other) with only the tool's arguments: OpenCode names a command,
     // a file or a search by what it runs or reads, so `cavvy_exit_worktree` can be one of those too.
     if (t.kind !== undefined && t.kind !== "other") return undefined;
-    const named = servedWorktreeName(t.title);
-    return named && servedWorktreeArgs(named, raw) ? { tool: named, name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
+    const named = servedToolName(t.title, o);
+    return named && servedToolArgs(o, named, raw) ? { tool: named, name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
 }
 
 /** A call as one of Cavvy's tools, by its kind; another kind as its own name. */
-function cavvyTool(t: ToolState, cwd: string): { name: string; input: Record<string, unknown> } {
+function cavvyTool(t: ToolState, cwd: string, o: OrchestratorServer | undefined): { name: string; input: Record<string, unknown> } {
     const raw = t.rawInput ?? {};
-    const served = servedCall(t);
+    const served = servedCall(t, o);
     if (served) return served;
     const path = pathsOf(raw, t.locations, cwd)[0];
     switch (t.kind) {
