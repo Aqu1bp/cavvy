@@ -23,7 +23,7 @@ import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSp
 import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
 import { AgyConnection, SIGN_IN_NEEDED, type Attachments } from "./connection";
-import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUnavailable, gateUrl } from "./gate";
+import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUnavailable, gateUrl, mcpDir } from "./gate";
 
 function agyDef(id: string): AgentCliDef {
     const def = agentCli(id);
@@ -32,19 +32,23 @@ function agyDef(id: string): AgentCliDef {
 }
 
 /** The arguments a process starts with, but the conversation it resumes (not part of its fingerprint). */
-function agyArgs(id: string, cfg: Pick<SpawnConfig, "model" | "cwd" | "additionalDirectories">, gate: string): string[] {
+function agyArgs(id: string, cfg: Pick<SpawnConfig, "model" | "cwd" | "additionalDirectories">, gate: string, mcp?: string): string[] {
     const dirs = [...new Set((cfg.additionalDirectories ?? []).map((d) => expandPath(d, cfg.cwd)))];
-    return [...extraArgs(id), "--input-format", "stream-json", "--output-format", "stream-json", "--model", cfg.model.id, ...dirs.flatMap((d) => ["--add-dir", d]), "--add-dir", gate];
+    return [...extraArgs(id), "--input-format", "stream-json", "--output-format", "stream-json", "--model", cfg.model.id, ...dirs.flatMap((d) => ["--add-dir", d]), "--add-dir", gate, ...(mcp ? ["--add-dir", mcp] : [])];
 }
 
 /** How a session's process is started, and spoken to: one per Cavvy session. */
 class AgyAdapter implements AgentCliAdapter {
     /** The turn under way, or the last one (set before each). */
-    current?: Pick<BackendTurn, "cwd">;
+    current?: Pick<BackendTurn, "cwd" | "orchestrator" | "readOnly">;
     /** Where the turn under way takes messages to steer it with. */
     steering?: SteerSource;
     /** The session's token for the gate: the hook calls back with it, so its calls reach this session only. */
     private token = randomUUID();
+    /** Its MCP folder's name: in agy's arguments, which the gate's token stays out of. */
+    private mcpId = randomUUID();
+    /** That folder, once made: it goes with the session. */
+    private mcp?: string;
     /** Its attachments: kept while the session is, so a conversation resumed in a new process can still read them. */
     private attached: Attachments = { names: new Map(), count: 0 };
 
@@ -55,7 +59,8 @@ class AgyAdapter implements AgentCliAdapter {
         const cant = gateUnavailable();
         if (cant) throw new Error(cant);
         const gate = gateDir();
-        const args = agyArgs(this.def.id, cfg, gate);
+        // Cavvy's MCP server (the browser, delegation, …): not for a read-only turn's process.
+        const args = agyArgs(this.def.id, cfg, gate, (this.mcp = mcpDir(this.mcpId, this.orchestrator())));
         const env = { [GATE_URL_ENV]: gateUrl(), [GATE_TOKEN_ENV]: this.token };
         const fingerprint = spawnFingerprint({ bin, args, cwd: cfg.cwd, env });
         // -p= last: it takes the next argument for its prompt otherwise.
@@ -64,11 +69,16 @@ class AgyAdapter implements AgentCliAdapter {
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
         liveDebug("agy", "spawned", { pid: proc.pid });
-        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token, files: filesDir(this.token), attached: this.attached }, () => this.steering);
+        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token, files: filesDir(this.token), attached: this.attached }, () => this.steering, () => this.orchestrator());
     }
 
-    /** The session is over: its attachments go. */
+    private orchestrator() {
+        return this.current?.readOnly ? undefined : this.current?.orchestrator;
+    }
+
+    /** The session is over: its MCP folder and its attachments go. */
     dispose() {
+        if (this.mcp) rmSync(this.mcp, { recursive: true, force: true });
         if (!this.attached.count) return;
         rmSync(filesDir(this.token), { recursive: true, force: true });
         this.attached = { names: new Map(), count: 0 };

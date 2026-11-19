@@ -14,11 +14,12 @@
 //   - The workspace folders are sorted by path, and the model takes the first for its own: the gate folder is named
 //     to sort after the session's folder, and SessionStart tells the model which is which.
 
-import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { isAbsolute, join, resolve } from "path";
 import { APP_TITLE } from "../../config/paths";
 import { canonical } from "../../util/files";
+import type { OrchestratorServer } from "../types";
 
 /** What agy waits for an answer (seconds): an ask can wait on the user that long. Cavvy answers before (GATE_DEADLINE_MS). */
 export const HOOK_TIMEOUT_S = 3600;
@@ -111,6 +112,24 @@ export function filesDir(token: string): string {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     ours(parent);
     return join(parent, token);
+}
+
+/**
+ * The session's folder for Cavvy's MCP server, as another workspace: agy starts the servers in a workspace folder's
+ * .agents/mcp_config.json, and fills in no variables there, so each session has its own with its token (only this
+ * user's, beside the gate folder, gone with the session). None without a server: then there's nothing to add.
+ */
+export function mcpDir(id: string, o: Pick<OrchestratorServer, "name" | "url" | "authorization"> | undefined): string | undefined {
+    const parent = `${gateDir()}-mcp`;
+    const dir = join(parent, id);
+    if (!o) {
+        rmSync(dir, { recursive: true, force: true });
+        return undefined;
+    }
+    mkdirSync(join(dir, ".agents"), { recursive: true, mode: 0o700 });
+    for (const d of [parent, dir, join(dir, ".agents")]) ours(d);
+    keep(join(dir, ".agents", "mcp_config.json"), JSON.stringify({ mcpServers: { [o.name]: { serverUrl: o.url, headers: { Authorization: o.authorization } } } }, null, 2) + "\n", 0o600);
+    return dir;
 }
 
 /** What the model is told when its conversation starts: which folder is its own. */
@@ -243,7 +262,12 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         return real !== cwd && (abs === real || abs.startsWith(real + "/")) ? cwd + abs.slice(real.length) : abs;
     };
     const path = (...keys: string[]) => keys.map((k) => str(args[k])).find(Boolean);
-    const inGate = (p: string) => Boolean(gate) && (canonical(p) === gate || canonical(p).startsWith(gate + "/"));
+    // The gate folder, and Cavvy's folders beside it (its MCP folders, attachments).
+    const inGate = (p: string) => Boolean(gate) && (canonical(p) === gate || canonical(p).startsWith(gate + "/") || canonical(p).startsWith(gate + "-"));
+    // Cavvy's MCP folders: their config holds the session's token, so no file tool reads them.
+    const inMcp = (p: string) => Boolean(gate) && (canonical(p) + "/").startsWith(gate + "-mcp/");
+    // A search from a folder holding them would reach them too.
+    const overMcp = (p: string) => inMcp(p) || Boolean(gate) && (gate + "-mcp/").startsWith(canonical(p).replace(/\/$/, "") + "/");
     const gateRefusal: AgyTool = { toolName: "", input: {}, refuse: `That folder only holds ${APP_TITLE}'s permission hook. Work in ${cwd}.` };
     if (str(args.CommandLine) || name === "run_command") {
         const command = str(args.CommandLine) ?? str(args.Command);
@@ -274,22 +298,32 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
     }
     if (/^(read_file|view_file|view_file_outline|view_code_item)$/.test(name)) {
         const file = path("Path", "AbsolutePath", "File", "FilePath");
-        return file ? { toolName: "Read", input: { file_path: at(file) } } : undefined;
+        if (!file) return undefined;
+        if (inMcp(at(file))) return gateRefusal;
+        // An MCP server's tool descriptions and instructions (<server>/<tool>.json, <server>/instructions.md): agy keeps
+        // them as files and has the model read them before its first call (agy 1.5.12). Not through a link elsewhere.
+        const descriptions = join(homedir(), ".gemini", "antigravity-cli", "mcp") + "/";
+        const read = canonical(at(file));
+        const description = read.startsWith(descriptions) && /^[^/]+\/([^/]+\.json|instructions\.md)$/.test(read.slice(descriptions.length));
+        return { toolName: "Read", input: { file_path: at(file) }, ...(description ? { free: true } : {}) };
     }
     if (name === "list_dir") {
         const dir = path("DirectoryPath", "Path", "Directory") ?? cwd;
+        if (inMcp(at(dir))) return gateRefusal;
         return { toolName: "LS", input: { path: at(dir) } };
     }
     if (name === "grep_search" || name === "codebase_search") {
         const pattern = path("Query", "Pattern", "query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchPath", "SearchDirectory", "Path", "DirectoryPath");
+        if (dir && overMcp(at(dir))) return gateRefusal;
         return { toolName: "Grep", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "find_by_name") {
         const pattern = path("Pattern", "Query", "pattern");
         if (!pattern) return undefined;
         const dir = path("SearchDirectory", "SearchPath", "Path", "DirectoryPath");
+        if (dir && overMcp(at(dir))) return gateRefusal;
         return { toolName: "Glob", input: { pattern, ...(dir ? { path: at(dir) } : {}) } };
     }
     if (name === "search_web") {

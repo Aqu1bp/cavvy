@@ -68,6 +68,7 @@ import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { inputKeysOf } from "../backends/served-tools";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { THEME_INSTRUCTIONS, THEME_TOOL_NAMES, servedThemeName, themeServerTools } from "../themes/tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
@@ -1743,35 +1744,36 @@ export class Agent {
     private orchestrator(): OrchestratorServer | undefined {
         if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        // Antigravity's CLI takes no MCP server from Cavvy (its own come from its settings).
-        if (agentCli(caller)?.protocol === "agy-stream-json") return undefined;
-        // An ACP agent (OpenCode, Grok) gets the worktree tools only: Cavvy's others aren't offered to it.
+        // An ACP agent (OpenCode, Grok) gets them too, through session/new's mcpServers.
         const acp = agentCli(caller)?.protocol === "acp";
-        const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
-        const store = acp ? undefined : this.state.secrets;
+        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
         // Where there's someone to sign in (not a -p run).
-        const signIn = acp ? undefined : this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
-        const scheduling = !acp && Boolean(this.state.scheduler);
+        const signIn = this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
+        const scheduling = Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
-        const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
         const monitoring = watching && caller === "codex";
-        // Neither has a browser to show Cavvy's pane: its tools go to both.
-        const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
-        // Nor a simulator: its tools go to both, on a Mac with Xcode.
-        const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
+        // None has a browser to show Cavvy's pane: its tools go to all.
+        const browsing = offered(BrowserNavigateTool, this.o.settings());
+        // Nor a simulator: its tools go to all, on a Mac with Xcode.
+        const simulating = offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
-        const peers = !acp && !this.oneShot ? this.state.peers : undefined;
+        const peers = !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
-        const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
+        const servers = !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
         // Cavvy's own window: where there's one on this machine to show a theme in.
-        const theming = !acp && Boolean(this.o.host.ui.showTheme);
+        const theming = Boolean(this.o.host.ui.showTheme);
         if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers && !theming) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
+        /** Tools whose calls run Cavvy's checks themselves (runServed, authorizeServedTool). */
+        const checksItself = new Set<string>();
+        const selfChecked = (added: ServerTool[]) => (added.forEach((t) => checksItself.add(t.name)), added);
         if (delegating) {
             tools.push(
                 ...orchestratorTools({
@@ -1787,12 +1789,12 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...selfChecked(secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) })));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         if (signIn) {
             // Under the CLI's limit for one of Cavvy's tools (toolTimeoutSec below): a call still waiting then answers "still waiting", and the card stays.
-            tools.push(...signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) }));
+            tools.push(...selfChecked(signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) })));
             instructions.push(SIGN_IN_INSTRUCTIONS);
         }
         if (scheduling) {
@@ -1804,34 +1806,34 @@ export class Agent {
             instructions.push(WATCH_INSTRUCTIONS);
         }
         if (monitoring) {
-            tools.push(...monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(MONITOR_INSTRUCTIONS);
         }
         if (browsing) {
-            tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(BROWSER_INSTRUCTIONS);
         }
         if (simulating) {
-            tools.push(...simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SIMULATOR_INSTRUCTIONS);
         }
         if (worktrees) {
-            tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(WORKTREE_INSTRUCTIONS);
         }
         if (servers) {
-            tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
         // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
-        else if (!acp && !this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (theming) {
-            tools.push(...themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(THEME_INSTRUCTIONS);
         }
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
-            tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
+            tools.push(...selfChecked(sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives)));
             instructions.push(sessionInstructions(drives));
         }
         this.serverTools = tools;
@@ -1846,6 +1848,9 @@ export class Agent {
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
+            inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
+            checksItself: [...checksItself],
+            readOnly: tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
@@ -3286,7 +3291,7 @@ export class Agent {
     }
 
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
-        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
         const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
@@ -4161,13 +4166,13 @@ const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: anothe
 const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool Cavvy has no tool of its own for (rules still match its name). */
-function backendTool(name: string, title?: string): Tool<any> {
+function backendTool(name: string, title?: string, readOnly = false): Tool<any> {
     return {
         name,
         description: "",
         parameters: { type: "object" },
         category: name.startsWith("mcp__") ? "mcp" : "execute",
-        readOnly: false,
+        readOnly,
         title: () => title ?? name,
         run: async () => ({ content: "" }),
     };

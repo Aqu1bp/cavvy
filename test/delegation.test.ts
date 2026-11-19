@@ -304,6 +304,12 @@ describe("Cavvy's MCP server", () => {
             const plain = await fetch(reg.url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...auth }, body: JSON.stringify(call(6, "slow")) });
             expect(plain.headers.get("content-type")).toContain("application/json");
             expect(await plain.json()).toEqual({ jsonrpc: "2.0", id: 6, result });
+            // With a progress token, progress that counts up (OpenCode ends a call after 60 seconds without it).
+            const tracked = await (await post(reg.url, { ...call(7, "slow"), params: { name: "slow", arguments: {}, _meta: { progressToken: "p7" } } }, auth)).text();
+            expect(tracked).not.toContain(": keep-alive");
+            expect(tracked).toContain(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "p7", progress: 1 } })}`);
+            expect(tracked).toContain(`"progress":2}`);
+            expect(tracked).toContain(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 7, result })}`);
         } finally {
             serverTiming.keepAliveMs = old;
             reg.close();
