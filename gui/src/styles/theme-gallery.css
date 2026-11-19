@@ -112,6 +112,11 @@
     transform: scale(calc(100cqw / 1600px));
 }
 
+/* While the window is resized (ThemeGallery.tsx): one layer each, moved and scaled as it is. */
+.tg-grid[data-resizing] .tg-stage {
+    will-change: transform;
+}
+
 .tg-stage > img {
     position: absolute;
     display: block;

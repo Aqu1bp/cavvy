@@ -167,13 +167,31 @@ async function remove(id: string, name: string) {
     }
 }
 
+/** How long after the window's last resize the previews are drawn again at their size. */
+const SETTLE_MS = 200;
+
 export function ThemeGallery(): JSX.Element {
+    let grid!: HTMLDivElement;
     onMount(() => {
         void loadAllBuiltins();
         void refreshThemes().catch(() => undefined);
+        // While the window is resized, each preview is one layer that's only moved and scaled, not its scene drawn
+        // again at every step (measured: 2.6 s of GPU work in a 2.8 s resize, 0.9 s in 1.3 s with it). Once it
+        // settles they're drawn again, sharp at their new size (theme-gallery.css).
+        let settle: ReturnType<typeof setTimeout> | undefined;
+        const resized = () => {
+            grid.dataset.resizing = "";
+            clearTimeout(settle);
+            settle = setTimeout(() => delete grid.dataset.resizing, SETTLE_MS);
+        };
+        addEventListener("resize", resized);
+        onCleanup(() => {
+            removeEventListener("resize", resized);
+            clearTimeout(settle);
+        });
     });
     return (
-        <div class="tg-grid" role="group" aria-label="Theme">
+        <div class="tg-grid" ref={grid} role="group" aria-label="Theme">
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
                 <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={() => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
