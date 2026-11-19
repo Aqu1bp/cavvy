@@ -75,6 +75,21 @@ describe("wire format", () => {
         r.push(encodeMessage({ jsonrpc: "2.0", id: 1, result: 7 }));
         expect(got).toEqual([{ jsonrpc: "2.0", id: 1, result: 7 }]);
     });
+
+    test("a buffer grown for a large message isn't kept once it's read", () => {
+        const got: unknown[] = [];
+        const r = new MessageReader((m) => got.push(m));
+        const size = () => (r as unknown as { buf: Uint8Array }).buf.length;
+        const big = encodeMessage({ jsonrpc: "2.0", method: "x", params: { s: "a".repeat(3 * 1024 * 1024) } });
+        // Half of it: the buffer grows and is kept while the rest is on its way.
+        r.push(big.subarray(0, big.length >> 1));
+        expect(size()).toBeGreaterThan(1024 * 1024);
+        r.push(big.subarray(big.length >> 1));
+        expect(got).toHaveLength(1);
+        expect(size()).toBe(64 * 1024);
+        r.push(encodeMessage({ jsonrpc: "2.0", id: 1, result: 7 }));
+        expect(got).toHaveLength(2);
+    });
 });
 
 describe("what gets reported", () => {
