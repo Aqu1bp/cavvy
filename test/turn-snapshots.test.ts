@@ -1673,6 +1673,9 @@ describe("per-turn snapshots", () => {
         await snapshots.end();
         await snapshots.begin(3, "third");
         write(cwd, "d/e.txt", "e, changed\n");
+        // What git lists changes: the next capture has a new list to look at, not the last one's.
+        git(cwd, ["add", "new.txt"]);
+        git(cwd, ["rm", "-q", "--cached", "a.txt"]);
         await snapshots.end();
         expect(snapshots.list().map((t) => [t.end!.incomplete, [...(t.changed ?? [])].sort()])).toEqual([[false, ["a.txt"]], [false, ["b.txt", "c.txt", "new.txt"]], [false, ["d/e.txt"]]]);
         const fresh = new TurnSnapshots(join(dirname(dir), "fresh"), cwd);
