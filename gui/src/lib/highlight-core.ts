@@ -124,6 +124,13 @@ async function ensure(lang: string): Promise<string | undefined> {
     return (await p) ? want : undefined;
 }
 
+/** A hit is the newest again: what's let go of first is what's gone unused longest. */
+function used<T, E>(cache: { map: Map<string, E> }, key: string, hit: E): E {
+    cache.map.delete(key);
+    cache.map.set(key, hit);
+    return hit;
+}
+
 function remember<T>(cache: Cache<T>, key: string, value: T, chars: number): T {
     const had = cache.map.get(key);
     if (had) {
@@ -148,7 +155,7 @@ export async function highlight(code: string, lang: string | undefined): Promise
     if (!lang || code.length > MAX_CHARS) return undefined;
     const key = `${lang}\u0000${code}`;
     const hit = cache.map.get(key);
-    if (hit) return hit.value;
+    if (hit) return used(cache, key, hit).value;
     const id = await ensure(lang);
     if (!id) return undefined;
     const h = await highlighter();
@@ -226,7 +233,7 @@ export async function highlightLineChunks(code: string, lang: string | undefined
     const key = `${lang}\u0000${code}`;
     const hit = lineCache.map.get(key);
     if (hit) {
-        emit(0, hit.value);
+        emit(0, used(lineCache, key, hit).value);
         return true;
     }
     const id = await ensure(lang);
