@@ -5,10 +5,11 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "fs";
 
 const CHUNK = 1024 * 1024;
 /**
- * Up to this size, read whole and split: the strings that makes parse about a fifth faster (a 213 MB GUI log read
- * whole and parsed, 515-564 ms; a chunk at a time, 632-652). Past it, a chunk at a time.
+ * Up to this size, read whole and split; past it, a chunk at a time. Read whole, a file is held three times at once
+ * (its bytes, its text, its lines), and a chunk at a time parses as fast: a 132 MB, 100,000-item session read and
+ * parsed peaked at 427 MB whole (310-404 ms) and 51-61 MB a chunk at a time (261-293 ms; Linux, Bun 1.4).
  */
-const WHOLE_MAX = 256 * 1024 * 1024;
+const WHOLE_MAX = 8 * 1024 * 1024;
 
 /**
  * Calls `fn` with each line of `file` (without its newline), in order; a last line without a newline too. Says whether
