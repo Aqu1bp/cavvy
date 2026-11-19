@@ -23,6 +23,8 @@ API keys for the server are added there too (`cavvy --server box auth add`, or S
 
 You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
 
+While the desktop app is open and connected to the server, your skills and commands stay the same there as here, copy or not (so the app's copy leaves them out): one you add, change or delete here is added, changed or deleted there within a few seconds. A skill or command that's the server's own (one an agent there made, or one you changed there) is left as it is. A file named like a key, or with a key of a known format in it, stays here, as in the copy.
+
 Never copied: keys and sign-ins, hooks and the status line (they're commands, and would run there), and the permission mode. Permission rules and MCP servers can have a key written into them anywhere (an address's path, an option's value), so they go only when every word in them reads as a name: a rule of plain words with no options in it (`Bash(npm run lint:*)`), and an MCP server that's just a package to run (`npx -y @scope/server`) or a public address with a plain path. A long run of letters and digits, or groups of them, reads as a key and stays. A password that's an ordinary word can't be told from a command's own words, so look through your rules for one before you copy. The rest stay, and Cavvy says how many; add those on the server yourself (`cavvy --server box mcp add …`). A memory, skill or command file is left out when it's named like a key file or has a key of a known format in it.
 
 What can go wrong, and what you see:
@@ -83,7 +85,7 @@ A new session starts on the machine named first in the strip under its composer 
 
 A click on a server's session in the sidebar opens it in the window you're in, which stays where it is: going back and forth is as quick as between this machine's own sessions. That session's model menu lists the server's models, and @ finds the server's files. Resting the pointer on its row connects to the server ahead of the click.
 
-- Search (⌘K) finds text only in the sessions of the machine the window is on.
+- Search (⌘K) in a window on this machine finds text in its sessions and in those of the servers it's connected to; a hit on a server says which. A server that's slow to answer doesn't hold the rest back: its hits follow. A window on a server finds the same, while this machine's Cavvy is reached; otherwise that server's sessions.
 - Recently deleted lists that machine's too.
 - A server that can't be reached, was stopped, or needs your word says so at the foot of the sidebar; its sessions stay listed, none shown as working.
 
@@ -95,27 +97,24 @@ If the connection drops, the window keeps what it shows and says why beside `Rec
 
 Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
 
-Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
+Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins. Sessions there can also reach your Mac's sessions, and yours theirs ([other machines](other-sessions.md#on-your-other-machines)).
 
 ## Your Mac's Simulator, from a server
 
 A server has no iOS simulators. Your Mac has, and while the desktop app is open it lends them to the servers it's connected to: a session there then has the simulator tools (`SimulatorControl`, `SimulatorSnapshot`, `SimulatorAct`, `SimulatorScreenshot`), and each call runs on your Mac. That's for sessions opened from the desktop app or `cavvy gui --server`; one run in a terminal with `cavvy --server box` doesn't have them.
 
-It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand, and what your Mac asks before a call appears in that chat, marked "On this Mac". Your answer goes to your Mac, not through the server.
+It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand.
 
-A call is checked twice: on the server by its own mode and rules, as any tool there, and then on your Mac by your Mac's default mode and rules.
+A call is asked about once, in that session, under the stricter of its own permission mode and your Mac's default mode (Plan on your Mac counts as Manual): Bypass is for what runs on the server. With your Mac in Auto, a session there in Bypass or Auto goes through its Auto check; in Manual, starting or acting on a device asks first in its chat. (A Claude Code or Codex session's Simulator calls skip the Auto check, as they do on the Mac itself: see `simulator.md`.) Your Mac doesn't ask again. What it still keeps:
 
-- In Manual on your Mac, starting a device or acting on one asks first, with a notification that names the server and the session if it isn't the one in front (a few a minute from one server at most, then one saying there's more). **Allow once** covers that one tap or key press, and the next asks again; allowing it for the session doesn't. Starting the same device again isn't asked about, until the session has left the Simulator alone for half an hour.
-- In Auto or Bypass on your Mac, these calls run without asking.
-- Reading the screen and listing devices never ask, in any mode: a session on a server can see whatever simulator is running on your Mac.
-- Your Mac's deny rules apply, and `open_url` won't open a `file:` address there for a server.
+- Its deny rules apply, and `open_url` won't open a `file:` address there for a server.
+- A server running an older Cavvy can't use it until it's updated: **Update** in the app, or `cavvy servers update <name>` from the same Cavvy the app runs (a `cavvy` in your terminal that's an older checkout puts its own, older build there).
+- One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 
 A screenshot comes back to the server and is kept there, so the chat on the server shows it.
 
 - It needs the desktop app open on a Mac with Xcode, the Simulator turned on in its settings, and a model set up there.
 - With the app closed, sessions on the server don't have the tools. One that calls them just as the app goes is told your Mac went away.
-- What you allowed "for this session" holds until the session on the server has left the Simulator unused for half an hour with its pane closed.
-- One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 - Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a server can't build one for iOS.
 
 ## Permissions on a server
@@ -144,7 +143,7 @@ cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. When a server the app is connected to runs another version that isn't newer, the app says so once (`box runs another version of Cavvy`, with **Update**), and the Machines menu keeps an update button on its row; if sessions are working there, it asks before stopping them. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
 
 An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 
@@ -154,7 +153,7 @@ An update that starts and then turns out not to work can be undone: `rollback` p
 
 ## After a restart
 
-When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, `Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.` A question a session was waiting on is gone with the restart; the session goes on and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
+When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, **Continued after a restart**. A question a session was waiting on is gone with the restart; the session is told it was dropped, not refused, and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
 
 What doesn't carry on:
 

@@ -41,7 +41,7 @@ function submit() {
     }).then((ok) => { if (ok) draft.clearSent(submitted, ok === "command"); return ok; });
 }
 mock.module("../../gui/src/state/app", () => ({
-    app, rpc, rpcFor: () => rpc, modelsFor: () => app.models, refreshModelsFor: noop, connFor: () => app.conn, awayMachine: () => undefined, machineFor: () => undefined, homeCwdAfter: () => app.homeCwd, reportError: (e: unknown) => errors.push(e),
+    app, rpc, rpcFor: () => rpc, modelsFor: () => app.models, providersFor: () => app.providers, limitsFor: () => app.limits, refreshModelsFor: noop, connFor: () => app.conn, awayMachine: () => undefined, machineFor: () => undefined, homeCwdAfter: () => app.homeCwd, awayUnopened: () => false, homeHere: () => {}, homeOnMachine: () => false, homeModeOf: () => app.homeMode, homeAt: () => ({ mode: app.homeMode }), homeDraftKey: () => "home", setHomeAwayMode: () => false, updateHomeSettings: () => undefined, homeOn: () => undefined, homeSettings: () => app.settings, reportError: (e: unknown) => errors.push(e),
     toast: (text: string, _level: string, action: any) => notices.push({ text, action }),
     createSession: async () => { created++; return { id: "created" }; }, setApp: (key: string, value: any) => {
         Object.assign(app, { [key]: value });

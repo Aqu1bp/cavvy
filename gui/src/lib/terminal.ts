@@ -70,21 +70,130 @@ const TABS_KEY = "cavvy.terminals";
  * the tabs it had on each (kept under one name, the other machine's list would drop them as unknown).
  */
 export const tabsKey = (at: string | undefined = machine) => (at ? `${TABS_KEY}.${at}` : TABS_KEY);
+/** The machines this window keeps terminal tabs (or closes still to send) for, by tabsKey's names ("" this computer). */
+export function tabMachines(): string[] {
+    const out: string[] = [];
+    try {
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i) ?? "";
+            const on = key === TABS_KEY ? "" : key.startsWith(`${TABS_KEY}.`) ? key.slice(TABS_KEY.length + 1) : undefined;
+            if (on === undefined) continue;
+            const saved = parseTabs(sessionStorage.getItem(key));
+            if (saved.tabs.length || saved.closed?.length) out.push(on);
+        }
+    } catch {}
+    return out;
+}
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
-/** sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's). */
-export function loadTabs(): SavedTabs {
+/**
+ * sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's).
+ * `at`: the machine the shells run on (tabsKey), the window's own unless said.
+ */
+export function loadTabs(at: string | undefined = machine): SavedTabs {
     try {
-        return parseTabs(sessionStorage.getItem(tabsKey()));
+        return parseTabs(sessionStorage.getItem(tabsKey(at)));
     } catch {
         return EMPTY;
     }
 }
 
-export function saveTabs(saved: SavedTabs) {
+export function saveTabs(saved: SavedTabs, at: string | undefined = machine) {
     try {
-        sessionStorage.setItem(tabsKey(), JSON.stringify(saved));
+        sessionStorage.setItem(tabsKey(at), JSON.stringify(saved));
     } catch {}
+}
+
+// A window's shells on a server outlive it for a while (the server's grace: src/server/terminals.ts), but its tabs and
+// the key they're its under are the window's own (sessionStorage), gone with it. So a window that goes says what it
+// had there, where the next one finds it (localStorage); the next window to open that server's sessions takes it,
+// once, and its connection there goes by the old window's key: the shells are still that window's to the server.
+const LEFT_KEY = "cavvy.terminals.left";
+const KEY_FOR = "cavvy.terminals.key";
+/** As long as a server keeps a shell nobody is attached to. */
+const LEFT_MS = 10 * 60_000;
+/** By server, then by the key of the window that went: each window's own, so one leaving doesn't cover another's. */
+type Left = Record<string, Record<string, { saved: SavedTabs; at: number }>>;
+const isKey = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{32}$/.test(v);
+function readLeft(now: number): Left {
+    // No names of its own: a server can be called "constructor".
+    const out: Left = Object.create(null);
+    try {
+        const v = JSON.parse(localStorage.getItem(LEFT_KEY) ?? "{}");
+        if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+        // Only what's of the shape written, and recent enough for its shells to be there still.
+        for (const [on, by] of Object.entries(v)) {
+            if (!by || typeof by !== "object" || Array.isArray(by)) continue;
+            for (const [key, e] of Object.entries(by as Record<string, { saved?: unknown; at?: unknown }>)) {
+                if (!isKey(key) || !e || typeof e.at !== "number" || now - e.at > LEFT_MS || now < e.at) continue;
+                const saved = parseTabs(JSON.stringify(e.saved ?? null));
+                if (saved.tabs.length) (out[on] ??= {})[key] = { saved, at: e.at };
+            }
+        }
+    } catch {}
+    return out;
+}
+function writeLeft(left: Left) {
+    try {
+        for (const on of Object.keys(left)) if (!Object.keys(left[on]!).length) delete left[on];
+        if (Object.keys(left).length) localStorage.setItem(LEFT_KEY, JSON.stringify(left));
+        else localStorage.removeItem(LEFT_KEY);
+    } catch {}
+}
+
+/** The key this window's connection to server `on` goes by: its own, or the one of the window whose tabs it took. */
+export function keyOn(on: string, own: () => string): string {
+    try {
+        const taken = sessionStorage.getItem(`${KEY_FOR}.${on}`);
+        if (isKey(taken)) return taken;
+    } catch {}
+    return own();
+}
+
+/**
+ * As this window loads: what it left itself as it went isn't for another to take (a reload: it's back, with its
+ * tabs and its keys).
+ */
+export function keepOwnTabs(own: () => string, now = Date.now()) {
+    const left = readLeft(now);
+    let mine = false;
+    for (const on of Object.keys(left)) {
+        const key = keyOn(on, own);
+        if (left[on]![key]) (delete left[on]![key], (mine = true));
+    }
+    if (mine) writeLeft(left);
+}
+
+/**
+ * Before this window first reaches server `on`: the tabs a window that went left there (the latest to go), if this
+ * one has none of its own there. Taken once: no other window gets them.
+ */
+export function takeLeftTabs(on: string, own: () => string, now = Date.now()) {
+    if (!on || loadTabs(on).tabs.length) return;
+    const left = readLeft(now);
+    const mine = keyOn(on, own);
+    const [key, entry] = Object.entries(left[on] ?? {}).filter(([k]) => k !== mine).sort((a, b) => b[1].at - a[1].at)[0] ?? [];
+    if (!key || !entry) return;
+    try {
+        sessionStorage.setItem(`${KEY_FOR}.${on}`, key);
+    } catch {
+        return;
+    }
+    saveTabs(entry.saved, on);
+    delete left[on]![key];
+    writeLeft(left);
+}
+
+/** As this window goes: its tabs on each server, with the key they're its under there. */
+export function leaveTabs(own: () => string, now = Date.now()) {
+    const left = readLeft(now);
+    for (const on of tabMachines()) {
+        // This computer's own shells go with its Cavvy; a window's own server keeps them by the window's own key (a reload).
+        if (!on || on === machine) continue;
+        const saved = loadTabs(on);
+        if (saved.tabs.length) (left[on] ??= {})[keyOn(on, own)] = { saved, at: now };
+    }
+    writeLeft(left);
 }
 
 const isId = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(v);

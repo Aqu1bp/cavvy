@@ -3,10 +3,11 @@
 // the demo's mock model (scripts/gui-demo.ts), and Chrome driven over DevTools. No browser package needed: installed
 // Chrome, or CAVVY_TEST_CHROME.
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { withinBudget } from "./helpers/perf-budget";
+import { startDemoServer } from "../scripts/demo-server";
 
 const chrome = [process.env.CAVVY_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 const repo = resolve(import.meta.dir, "..");
@@ -56,26 +57,62 @@ async function devtools(profile: string, browser: { exitCode: number | null }) {
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error("DevTools connection failed")); });
     let seq = 0;
     const pending = new Map<number, (m: any) => void>();
-    ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.id) { pending.get(m.id)?.(m); pending.delete(m.id); } };
+    // What became of the page and its targets, for a failure to say: a crash, a navigation, a target gone.
+    const t0 = performance.now();
+    const lifecycle: string[] = [];
+    // Waiting for an event of the page's: the next one with this name.
+    const awaited = new Map<string, () => void>();
+    const LIFECYCLE = /^(Inspector\.|Target\.(targetCrashed|targetDestroyed|detachedFromTarget)$|Page\.(frameStartedNavigating|frameNavigated)$)/;
+    ws.onmessage = (e) => {
+        const m = JSON.parse(String(e.data));
+        if (m.id) {
+            pending.get(m.id)?.(m);
+            pending.delete(m.id);
+        } else if (awaited.has(m.method)) {
+            awaited.get(m.method)!();
+            awaited.delete(m.method);
+        }
+        if (!m.id && LIFECYCLE.test(m.method)) {
+            lifecycle.push(`${((performance.now() - t0) / 1000).toFixed(1)}s ${m.method} ${JSON.stringify(m.params).slice(0, 160)}`);
+            // A crashed page never answers what's waiting on it.
+            if (m.method === "Inspector.targetCrashed") fail("the page crashed");
+        }
+    };
+    let gone: string | undefined;
+    const fail = (why: string) => {
+        gone = why;
+        for (const [id, answer] of pending) answer({ id, error: { message: why } });
+        pending.clear();
+    };
+    ws.onclose = (e) => {
+        lifecycle.push(`${((performance.now() - t0) / 1000).toFixed(1)}s DevTools connection closed (${e.code})`);
+        fail("DevTools connection closed");
+    };
     const call = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((r, j) => {
+        if (gone) return j(new Error(`${method}: ${gone}`));
         const id = ++seq;
         pending.set(id, (m) => (m.error ? j(new Error(`${method}: ${m.error.message}`)) : r(m.result)));
         ws.send(JSON.stringify({ id, method, params, sessionId }));
     });
+    await call("Target.setDiscoverTargets", { discover: true });
     const { targetId } = await call("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await call("Target.attachToTarget", { targetId, flatten: true });
     const page = (method: string, params: object = {}) => call(method, params, sessionId);
+    await page("Inspector.enable");
     const js = async (expression: string) => {
         const r = await page("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
         if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
         return r.result.value;
     };
-    return { page, js, close: () => ws.close() };
+    /** The next `method` event, asked for before what causes it. */
+    const next = (method: string) => new Promise<void>((r) => awaited.set(method, r));
+    return { page, js, next, lifecycle: () => lifecycle.slice(-20), close: () => ws.close() };
 }
 
 test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, once it's done the page does nothing, and a long session opened cold is drawn at its end from its first frame", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "cavvy-perf-gui-"));
     const profile = join(scratch, "chrome");
+    const chromeLog = join(scratch, "chrome.log");
     let demo: ReturnType<typeof Bun.spawn> | undefined;
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let tools: Awaited<ReturnType<typeof devtools>> | undefined;
@@ -84,20 +121,16 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         const dist = join(scratch, "dist");
         const built = Bun.spawnSync([process.execPath, "x", "vite", "build", "--outDir", dist, "--emptyOutDir", "--logLevel", "error"], { cwd: join(repo, "gui"), timeout: 120_000, stdout: "pipe", stderr: "pipe" });
         if (built.exitCode !== 0) throw new Error(`GUI build failed (${built.exitCode}): ${built.stderr.toString()}`);
-        const free = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
-        const port = free.port;
-        free.stop(true);
-        demo = Bun.spawn([process.execPath, "--no-env-file", `--config=${join(repo, "bunfig.toml")}`, join(repo, "scripts/gui-demo.ts"), "--dir", join(scratch, "demo"), "--port", String(port), "--token", TOKEN], {
-            cwd: repo, env: { ...process.env, CAVVY_GUI_DIST: dist } as Record<string, string>, stdout: "ignore", stderr: "ignore",
-        });
-        await until("the demo server", 60_000, () => fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false));
+        const started = await startDemoServer({ dir: join(scratch, "demo"), token: TOKEN, dist });
+        demo = started.proc;
+        const port = started.port;
         browser = Bun.spawn([
             chrome!, "--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
             ...(process.getuid?.() === 0 || process.env.CI ? ["--no-sandbox"] : []),
-            "--window-size=1200,800", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
-        ], { stdout: "ignore", stderr: "ignore" });
+            "--window-size=1200,800", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--enable-logging=stderr",
+        ], { stdout: "ignore", stderr: Bun.file(chromeLog) });
         tools = await devtools(profile, browser);
-        const { page, js } = tools;
+        const { page, js, next } = tools;
         await page("Page.enable");
         await page("Performance.enable");
         await page("Emulation.setDeviceMetricsOverride", { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
@@ -217,7 +250,11 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         await until("a new session's composer", 10_000, () => js(`!document.querySelector(".transcript:not([data-parked] *) article.turn")`));
         await send("a short one");
         await until("the short reply to finish", 60_000, finished);
+        // Page.reload answers before the page it loads is in: a call made meanwhile is dropped as that comes in
+        // ("Inspected target navigated or closed", runs 410, 428, 435). Read once the new page has loaded.
+        const loaded = next("Page.loadEventFired");
         await page("Page.reload");
+        await loaded;
         await until("the short session again", 30_000, () => js(`!!document.querySelector(".transcript:not([data-parked] *) .user-bubble") && document.querySelector("[data-session-id='${long}']") !== null`));
         await sleep(1500);
         await js(`(() => {
@@ -247,6 +284,11 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         const frames = (await js(`window.__frames`)) as string[];
         const seen = frames.filter((f, i) => f !== frames[i - 1]);
         expect(seen).toEqual(seen[0] === "short" ? ["short", "long@end"] : ["long@end"]);
+    } catch (err) {
+        // Why the page went away, when it did (Chrome's own log is in the scratch folder, removed below).
+        const said = (() => { try { return readFileSync(chromeLog, "utf8").trim().split("\n").filter((l) => /:(ERROR|FATAL):/.test(l) && !/dbus|crashpad/.test(l)).slice(-15).join("\n"); } catch { return "(none)"; } })();
+        console.error(`What the page went through:\n${tools?.lifecycle().join("\n") || "(nothing)"}\nChrome exited: ${browser?.exitCode ?? browser?.signalCode ?? "no"}\nChrome said:\n${said}`);
+        throw err;
     } finally {
         tools?.close();
         browser?.kill();

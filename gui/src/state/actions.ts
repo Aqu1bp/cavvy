@@ -9,7 +9,7 @@ import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, agentReady, app, createSession, homeCwdAfter, machineFor, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
+import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -28,7 +28,15 @@ export type { Attachment } from "../lib/attachments";
  * default the session on screen's (a folder of another machine's names nothing on the window's own).
  */
 export function newSession(cwd?: string, on: { machine?: string } | undefined = machineFor(app.activeId)) {
-    if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    if (onAnother(on, machine)) {
+        // Home there, in this window, when one of its sessions is opened here (it's connected to); else the window goes there.
+        if (cwd && homeOnMachine(on!.machine ?? "", cwd)) return void requestComposerFocus();
+        return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
+    }
+    homeHere();
+    // Another machine's session on screen but not opened here (connecting, or that machine unreachable): Home here, in
+    // this computer's latest project, not in a folder of that machine's.
+    if (!on && cwd === app.homeCwd && awayUnopened(app.activeId)) cwd = homeCwdAfter(app.activeId!);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();
@@ -36,6 +44,7 @@ export function newSession(cwd?: string, on: { machine?: string } | undefined = 
 
 /** The session on screen archived: Home, on the window's own machine. */
 function toHome(id: string) {
+    homeHere();
     batch(() => {
         setApp("homeCwd", homeCwdAfter(id));
         setApp("activeId", undefined);
@@ -52,8 +61,9 @@ export async function chooseFolder(o: { title?: string; action?: string; start?:
 }
 
 /** Choose a project folder. */
-export function chooseProject(): Promise<string | undefined> {
-    return chooseFolder();
+/** `home`: for Home, on the machine it's on: another machine's from its own folders, not this computer's picker. */
+export function chooseProject(home?: boolean): Promise<string | undefined> {
+    return home && homeOn() !== undefined ? new Promise((then) => setFolderPickerOpen({ then, link: rpcFor(undefined) })) : chooseFolder();
 }
 
 /** Carry on with a Claude Code or Codex session in Cavvy: import it, or open the session that already holds it. */
@@ -71,7 +81,8 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            requestTrust(cwd, () => void continueCliSession(cwd, s));
+            // Imported over the window's own connection (importCliSession): trusted there.
+            requestTrust(cwd, () => void continueCliSession(cwd, s), undefined, undefined, rpc);
             return false;
         }
         reportError(e);
@@ -79,12 +90,14 @@ export async function continueCliSession(cwd: string, s: CliSessionInfo): Promis
     }
 }
 
-export async function openProject(path: string) {
+/** `home`: from Home, on the machine it's on (another machine's, while it's there). */
+export async function openProject(path: string, home?: boolean) {
+    const on = home ? homeOn() : undefined;
     try {
-        const info = await rpc.call("projects.inspect", { path });
+        const info = await (on === undefined ? rpc : rpcFor(undefined)).call("projects.inspect", { path });
         if (!info.exists) return toast(`${path} isn't a folder`, "error");
-        newSession(info.path, { machine });
-        void refreshProjects();
+        newSession(info.path, { machine: on === undefined ? machine : on || undefined });
+        if (on === undefined) void refreshProjects();
     } catch (e) {
         reportError(e);
     }
@@ -249,19 +262,23 @@ export async function exportSession(id: string) {
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  * `accepted` identifies the receiving session, including one just created from Home.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string; at?: HomeAt }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    // Home's machine as it is now: checked, made and trusted there, wherever the user goes meanwhile.
+    const at = opts.to ? opts.to.at : id ? undefined : homeAt();
     let created = false;
+    // Still on that Home (the same folder on the same machine): the session made from it is shown.
+    const stillHome = () => app.activeId === undefined && app.homeCwd === cwd && homeOn() === at?.there?.on;
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
-        const to = { id, cwd };
+        const to = { id, cwd, at };
         // The toast stays, with its action, until the send succeeds.
         toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
             // A failure is shown once, in this toast, with its retry.
             if (!(await send(text, attachments, { literal: true, to, throwErrors: true, accepted: opts.accepted }))) return false;
-            if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
+            if (created && stillHome()) setApp("activeId", to.id);
             opts.sent?.();
         } });
         return false;
@@ -274,8 +291,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             }
             // Check before creating a session, so a typo on Home doesn't start one.
             const command = opts.literal ? undefined : slashName(text);
-            if (command) await rpc.call("commands.list", { cwd, command });
-            const h = await createIn(cwd);
+            const home = at ?? {};
+            if (command) await (home.there?.link ?? rpc).call("commands.list", { cwd, command });
+            const h = await createIn(cwd, home);
             if (!h) return false;
             id = h.id;
             created = true;
@@ -296,13 +314,13 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         }
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
-        if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
+        if (created && stillHome()) setApp("activeId", id);
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
         // Its model (Antigravity) would run the folder's own hooks: the message stays in the box until it's trusted.
         if (e instanceof RpcError && e.code === "needs_trust" && e.folder) {
-            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message));
+            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message), rpcFor(id), awayMachine(id));
             return false;
         }
         if (opts.throwErrors) throw e;
@@ -316,21 +334,23 @@ function agentTrustReason(message: string): string {
     return message.replace(/\s*\(\/trust\)/, "");
 }
 
-async function createIn(cwd: string) {
+async function createIn(cwd: string, at: HomeAt) {
+    const link = at.there?.link ?? rpc;
     try {
-        return await createSession(cwd, app.homeMode);
+        return await createSession(cwd, at);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
-            requestTrust(cwd, requestComposerFocus);
+            requestTrust(cwd, requestComposerFocus, undefined, undefined, link, at.there?.on);
             return undefined;
         }
         throw e;
     }
 }
 
-export async function trustAndContinue(path: string, trust: boolean) {
-    await rpc.call("projects.trust", { path, trust });
+/** `link`: the folder's machine, when the request said (requestTrust); else Home's folder on its machine, or the window's. */
+export async function trustAndContinue(path: string, trust: boolean, link?: Rpc) {
+    await (link ?? (path === app.homeCwd && !app.activeId ? rpcFor(undefined) : rpc)).call("projects.trust", { path, trust });
     void refreshProjects();
 }
 
@@ -365,7 +385,7 @@ export async function setModel(ref: string) {
     }
     try {
         if (id) await rpc.call("session.setModel", { id, ref, persist: true });
-        else {
+        else if (!(await updateHomeSettings({ model: ref }))) {
             await rpc.call("settings.update", { patch: { model: ref } });
             setApp("settings", "model", ref);
         }
@@ -376,9 +396,11 @@ export async function setModel(ref: string) {
 
 export async function setAccount(provider: string, accountId: string) {
     try {
+        // A session's call goes to its machine by its id; Home's default is its machine's (rpcFor), not always this window's.
         if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
-        else await rpc.call("accounts.setDefault", { provider, id: accountId });
-        await refreshProviders();
+        else await rpcFor(undefined).call("accounts.setDefault", { provider, id: accountId });
+        // Another machine says when its default changed (models.changed): its list is asked for again then.
+        if (awayMachine(app.activeId) === undefined) await refreshProviders();
     } catch (e) { reportError(e); }
 }
 
@@ -386,7 +408,7 @@ export async function setMode(mode: PermissionModeId) {
     const id = app.activeId;
     if (!id) {
         // For the sessions started from the home screen (the saved default is in Settings).
-        setApp("homeMode", mode);
+        if (!setHomeAwayMode(mode)) setApp("homeMode", mode);
         return;
     }
     // Shown at once, so pressing shift+tab twice quickly moves two steps; put back if the server refuses.
@@ -402,7 +424,7 @@ export async function setMode(mode: PermissionModeId) {
 export async function setFastMode(enabled: boolean) {
     try {
         if (app.activeId) await rpc.call("session.setFastMode", { id: app.activeId, enabled });
-        else {
+        else if (!(await updateHomeSettings({ fastMode: enabled }))) {
             const settings = await rpc.call("settings.update", { patch: { fastMode: enabled } });
             setApp("settings", settings);
         }
@@ -417,6 +439,8 @@ export async function setEffort(effort: EffortLevel): Promise<boolean> {
         return false;
     };
     if (id) return rpc.call("session.setEffort", { id, effort }).then(() => true, failed);
+    const there = updateHomeSettings({ effort });
+    if (there) return there.then(() => true, failed);
     const ok = await rpc.call("settings.update", { patch: { effort } }).then(() => true, failed);
     if (ok) setApp("settings", "effort", effort);
     return ok;
@@ -660,7 +684,8 @@ export async function archive(id: string, archived: boolean) {
             const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
             // On another machine: removing a worktree asks about folders there, which a window on that machine does.
             // From here it's kept, and said to be.
-            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this computer"}.`);
+            const away = awayMachine(id);
+            if ((row && row.machine !== machine) || away !== undefined) return setArchived(id, archived, `Archived. Its worktree stays on ${(row ? row.machine : away) || "this computer"}.`);
             const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;

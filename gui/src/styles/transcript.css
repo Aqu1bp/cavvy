@@ -218,6 +218,16 @@
     contain-intrinsic-size: auto calc(600 * var(--sp));
 }
 
+/* The CLI's own turn with nothing to show. */
+.turn.empty {
+    display: none;
+}
+
+/* The CLI's own turn with only a card: under the reply before it, not a turn's gap away. */
+.turn.attached:not(:first-child) {
+    margin-top: calc(-26 * var(--sp));
+}
+
 /* A screen or more from the view (Transcript.tsx): no layout or paint until it comes near, so a long
    conversation costs what its last screens do. Auto, not hidden: one scrolled to before it's marked near is drawn. */
 .turn[data-far] {
@@ -963,6 +973,17 @@
     color: var(--accent);
 }
 
+/* Folded with the work, it's a line among the steps: their edge and size, no icon. */
+.nt.wake.row {
+    padding: 0;
+    margin-bottom: calc(6 * var(--sp));
+    font-size: 0.964rem;
+}
+
+.nt.wake.row .ic {
+    display: none;
+}
+
 .nt .tx {
     flex: 1;
     min-width: 0;
@@ -1128,18 +1149,23 @@
 .ne {
     display: grid;
     grid-template-columns: var(--n-ic) minmax(0, 1fr) auto;
-    column-gap: var(--n-gap);
+    column-gap: calc(12 * var(--sp));
     align-items: start;
-    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) var(--n-x);
+    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(14 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: color-mix(in srgb, var(--danger) 8%, transparent);
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 .ne .ic {
+    height: calc(22 * var(--sp));
     color: var(--danger);
 }
 
 .ne-title {
+    font-size: 1rem;
+    line-height: calc(22 * var(--sp));
+    font-weight: 500;
     color: var(--fg);
     overflow-wrap: anywhere;
 }
@@ -1177,18 +1203,22 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: calc(6 * var(--sp));
-    margin: calc(6 * var(--sp)) 0 calc(2 * var(--sp));
+    gap: calc(8 * var(--sp));
+    margin: calc(12 * var(--sp)) 0 0;
 }
 
 .ne-foot .cbtn {
     gap: calc(5 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
+    font-size: 0.929rem;
 }
 
 /* A plan's limit: while the session waits to pick up again by itself, a line under its sentence says when. */
 .ne-resume {
-    font-size: 0.893rem;
-    line-height: 1.5;
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.929rem;
+    line-height: calc(20 * var(--sp));
     color: var(--fg-3);
 }
 

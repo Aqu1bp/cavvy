@@ -2,7 +2,7 @@ import { boundary } from "../helpers/render-boundary";
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 import { readFileSync } from "node:fs";
-import { all, component, node, noSplit, renderer, singlePane, text } from "../helpers/gui-render";
+import { all, component, node, noSplit, renderer, singlePane, text, noTerminal } from "../helpers/gui-render";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const mode = process.argv[2];
@@ -85,12 +85,13 @@ const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url)
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense"]);
 const widgets = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
+    ...noTerminal,
     // Stubs first: a component given explicitly below wins.
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
     ...noSplit, Panes: singlePane(),
     RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", isDesktop: mode === "desktop", isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), os: "other", setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
-    railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, viewedImage: () => undefined,
+    railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, folderPickerOpen: () => undefined, viewedImage: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, onMount() {},
 });
 const root = node("root");

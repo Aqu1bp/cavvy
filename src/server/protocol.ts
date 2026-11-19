@@ -70,6 +70,14 @@ export interface TrashedSessionSummary {
     cwd?: string;
     projectName?: string;
     deletedAt: number;
+    /** The server it was deleted on, for a window on the user's own computer (none: this machine's own). */
+    machine?: string;
+}
+
+/** What's deleted on the user's servers, and the servers that didn't say (not answering, or too old to list). */
+export interface ServersTrash {
+    rows: TrashedSessionSummary[];
+    silent: string[];
 }
 
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {
@@ -412,6 +420,11 @@ export interface TurnPrompt {
     scheduled?: string;
     /** Started by an event the agent asked to be woken for (a watched pull request, a monitor), not by the user. */
     wake?: boolean;
+    /**
+     * A wake that is the agent CLI's own turn, reporting on its background work (a command, a sub-agent, a monitor
+     * ended): the GUI shows no row for it, and `text` as a line of the turn's work.
+     */
+    background?: true;
     /** A wake that is a message from the agent in another session: who sent it (`text` is the message). */
     from?: { id: string; title: string };
     /** Position of the prompt in the session's messages, when it can be rewound to. */
@@ -1063,6 +1076,8 @@ export interface SessionSearchHit {
     match?: [number, number];
     /** When the matched message's turn started, or the session's last change when that isn't known. */
     at: number;
+    /** The server it's on, when it isn't the machine that was asked (a search on the user's computer looks on its servers too). */
+    machine?: string;
 }
 
 /**
@@ -1090,6 +1105,8 @@ export interface SessionSearchResult {
     partial: boolean;
     /** A newer search from the same window replaced this one; its hits are dropped. */
     stale?: boolean;
+    /** These are this machine's own: its servers hadn't answered yet. Asked again with `rest`, theirs come with them. */
+    pending?: boolean;
 }
 
 export interface ProjectInfo {
@@ -1437,6 +1454,14 @@ export interface UsageSummary {
     approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;
+    /** Who each CLI account is signed in as, where its CLI has said (`source:accountId` to an email): the same one on two machines is one account. */
+    who?: Record<string, string>;
+    /** What each CLI account is shown as, where it isn't one the window can name itself (`source:accountId` to a name): one the user added, or another machine's ("Work on box"). */
+    names?: Record<string, string>;
+    /** Servers whose usage isn't in this: not connected, or no answer. The rest of the user's machines are counted (usage-machines.ts). */
+    uncounted?: string[];
+    /** Servers still being asked: this is this computer's own so far. Asked again with `rest`, theirs are added. */
+    waiting?: string[];
 }
 
 /** A commit on main the installed desktop app doesn't have yet. */
@@ -1839,6 +1864,8 @@ export interface ServerSummary {
     destination: string;
     /** Connected to from this Cavvy right now. */
     connected: boolean;
+    /** The Cavvy there is another build than this one, and not a newer one: updating it is offered. */
+    behind?: boolean;
     /** A rented machine's cost, as its user agreed to it ("$12/month"). */
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
@@ -1856,6 +1883,8 @@ export interface MachineOverview {
     state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
     /** Its sessions as last heard, the archived among them. While it isn't heard from, none of them is shown at work. */
     sessions: SessionSummary[];
+    /** Connected, to a Cavvy that's another build than this one and not a newer one: updating it is offered. */
+    behind?: boolean;
 }
 
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
@@ -1934,8 +1963,10 @@ export type ServerEvent =
      * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
      * checks, and answers with offers.result. offers.cancel: the call was given up here.
      */
-    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; mode?: string; session: { id: string; title: string } }
     | { type: "offers.cancel"; callId: string }
+    /** On a server, to the user's own computer: what a session here asks about the user's other machines' sessions (src/server/far-peers.ts). */
+    | { type: "peers.call"; callId: string; op: string; params: Record<string, unknown> }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -2111,7 +2142,7 @@ export interface Methods {
      * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
      * server sent it (offers.call).
      */
-    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.set": { params: { kinds: string[]; mode?: string }; result: null };
     "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
     /**
      * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
@@ -2120,6 +2151,22 @@ export interface Methods {
     "offers.session": { params: { name: string; sessionId: string; title?: string; open?: boolean }; result: LentSession };
     /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
     "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
+    /**
+     * Only a server takes these, from the user's own machine (src/servers/sync.ts): what that machine gave it of its
+     * skills and commands (path under the home: sha256 of what it held), and more of them, or some gone.
+     */
+    "sync.files": { params: Record<string, never>; result: Record<string, string> };
+    "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
+    /**
+     * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
+     * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,
+     * `peers.read`, `peers.send`: asked of a server by that computer, about the server's own sessions.
+     */
+    "peers.hub": { params: Record<string, never>; result: null };
+    "peers.result": { params: { callId: string; result?: unknown; error?: string }; result: null };
+    "peers.list": { params: { query?: string; limit: number }; result: unknown[] };
+    "peers.read": { params: { id: string; turns?: number }; result: unknown };
+    "peers.send": { params: { id: string; message: string; from: { id: string; title: string; mode: string } }; result: unknown };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
@@ -2142,7 +2189,8 @@ export interface Methods {
      * window isn't on that server, so it's still told of that server's other sessions from here.
      */
     "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean; link?: boolean }; result: ConnectResult };
-    "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
+    /** `stop`: though sessions there are working or waiting. `force`: that, and though it runs a newer build than this one. */
+    "servers.update": { params: { name: string; force?: boolean; stop?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };
     "servers.remove": { params: { name: string }; result: null };
@@ -2151,6 +2199,14 @@ export interface Methods {
     /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it (`target`: the sign-in, which this machine must know with that port); until `servers.unforward` or the window goes. */
     "servers.forward": { params: { name: string; port: number; target: string }; result: null };
     "servers.unforward": { params: { name: string; port: number }; result: null };
+    /**
+     * An MCP server's sign-in started by a session on server `name`: its page (`url`) ends by calling a port on the
+     * machine with the browser, which is this one. This machine answers that call for a while and hands what it
+     * was sent to the server's Cavvy (mcp.callback).
+     */
+    "servers.mcpCallback": { params: { name: string; url: string }; result: null };
+    /** What the page of an MCP sign-in under way here ended with, brought by the machine with the browser: how it was taken (an HTTP status; 404 when no sign-in waits for it). */
+    "mcp.callback": { params: { query: string }; result: { status: number } };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
@@ -2243,7 +2299,7 @@ export interface Methods {
     "scripts.setupInfo": { params: { cwd: string }; result: SetupInfo };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
-    "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean; /** The rest of the search just asked: with what its servers found (SessionSearchResult.pending). */ rest?: boolean; /** From a window on a server (its name), of the user's own computer: its sessions and the other servers', that server searching its own. */ others?: string }; result: SessionSearchResult };
     /** Search is about to be used (its box opened): what it reads is read meanwhile. Answered at once. */
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
@@ -2328,7 +2384,9 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
-    "sessions.trash": { params: Record<string, never>; result: TrashedSessionSummary[] };
+    /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */
+    /** `servers`: the servers' instead of this machine's own (ServersTrash; a Cavvy from before it said which didn't answer sends the rows alone). */
+    "sessions.trash": { params: { servers?: boolean }; result: TrashedSessionSummary[] | ServersTrash };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /**
      * Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. `left`: also
@@ -2428,7 +2486,8 @@ export interface Methods {
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
-    "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /** `brief`: without `buckets`, for another machine adding this one's to its own. */
+    "usage.summary": { params: { days: UsageDays; brief?: boolean; /** This computer's own at once if its servers are slow (UsageSummary.waiting), for a window that then asks for the rest. */ first?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for. */ rest?: boolean }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
     /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */

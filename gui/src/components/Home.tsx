@@ -6,7 +6,7 @@
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
-import { app, noModel, refreshProjects, reportError, rpc, serversUi } from "../state/app";
+import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
@@ -64,25 +64,30 @@ export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
-    const [info, { refetch }] = createResource(
-        () => app.conn === "open" && app.homeCwd,
-        (path) =>
-            rpc.call("projects.inspect", { path }).catch((e) => {
+    const [inspected, { refetch }] = createResource(
+        // On Home's machine (another's, in a folder of its own).
+        () => (app.conn === "open" && app.homeCwd ? { path: app.homeCwd, on: homeOn() } : false),
+        ({ path }) =>
+            rpcFor(undefined).call("projects.inspect", { path }).catch((e) => {
                 if (app.conn === "open") reportError(e);
                 return undefined;
             }),
     );
+    // No folder (none chosen yet, or none on the machine Home came back to): what the last one was isn't this one's.
+    const info = () => (app.homeCwd ? inspected() : undefined);
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
-    const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
+    const clis = () => (homeOn() !== undefined ? [] : app.providers.filter((p) => p.agentCli?.installed && !p.configured));
+    // Another machine's has its sessions' models (one is open here).
+    const modelMissing = () => homeOn() === undefined && noModel();
     const [connecting, setConnecting] = createSignal<string>();
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
     // Only the edits' checks wait on it, so it's asked in a bar on the composer's top edge, not a card; and only once
     // there's a model to make edits (the ways to connect one take that place first).
-    const askHere = () => Boolean(app.homeCwd && !needsTrust().length && askTrust() && !noModel());
+    const askHere = () => Boolean(app.homeCwd && !needsTrust().length && askTrust() && !modelMissing());
     // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one. The bar
     // takes the question's room, not the column's (home.css), so the composer stays put when it goes.
-    const cards = () => (needsTrust().length ? 1 : 0) + (noModel() ? 1 / 3 : 0);
+    const cards = () => (needsTrust().length ? 1 : 0) + (modelMissing() ? 1 / 3 : 0);
     const trust = async (yes: boolean) => {
         await trustAndContinue(app.homeCwd!, yes);
         void refetch();
@@ -112,8 +117,8 @@ export function Home() {
     };
     const pick = async () => {
         setPickerOpen(false);
-        const path = await chooseProject();
-        if (path) await openProject(path);
+        const path = await chooseProject(true);
+        if (path) await openProject(path, true);
     };
     let composer: HTMLDivElement | undefined;
     // / and ! start a message (a command, a shell command), so they only type into an empty composer; @ goes anywhere.
@@ -161,6 +166,7 @@ export function Home() {
                 <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
+            {/* Worktrees are made on the window's own machine. */}
             <Show when={app.homeCwd && info()?.git}>
                 <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
             </Show>
@@ -193,17 +199,17 @@ export function Home() {
                 classList={{ asking: askHere() }}
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
             >
-                <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : noModel() ? "Connect a model to start" : "What should we work on?"}</h1>
+                <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
-                    <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
+                    <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
                         {(pr) => (
                             <button
                                 role="menuitem"
                                 class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
                                 onClick={() => {
                                     setPickerOpen(false);
-                                    void openProject(pr.path);
+                                    void openProject(pr.path, true);
                                     requestComposerFocus();
                                 }}
                             >
@@ -237,7 +243,7 @@ export function Home() {
                             <p>
                                 <b>{basename(app.homeCwd ?? "")}</b> has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
-                                ) that can run commands on this computer.
+                                ) that can run commands on {(homeOn() ?? machine) || "this computer"}.
                             </p>
                             <div class="ask-row">
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
@@ -253,7 +259,7 @@ export function Home() {
 
                     {/* No model yet: the ways to connect one, under the question that asks for it. A plan the user already
                         has (Claude Code, Codex…) is one click; a key is in Settings. */}
-                    <Show when={noModel()}>
+                    <Show when={modelMissing()}>
                         <div class="home-connect" role="group" aria-label="Connect a model">
                             <For each={clis()}>
                                 {(pr) => (
@@ -295,12 +301,12 @@ export function Home() {
                         autofocus
                         strip={strip}
                         onText={(t) => setTyped(Boolean(t))}
-                        compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository." : "Choose a project folder first." }}
+                        compare={homeOn() !== undefined ? { available: false, why: "Compare isn't available on another machine yet." } : info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository." : "Choose a project folder first." }}
                         placeholder={!app.homeCwd ? "Choose a project folder to start" : "Describe a task or ask a question"}
                     />
                 </div>
 
-                <Show when={app.homeCwd} keyed>
+                <Show when={app.homeCwd && homeOn() === undefined ? app.homeCwd : undefined} keyed>
                     {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} onShown={shown} />}
                 </Show>
             </div>

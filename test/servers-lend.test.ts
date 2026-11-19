@@ -1,8 +1,7 @@
 // A server's sessions using the simulators of the user's own machine (src/tools/lent.ts, Engine.borrow and
 // Engine.lend, src/servers/watch.ts), for real against the pretend server (test/helpers/fake-ssh.ts), with simctl
-// faked on this machine: the call travels there and back, runs through this machine's own checks in a session of
-// its own that's never listed (what it asks is shown, and told, as the session's there), and ends plainly when the
-// user says no or this machine goes away.
+// faked on this machine: the call travels there and back, is asked about only there (under the mode of the session
+// that made it), runs here in a session of its own that's never listed, and ends plainly when this machine goes away.
 
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -25,7 +24,7 @@ const { stopRemote } = await import("../src/servers/service");
 const simctl = await import("../src/simulator/simctl");
 const { resetSimulators } = await import("../src/simulator/session");
 import type { BuildSource } from "../src/servers/build";
-import type { Interaction, LentSession, MachineOverview, SessionSnapshot } from "../src/server/protocol";
+import type { LentSession, MachineOverview, SessionSnapshot } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
 const models = { providers: JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }), settings: JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", notifyAfterSeconds: 0 }) };
@@ -106,10 +105,13 @@ const here = await window();
 const DEVICES = JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [{ udid: "AAAA", name: "iPhone 17", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" }] } });
 /** What this machine's simctl was asked. */
 const ran: string[][] = [];
+/** While set, a device being started here doesn't finish starting until it's let go. */
+let holdBoot: Promise<void> | undefined;
 simctl.setAvailability({ ok: true, developerDir: "/Applications/Xcode.app/Contents/Developer" });
 simctl.setRunner(async (args) => {
     ran.push(args);
     if (args.join(" ") === "xcrun simctl list devices -j") return { code: 0, stdout: DEVICES, stderr: "" };
+    if (args[2] === "bootstatus" && holdBoot) await holdBoot;
     return { code: 0, stdout: "", stderr: "" };
 });
 
@@ -145,19 +147,6 @@ const textOf = (turn: SessionSnapshot["turns"][number]) => turn.blocks.map((b) =
 const told = (session: string) => here.events.findLast((e) => e.type === "offers.session" && e.name === "box" && e.sessionId === session)?.lent as LentSession | undefined;
 /** The same, asked for. */
 const lentTo = (session: string) => here.call("offers.session", { name: "box", sessionId: session }) as Promise<LentSession>;
-/** The next thing this machine asks its user for a session on the server, answered here. */
-async function answerLent(session: string, choice: "yes" | "no", seen = new Set<string>()): Promise<Interaction> {
-    let lent: LentSession | undefined;
-    await until(`this machine to ask for ${session}`, async () => {
-        lent = await lentTo(session);
-        return lent.asks.some((i) => !seen.has(i.id));
-    });
-    const asked = lent!.asks.find((i) => !seen.has(i.id))!;
-    seen.add(asked.id);
-    await here.call("session.respond", { id: lent!.id, interactionId: asked.id, response: { kind: "permission", choice } });
-    return asked;
-}
-
 let there: { url: string; token: string };
 let remote: Window;
 /** A session on the server, in Manual whatever a server's sessions start in: its own asking comes first, then this machine's. */
@@ -179,24 +168,19 @@ test("a server with no simulators is lent this machine's: its sessions have the 
     await expect(here.call("offers.set", { kinds: ["simulator"] })).rejects.toThrow("This machine isn't lent tools.");
 });
 
-test("a call from a session there runs here, after this machine's own asking, shown and told as that session's; the result goes back", async () => {
+test("a call from a session there is asked about there, under that session's mode, and runs here without asking again; the result goes back", async () => {
     const id = await sessionThere();
     await remote.call("session.send", { id, text: "simulator please" });
-    // The server's own asking first (sessionThere puts it in Manual), then this machine's.
+    // The session's own asking (sessionThere puts it in Manual), in its own chat; nothing has run yet.
     expect((await answer(remote, id, "yes")).kind).toBe("permission");
-    expect(ran.some((a) => a[2] === "boot")).toBe(false);
-    // This machine's asking is its windows' to show, in the session there, and says whose it is.
-    const asked = await answerLent(id, "yes");
-    expect(JSON.stringify(asked)).toContain("SimulatorControl(boot)");
-    expect(asked.kind === "permission" && asked.where).toBe("On this Mac");
+    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+    // This machine asked nothing of its own, though it's in Manual, and rang nobody.
+    expect(told(id)!.asks).toEqual([]);
+    expect(here.events.some((e) => e.type === "servers.notify" && e.lent)).toBe(false);
     const mineId = told(id)!.id!;
-    // It's told as the session there, by its name (the title the mock model gives any such session), by this machine.
-    const rang = here.events.find((e) => e.type === "servers.notify" && e.lent);
-    expect([rang.name, rang.sessionId, rang.kind, rang.title]).toEqual(["box", id, "permission", "Check the app in the simulator"]);
     // The session here that it runs in is never one of this machine's own to list.
     expect(here.events.some((e) => (e.type === "sessions.upsert" && e.session.id === mineId) || (e.type === "notify" && e.sessionId === mineId))).toBe(false);
     expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === mineId)).toBe(false);
-    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
     // It ran here: this machine's simctl was asked about this machine's device, which the server knows nothing of,
     // and the server's model read what this machine said.
     expect(ran.some((a) => a.join(" ") === "xcrun simctl bootstatus AAAA -b")).toBe(true);
@@ -206,8 +190,6 @@ test("a call from a session there runs here, after this machine's own asking, sh
     const result = turn.blocks.find((b) => b.t === "tool") as { name: string; output?: string };
     expect([result.name, Boolean(result.output)]).toEqual(["SimulatorControl", true]);
     expect(textOf(turn)).toContain("I couldn't find Settings on the screen: ");
-    // Answered: nothing waits here any more.
-    await until("the asking to be over", () => told(id)!.asks.length === 0);
     // Long after: the same session there is still lent through the same session here.
     await Bun.sleep(1500);
     const before = ran.filter((a) => a[2] === "bootstatus").length;
@@ -219,16 +201,59 @@ test("a call from a session there runs here, after this machine's own asking, sh
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
-test("the Simulator turned off here while a session there waits for this machine's answer: the question goes, and the session is told why", async () => {
-    const id = await sessionThere();
-    await remote.call("session.send", { id, text: "simulator before it's off" });
-    await answer(remote, id, "yes");
-    await until("the question here", async () => (await lentTo(id)).asks.length > 0);
+test("a window on this machine that shows a server's session hears what this machine lends it, as the windows on the server do", async () => {
+    // Not on the server: it opened that session here (state/app.ts awayMachine), and asked what this machine has for it.
+    const mac = await window();
+    try {
+        expect((await mac.call("offers.session", { name: "box", sessionId: "shown-here" })).id).toBeUndefined();
+        // The user starts a device for it (here, from a window on the server): this window hears of it, and of the device.
+        const opened = (await here.call("offers.session", { name: "box", sessionId: "shown-here", title: "Shown", open: true })) as LentSession;
+        await until("the window here to hear it has one", () => mac.events.some((e) => e.type === "offers.session" && e.sessionId === "shown-here" && e.lent.id === opened.id));
+        await here.call("simulator.command", { id: opened.id, command: "select", udid: "AAAA" });
+        await until("its simulator to be told of here", () => mac.events.some((e) => e.type === "simulator.state" && e.sessionId === opened.id));
+        // A session it never showed isn't its business: the windows on the server hear of it, this one doesn't.
+        await here.call("offers.session", { name: "box", sessionId: "not-shown", title: "Not shown", open: true });
+        await until("the window on the server to hear of the other", () => here.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown"));
+        expect(mac.events.some((e) => e.type === "offers.session" && e.sessionId === "not-shown")).toBe(false);
+    } finally {
+        await mac.close();
+    }
+});
+
+test("a session there in Bypass is asked about a call that runs here when this machine's own default asks (Bypass is the server's)", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    // This machine's default is Manual: the call is asked about, in the session's own chat there.
+    expect((await answer(remote, id, "yes")).kind).toBe("permission");
+    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+    expect(told(id)!.asks).toEqual([]);
+});
+
+test("this machine's mode changed while a call was being asked about there: the yes was to the old one, and the call is turned away", async () => {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "bypassPermissions" });
+    await remote.call("session.send", { id, text: "simulator please" });
+    const seen = new Set<string>();
+    let asked: any;
+    await until("it to ask", async () => Boolean((asked = ((await remote.call("session.open", { id })) as SessionSnapshot).state.interactions[0])));
+    const before = ran.length;
+    await here.call("settings.update", { patch: { defaultMode: "acceptEdits" } });
+    try {
+        await remote.call("session.respond", { id, interactionId: asked.id, response: { kind: "permission", choice: "yes" } });
+        seen.add(asked.id);
+        await until("the call to be answered", async () => JSON.stringify(await lastTurn(remote, id)).includes("permission mode just changed"));
+        expect(ran.length).toBe(before);
+    } finally {
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
+        await remote.call("session.interrupt", { id }).catch(() => undefined);
+    }
+});
+
+test("the Simulator turned off here: a session there that calls it is told why", async () => {
     await here.call("settings.update", { patch: { simulator: false } });
     try {
-        await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
-        expect(JSON.stringify(await lastTurn(remote, id))).toContain("Your Mac's Simulator isn't available now");
-        await until("the question here to go", async () => (await lentTo(id)).asks.length === 0);
+        expect((await lendHere("SimulatorControl", { action: "boot" }, "20261113-000000-dddddd")).text).toContain("Your Mac's Simulator isn't available now");
     } finally {
         await here.call("settings.update", { patch: { simulator: true } });
     }
@@ -247,29 +272,32 @@ test("the Simulator turned off here while a session there waits for this machine
     });
 });
 
-test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
-    const seen = new Set<string>();
+test("the session's no there is what it's told, and nothing runs here; this machine going away ends a call under way", async () => {
     const id = await sessionThere();
     await remote.call("session.send", { id, text: "simulator again" });
-    await answer(remote, id, "yes");
-    await answerLent(id, "no", seen);
-    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+    const before = ran.filter((a) => a[2] === "bootstatus").length;
+    await answer(remote, id, "no");
+    // A no ends the turn there as denied.
+    await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "denied");
     expect(JSON.stringify(await lastTurn(remote, id))).toContain("declined");
+    expect(ran.filter((a) => a[2] === "bootstatus").length).toBe(before);
 
     const second = await sessionThere();
-    await remote.call("session.send", { id: second, text: "simulator once more" });
-    await answer(remote, second, "yes");
-    // While this machine's question waits, its Cavvy stops listening to the server (as when it quits): only that
-    // connection goes, so what the session there is told can still be read through the window's own.
-    await until("the question here", async () => (await lentTo(second)).asks.length > 0);
-    // A window that comes late (reloaded, say) learns of it too, whichever session it shows.
-    expect(((await here.call("offers.asking", { name: "box" })) as { sessionId: string }[]).map((a) => a.sessionId)).toEqual([second]);
-    (mine.engine as any).serverLinks.watches.get("box").stop();
-    await until("the turn there to end", async () => (await lastTurn(remote, second)).status === "done");
-    expect(JSON.stringify(await lastTurn(remote, second))).toContain("went away before it answered");
-    // And the question here is withdrawn: nobody waits for its answer.
-    await until("the question here to go", async () => (await lentTo(second)).asks.length === 0);
-    expect(told(second)!.asks).toEqual([]);
+    const held = Promise.withResolvers<void>();
+    holdBoot = held.promise;
+    try {
+        await remote.call("session.send", { id: second, text: "simulator once more" });
+        await answer(remote, second, "yes");
+        await until("the device to be starting here", () => ran.filter((a) => a[2] === "bootstatus").length > before);
+        // While it starts, this machine's Cavvy stops listening to the server (as when it quits): only that
+        // connection goes, so what the session there is told can still be read through the window's own.
+        (mine.engine as any).serverLinks.watches.get("box").stop();
+        await until("the turn there to end", async () => (await lastTurn(remote, second)).status === "done");
+        expect(JSON.stringify(await lastTurn(remote, second))).toContain("went away before it answered");
+    } finally {
+        holdBoot = undefined;
+        held.resolve();
+    }
     remote.ws.close();
 });
 
@@ -378,8 +406,8 @@ test("a call this machine can't take now is answered, not left waiting: over fou
                 ws.send(JSON.stringify({ id: m.id, result: [] }));
                 // Once, on the list of those in play (the archived are asked for after it).
                 if (m.params?.archived) return;
-                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, session: { id: `s${i}`, title: "t" } } }));
-                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, session: { id: "s9", title: "t" } } }));
+                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, mode: "default", session: { id: `s${i}`, title: "t" } } }));
+                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, mode: "default", session: { id: "s9", title: "t" } } }));
                 ws.send(JSON.stringify({ event: { type: "offers.call", callId: "odd", tool: 7, input: {}, session: { id: "../x" } } }));
             },
         },
@@ -403,6 +431,42 @@ test("a call this machine can't take now is answered, not left waiting: over fou
     }
 });
 
+test("a call decided there under another mode than this machine's now is turned away, and the server told the new one", async () => {
+    const { MachineWatch } = await import("../src/servers/watch");
+    const results: { callId: string; isError?: boolean }[] = [];
+    const told: unknown[] = [];
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "offers.result") return void results.push(m.params);
+                if (m.method === "offers.set") return void told.push(m.params.mode);
+                if (m.method !== "sessions.list") return;
+                ws.send(JSON.stringify({ id: m.id, result: [] }));
+                if (m.params?.archived) return;
+                // On its way while the mode here went from Bypass to Manual: then one decided under Manual.
+                // And one from a server too old to say.
+                for (const [callId, mode] of [["old", "bypassPermissions"], ["new", "default"], ["unsaid", undefined]]) ws.send(JSON.stringify({ event: { type: "offers.call", callId, tool: "SimulatorControl", input: { action: "list" }, mode, session: { id: "s", title: "t" } } }));
+            },
+        },
+    });
+    const started: string[] = [];
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => ["simulator"], lendMode: () => "default", lend: () => (started.push("ran"), Promise.resolve({ text: "ok" })) });
+    watch.start();
+    try {
+        await until("all answered", () => results.length === 3);
+        expect(results.map((r) => [r.callId, !!r.isError])).toEqual([["old", true], ["unsaid", true], ["new", false]]);
+        expect(started).toEqual(["ran"]);
+        // Already told this mode when the connection opened: not told again.
+        expect(told).toEqual(["default"]);
+    } finally {
+        watch.stop();
+        void srv.stop(true);
+    }
+});
+
 test("two of the user's machines can lend to one server: one leaving doesn't take the tools away while the other is there", async () => {
     const { Engine } = await import("../src/server/engine");
     const { lent } = await import("../src/tools/lent");
@@ -420,13 +484,16 @@ test("two of the user's machines can lend to one server: one leaving doesn't tak
         await engine.handle(b as never, "offers.set", { kinds: ["simulator", "something-else"] });
         expect(lent("simulator")).toBe(true);
         // A call goes to the one that said so last, and ends when that one leaves.
-        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect([a.events.length, b.events.map((e) => e.type)]).toEqual([0, ["offers.call"]]);
+        // One decided while nothing was lent isn't sent: it wasn't decided under the lender's mode.
+        expect((await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal)).content).toContain("only just now");
+        expect(b.events.length).toBe(1);
         engine.dropClient(b as never);
         expect(await answer).toEqual({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
         // The other still lends: sessions keep the tools, and the next call goes to it.
         expect(lent("simulator")).toBe(true);
-        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(a.events.map((e) => e.type)).toEqual(["offers.call"]);
         engine.dropClient(a as never);
         expect(lent("simulator")).toBe(false);
@@ -481,7 +548,7 @@ test("the Simulator turned off on the Mac while it's connected: the session ther
     try {
         await until("the Mac to be lending", () => lent("simulator"));
         kinds = [];
-        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal, "default");
         expect(told).toEqual({ content: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
         // And the server's sessions stop being offered what can't run.
         await until("the tools to be taken away", () => !lent("simulator"));
@@ -516,44 +583,58 @@ test("asks from one server ring the user a few times a minute, then once more to
     expect(rang()).toEqual(["Wants to tap again"]);
 });
 
-test("each call runs under this machine's mode as it is now, not the one it had when the session there first used it", async () => {
+test("a call is never asked about here, whatever this machine's mode; its deny rules still hold", async () => {
     (mine.engine as any).lentAt.clear();
     const session = "20261113-000000-cccccc";
-    // The session here for it is made while this machine is in Manual.
-    await lendHere("SimulatorControl", { action: "list" }, session);
-    await here.call("settings.update", { patch: { allowBypass: true, defaultMode: "bypassPermissions" } });
+    // This machine is in Manual (the tests' default), where a session of its own would ask before starting a device.
+    const before = ran.length;
+    const free = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+    expect([free.text.includes("declined"), ran.slice(before).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
+    expect(told(session)?.asks ?? []).toEqual([]);
+    // Nor when this machine starts its sessions in Plan, which would refuse it.
+    await here.call("settings.update", { patch: { defaultMode: "plan" } });
     try {
-        const before = ran.length;
-        // Nothing is asked (nobody answers here): it goes straight to the device.
-        const free = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
-        expect([free.text.includes("declined"), ran.slice(before).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
-        // Back in Manual: the same session's next call asks, though this machine didn't when it began there.
-        await here.call("settings.update", { patch: { defaultMode: "default" } });
-        const seen = new Set<string>();
-        const asked = lendHere("SimulatorControl", { action: "shutdown" }, session);
-        await answerLent(session, "no", seen);
-        expect((await asked).text).toContain("declined");
-        // Bypass again, then only "Allow bypass mode" turned off (the mode set stays Bypass): it asks, as a session
-        // that starts now would, and nothing is said over and over in the session here.
-        await here.call("settings.update", { patch: { defaultMode: "bypassPermissions" } });
-        await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
-        await here.call("settings.update", { patch: { allowBypass: false } });
-        const guest = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.guestSession?.id === session) as any;
-        const notices = () => JSON.stringify(guest.view ?? guest.session.messages ?? "").split("Bypass mode is off").length - 1;
-        const said = notices();
-        const again = lendHere("SimulatorControl", { action: "shutdown" }, session);
-        await answerLent(session, "no", seen);
-        expect([(await again).text.includes("declined"), guest.mode]).toEqual([true, "default"]);
-        // And the next: the session here is in Manual, the mode set is still Bypass, and nothing says so each call.
-        const next = lendHere("SimulatorControl", { action: "shutdown" }, session);
-        await answerLent(session, "no", seen);
-        expect([(await next).text.includes("declined"), guest.mode, notices() - said]).toEqual([true, "default", 0]);
+        const planned = ran.length;
+        const ok = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, "20261113-000000-ffffff");
+        expect([ok.text.includes("plan"), ran.slice(planned).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
     } finally {
-        await here.call("settings.update", { patch: { allowBypass: false, defaultMode: "default" } });
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
     }
+    // A rule of this machine's that denies it is still this machine's to keep.
+    const file = join(iso.home, "settings.json");
+    const was = readFileSync(file, "utf8");
+    // Written by hand, with nothing telling Cavvy: it holds from the next call, for a session already lent through too.
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(was), permissions: { deny: ["SimulatorControl(boot)"] } }));
+    try {
+        for (const s of [session, "20261113-000000-eeeeee"]) {
+            const after = ran.length;
+            const denied = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, s);
+            expect([denied.isError, ran.slice(after).some((a) => a[2] === "bootstatus")]).toEqual([true, false]);
+        }
+    } finally {
+        writeFileSync(file, was);
+    }
+    // Half-written (or blank) just as a call comes: not a file with no rules. The call is turned away, and the
+    // session it's lent through isn't left counted as busy.
+    for (const broken of ['{ "permissions": { "deny": [', ""]) {
+        writeFileSync(file, broken);
+        try {
+            const after = ran.length;
+            const refused = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+            // A file that isn't valid stays so: said to be the user's to fix, not to try again. A blank one is being written.
+            expect([refused.isError, refused.text.includes(broken ? "until that's fixed" : "Call it again"), ran.length]).toEqual([true, true, after]);
+        } finally {
+            writeFileSync(file, was);
+        }
+    }
+    expect((await Promise.all([...(mine.engine as any).guests.values()])).map((rt: any) => rt.lending)).not.toContain(1);
+    // And taken out again, it's gone.
+    const again = ran.length;
+    await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+    expect(ran.slice(again).some((a) => a[2] === "bootstatus")).toBe(true);
 });
 
-test("this machine's Cavvy quitting while its question waits: the session there is told it went away, not that the user said no", async () => {
+test("this machine's Cavvy quitting while a call runs here: the session there is told it went away, not that the user said no", async () => {
     // An earlier test stopped this machine listening to the server: it listens again, and lends.
     (mine.engine as any).serverLinks.watches.delete("box");
     await here.call("servers.overview");
@@ -561,9 +642,11 @@ test("this machine's Cavvy quitting while its question waits: the session there 
     remote = new Window(there.url, there.token);
     expect(await remote.opened.promise).toBe(true);
     const id = await sessionThere();
+    const starting = ran.filter((a) => a[2] === "bootstatus").length;
+    holdBoot = new Promise(() => {});
     await remote.call("session.send", { id, text: "simulator at the end" });
     await answer(remote, id, "yes");
-    await until("the question here", async () => (await lentTo(id)).asks.length > 0);
+    await until("the device to be starting here", () => ran.filter((a) => a[2] === "bootstatus").length > starting);
     // Quitting ends this machine's way to the server too, so what the session there was told is read from its record.
     await mine.engine.stop();
     const record = () => [...new Bun.Glob(`**/${id}.jsonl`).scanSync({ cwd: join(fake.home, ".cavvy"), absolute: true })].map((f) => readFileSync(f, "utf8")).join("");

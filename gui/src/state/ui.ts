@@ -5,6 +5,7 @@ import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 import type { InspectorPane } from "../lib/inspector";
+import type { Rpc } from "../lib/rpc";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -28,7 +29,8 @@ export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[
 /** The files the review pane listed when Commit was clicked; the Commit dialog picks from them. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
-export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();
+/** `link`: the machine whose folders it shows, when that isn't the window's (Home on another machine). */
+export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string; link?: Rpc } | undefined>();
 /** The MCP servers dialog, and the server to show first. */
 export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined>();
 /** Recently deleted: the trashed sessions, with Restore. */
@@ -88,6 +90,12 @@ export interface SetupRun { ticket: string; label: string; command: string }
  * in one. `closeBesideReader`: the side panel closed while the other session's diff reader held it open; true if it did.
  */
 export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
+
+/**
+ * An account's sign-in tab (Settings) is showing: the window's own machine's terminal shows though a session of
+ * another machine is in view, until another session or Home is (App.tsx).
+ */
+export const [terminalLogin, setTerminalLogin] = createSignal(false);
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {

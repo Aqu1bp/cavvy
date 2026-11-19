@@ -38,6 +38,8 @@ const REPLY_MS = 20_000;
  * many in play, as many archived: what a window lists of its own machine).
  */
 const HEARD = 300;
+/** How soon after its sessions change they're written down (kept). */
+export const KEEP_MS = 2000;
 /** How long the archived list is waited for before the sessions in play are told without it. */
 const ARCHIVED_MS = 3000;
 /** One session's change is told by itself this many times a second at most: past that, the whole list, now and then. */
@@ -45,6 +47,12 @@ const CHANGES_PER_SECOND = 20;
 /** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
 const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
+/** A server's record of the skills and commands it was given: a path and a hash for each of at most 3000 files. */
+const SYNC_ANSWER = 1024 * 1024;
+/** What a server says of its sessions to another machine's agent (src/server/far-peers.ts): a session's last turns, as text. */
+const PEERS_ANSWER = 1024 * 1024;
+/** At most this many of a server's requests about sessions elsewhere are answered at once. */
+const PEERS_AT_ONCE = 4;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
 const MAX_PER_MINUTE = 32 * 1024 * 1024;
@@ -124,15 +132,52 @@ export class MachineWatch {
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
+            /** This machine's own default permission mode: what its lent tools are held to there (tools/lent.ts lentMode). */
+            lendMode?: () => string;
+            /** Brings the server level with this machine's skills and commands, asking it over this connection (sync.ts). */
+            sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
+            /**
+             * Answers what a session on the server asks about the user's other machines' sessions (far-peers.ts
+             * answerPeers): this one says so on connecting.
+             */
+            peers?: (op: string, params: Record<string, unknown>) => Promise<unknown>;
             /** Runs a call of one of those, through this machine's own checks. */
             lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
             idleRetryMs?: number;
+            /**
+             * Its sessions as last heard, kept from one run to the next: listed (none at work) while it can't be
+             * reached, though it couldn't be from the start.
+             */
+            kept?: { read: () => unknown; write: (sessions: SessionSummary[]) => void };
         },
     ) {}
 
     start() {
+        if (this.o.kept && !this.sessions.size) {
+            const rows = this.o.kept.read();
+            for (const v of Array.isArray(rows) ? rows.slice(0, 2 * HEARD) : []) {
+                const s = heardSession(v);
+                if (s) this.sessions.set(s.id, this.resting(s));
+            }
+        }
         void this.attempt(false);
+    }
+
+    /** A session as kept: none at work (what it was doing isn't known until the server says). */
+    private resting(s: SessionSummary): SessionSummary {
+        return s.status === "idle" && !s.live ? s : { ...s, status: "idle", live: false, waitingKind: undefined, turnStartedAt: undefined };
+    }
+
+    /** Its sessions written down a moment after they change: one write for a burst of changes. */
+    private keepTimer?: ReturnType<typeof setTimeout>;
+    private keepSoon() {
+        if (!this.o.kept || this.keepTimer) return;
+        this.keepTimer = setTimeout(() => {
+            this.keepTimer = undefined;
+            this.o.kept?.write([...this.sessions.values()].map((s) => this.resting(s)));
+        }, KEEP_MS);
+        (this.keepTimer as { unref?: () => void }).unref?.();
     }
 
     /** Something changed for this server (a window connected to it, it came back): tried now, not when the wait is over. */
@@ -154,7 +199,7 @@ export class MachineWatch {
     /** A session as the list shows it now. */
     private shown(s: SessionSummary): SessionSummary {
         // While it isn't heard from, what it last said of a session at work would be a ring for news that isn't coming.
-        if (this.state !== "connected" && this.state !== "connecting") return s.status === "idle" && !s.live ? s : { ...s, status: "idle", live: false, waitingKind: undefined, turnStartedAt: undefined };
+        if (this.state !== "connected" && this.state !== "connecting") return this.resting(s);
         // Waiting, though the server doesn't know it: it's this machine that asks.
         return this.asking.has(s.id) && s.status !== "waiting" ? { ...s, status: "waiting", waitingKind: "permission" } : s;
     }
@@ -201,6 +246,16 @@ export class MachineWatch {
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
     call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
+        return this.request(method, params, MAX_ANSWER);
+    }
+
+    /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts), or for a search here. */
+    ask(method: "peers.list" | "peers.read" | "peers.send" | "sessions.search" | "sessions.searchWarm" | "usage.summary" | "mcp.callback" | "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> {
+        return this.request(method, params, PEERS_ANSWER, ms);
+    }
+
+    /** `ms`: how long it waits for the answer before it gives up (and the call's place is free again). */
+    private request(method: string, params: Record<string, unknown>, maxAnswer: number, ms = REPLY_MS): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
         if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));
@@ -209,7 +264,7 @@ export class MachineWatch {
             const timer = setTimeout(() => {
                 this.calls.delete(id);
                 reject(new Error(`${this.name} didn't answer.`));
-            }, REPLY_MS);
+            }, ms);
             (timer as { unref?: () => void }).unref?.();
             this.calls.set(id, {
                 timer,
@@ -220,12 +275,35 @@ export class MachineWatch {
                     // and its kind when it names one (a window treats some apart).
                     if (error) return reject(Object.assign(new Error(cut(error.message, 300).replace(/\s+/g, " ").trim() || "It didn't work."), { theirs: true }, typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
                     const result = r.result ?? null;
-                    if (JSON.stringify(result).length > MAX_ANSWER) return reject(new Error(`${this.name} answered with more than was asked for.`));
+                    if (JSON.stringify(result).length > maxAnswer) return reject(new Error(`${this.name} answered with more than was asked for.`));
                     resolve(result);
                 },
             });
             ws.send(JSON.stringify({ id, method, params }));
         });
+    }
+
+    /** A sync under way, and whether another was asked for meanwhile (it runs once this one ends). */
+    private syncing?: Promise<void>;
+    private syncAgain = false;
+
+    /**
+     * Brings the server's skills and commands level with this machine's (src/servers/sync.ts): when the connection
+     * opens, and when they change here. One at a time; asked for meanwhile, it runs once more after.
+     */
+    resync() {
+        if (!this.o.sync || this.state !== "connected") return;
+        if (this.syncing) return void (this.syncAgain = true);
+        this.syncing = this.o
+            .sync((method, params) => this.request(method, params, SYNC_ANSWER))
+            .catch(() => undefined)
+            .finally(() => {
+                this.syncing = undefined;
+                if (this.syncAgain) {
+                    this.syncAgain = false;
+                    this.resync();
+                }
+            });
     }
 
     /** What this machine lends changed: said to the server on the connection there is, if any. */
@@ -237,6 +315,8 @@ export class MachineWatch {
     stop() {
         this.stopped = true;
         clearTimeout(this.timer);
+        clearTimeout(this.keepTimer);
+        this.keepTimer = undefined;
         this.ws?.close();
     }
 
@@ -299,6 +379,10 @@ export class MachineWatch {
         let listed = false;
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
         const lending = new Map<string, AbortController>();
+        /** The mode this machine last told the server its lent calls are held to (offers.set). */
+        let sentMode: string | undefined;
+        /** Requests from the server about sessions elsewhere (peers.call) being answered now. */
+        let peersBusy = 0;
         /** The lists asked for when the connection opens: those in play, then the archived. */
         let archivedListed = false;
         const list = (rows: unknown, archived: boolean) => {
@@ -325,7 +409,7 @@ export class MachineWatch {
                 }
                 lending.clear();
             }
-            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
         };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
@@ -351,7 +435,9 @@ export class MachineWatch {
                 (told as { unref?: () => void }).unref?.();
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
-                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
+                this.resync();
+                if (this.o.peers) ws.send(JSON.stringify({ id: this.nextId++, method: "peers.hub", params: {} }));
                 return;
             }
             if (msg.id === 2) {
@@ -360,6 +446,7 @@ export class MachineWatch {
                 list(msg.result, true);
                 clearTimeout(told);
                 this.o.changed();
+                this.keepSoon();
                 return;
             }
             if (typeof msg.id === "number") {
@@ -379,8 +466,12 @@ export class MachineWatch {
                 this.say({ session: this.shown(s) });
                 // Bounded, whatever the server sends.
                 this.bound(true);
+                this.keepSoon();
             } else if (ev.type === "sessions.remove") {
-                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.say({ remove: ev.id });
+                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) {
+                    this.say({ remove: ev.id });
+                    this.keepSoon();
+                }
             } else if (ev.type === "notify") {
                 const kind = KINDS.find((k) => k === ev.kind);
                 if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;
@@ -413,7 +504,18 @@ export class MachineWatch {
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
                     answer(NOT_LENT);
-                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
+                }
+                // A server older than the mode it decides lent calls under: it may have let one through that this
+                // machine's own mode would ask about.
+                if (typeof ev.mode !== "string") return answer({ text: `Cavvy on ${this.name} is too old to run this on the user's Mac. Ask the user to update it from the Cavvy app on their Mac: on a new session, the list of machines has an update button next to ${this.name}.`, isError: true });
+                // Decided there under another default mode than this machine's now (changed in the terminal's /config, or
+                // the call was on its way when it changed): decided again there, under this one.
+                const mode = (this.o.lendMode?.() ?? "default");
+                if (ev.mode !== mode) {
+                    answer({ text: "Your Mac's permission mode just changed. Call it again.", isError: true });
+                    if (mode !== sentMode) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = mode) } }));
+                    return;
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);
@@ -425,6 +527,25 @@ export class MachineWatch {
                         lending.delete(callId);
                         // Given up there meanwhile, or the connection is another one now: nobody waits for it.
                         if (!stop.signal.aborted) answer(r);
+                    });
+            } else if (ev.type === "peers.call") {
+                // Answered whatever it asks, so nothing there waits on a request only dropped here.
+                const callId = typeof ev.callId === "string" && ev.callId.length <= 100 ? ev.callId : undefined;
+                if (!callId || !this.o.peers) return;
+                const params = ev.params && typeof ev.params === "object" && !Array.isArray(ev.params) ? (ev.params as Record<string, unknown>) : {};
+                const reply = (r: { result: unknown } | { error: string }) => ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "peers.result", params: { callId, ...r } }));
+                // A few at a time from one server: each may read sessions' history here.
+                if (peersBusy >= PEERS_AT_ONCE) return void reply({ error: "Cavvy on your computer is busy with other requests from this server. Try again in a moment." });
+                peersBusy++;
+                void this.o
+                    .peers(typeof ev.op === "string" ? ev.op : "", params)
+                    .then(
+                        (result) => ({ result: result ?? null }),
+                        (e) => ({ error: cut((e as Error).message, 1000) }),
+                    )
+                    .then((r) => {
+                        peersBusy--;
+                        reply(r);
                     });
             } else if (ev.type === "offers.cancel") {
                 if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();

@@ -241,6 +241,9 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 // 0.78 on the wire (measured; test/ws-compress.test.ts). This machine's own windows aren't: no link to save.
                 const remote = url.pathname === "/ws" && (who !== undefined || (host !== "127.0.0.1" && host !== "localhost" && req.headers.get("host")?.toLowerCase() === `${host}:${port}`));
                 const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}), ...(remote ? { compress: true } : {}) };
+                // Compression is offered to the windows on another machine only: one on this machine would compress what
+                // it sends, and the server take it apart on its one thread (a 12 MB send held every session 62 ms, against 11; Linux, Chrome).
+                if (!remote) req.headers.delete("sec-websocket-extensions");
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -274,7 +277,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
         },
         websocket: {
             maxPayloadLength: 48 * 1024 * 1024,
-            // Offered, used only for windows on another machine (Conn.compress). A context of its own per connection
+            // Offered only to windows on another machine (Conn.compress; fetch above). A context of its own per connection
             // (64 KB): each message's frame and keys are then nearly free (a shared one: 4.2 bytes a character).
             perMessageDeflate: { compress: "64KB", decompress: false },
             idleTimeout: 120,

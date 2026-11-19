@@ -14,13 +14,13 @@ import { batch, createEffect, createMemo, createResource, createSignal, For, on,
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc } from "../state/app";
+import { app, reportError, revealsIn, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
+import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
-import { canReveal, revealPath } from "../lib/platform";
+import { revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
 import { incompleteLine } from "../lib/turn-places";
 import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
@@ -659,7 +659,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
 
     const gitScope = (): GitScope => (scope() === "cavvy" ? "uncommitted" : (scope() as GitScope));
-    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
+    const [git] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
 
     // The repository's worktrees: listed once, and again each time the view menu opens, on Refresh, and when the
     // worktree looked at fails to load, so one that's been removed falls back to the session's folder.
@@ -811,7 +811,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
 
     const refresh = () => {
-        void refetchGit();
+        // Every view of it (the header's Changes too), not this one only.
+        refreshGitChanges();
         if (away()) void refetchWorktrees();
         if (shownScope() === "cavvy") void refetchCavvy();
     };
@@ -964,7 +965,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             onToggle={(all) => toggle(k, all)}
             // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
             onOpen={own() && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => void openInEditor(absolute(f().path), undefined, { gitToken: f().pathToken }) : undefined}
-            onReveal={canReveal ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
+            onReveal={revealsIn(id()) ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
             full={fetchFull}
             eager={eager().has(k) || (jump() !== undefined && listedPick() !== undefined && cardKey(listedPick()!) === k)}
         />

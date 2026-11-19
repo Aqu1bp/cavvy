@@ -140,6 +140,10 @@ test("a session opens with the sub-agents of the turns it sends, and any running
     const all = rt.snapshot();
     expect(all.agents.every((a) => !a.partial && a.blocks.length === 1)).toBe(true);
     expect(all.agentsMore).toBeUndefined();
+    // Up to a turn (a fork's preview): the sub-agents of the turns up to it only, none of the later ones' sent or counted.
+    const upTo = rt.snapshot(undefined, undefined, false, 4);
+    expect(upTo.agents.map((a) => a.id).sort()).toEqual(["broke", "busy", "old", "task"]);
+    expect(upTo.agentsMore).toBeUndefined();
     // Its turn's page brings it whole, and so does asking for it.
     const page = rt.turnsBefore("t7", { count: 10 })!;
     expect(page.agents?.map((a) => a.id).sort()).toEqual(["broke", "busy", "old", "task"]);

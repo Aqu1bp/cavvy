@@ -31,7 +31,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, loadScopeChecked, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -141,7 +141,7 @@ import { cardOf } from "../../gui/src/lib/cards";
 import { agentHeadOf, headOf, TurnStore, type StoredAgent, type StoredTurn } from "./turn-store";
 
 /** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
-export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
+export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. A tool call that shows as declined at that moment was dropped by the restart, not refused by the user: make it again if you still need it. Continue where you left off.";
 export const RESTART_LABEL = "Continued after a restart";
 
 /**
@@ -289,16 +289,28 @@ function lastPromptsFrom(messages: readonly Message[], n: number): number | unde
     return at.length > n ? at[at.length - n] : undefined;
 }
 
+/** The first turn's prompt among `messages` (replay starts one at each of these kinds), as firstPrompt gives it. */
+function firstPromptIn(messages: readonly Message[]): string | undefined {
+    for (const m of messages) {
+        if (m.role !== "user") continue;
+        const kind = m.meta?.kind ?? "prompt";
+        if (kind === "prompt" || kind === "command" || kind === "wake") return reviewGist(promptText(m));
+    }
+    return undefined;
+}
+
 /** How many prompts come before `end`. */
 function promptsBefore(messages: readonly Message[], end: number): number {
     return promptIndices(messages, end).length;
 }
 
 /** `tailFirst`: a compacted session opened the first time has its last segment's turns built first (tests turn it off). */
-export const turnBuilding = {
+export const turnBuilding: { tailFirst: boolean; tailPrompts: number; held?: Promise<unknown> } = {
     tailFirst: true,
     /** A one-segment session built from its logs, with more prompts than this: those last ones' turns built first (tailAt). */
     tailPrompts: 100,
+    /** Tests: the earlier turns (buildHead, buildEarlier) aren't begun until this settles. */
+    held: undefined,
 };
 /**
  * `ms`: how long what Find searches is kept after it was last used: 30 MB for a 100,000-item session, worked out again
@@ -726,7 +738,7 @@ export class Runtime {
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
         // On a server: tools it hasn't got and another of the user's machines lends it (its Mac's simulators). Kept for
         // as long as the session, so a call made after the Mac has left is told that, not that there are no simulators.
-        if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
+        if (engine.away) this.toolState.lends = { call: (tool, input, signal, decided) => engine.borrow(this, tool, input, signal, decided) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         // The user's servers, for an agent to set one up or add one: from their own machine only (a server reaches no other machine of theirs).
@@ -750,7 +762,7 @@ export class Runtime {
         };
         this.toolState.wakes!.onReady(() => this.wake());
         // The user's other sessions, for its agent to list, read, send to and start.
-        this.toolState.peers = appPeers(engine.peerHost(), this);
+        this.toolState.peers = appPeers(engine.peerHost(), this, () => engine.farPeers());
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -819,10 +831,13 @@ export class Runtime {
             if (opts.resumed && tailAt !== undefined) {
                 // At least a turn for each prompt before these.
                 this.earlierAtLeast = promptsBefore(session.messages, tailAt);
+                // Named after its first prompt meanwhile, not the first of these.
+                this.storedFirst = firstPromptIn(session.messages);
                 this.earlierBuilt = this.buildHead(segs, tailAt);
             } else if (tailFirst) {
                 // At least each later segment's compaction (a turn of its own) comes before these.
                 this.earlierAtLeast = segs.length - 1;
+                this.storedFirst = segs.slice(0, -1).map((x) => firstPromptIn(x.messages)).find((x) => x !== undefined);
                 this.earlierBuilt = this.buildEarlier(segs);
             }
             // After the window is sent them, a slice at a time: put in the store before, they held its first open back
@@ -1045,6 +1060,9 @@ export class Runtime {
             this.trimBuilt();
             // Its steps were to build them: they're built (and stored) now.
             this.ui.lighten();
+            // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
+            // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
+            if (!this.abort) this.session.letGoOfMessages();
         }, 0);
     }
 
@@ -1680,7 +1698,10 @@ export class Runtime {
         sent.reverse();
         const turns = from ? all.slice(from) : all;
         const unread = this.unread;
-        const { agents, more } = agentsFor(this.view.agents, turns, !from && !unread, (a) => this.agentFull(a), foldedIds(sent));
+        // Up to a turn: only the sub-agents of those turns (a fork has none of the later ones').
+        const upToIds = upTo === undefined ? undefined : new Set(all.map((t) => t.id));
+        const ofThese = upToIds ? this.view.agents.filter((a) => upToIds.has(a.turnId)) : this.view.agents;
+        const { agents, more } = agentsFor(ofThese, turns, !from && !unread, (a) => this.agentFull(a), foldedIds(sent));
         // Those before the latest segment's still being built: at least as many as there are (the window is told how many
         // when it asks for them: session.turns). Those not read from the store yet, and their sub-agents (counted).
         const earlier = from + (this.earlierAtLeast ?? 0) + (unread?.turns ?? 0);
@@ -1699,6 +1720,7 @@ export class Runtime {
         // Built anew meanwhile (other turns): these are no longer theirs.
         const turns = this.view.turns;
         try {
+            await turnBuilding.held;
             for (let a = 0; a < last; a++) {
                 await nextSlice();
                 if (this.closed || this.view.turns !== turns) return;
@@ -1720,6 +1742,8 @@ export class Runtime {
         } finally {
             this.earlierBuilt = undefined;
             this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
         }
     }
 
@@ -1733,6 +1757,7 @@ export class Runtime {
         const messages = this.session.messages;
         const notices = this.session.notices;
         try {
+            await turnBuilding.held;
             await this.ui.readAllSoon();
             const head: Turn[] = [];
             // Each part's sub-agents with it (a sub-agent's are of the same turn): all at once took 110-126 ms.
@@ -1757,6 +1782,8 @@ export class Runtime {
         } finally {
             this.earlierBuilt = undefined;
             this.earlierAtLeast = 0;
+            // Its turns name it now (those built here, or those a rebuild made meanwhile).
+            if (!this.unread) this.storedFirst = undefined;
         }
     }
 
@@ -1853,6 +1880,17 @@ export class Runtime {
         this.findForget = setTimeout(() => (this.findCache = new WeakMap()), findKeeping.ms);
         this.findForget.unref?.();
         return found ?? [];
+    }
+
+    /**
+     * Tests: what opening it set going is done (its earlier turns built, put in its store) and what Find kept is let
+     * go of now, not findKeeping.ms after: what it keeps from here is what it keeps while it's open.
+     */
+    async openDone(): Promise<void> {
+        await this.earlierBuilt;
+        while (this.storing && !this.closed) await nextSlice();
+        clearTimeout(this.findForget);
+        this.findCache = new WeakMap();
     }
 
     /** Every sub-agent as its row in the Agents list shows it (those a window wasn't sent: agentsFor). */
@@ -4338,7 +4376,7 @@ export class Runtime {
         const attached = attachedPrompt(opts.attachments, false);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }), ...(opts.from ? { from: opts.from } : {}) },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true, ...(opts.adopt ? { background: true as const } : {}) } : { index }), ...(opts.from ? { from: opts.from } : {}) },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -5589,6 +5627,17 @@ export class Runtime {
         this.lending++;
         this.lastLent = Date.now();
         try {
+            // This machine's rules as they are now: no turn of this session's own reads them again. A file that can't
+            // be read just now, or is blank, is being written: it isn't one with fewer rules, and nothing is taken from it.
+            // One that isn't valid stays so until the user mends it: said, so the model doesn't call again and again
+            // (each call asks its user first).
+            if (!this.ws.reloadReadable())
+                return {
+                    text: loadScopeChecked("user", this.ws.cwd).unreadable
+                        ? "Cavvy on your Mac can't use its settings file as it is (it can't be read, or isn't valid). Nothing a server asks runs there until that's fixed. Tell the user, and don't call this again until they have."
+                        : "Cavvy on your Mac couldn't read its settings just now. Call it again.",
+                    isError: true,
+                };
             return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;

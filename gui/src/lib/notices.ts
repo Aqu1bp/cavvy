@@ -60,8 +60,8 @@ function windowWord(w: string): string {
  * A limit, in a few words: stopping the turn, "Second is out of its 5-hour limit until 3:40 PM"; on credits, "Using
  * credits until 3:40 PM"; reached, "5-hour limit reached".
  */
-export function limitTitle(l: NoticeLimit, level: NoticeBlock["level"], now: number): string {
-    const until = l.resetsAt !== undefined && l.resetsAt > now ? ` until ${untilLabel(l.resetsAt, now)}` : "";
+export function limitTitle(l: NoticeLimit, level: NoticeBlock["level"], now: number, timeSaid = false): string {
+    const until = !timeSaid && l.resetsAt !== undefined && l.resetsAt > now ? ` until ${untilLabel(l.resetsAt, now)}` : "";
     if (level === "error") return `${l.name} is out of its ${l.window ? `${windowWord(l.window)} ` : "usage "}limit${until}`;
     if (l.credits) return `Using credits${until}`;
     return `${l.window ? `${l.window} limit` : "Usage limit"} reached`;
@@ -78,8 +78,9 @@ export function warnParts(b: NoticeBlock, now: number): { title: string; body?: 
 const STOPPED = /^([^\n:]{3,60}?(?:stopped|failed|error)):\s+([\s\S]+)$/i;
 
 /** An error's card: one short sentence, and what was said with it (in monospace: a CLI's raw words). */
-export function errorParts(b: NoticeBlock, now: number): { title: string; body?: string } {
-    if (b.limit) return { title: limitTitle(b.limit, "error", now) };
+/** `timeSaid`: a limit's card says when it resets under its title, so the title doesn't. */
+export function errorParts(b: NoticeBlock, now: number, timeSaid = false): { title: string; body?: string } {
+    if (b.limit) return { title: limitTitle(b.limit, "error", now, timeSaid) };
     if (b.title) return { title: b.title, ...(b.text.trim() ? { body: b.text } : {}) };
     const m = STOPPED.exec(b.text.trim());
     return m ? { title: m[1]!, body: m[2]! } : { title: b.text };
@@ -136,6 +137,25 @@ export function shownBlocks(blocks: Block[]): Block[] {
     const stopped = blocks.some((b) => b.t === "notice" && b.level === "error" && b.limit);
     if (!stopped) return blocks;
     return blocks.filter((b) => !(b.t === "notice" && b.level === "warn" && b.limit && !b.limit.credits));
+}
+
+/** A turn its agent CLI started by itself, reporting on background work (TurnPrompt.background): it has no row of its own. */
+export function quietWake(prompt: { wake?: boolean; background?: true; from?: unknown } | undefined): boolean {
+    return Boolean(prompt?.wake && prompt.background && !prompt.from);
+}
+
+/**
+ * A quiet turn's blocks: once something comes after it, without its "limit reached" (what came next says how things
+ * stand: the reply, or the card of the turn the limit stopped). The last turn keeps it: nothing else says it yet.
+ */
+export function quietBlocks(blocks: Block[], quiet: boolean, last: boolean | undefined): Block[] {
+    if (!quiet || last) return blocks;
+    return blocks.filter((b) => !(b.t === "notice" && b.level === "warn" && b.limit && !b.limit.credits));
+}
+
+/** A turn's row that is work (lib/live-line.ts workSegments): a run of steps, a thought. */
+export function isWorkRow(it: { kind: string; card?: string; block?: { t: string } }): boolean {
+    return it.kind === "activity" ? it.card !== "plan" : it.block?.t === "thinking";
 }
 
 /** The turn has an error card: it says how the turn ended, so no "Stopped with an error" line under it. */

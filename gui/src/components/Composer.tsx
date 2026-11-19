@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
-import { app, awayMachine, connFor, handleFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
+import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
@@ -63,7 +63,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let bar: HTMLDivElement | undefined;
     // Tight, the controls give way a step at a time (lib/composer-fit.ts).
     onMount(() => onCleanup(fitComposerBar(bar!)));
-    const draftKey = () => p.sessionId ?? "home";
+    const draftKey = () => p.sessionId ?? homeDraftKey();
     // In a split (state/split.ts), focus and the pickers opened from the keyboard are the focused pane's.
     const pane = usePane();
     const draft = createComposerDraft(draftKey, wasDeleted);
@@ -92,8 +92,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
     const busy = () => Boolean(st()?.busy);
-    const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
-    const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
+    // Home's are its machine's (another's, in a folder of its).
+    const settings = () => (p.sessionId ? app.settings : homeSettings());
+    const mode = (): PermissionModeId => st()?.mode ?? (p.sessionId ? undefined : homeModeOf()) ?? settings().defaultMode ?? "default";
+    const bypassAllowed = () => Boolean(st()?.bypassAllowed || settings().allowBypass);
     const shell = () => text().startsWith("!");
     /** Review comments left in this session's diff; they go with the next message. */
     const comments = () => (p.sessionId && !wasDeleted(p.sessionId) ? reviewComments.list(p.sessionId) : []);
@@ -280,7 +282,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     createEffect(
         on(
             // MCP prompts are commands too: the list is read again when a server's prompts come or go.
-            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
+            // Its machine's: a session of another machine's (or Home on one) reads that machine's commands and skills.
+            [() => (connFor(p.sessionId) === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
             ([cwd, provider]) => {
                 let current = true;
                 onCleanup(() => { current = false; });
@@ -289,7 +292,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
                 const fetch = () => {
-                    if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
+                    if (cwd) void rpcFor(p.sessionId).call("commands.list", { cwd, provider }).then((c) => {
                         if (!current) return;
                         commands = c;
                         setKnown(c);
@@ -660,7 +663,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         });
     };
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
-    const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
+    const model = () => st()?.model ?? modelsFor(p.sessionId).flatMap((g) => g.models).find((m) => m.ref === settings().model);
     /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */
     const autoAsks = () => Boolean(app.providers.find((pr) => pr.id === model()?.provider)?.agentCli?.autoAsks);
     // Run members are validated separately by the server; the default model is irrelevant.
@@ -753,13 +756,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const pickers = () => (
         <>
             <ModelPicker
-                sessionId={p.sessionId} current={st()?.model} currentRef={app.settings.model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
-                effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
+                sessionId={p.sessionId} current={st()?.model} currentRef={settings().model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                effort={st() ? st()!.effort : settings().effort} fast={st() ? st()!.fastMode : settings().fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
             <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} home={p.variant === "home"} />;
     return (
         <div
             ref={root}

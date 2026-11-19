@@ -4,11 +4,13 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, Plus, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
-import { app, reportError, rpc, setApp, toast } from "../state/app";
+import { updateServer } from "../lib/server-update";
+import { app, homeOn, reportError, rpc, setApp, toast } from "../state/app";
+import { newSession } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
@@ -18,6 +20,22 @@ import "../styles/servers.css";
 
 // What the window's connection needs of a server (state/app.ts), from the one place this is all loaded from.
 export { machineCredentials, setMachineIssue, switchMachine } from "../lib/machines";
+
+/** Where a session made now runs: Home's machine (another's, in a folder of its), else the window's. Undefined: this computer. */
+const runsOn = () => {
+    const on = homeOn();
+    return on === undefined ? machine : on || undefined;
+};
+/** To `name` (undefined: this computer): Home on the window's own machine, in its latest project, or the window there. */
+const goTo = (name: string | undefined) => {
+    if (runsOn() === name) return;
+    if (name === machine) {
+        const cwd = app.projects[0]?.path ?? app.hello?.startCwd;
+        newSession(cwd, { machine });
+        // No project here yet: none is shown, not the folder of the machine it left.
+        if (!cwd) setApp("homeCwd", undefined);
+    } else switchMachine(name);
+};
 
 /** The sidebar's list of machines is open, under the button that opened it. */
 const [serverMenu, setServerMenu] = createSignal(false);
@@ -71,7 +89,7 @@ export function mountWhere(el: HTMLElement): () => void {
         () => (
             <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" onClick={(e) => openMachines(e.currentTarget, "start")}>
                 <Server size={14} class="ic" />
-                <span class="truncate">{machine ?? HERE}</span>
+                <span class="truncate">{runsOn() ?? HERE}</span>
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
         ),
@@ -171,24 +189,29 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
     };
     return (
         <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={240}>
-            <button role="menuitemradio" aria-checked={!machine} class="menu-item compact" onClick={() => (close(), machine && switchMachine(undefined))}>
+            <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item compact" onClick={() => (close(), goTo(undefined))}>
                 <span class="grow">{HERE}</span>
-                <Show when={!machine}>
+                <Show when={!runsOn()}>
                     <Check size={14} />
                 </Show>
             </button>
             <For each={list() ?? []}>
                 {(s) => (
                     <div class="server-row">
-                        <button role="menuitemradio" aria-checked={machine === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), machine !== s.name && switchMachine(s.name))}>
+                        <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), goTo(s.name))}>
                             <span class="grow">{s.name}</span>
                             <Show when={s.cost}>
                                 <span class="server-cost">{s.cost}</span>
                             </Show>
-                            <Show when={machine === s.name}>
+                            <Show when={runsOn() === s.name}>
                                 <Check size={14} />
                             </Show>
                         </button>
+                        <Show when={s.behind}>
+                            <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
+                                <CircleArrowUp size={13} />
+                            </button>
+                        </Show>
                         {/* Not the one this window is on: it's removed from another. */}
                         <Show when={machine !== s.name}>
                             <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>

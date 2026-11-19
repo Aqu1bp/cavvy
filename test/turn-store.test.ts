@@ -462,6 +462,43 @@ test(`${what} opened the first time is built from its latest turns, and comes ou
     expect(canon(tail)).toEqual(canon(whole));
 }, 120_000);
 
+// Named, while its earlier turns are still being built, after the prompt it was built from: not the first of its latest
+// turns, which named it until they were all in (and the window's header, as more were shown, otherwise).
+for (const [kind, what] of [["native", "a compacted session"], ["cli", "a long Claude Code session"]] as const)
+test(`${what} opened the first time is named after its first prompt while its earlier turns are built`, async () => {
+    const cwd = join(tempDir("cavvy-turn-store-tail-name-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind, seed: 11 });
+    const prompts = turnBuilding.tailPrompts;
+    turnBuilding.tailPrompts = 10;
+    const file = findSessionAnywhere(t.id)!;
+    const rt = () => (srv as any).engine.runtimes.get(t.id);
+    try {
+        turnBuilding.tailFirst = false;
+        await open(t.id);
+        const whole = rt().firstPrompt();
+        expect(whole).toBeTruthy();
+        await close(t.id);
+        turnBuilding.tailFirst = true;
+        for (const f of [storeOf(file, t.id), storeOf(file, t.id).replace(/\.json$/, ".jsonl"), join(dirname(file), "state", `${t.id}.json`)]) rmSync(f, { force: true });
+        // Asked while they're still being built: held until it's been asked.
+        let release!: () => void;
+        turnBuilding.held = new Promise<void>((r) => (release = r));
+        await call("session.open", { id: t.id, last: 5 });
+        expect(rt().earlierBuilt).toBeDefined();
+        expect(rt().firstPrompt()).toBe(whole);
+        release();
+        turnBuilding.held = undefined;
+        await rt().allTurns();
+        expect(rt().firstPrompt()).toBe(whole);
+        await close(t.id);
+    } finally {
+        turnBuilding.tailFirst = true;
+        turnBuilding.tailPrompts = prompts;
+        turnBuilding.held = undefined;
+    }
+}, 120_000);
+
 // A turn coming while the earlier turns are still being built (the notice a Claude Code session opens with here, where
 // it isn't installed; a prompt sent at once) started putting the latest ones in the store; the build, done, put them
 // there again from scratch, after the first had let go of them: those came out empty, there and in every open after.
@@ -541,6 +578,30 @@ test("a long session opened the first time puts its turns in its store a slice a
         turnStoring.sliceMs = slice;
         TurnStore.prototype.put = put;
     }
+    await close(t.id);
+}, 60_000);
+
+// Read whole to build its turns the first time, a Claude Code session's messages were then kept while it was open
+// (2.9 MB of one of 30,000 items): once its turns are stored, the digest a reopen has is kept in their place, and
+// what asks for them after (rewind, fork, a model switch) reads them from its file.
+test("a long Claude Code session opened the first time lets go of its messages once its turns are stored, and reads them again when asked", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-let-go-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 5 });
+    const file = findSessionAnywhere(t.id)!;
+    await open(t.id, { last: 10 });
+    const rt = srv.engine.runtimes.get(t.id)!;
+    await rt.openDone();
+    expect(rt.session.historyDigest).toBeDefined();
+    expect((rt.session as any).loadedMessages).toHaveLength(0);
+    const targets = await call("session.rewindTargets", { id: t.id });
+    expect(targets.length).toBeGreaterThan(10);
+    // Read when asked for: as reading its file whole makes them.
+    expect(JSON.parse(JSON.stringify(rt.session.messages))).toEqual(JSON.parse(JSON.stringify((Session as any).read(file, false, true, false).messages)));
+    await close(t.id);
+    // Opened again (from its store and its checkpoint): the same.
+    await open(t.id, { last: 10 });
+    expect(await call("session.rewindTargets", { id: t.id })).toEqual(targets);
     await close(t.id);
 }, 60_000);
 

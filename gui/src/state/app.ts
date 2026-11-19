@@ -9,7 +9,7 @@ import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, Per
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
-import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
+import { canReveal, credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -43,9 +43,19 @@ export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversU
 const away = new Map<string, Rpc>();
 /** And the machine each is on ("" for this computer). */
 const awayOn = new Map<string, string>();
+/** Counts each session recorded in `away`: what reads them (linkedMachine) is run again. */
+const [awayCount, setAwayCount] = createSignal(0);
+/** The machine `id` is opened here from and the connection to it, once it's recorded (another machine's session). */
+export function linkedMachine(id: string): { on: string; link: Rpc } | undefined {
+    awayCount();
+    const link = away.get(id);
+    return link && { on: awayOn.get(id)!, link };
+}
 rpc.route = (method, params) => {
     // A session's own call names it `id`; one about something of a session's (a path in it), `sessionId`. Others'
     // ids (an account's, a terminal's) aren't sessions', whatever they're called.
+    // What this computer lends a server's session (offers.*) is this computer's own, whichever machine that session is on.
+    if (method.startsWith("offers.")) return undefined;
     const p = params as { id?: unknown; sessionId?: unknown } | undefined;
     const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
     const link = id !== undefined ? away.get(id) : undefined;
@@ -55,26 +65,111 @@ rpc.route = (method, params) => {
  * What machine `id` is on: its row's, or (its row not listed yet, after a reload) the one the window was showing it
  * from (cavvy.navigation's `on`); else the window's own.
  */
-function machineOf(id: string): string | undefined {
+export function machineOf(id: string): string | undefined {
     // Opened here from another machine (a fork made there may not be listed yet).
     if (awayOn.has(id)) return awayOn.get(id) || undefined;
     const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
     if (at) return at.machine;
-    if (restoredOn && restoredOn.id === id) return restoredOn.on || undefined;
+    if (restoredOn.has(id)) return restoredOn.get(id) || undefined;
     return machine;
 }
-/** The other machine `sessionId` is opened here from, if it is (a server's name; "" this computer, in a window on a server). */
+/**
+ * Home in a folder of another machine's (newSession with one of its sessions on screen): what's sent from it makes a
+ * session there, as opening one of its sessions opens it here, over the connection to it. The window isn't loaded
+ * again for it (0.2-0.5 s, and what was typed meanwhile went astray).
+ */
+const [homeAway, setHomeAway] = createSignal<{ on: string; cwd: string; link: Rpc }>();
+/** The permission mode picked on Home on each other machine, for the window's life (app.homeMode is this computer's). */
+const [awayModes, setAwayModes] = createStore<Record<string, PermissionModeId>>({});
+/** Each other machine's recent projects, for Home's project menu while it's on that machine. */
+const [machineProjects, setMachineProjects] = createStore<Record<string, ProjectInfo[]>>({});
+function machineProjectsAgain(on: string, link: Rpc) {
+    void link.call("projects.recent", {}).then((p) => setMachineProjects(on, reconcile(p, { key: "path" })), () => undefined);
+}
+/** Each other machine's settings, for Home on it: the model, effort and permission mode a session made there starts with. */
+const [machineSettings, setMachineSettings] = createStore<Record<string, GuiSettings>>({});
+function machineSettingsAgain(on: string, link: Rpc) {
+    void link.call("settings.get", {}).then((s) => setMachineSettings(on, reconcile(s)), () => undefined);
+}
+/** The other machine Home is on, while it's shown in that machine's folder ("" this computer, in a window on a server). */
+export function homeOn(): string | undefined {
+    const h = homeAway();
+    return h && app.activeId === undefined && app.homeCwd === h.cwd ? h.on : undefined;
+}
+/**
+ * Home in `cwd` on `on`, over the connection a session of it opened here has. False (and nothing changed) when none
+ * of its sessions is: it isn't connected to here.
+ */
+export function homeOnMachine(on: string, cwd: string): boolean {
+    const id = [...awayOn].find(([k, m]) => m === on && away.has(k))?.[0];
+    if (id === undefined) return false;
+    const link = away.get(id)!;
+    batch(() => {
+        setHomeAway({ on, cwd, link });
+        setApp("homeCwd", cwd);
+        setApp("activeId", undefined);
+    });
+    if (!(on in machineSettings)) machineSettingsAgain(on, link);
+    machineProjectsAgain(on, link);
+    if (!(on in machineModels)) machineModelsAgain(on, link);
+    return true;
+}
+/** Home back on the window's own machine. */
+export function homeHere() {
+    setHomeAway(undefined);
+}
+/** The settings Home starts a session with: its machine's. */
+export function homeSettings(): GuiSettings {
+    const on = homeOn();
+    return (on !== undefined && machineSettings[on]) || app.settings;
+}
+/** The permission mode picked on Home: its machine's own (a server's is Bypass; this computer's is never set by a server's). */
+export function homeModeOf(): PermissionModeId | undefined {
+    const on = homeOn();
+    return on !== undefined ? awayModes[on] : app.homeMode;
+}
+/** Picked on Home on another machine: kept for it while the window's open, as app.homeMode is here. False on the window's own. */
+export function setHomeAwayMode(mode: PermissionModeId): boolean {
+    const on = homeOn();
+    if (on === undefined) return false;
+    setAwayModes(on, mode);
+    return true;
+}
+/** The recent projects Home's menu offers: those of the machine it's on. */
+export function homeProjects(): ProjectInfo[] {
+    const on = homeOn();
+    return on !== undefined ? (machineProjects[on] ?? []) : app.projects;
+}
+/** Home's draft: one for each machine, so what's typed for one isn't sent on another. */
+export const homeDraftKey = () => (homeOn() === undefined ? "home" : `home@${homeOn()}`);
+
+/** A setting picked on Home on another machine: saved there. Undefined on the window's own. */
+export function updateHomeSettings(patch: Partial<GuiSettings>): Promise<GuiSettings> | undefined {
+    const on = homeOn();
+    if (on === undefined) return undefined;
+    const link = homeAway()!.link;
+    if (machineSettings[on]) setMachineSettings(on, patch);
+    return link.call("settings.update", { patch } as never).then((s: GuiSettings) => (setMachineSettings(on, reconcile(s)), s));
+}
+/**
+ * The other machine `sessionId` is opened here from, if it is (a server's name; "" this computer, in a window on a
+ * server). No session: Home's, while it's on another machine.
+ */
 export function awayMachine(sessionId: string | undefined): string | undefined {
-    return sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    return sessionId !== undefined ? awayOn.get(sessionId) : homeOn();
 }
 /** A new session from `sessionId` (its project, New session while it's shown) goes on its machine: this is it, when that isn't the window's. */
 export function machineFor(sessionId: string | undefined): { machine?: string } | undefined {
     const on = awayMachine(sessionId);
     return on === undefined ? undefined : { machine: on || undefined };
 }
+/** Another machine's session, by its row, not opened here (its connection still being made, or that machine unreachable). */
+export function awayUnopened(id: string | undefined): boolean {
+    return id !== undefined && !awayOn.has(id) && machineOf(id) !== machine;
+}
 /** The folder Home shows once `id`, on screen, is gone: its own, unless it's another machine's (it names nothing on the window's); then the window's latest project. */
 export function homeCwdAfter(id: string): string | undefined {
-    return awayOn.has(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
+    return awayOn.has(id) || awayUnopened(id) ? (app.projects[0]?.path ?? app.hello?.startCwd) : app.homeCwd;
 }
 /** A session made on another machine from one of its sessions opened here (a fork, a plan carried out): on there too. */
 export function sameMachine(from: string, made: string) {
@@ -82,6 +177,7 @@ export function sameMachine(from: string, made: string) {
     if (!link) return;
     away.set(made, link);
     awayOn.set(made, awayOn.get(from)!);
+    setAwayCount((n) => n + 1);
 }
 /** The last row the pointer came to (warmFor): coming to it again asks nothing more. */
 let warmed: string | undefined;
@@ -97,30 +193,52 @@ export function warmFor(id: string) {
     const on = at.machine;
     void linkFor(on).catch(() => {
         // Not reached: it isn't kept trying for a row only pointed at. A click tries again, and says why.
-        if (![...awayOn.values()].includes(on ?? "")) dropLink(on);
+        if (![...awayOn.values()].includes(on ?? "") && !heldLinks.has(on ?? "")) dropLink(on);
     });
 }
 
+/** Whether Finder can show `sessionId`'s files: they're on this computer, and so is the window. */
+export const revealsIn = (sessionId: string) => canReveal && awayMachine(sessionId) === undefined;
 /** The connection to ask about `sessionId` over what isn't named by it (the files in its folder: fs.mentions). */
 export function rpcFor(sessionId: string | undefined): Rpc {
-    return (sessionId !== undefined && away.get(sessionId)) || rpc;
+    if (sessionId === undefined) return homeOn() !== undefined ? homeAway()!.link : rpc;
+    return away.get(sessionId) || rpc;
 }
 /** Each other machine's models, as its Cavvy lists them: for its sessions opened in this window (modelsFor). */
 const [machineModels, setMachineModels] = createStore<Record<string, ProviderModels[]>>({});
 /** The models to offer in `sessionId`: its machine's. */
 export function modelsFor(sessionId: string | undefined): ProviderModels[] {
-    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    const on = awayMachine(sessionId);
     return on === undefined ? app.models : (machineModels[on] ?? []);
 }
 /** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
 function machineModelsAgain(on: string, link: Rpc, refresh = false) {
     void link.call("models.list", { refresh }).then((m) => setMachineModels(on, reconcile(m, { key: "provider" })), () => undefined);
+    machineProvidersAgain(on, link);
+}
+/** Each other machine's providers, as its Cavvy lists them: its CLIs' accounts, for its sessions opened in this window (providersFor). */
+const [machineProviders, setMachineProviders] = createStore<Record<string, ProviderInfo[]>>({});
+/** The providers of `sessionId`'s machine: whose accounts its model menu offers. */
+export function providersFor(sessionId: string | undefined): ProviderInfo[] {
+    const on = awayMachine(sessionId);
+    return on === undefined ? app.providers : (machineProviders[on] ?? []);
+}
+function machineProvidersAgain(on: string, link: Rpc) {
+    void link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
+    void link.call("limits.get", {}).then((l) => Array.isArray(l) && setMachineLimits(on, reconcile(Object.fromEntries(l.map((x) => [planLimitKey(x.provider, x.accountId), fromWireLimits(x)])))), () => undefined);
+}
+/** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
+const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
+/** The plan limits of `sessionId`'s machine's accounts. */
+export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
+    const on = awayMachine(sessionId);
+    return on === undefined ? app.limits : (machineLimits[on] ?? {});
 }
 /** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
 export function refreshModelsFor(sessionId: string | undefined, refresh = false): Promise<void> {
-    const link = sessionId !== undefined ? away.get(sessionId) : undefined;
-    if (!link) return refreshModels(refresh);
-    machineModelsAgain(awayOn.get(sessionId!)!, link, refresh);
+    const on = awayMachine(sessionId);
+    if (on === undefined) return refreshModels(refresh);
+    machineModelsAgain(on, rpcFor(sessionId), refresh);
     return Promise.resolve();
 }
 /** Each other machine's connection, as it is now: for its sessions opened here (connFor). */
@@ -129,13 +247,16 @@ const [linkStates, setLinkStates] = createStore<Record<string, ConnectionState>>
 const [linkIssues, setLinkIssues] = createStore<Record<string, LinkProblem | undefined>>({});
 /** Why the connection `sessionId` is shown over (another machine's) is down, if it is and that's known. */
 export function problemFor(sessionId: string | undefined): (LinkProblem & { machine: string }) | undefined {
-    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    const on = awayMachine(sessionId);
     const issue = on !== undefined && connFor(sessionId) !== "open" ? linkIssues[on] : undefined;
     return issue && { ...issue, machine: on! };
 }
 /** The state of the connection `sessionId` is shown over: its machine's, or the window's own. */
 export function connFor(sessionId: string | undefined): ConnectionState {
-    const on = sessionId !== undefined ? awayOn.get(sessionId) : undefined;
+    return connOn(awayMachine(sessionId));
+}
+/** The state of the connection to machine `on` (awayMachine's names; undefined: the window's own). */
+export function connOn(on: string | undefined): ConnectionState {
     return on === undefined ? app.conn : (linkStates[on] ?? "connecting");
 }
 /**
@@ -157,15 +278,37 @@ let shownNow: () => string | undefined = () => undefined;
  */
 function tellShown() {
     const id = shownNow();
-    const there = id !== undefined ? away.get(id) : undefined;
-    if (app.conn === "open") void rpc.call("session.shown", { id: there ? undefined : id }).catch(() => undefined);
-    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: there === link ? id : undefined }).catch(() => undefined);
+    // In a split, the other pane too, to its machine when the focused one isn't on it.
+    const shown = id === undefined ? [] : [id, ...onScreen.beside().filter((x) => x !== id)];
+    // One not linked yet is the window's only if it's on the window's machine.
+    const on = (link: Rpc) => shown.find((x) => (away.get(x) ?? ((machineOf(x) ?? "") === (machine ?? "") ? rpc : undefined)) === link);
+    if (app.conn === "open") void rpc.call("session.shown", { id: on(rpc) }).catch(() => undefined);
+    for (const link of new Set([...allLinks(), ...away.values()])) if (link.state === "open") void link.call("session.shown", { id: on(link) }).catch(() => undefined);
 }
 /** Connections already listened to: what each says of its sessions comes to the window's handling of its own. */
 const heard = new WeakSet<Rpc>();
 
+/** Machines whose connection a terminal panel holds (machineLink): kept, though none of their sessions is open here. */
+const heldLinks = new Set<string>();
+
+/**
+ * The connection to machine `on` (awayMachine's names: "" this computer, in a window on a server), made if it isn't,
+ * and kept: not waited on, so one that can't be reached yet keeps trying by itself (a terminal panel waits for it).
+ */
+export function machineLink(on: string): Promise<Rpc> {
+    heldLinks.add(on);
+    return linkMade(on || undefined);
+}
+
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
-async function linkFor(name: string | undefined): Promise<Rpc> {
+export async function linkFor(name: string | undefined): Promise<Rpc> {
+    const link = await linkMade(name);
+    await opened(link, name);
+    return link;
+}
+
+/** The connection to `name`'s Cavvy, made and listened to if it isn't: not waited on. */
+async function linkMade(name: string | undefined): Promise<Rpc> {
     // This computer's Cavvy says where a server's is. In a window on a server it's another connection of the window's.
     const home = machine ? (await import("../lib/machines")).home : undefined;
     const on = name ?? "";
@@ -175,6 +318,8 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
         if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
         // Its models changed (a key added there): asked for again, if they were asked for.
         else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
+        // Its accounts' limits, as they move: for the meter of its sessions here.
+        else if (e.type === "limits" && on in machineLimits) setMachineLimits(on, planLimitKey(e.limits.provider, e.limits.accountId), reconcile(fromWireLimits(e.limits)));
     };
     const link = linkTo(name, home ?? rpc, home, theirs);
     if (!heard.has(link)) {
@@ -195,7 +340,6 @@ async function linkFor(name: string | undefined): Promise<Rpc> {
             tellShown();
         });
     }
-    await opened(link);
     return link;
 }
 rpc.retriesCredentials = isDesktop;
@@ -312,6 +456,12 @@ function capErrors(added: number) {
     }
 }
 
+/** A note that no longer holds (what it offered is done): taken away, shown or still waiting its turn. */
+export function withdrawToast(message: string) {
+    for (let i = toastQueue.length - 1; i >= 0; i--) if (toastQueue[i]!.message === message) toastQueue.splice(i, 1);
+    for (const t of toasts.filter((t) => t.message === message && !isError(t))) dismissToast(t.id);
+}
+
 export function dismissToast(id: number) {
     clearTimeout(toastTimers.get(id)?.timer);
     toastTimers.delete(id);
@@ -402,12 +552,16 @@ const NAVIGATION_KEY = "cavvy.navigation";
  * The session the window was showing as it loaded, and the machine it's on ("" this computer), when that isn't the
  * window's: it's opened from there again (machineOf), its row maybe not listed yet.
  */
-let restoredOn: { id: string; on: string } | undefined;
+const restoredOn = new Map<string, string>();
+/** `id` is on machine `on` though its row may not be listed: shown from there before the reload (a split's other pane, state/split.ts), or found there by search. */
+export function restoredFrom(id: string, on: string) {
+    restoredOn.set(id, on);
+}
 /** Per webview/tab, separate from device-wide preferences and auth links. */
 function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
     try {
         const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
-        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn = { id: saved.activeId, on: saved.on };
+        if (typeof saved?.activeId === "string" && typeof saved?.on === "string") restoredOn.set(saved.activeId, saved.on);
         return {
             activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
             homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
@@ -636,6 +790,20 @@ export function onRenew(h: SessionHandle, fn: () => (() => void) | void): () => 
     };
 }
 
+/** What's shown of each session, told when its turns are replaced (a rewind's reset) after they're applied. */
+const resetting = new Map<string, Set<() => void>>();
+
+/** `fn` runs once `h`'s turns have been replaced by the server's (a reset op). Returns what stops it. */
+export function onReset(h: SessionHandle, fn: () => void): () => void {
+    let set = resetting.get(h.id);
+    if (!set) resetting.set(h.id, (set = new Set()));
+    set.add(fn);
+    return () => {
+        set.delete(fn);
+        if (!set.size && resetting.get(h.id) === set) resetting.delete(h.id);
+    };
+}
+
 /** No longer open here. */
 function letGo(h: SessionHandle) {
     handles.delete(h.id);
@@ -719,6 +887,7 @@ function flush(h: SessionHandle) {
             }),
         ),
     );
+    if (ops.some((op) => op.op === "reset")) for (const fn of resetting.get(h.id) ?? []) fn();
 }
 
 function schedule(h: SessionHandle) {
@@ -1064,8 +1233,23 @@ export async function importCliSession(cwd: string, source: string, id: string):
     return adopt(snap);
 }
 
-export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
-    const snap = await rpc.call("session.create", { cwd, mode });
+/** Where a session made from Home now would be made: its machine's connection and mode (`there` unset: this window's). */
+export type HomeAt = { there?: { on: string; link: Rpc }; mode?: PermissionModeId };
+export function homeAt(): HomeAt {
+    const h = homeOn() !== undefined ? homeAway() : undefined;
+    return { there: h && { on: h.on, link: h.link }, mode: homeModeOf() };
+}
+
+/** Make a session in `cwd`, on Home's machine as it was when `at` was taken (the user may have moved on since). */
+export async function createSession(cwd: string, at: HomeAt = homeAt()): Promise<SessionHandle> {
+    // From Home on another machine: made there, and opened here as one of its sessions is.
+    const { there, mode } = at;
+    const snap = await (there ? there.link : rpc).call("session.create", { cwd, mode });
+    if (there) {
+        away.set(snap.state.id, there.link);
+        awayOn.set(snap.state.id, there.on);
+        setAwayCount((n) => n + 1);
+    }
     return adopt(snap);
 }
 
@@ -1128,6 +1312,27 @@ export function forkMakingOf(id: string): string | undefined {
     return forksMaking.get(id);
 }
 
+/** `id`, a session of machine `on`'s, is opened here over `link` from now on. */
+function linked(id: string, on: string | undefined, link: Rpc) {
+    away.set(id, link);
+    awayOn.set(id, on ?? "");
+    setAwayCount((n) => n + 1);
+    if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
+    // And its settings: Home on it (a new session from this one) starts with them.
+    if (!((on ?? "") in machineSettings)) machineSettingsAgain(on ?? "", link);
+    tellShown();
+}
+
+/**
+ * Opens a session without showing it in the main view (the one beside it in a split, Panes): one of another
+ * machine's over the connection to it, made first if it isn't.
+ */
+export async function openBeside(id: string): Promise<SessionHandle> {
+    const on = machineOf(id);
+    if (on !== machine && !away.has(id)) linked(id, on, await linkFor(on));
+    return openSession(id);
+}
+
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
     // One on another machine: opened here, over a connection to that machine's Cavvy (linkFor), as one of the window's
@@ -1170,10 +1375,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (elsewhere) {
             const link = await linkFor(on);
             if (!current()) return;
-            away.set(id, link);
-            awayOn.set(id, on ?? "");
-            if (!((on ?? "") in machineModels)) machineModelsAgain(on ?? "", link);
-            tellShown();
+            linked(id, on, link);
         }
         const h = await openSession(id);
         if (!current()) return;
@@ -1207,7 +1409,7 @@ export async function activate(id: string | undefined, cwd?: string) {
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
         setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
         if (e instanceof RpcError && e.code === "needs_trust" && project) {
-            requestTrust(project, () => { if (current()) void activate(id, project); });
+            requestTrust(project, () => { if (current()) void activate(id, project); }, undefined, undefined, rpcFor(id), awayMachine(id));
         }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     }
@@ -1231,9 +1433,11 @@ export async function restoreActiveSession() {
  * MCP approval upgrades existing session trust, and an agent CLI that runs the folder's own hooks (`reason` says so)
  * needs it: declining either must not change that session.
  */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string) {
-    setTrustRequest({ path, then, purpose, reason });
+/** `link`: the connection to the machine the folder is on (another machine's session, or Home on one: rpcFor). */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string; link?: Rpc; on?: string } | undefined>();
+/** `link`, `on`: the machine the folder is on, when it isn't the window's own: its connection, and its name ("" this computer, in a window on a server). */
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string, link?: Rpc, on?: string) {
+    setTrustRequest({ path, then, purpose, reason, link, on });
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,7 +1758,8 @@ function onEvent(ev: ServerEvent) {
             if (!machine) void themeEvents().then((m) => m.onThemeEvent(ev));
             return;
         case "app.update":
-            setApp("update", reconcile(ev.info));
+            // In a window on a server, this computer's Cavvy says (lib/machines.ts): the server's has no app to update.
+            if (!machine) setApp("update", reconcile(ev.info));
             return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
@@ -1643,7 +1848,11 @@ export function start() {
     shownNow = () => (hidden() ? undefined : app.activeId);
     createRoot(() => createEffect(() => {
         shownNow();
-        if (app.conn === "open") tellShown();
+        onScreen.beside();
+        // Each connection that's open hears it, the window's own or not (tellShown checks each). Only on these changes:
+        // not each time a row it looks a machine up in changes.
+        void app.conn;
+        untrack(tellShown);
     }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;

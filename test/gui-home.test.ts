@@ -197,7 +197,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
         ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
-        refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
+        refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [],
         noModel: () => (o.models ?? [{ models: [{}] }]).every((g: any) => !g.models.length),
         // No servers here: where a session runs isn't said (the servers code says it, when there are any).
         createEffect: (fn: () => void) => fn(), isElectron: false, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
@@ -353,13 +353,13 @@ test("Home shows the error cards above the trust and connect cards", () => {
 
 // ---- The worktree picker ----------------------------------------------------------------------------
 
-function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | undefined, loading: boolean) {
+function picker(cwd: string, listed: { path: string; on?: string; worktrees: unknown[] } | undefined, loading: boolean, on?: string) {
     const opened: string[] = [];
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
         Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, rpc: {},
+        app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}),
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
@@ -379,6 +379,9 @@ test("the worktree picker never offers another project's worktrees while this on
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
     expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…"]);
+    // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
+    expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
+    expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(3);
 });
 
 // ---- The limit pill ---------------------------------------------------------------------------------
@@ -405,16 +408,19 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
 
 function meter(home: boolean, used?: number, sessionId?: string) {
     const provider = "claude-code";
+    // Noon today: a reset 106 minutes on is the same day whenever the test runs (late in the evening it wouldn't be).
+    const noon = new Date().setHours(12, 0, 0, 0);
     const planLimitKey = (p: string, a = "default") => JSON.stringify([p, a]);
     const ComposerMeter = componentCode("ComposerMeter", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createEffect: stub, createMemo: (f: () => unknown) => f, createUniqueId: () => "u", on: stub, onCleanup: stub,
         planLimitKey,
-        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: Date.now() + 106 * 60_000 }]) }, settings: {} },
+        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
-        awayMachine: () => undefined, reportError: stub, rpc: {}, toast: stub,
+        awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
+        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => Date.now(), limitAlternatives, meterOf, windowLine,
+        now: () => noon, limitAlternatives, meterOf, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),

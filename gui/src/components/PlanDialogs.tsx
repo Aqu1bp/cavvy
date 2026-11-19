@@ -9,10 +9,10 @@ import { AlertTriangle, Copy, FolderGit2, Save } from "lucide-solid";
 import { IMPLEMENT_MODES, type ImplementMode, type ImplementPlanResult, type PlanInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { basename, tildify } from "../lib/format";
-import { canReveal, copyText, revealPath } from "../lib/platform";
-import { activate, app, rpc, sameMachine, toast } from "../state/app";
+import { copyText, revealPath } from "../lib/platform";
+import { activate, app, awayMachine, revealsIn, rpc, rpcFor, sameMachine, toast } from "../state/app";
 import { chooseFolder } from "../state/actions";
-import { planDialog, setPlanDialog } from "../state/ui";
+import { planDialog, setFolderPickerOpen, setPlanDialog } from "../state/ui";
 import { errorOf, type FormError } from "./WorktreeDialogs";
 import { Markdown } from "./blocks/Markdown";
 import { Dialog } from "./ui/Dialog";
@@ -27,9 +27,9 @@ export const MODE_CHOICES: Record<ImplementMode, { label: string; hint: string }
 const home = (p: string) => tildify(p, app.hello?.homeDir);
 
 /** "Saved …" with what can be done with the file here. */
-export function savedToast(path: string) {
+export function savedToast(path: string, sessionId: string) {
     const actions = [
-        ...(canReveal ? [{ label: "Reveal in Finder", run: () => revealPath(path) }] : []),
+        ...(revealsIn(sessionId) ? [{ label: "Reveal in Finder", run: () => revealPath(path) }] : []),
         { label: "Copy path", run: () => copyText(path) },
     ];
     toast(`Saved the plan to ${home(path)}`, "success", actions);
@@ -118,7 +118,9 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
         setError(undefined);
     };
     const choose = async () => {
-        const dir = await chooseFolder({ title: "Choose where to save the plan", action: "Save it here", start: p.info.cwd });
+        const o = { title: "Choose where to save the plan", action: "Save it here", start: p.info.cwd };
+        // Saved on the session's machine: another machine's folders are chosen from its own, not this computer's picker.
+        const dir = await (awayMachine(p.sessionId) === undefined ? chooseFolder(o) : new Promise<string | undefined>((then) => setFolderPickerOpen({ then, link: rpcFor(p.sessionId), ...o })));
         if (dir) edit(`${dir.replace(/\/+$/, "")}/${name()}`);
     };
     let open = true;
@@ -134,7 +136,7 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
             const r = await rpc.call("session.savePlan", { id: p.sessionId, toolId: p.info.id, path: target, replace });
             p.setBusy(false);
             if (open) p.onClose();
-            savedToast(r.path);
+            savedToast(r.path, p.sessionId);
         } catch (e) {
             if (e instanceof RpcError && e.code === "file_exists") setExists(target);
             else setError(errorOf(e));
@@ -223,7 +225,8 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
         setError(undefined);
         p.setBusy(true);
         try {
-            if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
+            // On the plan's session's machine, where it's carried out.
+            if (trust) await rpcFor(p.sessionId).call("projects.trust", { path: trust, trust: true });
             if (!open) return;
             const before = made();
             const r = await rpc.call("session.implementPlan", { id: p.sessionId, toolId: p.info.id, branch: before?.branch ?? b, base: base().trim() || undefined, mode: mode(), resume: before?.path });

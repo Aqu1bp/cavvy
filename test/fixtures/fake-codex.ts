@@ -547,13 +547,17 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
-        const wake = new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
+        // Waited for anew after each steer: one already resolved would end every later wait at once, and the loop would
+        // spin without a pause until the turn's end (millions of timers, and stdin unread long after).
+        const waitForWake = () => new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
+        let wake = waitForWake();
         while (!t.interrupted && Date.now() < until) {
             if (stream) notify("item/agentMessage/delta", { threadId, turnId, itemId: `stream-${turnId}`, delta: "more " });
             await Promise.race([wake, Bun.sleep(20)]);
             if (woken && !t.interrupted) {
                 // A steer: it heard it, and goes on.
                 woken = false;
+                wake = waitForWake();
                 log({ hangSteered: t.steered ?? [] });
             }
         }

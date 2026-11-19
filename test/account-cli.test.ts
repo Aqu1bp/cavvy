@@ -1,8 +1,9 @@
 // Fake CLIs only: account selection must never become the environment of tools or hooks.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, linkSync, mkdirSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, realpathSync, rmSync, symlinkSync, linkSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const { home, cleanup } = isolate();
 const { saveAgentConfig, readAgentConfig, removeAgentConfig, BUILTIN_PROVIDERS } = await import("../src/providers/registry");
@@ -27,7 +28,7 @@ for (const [provider, fixture] of [["claude-code", "fake-claude.ts"], ["codex", 
     chmodSync(bin, 0o700);
     saveAgentConfig(provider!, { path: bin, accounts: [{ id: "personal", name: "Personal", folder: folders[provider!], managed: false }] });
 }
-const starts = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((line) => line.argv);
+const starts = () => fakeLog(log).filter((line) => line.argv);
 beforeEach(() => {
     process.env.CAVVY_HOME = home;
     process.env.CLAUDE_CONFIG_DIR = originalClaude;
@@ -171,7 +172,7 @@ test("native CLI turns select their account and deny account folders in their ow
     const settings = JSON.parse(claudeArgs[claudeArgs.indexOf("--settings") + 1]);
     for (const denied of [folder, join(realpathSync(root), "personal")]) expect(settings.permissions.deny).toContain(`Read(/${denied}/**)`);
     // Codex takes its standard sandbox for the mode: no permission profiles of Cavvy's (#375).
-    const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
+    const received = fakeLog(log).map((line) => line.received).filter(Boolean);
     const thread = received.find((message) => message.method === "thread/start").params;
     const turn = received.find((message) => message.method === "turn/start").params;
     expect(thread.sandbox).toBe("workspace-write");
@@ -194,7 +195,7 @@ test("Codex's initialize, thread and turn parameters are the same with and witho
         turn.session.mode = () => mode;
         expect((await backend.runTurn(turn)).reason).toBe("done");
         await backend.release?.(key);
-        const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
+        const received = fakeLog(log).map((line) => line.received).filter(Boolean);
         const pick = (method: string) => received.find((message) => message.method === method)?.params;
         // Every turn/start has an id of its own (clientUserMessageId), fresh each time: its form is what has to match.
         const turnParams = pick("turn/start");
@@ -269,7 +270,7 @@ test("a Codex that refuses the delegation config falls back without it, named ac
     turn.liveSessions = false;
     turn.orchestrator = { name: "cavvy", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
     expect((await backend.runTurn(turn)).reason).toBe("done");
-    const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
+    const received = fakeLog(log).map((line) => line.received).filter(Boolean);
     expect(received.filter((message) => message.method === "thread/start")).toHaveLength(2);
     expect(received.some((message) => message.method === "turn/start")).toBe(true);
 });

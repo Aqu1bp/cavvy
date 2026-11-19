@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, rpc, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, onReset, rpc, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, rewindTarget, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -1286,6 +1286,12 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         restore();
     };
+    // Its turns replaced (a rewind): those not drawn yet at the end, held back or still going in, were counted against
+    // the turns before, and would leave the end of these undrawn. Their last page is drawn, at once.
+    onCleanup(onReset(p.handle, () => {
+        if (heldBelow) unholdForEnd();
+        else setTrimmed(0);
+    }));
     onCleanup(onRenew(p.handle, () => {
         const was = keyed(turns(), { bottom: stick(), top: 0, anchor: reading, openWork: [...openWork] });
         return () => void placeAgain(was);

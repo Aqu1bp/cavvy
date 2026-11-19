@@ -123,7 +123,8 @@ describe("events", () => {
         const all = woken.map((w) => w.text).join("\n");
         // 400 redraws would have flooded it.
         expect(shell.monitor!.events).toBe(3);
-        expect(all).toContain("one\ntwo\n400%\n");
+        // In one notification or several: a slow runner can take past BATCH_MS to reach 400%, which then comes in its own.
+        expect([...all.matchAll(/<monitor-output[^>]*>\n([\s\S]*?)<\/monitor-output>/g)].flatMap((m) => m[1]!.split("\n").filter(Boolean))).toEqual(["one", "two", "400%"]);
         expect(all).toContain("exited with code 0 after 3 events");
     });
 

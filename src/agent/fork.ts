@@ -145,7 +145,9 @@ export async function readForkSource(file: string): Promise<Line[]> {
     const fh = await open(file, "r");
     try {
         const chunk = Buffer.allocUnsafe(1024 * 1024);
-        let rest = "";
+        // What follows a slice's last newline, kept as bytes (a slice can end inside a character), in pieces: one line
+        // longer than many slices isn't copied again for each.
+        let rest: Buffer[] = [];
         let pos = 0;
         let since = performance.now();
         for (;;) {
@@ -156,11 +158,11 @@ export async function readForkSource(file: string): Promise<Line[]> {
             const buf = chunk.subarray(0, bytesRead);
             const nl = buf.lastIndexOf(10);
             if (nl < 0) {
-                rest += buf.toString("utf-8");
+                rest.push(Buffer.from(buf));
                 continue;
             }
-            const text = rest + buf.subarray(0, nl).toString("utf-8");
-            rest = buf.subarray(nl + 1).toString("utf-8");
+            const text = Buffer.concat([...rest, buf.subarray(0, nl)]).toString("utf-8");
+            rest = [Buffer.from(buf.subarray(nl + 1))];
             for (const raw of text.split("\n")) {
                 if (!raw.trim()) continue;
                 try {
@@ -174,9 +176,10 @@ export async function readForkSource(file: string): Promise<Line[]> {
                 since = performance.now();
             }
         }
-        if (rest.trim()) {
+        const last = Buffer.concat(rest).toString("utf-8");
+        if (last.trim()) {
             try {
-                lines.push(JSON.parse(rest) as Line);
+                lines.push(JSON.parse(last) as Line);
             } catch {
                 // a torn last line
             }

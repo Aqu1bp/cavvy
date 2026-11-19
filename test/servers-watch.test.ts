@@ -357,3 +357,33 @@ test("more in a minute than the connection has reason to carry ends it, whatever
     expect(await closed.promise).toBe("too-much");
     expect(got).toBeLessThanOrEqual(100);
 });
+
+test("a server's sessions as last heard stay listed, none at work, where it can't be reached from the start", async () => {
+    let kept: unknown;
+    const kept1 = { read: () => undefined, write: (s: unknown) => void (kept = s) };
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                const row = (id: string, o: object) => ({ id, title: id, cwd: "/srv/app", projectName: "app", updatedAt: 2, createdAt: 1, messages: 2, pinned: false, settled: false, ...o });
+                if (m.method === "sessions.list") ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [row("old", { status: "idle", archived: true, live: false })] : [row("busy", { status: "running", archived: false, live: true })] }));
+            },
+        },
+    });
+    const first = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, kept: kept1 });
+    stops.push(() => (first.stop(), void srv.stop(true)));
+    first.start();
+    await until("its sessions to be written down", () => Array.isArray(kept));
+    first.stop();
+    // The next launch: the server can't be reached at all.
+    const next = new MachineWatch("box", { reach: async () => ({ status: "failed", problem: { message: "no route" } }) as never, changed: () => {}, notice: () => {}, retryMs: [60_000], kept: { read: () => JSON.parse(JSON.stringify(kept)), write: () => {} } });
+    stops.push(() => next.stop());
+    next.start();
+    await until("it to be unreachable", () => next.overview().state === "unreachable");
+    expect(next.overview().sessions.map((s) => [s.id, s.status, s.live, s.archived])).toEqual([
+        ["busy", "idle", false, false],
+        ["old", "idle", false, true],
+    ]);
+});

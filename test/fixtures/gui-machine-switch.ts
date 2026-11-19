@@ -29,6 +29,12 @@ Object.assign(globalThis, {
 
 const summary = (id: string, o: object = {}) => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
 const opened: { url: string; id: string }[] = [];
+/** Sessions made (session.create), and messages sent (session.send): where each went. */
+const made: { url: string; cwd: string; mode?: string }[] = [];
+const sent: { url: string; id: string; text: string }[] = [];
+/** Account picks (session.setAccount, accounts.setDefault): where each went. */
+const picked: { url: string; method: string; accountId: string }[] = [];
+const cli = (accounts: { id: string; name: string }[]) => [{ id: "claude-code", name: "Claude Code", kind: "agent", configured: true, requiresKey: false, agentCli: { accounts, defaultAccount: "default", installed: true, multiAccount: true } }];
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -52,19 +58,32 @@ class ServerSocket extends Socket {
             opened.push({ url: this.url, id: params.id });
             reply({ seq: 0, epoch: "e", state: { id: params.id, cwd: "/srv/app", busy: false, interactions: [] }, turns: [{ id: `${params.id}-t`, status: "done", startedAt: 1, prompt: { text: "hi" }, blocks: [] }], agents: [] });
         } else if (method === "models.list") reply(onBox ? [{ provider: "boxp", providerName: "Box's", status: "ok", models: [{ ref: "boxp:only-on-box", id: "only-on-box", name: "Only on box", provider: "boxp" }] }] : []);
-        else if (method.startsWith("fs.")) {
+        else if (method === "limits.get") reply(onBox ? [{ provider: "claude-code", accountId: "default", windows: [{ label: "Weekly", usedPercent: 91 }], reached: false, at: 1 }] : []);
+        else if (method === "providers.list") reply(cli(onBox ? [{ id: "default", name: "Default" }, { id: "work", name: "Work on box" }] : [{ id: "default", name: "Default" }]));
+        else if (method === "session.setAccount" || method === "accounts.setDefault") {
+            picked.push({ url: this.url, method, accountId: params.accountId ?? params.id });
+            reply(null);
+        } else if (method.startsWith("fs.")) {
             looked.push({ url: this.url, method });
             reply(method === "fs.mentions" ? [] : {});
-        } else if (method === "settings.get") reply({});
-        else if (method === "projects.recent") reply(onBox ? [] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
-        else if (method === "session.close" || method === "session.shown") reply(null);
+        } else if (method === "settings.get") reply(onBox ? { model: "boxp:only-on-box" } : {});
+        else if (method === "projects.recent") reply(onBox ? [{ path: "/srv/app", name: "app", exists: true, trusted: true, needsTrust: [] }, { path: "/srv/api", name: "api", exists: true, trusted: true, needsTrust: [] }] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
+        else if (method === "projects.inspect") reply({ path: params.path, exists: true });
+        else if (method === "session.create") {
+            made.push({ url: this.url, cwd: params.cwd, mode: params.mode });
+            reply({ seq: 0, epoch: "e", state: { id: `made-${made.length}`, cwd: params.cwd, busy: false, interactions: [] }, turns: [], agents: [] });
+        } else if (method === "session.send") {
+            sent.push({ url: this.url, id: params.id, text: params.text });
+            reply(null);
+        } else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
     }
 }
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((r) => setImmediate(r)); };
 
-const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, modelsFor, rpcFor, warmFor } = await import("../../gui/src/state/app");
+const { start, rpc, app, activate, forgetSession, handleFor, upsertSession, setApp, modelsFor, providersFor, limitsFor, rpcFor, warmFor, homeOn, homeSettings, machineFor, homeModeOf, homeProjects, homeDraftKey } = await import("../../gui/src/state/app");
+const { folderPickerOpen } = await import("../../gui/src/state/ui");
 Object.assign(rpc, { credentials: async () => ({ url: "ws://local.test/ws", token: "local-token" }) });
 try {
     start();
@@ -98,6 +117,16 @@ try {
     // What its composer offers and looks up is box's: its models, the files in its folder, the paths in what it says.
     assert.deepEqual(modelsFor("b1").flatMap((g) => g.models.map((m) => m.ref)), ["boxp:only-on-box"]);
     assert.deepEqual(modelsFor("l1"), app.models);
+    // Its accounts too: the ones signed in on box, and a pick switches the session there.
+    const names = (id: string | undefined) => providersFor(id).flatMap((p) => p.agentCli?.accounts.map((a) => a.name) ?? []);
+    assert.deepEqual(names("b1"), ["Default", "Work on box"], "box's accounts for box's session");
+    assert.deepEqual(names("l1"), ["Default"], "this computer's for its own");
+    // And its accounts' plan limits: box's "Default" isn't this computer's.
+    assert.deepEqual(Object.values(limitsFor("b1")).map((l) => l.windows[0]?.usedPercent), [91], "box's limits for box's session");
+    assert.equal(limitsFor("l1"), app.limits);
+    const { setAccount } = await import("../../gui/src/state/actions");
+    await setAccount("claude-code", "work");
+    assert.deepEqual(picked.map((x) => [x.method, x.url.includes("box"), x.accountId]), [["session.setAccount", true, "work"]], "the pick goes to box");
     await rpcFor("b1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
     await rpc.call("fs.exists", { sessionId: "b1", paths: ["README.md"] } as never);
     await rpcFor("l1").call("fs.mentions", { cwd: "/srv/app", query: "rea" });
@@ -111,23 +140,95 @@ try {
     assert.equal(app.activeId, "l1");
     assert.ok(handleFor("b1"), "box's session is kept open, for going back to it");
 
-    // New session with box's session on screen: on box, in its folder (the window goes there, as + on box's project
-    // does), not on this computer in a folder of box's. With the window's own on screen, here.
-    const { newSession, setArchived } = await import("../../gui/src/state/actions");
+    // New session with box's session on screen: Home on box, in its folder, in this window at once (not the window
+    // sent there and loaded again, which took 0.2-0.5 s, what was typed meanwhile going astray), nor on this computer
+    // in a folder of box's. With the window's own on screen, here.
+    const { newSession, setArchived, send } = await import("../../gui/src/state/actions");
     newSession(app.homeCwd);
     assert.deepEqual(switched, [], "a new session from the window's own stays here");
     assert.equal(app.activeId, undefined);
     await activate("b1");
     await settle();
+    const looking = looked.length;
+    newSession(app.homeCwd);
+    // Home, in the same moment: what's typed next goes in its composer.
+    assert.equal(app.activeId, undefined, "Home at once");
+    assert.equal(app.homeCwd, "/srv/app", "in box's folder");
+    assert.equal(homeOn(), "box", "on box");
+    await settle();
+    assert.deepEqual(switched, [], "the window stays where it is");
+    assert.equal(reloads, 0, "and isn't loaded again");
+    // What Home offers and looks up is box's: its models, its settings, the files in its folder.
+    assert.deepEqual(modelsFor(undefined).flatMap((g) => g.models.map((m) => m.ref)), ["boxp:only-on-box"]);
+    assert.equal(homeSettings().model, "boxp:only-on-box");
+    // And box's accounts: the one picked on its Home is box's default, not this computer's.
+    assert.deepEqual(names(undefined), ["Default", "Work on box"]);
+    picked.length = 0;
+    await setAccount("claude-code", "work");
+    assert.deepEqual(picked.map((x) => [x.method, x.url.includes("box"), x.accountId]), [["accounts.setDefault", true, "work"]], "Home's pick goes to box");
+    await rpcFor(undefined).call("fs.mentions", { cwd: "/srv/app", query: "rea" });
+    assert.deepEqual(looked.slice(looking).map((l) => l.url.includes("box")), [true], "Home's lookups go to box");
+    // Sent: made on box, in its folder, with box's own permission mode (none picked here), and opened here as box's.
+    assert.ok(await send("hello from home"));
+    assert.deepEqual(made.map((m) => [m.url.includes("box"), m.cwd, m.mode]), [[true, "/srv/app", undefined]], "made on box");
+    assert.equal(app.activeId, "made-1", "and shown");
+    assert.deepEqual(sent.map((m) => [m.url.includes("box"), m.id, m.text]), [[true, "made-1", "hello from home"]], "sent to box");
+    assert.deepEqual(machineFor("made-1"), { machine: "box" });
+    // New session from it: Home on box again. From the window's own: Home here.
+    newSession(app.homeCwd);
+    assert.equal(homeOn(), "box");
+    // Each machine's Home keeps what's picked on it, for the window's life: the permission mode (box's isn't put back
+    // to its default by going Home on it again, nor this computer's by box's), and its own draft.
+    const { setMode, chooseProject, openProject } = await import("../../gui/src/state/actions");
+    await setMode("default");
+    assert.equal(homeModeOf(), "default", "Manual picked on box's Home");
+    assert.equal(homeDraftKey(), "home@box", "box's Home has its own draft");
+    await settle();
+    // Box's projects, not this computer's; and its folders to choose from, not this computer's picker.
+    assert.deepEqual(homeProjects().map((p) => p.path), ["/srv/app", "/srv/api"], "box's projects");
+    void chooseProject(true);
+    const looking2 = looked.length;
+    await folderPickerOpen()!.link!.call("fs.dirs", { path: "~" });
+    assert.deepEqual(looked.slice(looking2).map((l) => l.url.includes("box")), [true], "box's folders");
+    folderPickerOpen()!.then(undefined);
+    // A project picked there: Home stays on box, in that folder.
+    await openProject("/srv/api", true);
+    assert.equal(homeOn(), "box", "Home stays on box");
+    assert.equal(app.homeCwd, "/srv/api");
+    assert.deepEqual(switched, [], "and the window stays here");
+    newSession(app.homeCwd);
+    assert.equal(homeModeOf(), "default", "box's pick kept after a new session there");
+    await activate("l1");
+    newSession(app.homeCwd);
+    assert.equal(homeOn(), undefined, "Home on this computer");
+    assert.equal(homeModeOf(), undefined, "this computer's Home isn't given box's pick");
+    assert.equal(homeDraftKey(), "home", "nor its draft");
+    assert.deepEqual(homeProjects().map((p) => p.path), ["/home/me/web"], "and lists this computer's projects");
+    assert.deepEqual(modelsFor(undefined), app.models);
+    await activate("made-1");
+    newSession(app.homeCwd);
+    assert.equal(homeOn(), "box");
+    assert.equal(homeModeOf(), "default", "box's pick kept after a visit to this computer's session");
+    await activate("l1");
+    newSession(app.homeCwd);
+    await activate("b1");
+    await settle();
+    // One of box's on screen but not opened here (its connection still being made, or box unreachable): Home here, in
+    // this computer's latest project, not in a folder of box's (nor the window sent to a box it may not reach).
+    upsertSession(summary("b8", { machine: "box", cwd: "/srv/other" }) as never);
+    setApp({ activeId: "b8", homeCwd: "/srv/other" });
     newSession(app.homeCwd);
     await settle();
-    assert.deepEqual(switched, [["box", undefined, "/srv/app"]], "a new session from box's goes to box");
-    assert.equal(app.activeId, "b1", "the window stays on box's session until it's there");
+    assert.equal(switched.length, 0, "the window stays here");
+    assert.equal(app.activeId, undefined);
+    assert.equal(app.homeCwd, "/home/me/web", "in this computer's latest project");
+    await activate("b1");
+    await settle();
     // Archived while on screen: Home here, in this computer's latest project (box's folder names nothing here).
     assert.ok(await setArchived("b1", true));
     assert.equal(app.activeId, undefined);
     assert.equal(app.homeCwd, "/home/me/web");
-    assert.equal(switched.length, 1, "and the window stays where it is");
+    assert.equal(switched.length, 0, "and the window stays where it is");
     // Deleted while on screen (here or in another window): the same.
     await activate("b1");
     assert.equal(app.homeCwd, "/srv/app");
