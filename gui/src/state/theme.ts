@@ -191,14 +191,13 @@ function putUp(s: Shown | undefined) {
     drawing = undefined;
     const before = untrack(up);
     if (before === s) return;
-    // The same look again (its contrast or glass changed): no crossfade for that. Nothing there before and nothing
-    // drawn now (a start with a theme without a scene): its colours are on <html> already (theme-boot.js).
+    // The same look again (its contrast or glass changed): no crossfade for that.
     const same = before && s && sceneKey(before) === sceneKey(s);
     // The scene of the theme the window started with: its colours have been up from the first paint, and the window
     // is still filling in under it, which a crossfade would show twice (its snapshot and the moved page); it just comes.
     const starting = !before && !anyUp && s?.id === startedWith;
     if (s) anyUp = true;
-    swap(() => setUp(s), !same && !starting && Boolean(before || s?.look.layers?.length));
+    swap(() => setUp(s), !same && !starting);
 }
 
 

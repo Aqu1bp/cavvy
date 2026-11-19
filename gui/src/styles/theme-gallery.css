@@ -97,11 +97,10 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    container-type: size;
 }
 
-/* Scaled to the tile, however wide the grid makes it: the tile is the stage's shape (16 / 10), so filling its width
-   covers it, as the window's scene covers the window. */
+/* Scaled to the tile when it's put up (ThemeGallery.tsx Picture): the tile is the stage's shape (16 / 10), so filling
+   its width covers it, as the window's scene covers the window. */
 .tg-stage {
     position: absolute;
     left: 0;
@@ -109,7 +108,6 @@
     width: 1600px;
     height: 1000px;
     transform-origin: 0 0;
-    transform: scale(calc(100cqw / 1600px));
 }
 
 /* The scene at rest as one picture (ThemeGallery.tsx Picture), hidden under its layers once they're up while it moves. */

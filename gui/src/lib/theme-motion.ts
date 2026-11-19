@@ -7,7 +7,7 @@
 
 import type { Layer, Motion } from "../../../src/themes/format";
 import { STEP_MS } from "./stream-clock";
-import { poseAt, poseOf, r, times, transformOf } from "./theme-pose";
+import { poseAt, poseOf, r, times, transformOf, type Pose } from "./theme-pose";
 
 export { poseAt, restPose, transformOf, type Pose } from "./theme-pose";
 
@@ -91,6 +91,27 @@ export interface LayerAnimation {
 }
 
 /**
+ * Where in the pass each of a motion's `stretches` + 1 stops is sampled: at its own place, or at a keyframe within half
+ * a stretch of it that differs from it most. A keyframe between two stops (a flash that peaks and is gone within a
+ * stretch) is then shown, up to half a stretch early or late, instead of never.
+ */
+function sampledAt(m: Motion, stretches: number): number[] {
+    const at = Array.from({ length: stretches + 1 }, (_, i) => i / stretches);
+    const apart = (a: Pose, b: Pose) => Math.max(Math.abs(a.opacity - b.opacity), Math.abs(a.x - b.x) / 100, Math.abs(a.y - b.y) / 100, Math.abs(a.rotate - b.rotate) / 90, Math.abs(a.scale - b.scale));
+    const most = new Map<number, number>();
+    for (const k of times(m.keyframes)) {
+        const i = Math.round(k * stretches);
+        if (Math.abs(k - at[i]!) < 1e-9) continue;
+        const d = apart(poseAt(m, k), poseAt(m, at[i]!));
+        if (d > (most.get(i) ?? 0)) {
+            most.set(i, d);
+            at[i] = k;
+        }
+    }
+    return at;
+}
+
+/**
  * The animation for a layer's motion, under `name`. One pass is cut into stretches a whole number of steps long, about
  * a quarter second each (the curve's sampled at their ends), and each stretch is walked in steps of `frame` (frameFor).
  */
@@ -101,9 +122,10 @@ export function layerAnimation(m: Motion, name: string, baseOpacity = 1, frame =
     const stretch = Math.max(grid, Math.round(wanted / stretches / grid) * grid);
     const durationMs = stretch * stretches;
     const fades = m.keyframes.some((f) => f.opacity !== undefined) || baseOpacity !== 1;
+    const at = sampledAt(m, stretches);
     const lines: string[] = [];
     for (let i = 0; i <= stretches; i++) {
-        const p = poseAt(m, i / stretches);
+        const p = poseAt(m, at[i]!);
         const pct = r((i / stretches) * 100, 4);
         lines.push(`${pct}%{transform:${transformOf(p)}${fades ? `;opacity:${r(p.opacity * baseOpacity, 3)}` : ""}}`);
     }

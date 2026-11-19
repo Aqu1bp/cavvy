@@ -8,7 +8,7 @@ import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
-import { reportError, toast } from "../state/app";
+import { app, homeCwdAfter, reportError, toast } from "../state/app";
 import { refreshThemes, themeRpc } from "../state/theme-events";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
@@ -45,7 +45,7 @@ let serial = 0;
 const [settled, setSettled] = createSignal(0);
 
 /**
- * A look's scene at rest, scaled to the tile (theme-gallery.css), about `width` wide; its layers move while `moving`.
+ * A look's scene at rest, scaled to the tile, about `width` wide; its layers move while `moving`.
  * At rest it's one picture (a canvas drawn once at the tile's size), not each layer: with them all, every step of a
  * window's resize drew the gallery's hundred-odd layers again (measured: 2.6 s of GPU work in a 2.8 s resize). The
  * layers are put up only while it moves, and the picture hidden once they're drawn.
@@ -98,7 +98,7 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
             <canvas class="tg-still" ref={still} />
             <Show when={p.moving}>
                 <style>{anims.map((a) => a?.keyframes ?? "").join("\n")}</style>
-                <span class="tg-stage" ref={stage}>
+                <span class="tg-stage" ref={stage} style={{ transform: `scale(${still.getBoundingClientRect().width / STAGE.width})` }}>
                     <For each={(p.look.layers ?? []).filter((l) => l.when !== "working")}>
                         {(layer) => {
                             const i = p.look.layers!.indexOf(layer);
@@ -136,8 +136,9 @@ function Face(p: { look?: Look; scheme: Scheme; moving: boolean }): JSX.Element 
     return (
         // With no look it's the app's own (its data-theme gives it that scheme's tokens, over a theme's on <html>).
         <span class="tg-face" data-theme={p.look ? undefined : p.scheme} style={vars() ?? {}}>
-            <Show when={p.look?.layers?.length}>
-                <Picture look={p.look!} width={136} moving={p.moving} />
+            {/* Made again for another look (a scheme switched): its still and its moving layers come from the same one. */}
+            <Show when={p.look?.layers?.length ? p.look : undefined} keyed>
+                {(look) => <Picture look={look} width={136} moving={p.moving} />}
             </Show>
             <span class="tg-ui">
                 <i />
@@ -245,7 +246,8 @@ export function ThemeGallery(): JSX.Element {
                             class="tg-pick tg-make"
                             onClick={() => {
                                 setSettingsTab(undefined);
-                                newSession();
+                                // On this Mac, whatever machine the session on screen is on: its sessions have the theme tools.
+                                newSession(app.activeId ? homeCwdAfter(app.activeId) : undefined, undefined);
                                 requestAnimationFrame(() => askAtHome());
                             }}
                         >

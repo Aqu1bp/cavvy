@@ -67,6 +67,9 @@ describe("checking a theme", () => {
         expect(svgProblem('<svg><foreignObject/></svg>')).toContain("foreignObject");
         expect(svgProblem('<svg><script/></svg>')).toContain("<script>");
         expect(svgProblem('<svg><rect fill="url(#g)"/><use href="#a"/><image href="data:image/png;base64,AA"/></svg>')).toBeUndefined();
+        // Quoted, in an attribute or in CSS, a reference to itself is still one.
+        expect(svgProblem(`<svg><rect fill="url('#g')"/><style>rect{fill:url( "#g" )}</style></svg>`)).toBeUndefined();
+        expect(svgProblem(`<svg><rect fill="url('https://x')"/></svg>`)).toContain("url()");
     });
 
     test("an SVG that would animate itself is refused: an image runs it every frame, out of the window's reach", () => {
@@ -315,6 +318,13 @@ describe("a scene's motion", () => {
             for (const m of a.keyframes.matchAll(/([a-z-]+):/g)) expect(["transform", "opacity"]).toContain(m[1]!);
             expect(a.animation).toContain("infinite");
         }
+    });
+
+    test("a keyframe between two of its stops still shows: a flash isn't sampled away", () => {
+        // Dark, a flash at 0.1 of a 6 s pass, dark again by 0.14: the stops fall every 0.25 s (1/24 of the pass).
+        const flash = { duration: 6, loop: "repeat" as const, easing: "linear" as const, keyframes: [{ at: 0, opacity: 0 }, { at: 0.08, opacity: 0 }, { at: 0.1, opacity: 1 }, { at: 0.14, opacity: 0 }, { at: 1, opacity: 0 }] };
+        const opacities = [...layerAnimation(flash, "f").keyframes.matchAll(/opacity:([\d.]+)/g)].map((m) => Number(m[1]));
+        expect(Math.max(...opacities)).toBe(1);
     });
 
     test("steps each layer as seldom as it can without its steps showing", async () => {

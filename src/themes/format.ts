@@ -139,7 +139,7 @@ export function svgProblem(svg: string): string | undefined {
     if (/<foreignObject[\s/>]/i.test(t)) return "has a <foreignObject>, which isn't drawn";
     if (/\son[a-z]+\s*=/i.test(t)) return "has an event handler attribute, which an image never runs";
     if (/(?:href|src)\s*=\s*["']\s*(?!#|data:)/i.test(t)) return "links to something outside itself, which an image can't load: use #ids or data: URLs";
-    if (/url\(\s*["']?\s*(?!#|data:)/i.test(t)) return "has a url() outside itself, which an image can't load: use url(#id)";
+    if (/url\((?!\s*["']?\s*(?:#|data:))/i.test(t)) return "has a url() outside itself, which an image can't load: use url(#id)";
     if (/@import/i.test(t)) return "has an @import, which an image can't load";
     // An image runs these on its own, every frame and out of the window's reach: motion goes in the layer's "motion".
     if (new RegExp(`<${PREFIX}(?:animate\\w*|set|discard)[\\s/>]`, "i").test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
