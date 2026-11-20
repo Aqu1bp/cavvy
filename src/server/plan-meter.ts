@@ -38,6 +38,8 @@ export interface PlanNow {
     reached: boolean;
     /** Windows of some models (scope) reached now: those models are stopped, the plan's others aren't. */
     partly: WindowNow[];
+    /** Reached with no window to show for it (a bare rejection): the whole plan's, for every model. */
+    planStop: boolean;
     /** Reached, but turns go on past it, billed to credits. */
     usingCredits: boolean;
     /** When a reached limit lifts (ms), when known. */
@@ -63,11 +65,10 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
     const planWide = (w: WindowNow) => w.reached && !w.scope;
     const partly = windows.filter((w) => w.reached && w.scope);
     // A stop the CLI reported (a turn was refused) stands until its own reset; with none known, until every window
-    // has reset. It's a model's limit's (Fable's), not the plan's, only when the CLI said so (stopScope) and that
-    // window is reached: never by inference, so a stop of the whole plan is never hidden.
+    // has reset. The windows decide what's reached: the stop adds something only when no window is reached (a bare
+    // rejection, a turn's stop with nothing else said), and then it's the whole plan's, for every model.
     const stopLive = Boolean(l.reached) && (l.resetsAt !== undefined ? !passed(l.resetsAt) : !(windows.length && windows.every((w) => w.reset)));
-    const scopedStop = stopLive && l.stopScope !== undefined && partly.some((w) => w.scope === l.stopScope);
-    const planStop = stopLive && !scopedStop;
+    const planStop = stopLive && !windows.some((w) => w.reached);
     const reached = windows.some(planWide) || planStop;
     const blocking: (number | undefined)[] = windows.filter(planWide).map((w) => w.resetsAt);
     if (planStop && (l.resetsAt !== undefined || !blocking.length)) blocking.push(l.resetsAt);
@@ -82,6 +83,7 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
         windows,
         reached,
         partly,
+        planStop,
         usingCredits: usingCredits(l, reached, (i) => planWide(windows[i]!)),
         liftsAt,
         reportedAt,
@@ -95,6 +97,9 @@ export function reportedOf(l: PlanLimits, now: number): number {
     return Math.min(l.at, ...l.windows.filter((w) => w.resetsAt === undefined || w.resetsAt > now).map((w) => w.at ?? l.at));
 }
 
+/** Aliases a CLI serves as one model or another, by mode: each may be any of them. */
+const MODE_ALIASES: Readonly<Record<string, readonly string[]>> = { opusplan: ["opus", "sonnet"] };
+
 /**
  * Whether a model limit's window (its scope: a model family, a model slug) covers a model: its id has the scope's word,
  * by the model the CLI said it served (`resolved`) where known, else by its id. An alias that names no model
@@ -104,6 +109,8 @@ export function reportedOf(l: PlanLimits, now: number): number {
 export function covers(scope: string, model: { id: string; resolved?: string } | undefined): boolean | undefined {
     if (!model) return undefined;
     const id = (model.resolved || model.id).toLowerCase();
+    // An alias served as one model or another by mode ("opusplan": Opus in plan mode, Sonnet otherwise) may be either.
+    if (!model.resolved && MODE_ALIASES[id]) return MODE_ALIASES[id]!.includes(scope) ? undefined : false;
     if (id.includes(scope)) return true;
     return !model.resolved && /^(default|auto|best)?$/.test(id) ? undefined : false;
 }

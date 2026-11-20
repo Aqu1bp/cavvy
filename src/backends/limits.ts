@@ -110,10 +110,10 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId =
     const blockingResets = [resetsAt, latestReset(blocking)].filter((t): t is number => t !== undefined);
     const lifts = reached && !blocking.some((w) => w.resetsAt === undefined) && blockingResets.length ? Math.max(...blockingResets) : undefined;
     const credits = claudeCredits(i);
-    // Which models the stop is: only as the CLI said, naming a window of some models (Fable's). One naming none (and
-    // listing none) repeats the last named rejection, if that still stands ("*", resolved by mergeLimits).
-    const stopScope = status !== "rejected" ? undefined : named ? named.scope : !listed ? SAME_STOP : undefined;
-    return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, ...(stopScope ? { stopScope } : {}), ...(credits === undefined ? {} : { credits }), at }, partial: !listed };
+    // A rejection of a window of some models (Fable's) says whether extra usage carries that window: kept on it, so a
+    // later report about the plan's other models (Opus on extra usage) doesn't speak for it.
+    if (status === "rejected" && named?.scope && credits !== undefined) named.credits = credits;
+    return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, ...(credits === undefined ? {} : { credits }), at }, partial: !listed };
 }
 
 /**
@@ -324,9 +324,6 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
     return fullest?.resetsAt;
 }
 
-/** PlanLimits.stopScope of a rejection that names no window: the same stop as the last named one, if it still stands. */
-export const SAME_STOP = "*";
-
 /** Two reports' resets this close are the same window period's. */
 const SAME_PERIOD_MS = 10 * 60_000;
 
@@ -354,11 +351,7 @@ export interface MergeHow {
  */
 export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean, how: boolean | MergeHow = false): PlanLimits {
     const { full = false, statusUnsaid = false } = typeof how === "boolean" ? { full: how } : how;
-    if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) {
-        if (next.stopScope !== SAME_STOP) return next;
-        const { stopScope: _, ...rest } = next;
-        return rest;
-    }
+    if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const windows = prev.windows.flatMap((w) => {
         const n = next.windows.find((n) => n.id === w.id);
@@ -373,6 +366,9 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
         if (statusUnsaid && w.resetsAt !== undefined && w.resetsAt > next.at && (merged.resetsAt === undefined || Math.abs(merged.resetsAt - w.resetsAt) <= SAME_PERIOD_MS)) {
             merged = { ...merged, resetsAt: w.resetsAt, ...(n.reached === undefined && w.reached !== undefined ? { reached: w.reached } : {}) };
         }
+        // Said to be at its limit with no reset known: there's no telling whether /usage's figures are of a new period,
+        // so it stays at its limit until a report says it's allowed (or its new reset, once known, passes).
+        else if (statusUnsaid && w.reached === true && w.resetsAt === undefined && n.reached === undefined) merged = { ...merged, reached: true };
         // An update that doesn't say whether a limit has credits leaves what was said.
         if (n.credits === undefined && w.credits !== undefined) merged = { ...merged, credits: w.credits };
         return [merged];
@@ -392,12 +388,7 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : (partial || statusUnsaid) && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     // Codex's updates leave credits out (null): what the last read said stands until one says otherwise.
     const credits = next.credits ?? prev.credits;
-    // Which models the stop is, only as the CLI said: a rejection naming a window of some models says so; one naming
-    // none repeats the last, while that stands; any other stop (a plan-wide window's, a turn's own) is the plan's;
-    // a report that doesn't speak of a stop leaves what was said, while the stop stands.
-    const prevScope = prev.reached && live(prev.resetsAt) ? prev.stopScope : undefined;
-    const stopScope = !reached ? undefined : next.reached === true ? (next.stopScope === SAME_STOP ? prevScope : next.stopScope) : prevScope;
-    return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(stopScope ? { stopScope } : {}), ...(credits === undefined ? {} : { credits }), at: next.at };
+    return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(credits === undefined ? {} : { credits }), at: next.at };
 }
 
 /** "4:40 PM" today, else "Mon 20 Oct, 9:00 AM" (local time). */

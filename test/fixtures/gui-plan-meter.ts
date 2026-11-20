@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { planLimitKey, type AccountInfo } from "../../src/server/protocol";
-import { limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine } from "../../gui/src/lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine } from "../../gui/src/lib/limits";
 import { contextView } from "../../gui/src/lib/context";
 import { cost, tokens } from "../../gui/src/lib/format";
 
@@ -38,7 +38,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); }, get activeId() { return activeId(); } },
         handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
-        now: () => timestamp, planLimitKey, limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine, contextView, cost, tokens,
+        now: () => timestamp, planLimitKey, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine, contextView, cost, tokens,
         // Another machine's session has that machine's providers and limits, asked over the connection to it.
         providersFor: () => (options.away === undefined ? [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }] : options.machineProviders ?? []),
         limitsFor: () => (options.away === undefined ? limits() : options.machineLimits ?? {}),
@@ -210,7 +210,8 @@ test("Home uses default account; session uses its own account", () => {
             m.wire();
             expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work usage: Weekly 100%" : "CLI · Default usage: 5-hour 100%");
             m.show();
-            expect(text(m.root)).toContain(home ? "CLI · Work, weekly limit." : "CLI · Default, 5-hour limit.");
+            // Named by the limit that stops it, then whose plan it is.
+            expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work." : "5-hour limit reachedCLI · Default.");
             expect(m.button("Compact now").props["aria-disabled"]).toBe(home ? true : undefined);
         } finally { m.dispose(); }
     }

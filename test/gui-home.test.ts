@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
 import { componentCode, elements, type Element } from "./gui-component-harness";
 import { ago } from "../gui/src/lib/format";
-import { limitAlternatives, limitBadge, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine } from "../gui/src/lib/limits";
+import { limitAlternatives, limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine } from "../gui/src/lib/limits";
 
 const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
 // Keyed, its child gets the value; otherwise an accessor, as Solid's does.
@@ -410,7 +410,8 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
     // A model's limit (Fable's) counts on Home only for a model it covers, reached or not; never for the account's badge.
     const fable = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable" } as any], { reached: false });
-    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable" })).toMatchObject({ pct: 100, reached: false, window: "weekly Fable", scope: "fable" });
+    // Reached for a Fable model: its limit, though not the plan's.
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable" })).toMatchObject({ pct: 100, reached: true, window: "weekly Fable", scope: "fable" });
     expect(nearLimit(meterOf(fable, Date.now()), { id: "opus" })).toBeUndefined();
     expect(nearLimit(meterOf(fable, Date.now()))).toBeUndefined();
     const near = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 86, scope: "fable" } as any]);
@@ -442,7 +443,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
         providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => noon, limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine,
+        now: () => noon, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),

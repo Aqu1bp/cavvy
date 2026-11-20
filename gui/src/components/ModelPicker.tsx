@@ -13,7 +13,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
-import { limitBadge, meterOf, nearLimit, planTitle, scopeName, windowShort, type NearLimit } from "../lib/limits";
+import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, windowShort, type NearLimit } from "../lib/limits";
 import { covers } from "@shared/plan-meter";
 import { now } from "../lib/clock";
 
@@ -395,20 +395,20 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     };
 
     /**
-     * A model stopped by a model limit (Fable's) of its account's plan, while the plan's others go on: that window, and
-     * whether it's sure. The session's own model by the one its CLI served (as the composer); an alias not served yet
-     * may be under it.
+     * What stops a model on its account's plan, when its row has to say it: a model's limit (Fable's) that covers it
+     * (the session's own model by the one its CLI served, as the composer; an alias not served yet may be under it),
+     * or the plan's own where the account's badge isn't in view (search, Favorites).
      */
     const modelLimit = (m: ModelSummary) => {
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
-        if (!meter || meter.reached) return undefined;
         const served = p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined;
-        for (const w of meter.partly) {
-            const c = covers(w.scope!, { id: m.id, resolved: served });
-            if (c !== false) return { w, sure: c === true };
-        }
-        return undefined;
+        const model = { id: m.id, resolved: served };
+        const stop = limitFor(meter, model);
+        if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;
+        const name = stop.window ? `${limitName(stop.window)} limit` : "Limit";
+        const sure = !stop.window?.scope || covers(stop.window.scope, model) === true;
+        return `${sure ? `${name} reached` : `May be under the ${name}, reached`}${stop.resets ? `, resets ${stop.resets}` : ""}`;
     };
     const rowView = (r: Row) => {
         const name = modelName(r.m);
@@ -451,7 +451,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                         <span class="mr-name truncate">{name}</span>
                         {/* Its model limit reached: marked as an account at its limit is. */}
                         <Show when={stopped()}>
-                            {(s) => <span class="mp-acct-lv full mr-lim" title={`${s().sure ? `${scopeName(s().w.scope!)} limit reached` : `May be under the ${scopeName(s().w.scope!)} limit, reached`}${s().w.resets ? `, resets ${s().w.resets}` : ""}`}>limit</span>}
+                            {(title) => <span class="mp-acct-lv full mr-lim" title={title()}>limit</span>}
                         </Show>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>

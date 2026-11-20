@@ -14,6 +14,8 @@ export interface MeterWindow {
     resets?: string;
     /** When it reset, once that has passed since the report ("9:52 AM", "Wed"): usage started again then. */
     reset?: string;
+    /** When it resets (ms), when known: which of several lifts last. */
+    resetsAt?: number;
     reached: boolean;
     /** The model family it counts, for a window of some models' ("fable"): reached, it stops those only. */
     scope?: string;
@@ -27,6 +29,8 @@ export interface Meter {
     reached: boolean;
     /** Windows of some models reached now ("Weekly Fable"): those models are stopped, the plan's others aren't. */
     partly: MeterWindow[];
+    /** Reached with no window to show for it (a bare rejection): the whole plan's, for every model. */
+    planStop: boolean;
     /** Reached, but turns go on past it, billed to credits (Codex) or extra usage (Claude Code). */
     usingCredits: boolean;
     /** When a reached limit resets, as a phrase ("4:40 PM, in 2h 5m"). */
@@ -77,6 +81,7 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
         pct: w.pct,
         reached: w.reached,
         ...(w.resetsAt === undefined ? {} : w.reset ? { reset: resetLabel(w.resetsAt, now) } : { resets: resetLabel(w.resetsAt, now, w.reached) }),
+        ...(w.resetsAt === undefined ? {} : { resetsAt: w.resetsAt }),
         ...(w.scope ? { scope: w.scope } : {}),
         ...(w.credits === undefined ? {} : { credits: w.credits }),
     }));
@@ -84,6 +89,7 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
         windows,
         reached: p.reached,
         partly: p.partly.map((w) => windows[p.windows.indexOf(w)]!),
+        planStop: p.planStop,
         usingCredits: p.usingCredits,
         resets: p.liftsAt ? resetLabel(p.liftsAt, now, true) : undefined,
         asOf: p.stale ? `as of ${sameDay(p.reportedAt, now) ? clock(p.reportedAt) : resetLabel(p.reportedAt, now, true)}` : undefined,
@@ -147,24 +153,20 @@ export interface NearLimit {
  */
 export function nearLimit(m: Meter | undefined, model?: { id: string; resolved?: string }): NearLimit | undefined {
     if (!m) return undefined;
-    // A model's limit (Fable's) counts only for a model it covers (or may), however full: not for another model, nor
-    // for an account as a whole (no model: the picker's badge).
-    const live = m.windows.filter((w) => !w.reset && !(w.scope && (!model || covers(w.scope, model) === false)));
-    const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
-    // The plan's limit reached comes first, with when it lifts: a model's (Fable's) can't say more than that.
-    if (m.reached) {
-        const w = live.find((w) => w.reached && !w.scope);
-        return { pct: 100, reached: true, ...(w ? { window: w.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()) } : {}), ...(m.resets ?? w?.resets ? { resets: m.resets ?? w?.resets } : {}) };
+    // The plan's stop with no window to show (a bare rejection): every model's, until it lifts.
+    if (m.planStop) return { pct: 100, reached: true, ...(m.resets ? { resets: m.resets } : {}) };
+    // The limits that apply to this model (no model: the account's own, its plan's windows only).
+    const live = model ? applies(m, model) : m.windows.filter((w) => !w.reset && !w.scope);
+    const reached = live.filter((w) => w.reached);
+    const named = (w: MeterWindow) => w.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase());
+    // At a limit: the one that lifts last, full, whatever share the CLI last gave (a window rejected at 97%).
+    if (reached.length) {
+        const w = lastToLift(reached);
+        return { pct: 100, reached: true, window: named(w), ...(w.resets ? { resets: w.resets } : {}), ...(w.scope ? { scope: w.scope } : {}) };
     }
-    // A reached window is the one to name, whatever another's percentage.
-    const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
-    const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
-    // At its limit is full, whatever share the CLI last gave (a window rejected at 97%): as the rail's card says.
-    const pct = w ? (w.reached ? 100 : used(w)) : 0;
-    if (pct < 80) return undefined;
-    // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
-    const resets = w?.resets ?? m.resets;
-    return { pct: Math.min(100, Math.round(pct)), reached: false, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}), ...(w?.reached && w.scope ? { scope: w.scope } : {}) };
+    const w = live.filter((w) => w.pct !== undefined).sort((a, b) => b.pct! - a.pct!)[0];
+    if (!w || w.pct! < 80) return undefined;
+    return { pct: Math.min(100, Math.round(w.pct!)), reached: false, window: named(w), ...(w.resets ? { resets: w.resets } : {}) };
 }
 
 /** An account's badge in the model picker: "limit" once its plan's limit is reached, else its share ("94%"); `long` in its list. A model's own limit marks that model's row. */
@@ -177,18 +179,38 @@ export function scopeName(scope: string): string {
     return scope.charAt(0).toUpperCase() + scope.slice(1);
 }
 
+/** A window as a limit is named: a model family's by the family ("Fable"), the plan's by its length ("Weekly", "5-hour"). */
+export function limitName(w: Pick<MeterWindow, "label" | "scope">): string {
+    return w.scope ? scopeName(w.scope) : w.label;
+}
+
 /**
- * What a turn on `model` runs into now: the plan's limit, or a reached window of some models that covers it (or
- * may: an alias like "default" can't be told). Undefined when nothing stops it. `credits`: it goes on, on credits.
+ * The limits that apply to a model: the plan's own windows, and the windows of some models (Fable's) that cover it
+ * (or may: an alias not served yet). A plan's stop with no window reached (a bare rejection) applies to every model.
  */
-export function limitFor(m: Meter | undefined, model: { id: string; resolved?: string } | undefined): { window?: MeterWindow; credits: boolean; scope?: string } | undefined {
+function applies(m: Meter, model: { id: string; resolved?: string } | undefined): MeterWindow[] {
+    return m.windows.filter((w) => !w.reset && (!w.scope || (model !== undefined && covers(w.scope, model) !== false)));
+}
+
+/**
+ * What a turn on `model` runs into now: its reached limit that lifts last ("Fable", "Weekly"), or the plan's stop with
+ * none to show. Undefined when nothing stops it. `credits`: it goes on, on credits, for every limit reached: any
+ * that stops turns wins.
+ */
+export function limitFor(m: Meter | undefined, model: { id: string; resolved?: string } | undefined): { window?: MeterWindow; credits: boolean; resets?: string } | undefined {
     if (!m) return undefined;
-    const covering = m.partly.filter((w) => covers(w.scope!, model) !== false);
-    if (!m.reached && !covering.length) return undefined;
-    // Several apply (the plan's, on credits, and Fable's, with none): any that stops turns wins.
-    const credits = (!m.reached || m.usingCredits) && covering.every((w) => w.credits === true);
-    if (m.reached) return { window: m.windows.find((w) => w.reached && !w.scope), credits };
-    return { window: covering[0], credits, scope: covering[0]!.scope };
+    if (m.planStop) return { credits: m.usingCredits, ...(m.resets ? { resets: m.resets } : {}) };
+    const reached = applies(m, model).filter((w) => w.reached);
+    if (!reached.length) return undefined;
+    // A model's window by its own say, else the plan's; the plan's windows by the plan's (usingCredits).
+    const credits = reached.every((w) => (w.scope ? w.credits === true : m.usingCredits && w.credits !== false));
+    const last = lastToLift(reached);
+    return { window: last, credits, ...(last.resets ? { resets: last.resets } : {}) };
+}
+
+/** The reached window that lifts last: one with no known reset counts as last. */
+function lastToLift(ws: MeterWindow[]): MeterWindow {
+    return ws.reduce((a, b) => (b.resetsAt === undefined || (a.resetsAt !== undefined && b.resetsAt > a.resetsAt) ? b : a));
 }
 
 /** A plan as every surface names it (plan-meter.ts planTitle), from what the server lists of its CLI. */

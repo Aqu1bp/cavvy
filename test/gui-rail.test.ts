@@ -348,11 +348,13 @@ test("a model's limit reached (Fable's) is amber and says which; the plan's othe
     // A window of the whole plan at 95% is red, as its row is (windowTone): the chip follows the plan's own figure.
     const [high] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [{ ...all[key("claude-code")]!.windows[0]!, usedPercent: 95 }, all[key("claude-code")]!.windows[1]!] } }, providers: [ultra], now: NOW });
     expect(high).toMatchObject({ pct: 95, tone: "danger", reached: false });
-    // A stop the CLI said was Fable's isn't the plan's; one it didn't say of is, though Fable's window is reached.
-    const [stop] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000, stopScope: "fable" } }, providers: [ultra], now: NOW });
+    // A stop beside a reached Fable window: the windows decide (it adds nothing); with no window reached, it's the plan's.
+    const [stop] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
     expect(stop).toMatchObject({ reached: false, tone: "warn" });
-    const [plain] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
-    expect(plain).toMatchObject({ reached: true, tone: "danger" });
+    const [bare] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [all[key("claude-code")]!.windows[0]!], reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
+    expect(bare).toMatchObject({ reached: true, tone: "danger" });
+    // And its tooltip says so, not only its ring.
+    expect(bare!.detail.split("\n")[1]).toMatch(/^Reached, resets [A-Za-z]+\.?$/);
     // The chip's figure is the plan's own window, never a model's, even one fuller and not reached.
     const opus = { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 96, resetsAt: NOW + 3 * 86_400_000, scope: "opus" };
     const [headline] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [all[key("claude-code")]!.windows[0]!, opus] } }, providers: [ultra], now: NOW });

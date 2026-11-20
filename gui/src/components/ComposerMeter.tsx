@@ -5,7 +5,7 @@ import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine } from "../lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
@@ -161,8 +161,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                         <section class={`cx-limit ${st().credits ? "credits" : ""}`} aria-label="Plan limit">
                             <Gauge size={15} aria-hidden="true" />
                             <div>
-                                <b>{`${st().scope ? `${scopeName(st().scope!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</b>
-                                <span>{name()}{st().window ? `, ${st().window!.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase())} limit` : ""}.<Show when={(st().scope ? undefined : meter()?.resets) ?? st().window?.resets}>{(r) => <> Resets {r()}.</>}</Show></span>
+                                {/* Named by the limit that stops this session, the one that lifts last: "Fable limit reached", "Weekly limit reached". */}
+                                <b>{`${st().window ? `${limitName(st().window!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</b>
+                                <span>{name()}.<Show when={st().resets}>{(r) => <> Resets {r()}.</>}</Show></span>
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>

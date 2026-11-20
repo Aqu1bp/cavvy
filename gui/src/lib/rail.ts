@@ -239,7 +239,8 @@ export function railFoot(o: {
         const line = !meter.reached && !partly && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
         // Only a model's limit reached: said under the plan's name, in the tooltip and the card, not only to a screen reader.
         const note = partly ? brief : undefined;
-        const detail = [head, note, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
+        // A stop with no window to show for it (a bare rejection) is what makes it red: said in the tooltip too.
+        const detail = [head, note ?? (meter.planStop ? brief : undefined), ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
         // The card's rows: a window that has reset since the report has no figure to show, only when it reset.
         const windows = meter.windows.map((w): RailWindow => {
             const shown = w.pct === undefined ? undefined : Math.min(100, w.pct);

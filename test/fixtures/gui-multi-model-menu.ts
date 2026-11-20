@@ -4,7 +4,7 @@ import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/so
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
 import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
-import { limitBadge, meterOf, nearLimit, planTitle, scopeName, windowShort } from "../../gui/src/lib/limits";
+import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, windowShort } from "../../gui/src/lib/limits";
 import { covers } from "../../src/server/plan-meter";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
@@ -89,7 +89,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, windowShort, planTitle, scopeName, covers, tokens, now: () => 0,
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, limitFor, limitName, windowShort, planTitle, covers, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
@@ -310,6 +310,24 @@ test("an alias row: the session's by the model its CLI served; another not serve
     const unknown = picker(true, opts());
     unknown.tabs()[2].click();
     expect(marks(unknown)).toEqual([expect.stringMatching(/^May be under the Fable limit, reached, resets /), expect.stringMatching(/^Fable limit reached/)]);
+});
+
+test("the plan at its limit: rows say so where the account's badge isn't shown (search), not under it", () => {
+    const opus = { ref: "cli:opus", id: "opus", name: "Opus", provider: "cli" };
+    const week = Date.now() + 86_400_000;
+    const f = picker(true, {
+        groups: [{ provider: "cli", providerName: "CLI", models: [opus] }],
+        providers: [{ id: "cli", name: "CLI", agentCli: { accounts: [{ id: "default", name: "Default" }, { id: "w", name: "Work" }], defaultAccount: "default" } }],
+        limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: true, at: Date.now(), windows: [{ id: "seven_day", label: "Weekly", usedPercent: 100, reached: true, resetsAt: week }] } },
+    });
+    const mark = () => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick") && text(n).startsWith("Opus")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("mr-lim"))?.props.title ?? "");
+    f.tabs()[2].click();
+    // Its provider's list: the account's badge says it.
+    expect(text(f.accountButton())).toBe("Defaultlimit");
+    expect(mark()).toEqual([""]);
+    // Searched: no badge in view, so the row does.
+    f.search().props.onInput({ currentTarget: { value: "opus" } });
+    expect(mark()).toEqual([expect.stringMatching(/^Weekly limit reached, resets /)]);
 });
 
 test("another machine's session opened here is offered that machine's accounts, not this computer's, limits or Add account", () => {
