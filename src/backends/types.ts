@@ -65,6 +65,16 @@ export interface BackendPermission {
     callId?: string;
     /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
     hookDecision?: "allow" | "ask";
+    /**
+     * A command the backend runs in this folder, outside the session's (Grok, Antigravity; Codex's come as `cd <folder> && …`):
+     * asked about, whatever the rules say, but in Bypass, where it's checked as run there.
+     */
+    elsewhere?: string;
+    /**
+     * The CLI asked while running in its own bypass mode (Claude Code): it asks nothing there but what a hook of the
+     * user's says to ask about, so this one is the user's to answer, in Bypass too.
+     */
+    ownBypassAsk?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**
