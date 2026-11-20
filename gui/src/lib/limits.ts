@@ -27,6 +27,8 @@ export interface Meter {
     resets?: string;
     /** "as of 2:02 PM" when the numbers may be out of date. */
     asOf?: string;
+    /** When the oldest figure shown was reported (ms). */
+    reportedAt: number;
     /** The fullest window that hasn't reset since the report, for the compact chip. */
     top?: MeterWindow;
 }
@@ -75,7 +77,8 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
         reached: p.reached,
         usingCredits: p.usingCredits,
         resets: p.liftsAt ? resetLabel(p.liftsAt, now, true) : undefined,
-        asOf: p.stale ? `as of ${sameDay(l.at, now) ? clock(l.at) : resetLabel(l.at, now, true)}` : undefined,
+        asOf: p.stale ? `as of ${sameDay(p.reportedAt, now) ? clock(p.reportedAt) : resetLabel(p.reportedAt, now, true)}` : undefined,
+        reportedAt: p.reportedAt,
         top: p.top ? windows[p.windows.indexOf(p.top)] : undefined,
     };
 }

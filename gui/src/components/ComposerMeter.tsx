@@ -23,7 +23,8 @@ export function nearLimit(m: Meter | undefined): { pct: number; window?: string;
     const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
     // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
     if (m.reached && !w?.reached) return { pct: 100, ...(m.resets ? { resets: m.resets } : {}) };
-    const pct = w ? used(w) : 0;
+    // At its limit is full, whatever share the CLI last gave (a window rejected at 97%): as the rail's card says.
+    const pct = w ? (w.reached ? 100 : used(w)) : 0;
     if (pct < 80 && !m.reached) return undefined;
     // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
     const resets = w?.resets ?? m.resets;

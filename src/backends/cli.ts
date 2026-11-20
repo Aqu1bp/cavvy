@@ -3,7 +3,7 @@
 // and talking newline-delimited JSON over its stdin/stdout.
 
 import { existsSync, statSync } from "fs";
-import { delimiter, isAbsolute, join } from "path";
+import { basename, delimiter, isAbsolute, join } from "path";
 import { homedir } from "os";
 import type { Subprocess } from "bun";
 import { childEnv } from "../util/env";
@@ -71,17 +71,35 @@ export interface CliResult {
     stderr: string;
 }
 
-/** Run a short CLI command (status checks) with arguments only, never a shell. */
+/**
+ * Run a short CLI command (status checks) with arguments only, never a shell. Cancelled (or out of time), it's
+ * asked to stop, then killed stopTiming.killMs later; that long after, its output is no longer waited for (a
+ * process it left behind may hold the pipes). One cancelled before it starts isn't started.
+ */
 export async function runCli(bin: string, args: string[], opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; env?: Record<string, string> } = {}): Promise<CliResult> {
+    if (opts.signal?.aborted) throw new Error(`Cancelled before ${basename(bin)} started`);
     const proc = Bun.spawn([bin, ...args], { cwd: opts.cwd ?? homedir(), env: { ...childEnv(), ...opts.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const kill = () => proc.kill();
+    let escalate: ReturnType<typeof setTimeout> | undefined;
+    let abandon: ReturnType<typeof setTimeout> | undefined;
+    let giveUp!: () => void;
+    const gaveUp = new Promise<void>((r) => (giveUp = r));
+    const kill = () => {
+        if (escalate) return;
+        proc.kill();
+        escalate = setTimeout(() => {
+            proc.kill("SIGKILL");
+            abandon = setTimeout(giveUp, stopTiming.killMs);
+        }, stopTiming.killMs);
+    };
     const timer = setTimeout(kill, opts.timeoutMs ?? 20_000);
     opts.signal?.addEventListener("abort", kill, { once: true });
     try {
-        const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-        return { code, stdout, stderr };
+        const read = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).then(([stdout, stderr, code]) => ({ code, stdout, stderr }));
+        return await Promise.race([read, gaveUp.then(() => ({ code: proc.exitCode ?? -1, stdout: "", stderr: "" }))]);
     } finally {
         clearTimeout(timer);
+        clearTimeout(escalate);
+        clearTimeout(abandon);
         opts.signal?.removeEventListener("abort", kill);
     }
 }

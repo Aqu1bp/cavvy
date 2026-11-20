@@ -397,6 +397,8 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     expect(at(limits([{ label: "5-hour", usedPercent: 62 }, { label: "Weekly", usedPercent: 94 }]))).toEqual({ pct: 94, window: "weekly" });
     expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, window: "GPT-5 5-hour" });
     expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, window: "weekly Opus" });
+    // At its limit at 97% (Claude Code said rejected): full, as the rail's card says, not 97%.
+    expect(at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))).toEqual({ pct: 100, window: "5-hour" });
     expect(at(limits([], { reached: true }))).toEqual({ pct: 100, window: undefined });
     // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
     expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100 });

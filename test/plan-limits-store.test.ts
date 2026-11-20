@@ -108,6 +108,14 @@ test("whether turns go on using credits (#434) is saved as a flag, and nothing e
     expect(JSON.stringify(claude)).not.toContain("917");
 });
 
+test("a window kept from an earlier report is saved with when that was; an older file's have the plan's time", () => {
+    writeFileSync(paths.planLimits(), JSON.stringify({ version: 1, limits: [
+        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000 }, { id: "x", label: "X", at: "soon" }] },
+    ] }));
+    const [l] = loadPlanLimits();
+    expect(l!.windows.map((w) => w.at)).toEqual([undefined, 1000, undefined]);
+});
+
 test("a broken or foreign file is ignored", async () => {
     writeFileSync(paths.planLimits(), "{ not json");
     expect(loadPlanLimits()).toEqual([]);

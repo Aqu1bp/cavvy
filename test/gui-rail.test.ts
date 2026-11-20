@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
 const { resetLabel } = await import("../gui/src/lib/limits");
-const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
+const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph, resetWatcher } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");
@@ -320,4 +320,23 @@ test("Needs you's group starts the active list, isn't counted under a project, a
     const joined = order.holdSidebar(plain, order.sidebarEntries(now, [], { ...base, needs: ["2"] }), true, now, undefined, false);
     expect(joined[0]).toEqual({ key: "heading:needs", kind: "needs", ids: ["2"] });
     expect(order.sidebarIds(joined)).toEqual(order.sidebarIds(plain));
+});
+
+test("a reset is asked about once, and only while the rail's footer is on screen", () => {
+    const plans = [{ provider: "claude-code", accountId: "max" }, { provider: "codex", accountId: "default" }];
+    const all = {
+        [key("claude-code", "max")]: limits("claude-code", NOW, [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: NOW + 1000 }]),
+        [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 10, resetsAt: NOW + 86_400_000 }]),
+    };
+    const crossed = resetWatcher(NOW);
+    expect(crossed(NOW + 500, true, plans, all)).toEqual([]);
+    expect(crossed(NOW + 1500, true, plans, all)).toEqual([{ provider: "claude-code", accountId: "max" }]);
+    // Once.
+    expect(crossed(NOW + 2500, true, plans, all)).toEqual([]);
+    // Hidden while it resets: nothing; shown again, asked once.
+    const hidden = resetWatcher(NOW);
+    expect(hidden(NOW + 1500, false, plans, all)).toEqual([]);
+    expect(hidden(NOW + 3000, false, plans, all)).toEqual([]);
+    expect(hidden(NOW + 4000, true, plans, all)).toEqual([{ provider: "claude-code", accountId: "max" }]);
+    expect(hidden(NOW + 5000, true, plans, all)).toEqual([]);
 });

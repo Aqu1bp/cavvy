@@ -1349,7 +1349,10 @@ export interface LimitWindow {
     usedPercent?: number;
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
+    /** At its limit (true), said not to be (false), or not said (then a full window is taken to be). */
     reached?: boolean;
+    /** When this window was last reported (ms), when it's older than the plan's report (`at`): kept from an earlier one. */
+    at?: number;
     /**
      * Only on a window of another metered limit than the plan's own (a Codex model's): whether
      * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False

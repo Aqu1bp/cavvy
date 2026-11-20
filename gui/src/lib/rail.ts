@@ -233,7 +233,7 @@ export function railFoot(o: {
         const top = meter.top;
         const pct = meter.reached ? 100 : top?.pct;
         // When it was reported, and when a reached limit lifts, as briefly as can be: "2:02 PM", "Mon".
-        const reported = resetLabel(limits.at, o.now);
+        const reported = resetLabel(meter.reportedAt, o.now);
         const lifts = meter.resets?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
         const brief = meter.reached ? `Reached${meter.usingCredits ? " · using credits" : ""}${lifts ? `, resets ${lifts}` : ""}`
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
@@ -254,4 +254,22 @@ export function railFoot(o: {
             line, brief, stale: Boolean(meter.asOf), asOf: meter.asOf, detail, windows,
         };
     });
+}
+
+/**
+ * The rail's watch on its plans' resets, tick by tick (the shared clock: no timer of its own): the plans with a
+ * window that has reset since it last looked, to ask where they stand now. Only while the footer is on screen
+ * (`shown`); shown again, a reset that passed meanwhile counts once. The clock doesn't tick while the window can't
+ * be seen, so its next tick does the same.
+ */
+export function resetWatcher(start: number) {
+    let seen = start;
+    return (now: number, shown: boolean, plans: readonly Pick<RailPlan, "provider" | "accountId">[], limits: Record<string, PlanLimits>): { provider: string; accountId: string }[] => {
+        if (!shown) return [];
+        const from = seen;
+        seen = now;
+        return plans
+            .filter((p) => limits[planLimitKey(p.provider, p.accountId)]?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > from && w.resetsAt <= now))
+            .map((p) => ({ provider: p.provider, accountId: p.accountId }));
+    };
 }

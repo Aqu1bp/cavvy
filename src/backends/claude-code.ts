@@ -242,35 +242,42 @@ export function describeClaudeAuth(s: ClaudeStatus): string {
 
 /**
  * Where an account's plan limits stand, without a turn: Claude Code answers `/usage` in print mode by itself, with
- * no model call (2.1.322: no turns, no cost; about 3.5 s and 360 MB on a 2-core Linux server). Older versions
- * might send it to the model as a prompt, so they aren't asked; nor is one that did (no `local_command` in its
- * result), again. Its MCP servers and hooks stay off for it; times come in UTC. Undefined when it can't be read.
+ * no model call (2.1.322: no turns, no cost; about 3.5 s and 360 MB on a 2-core Linux server). It's run with a
+ * model that doesn't exist (USAGE_NO_MODEL): `/usage` doesn't need one, and a CLI that sent it to the model instead
+ * would fail before any request (2.1.322 refuses an unknown model without an API call). Versions before 2.1.322
+ * aren't asked. An account whose answer isn't a local `/usage` one (no `local_command`, a turn or a cost, an
+ * error, a shape not known) isn't asked again while Cavvy runs. MCP servers and hooks stay off for it; times come
+ * in UTC. Undefined when it can't be read.
  */
 export async function claudeUsage(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<PlanLimits | undefined> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    if (usageRefused.has(bin)) return undefined;
+    const refusal = `${bin}\0${accountId ?? "default"}`;
+    if (usageRefused.has(refusal)) return undefined;
     const env = accountEnv(providerId, accountId);
     const version = await runCli(bin, ["--version"], { signal, timeoutMs: 10_000, env });
     if (!claudeVersionAtLeast(/^\s*(\S+)/.exec(version.stdout)?.[1], 322)) return undefined;
     const at = Date.now();
-    const r = await runCli(bin, ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
-    let j: Record<string, unknown> | undefined;
+    const r = await runCli(bin, ["-p", "/usage", "--model", USAGE_NO_MODEL, "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
+    // Stopped (cancelled, out of time) or crashed: nothing was said either way.
+    if (signal?.aborted || (r.code !== 0 && !r.stdout.trim())) return undefined;
+    let j: unknown;
     try {
         j = JSON.parse(r.stdout);
     } catch {
+        j = undefined;
+    }
+    const o = j && typeof j === "object" ? (j as Record<string, unknown>) : undefined;
+    if (!o || o.local_command !== "usage" || o.num_turns !== 0 || o.total_cost_usd !== 0 || o.is_error !== false || typeof o.result !== "string") {
+        usageRefused.add(refusal);
         return undefined;
     }
-    if (!j || typeof j !== "object") return undefined;
-    if (j.local_command !== "usage" || j.num_turns !== 0 || j.total_cost_usd !== 0) {
-        // Answered by the model, or in a way not known: not asked again while Cavvy runs.
-        if (j.local_command !== "usage" && (Number(j.num_turns) > 0 || Number(j.total_cost_usd) > 0)) usageRefused.add(bin);
-        return undefined;
-    }
-    if (j.is_error === true) return undefined;
-    return parseClaudeUsage(j.result, at, accountId ?? "default");
+    return parseClaudeUsage(o.result, at, accountId ?? "default");
 }
 
-/** Claude Code binaries whose `/usage` reached the model. */
+/** The model `/usage` is run with: none by this name, so nothing can reach a model. */
+export const USAGE_NO_MODEL = "cavvy-usage-no-model";
+
+/** Claude Code binaries and accounts (bin \0 account) whose `/usage` wasn't answered locally. */
 const usageRefused = new Set<string>();
 
 /** Noninteractive fast mode via --settings was added in 2.1.205. */

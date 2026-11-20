@@ -74,6 +74,7 @@ import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { reportedOf } from "../server/plan-meter";
 import { describeJob, shortTime } from "../agent/schedule";
 import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
@@ -1103,7 +1104,7 @@ function costCommand(app: App) {
         const name = limitAccountLabel(l.provider, l.accountId);
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
-        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
+        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(reportedOf(l, Date.now()))}.`));
     }
     app.print(lines);
 }

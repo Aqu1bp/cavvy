@@ -30,6 +30,8 @@ export interface PlanNow {
     usingCredits: boolean;
     /** When a reached limit lifts (ms), when known. */
     liftsAt?: number;
+    /** When the oldest figure shown was reported: a window kept from an earlier report has that one's time. */
+    reportedAt: number;
     /** Reported long enough ago that the figures may be out of date. */
     stale: boolean;
     /** The fullest window that hasn't reset since the report. */
@@ -42,22 +44,32 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
     const passed = (t?: number) => t !== undefined && t <= now;
     const windows = l.windows.map((w): WindowNow => {
         const reset = passed(w.resetsAt);
-        const reached = !reset && Boolean(w.reached || (w.usedPercent ?? 0) >= 100);
+        // As the CLI said (rejected, or allowed), else a full window is.
+        const reached = !reset && (w.reached ?? (w.usedPercent ?? 0) >= 100);
         return { id: w.id, label: w.label, pct: reset ? undefined : w.usedPercent, reached, reset, resetsAt: w.resetsAt };
     });
-    // Reached with no window to show for it (a plain stop) stands until its own reset, or until every window has reset.
-    const reached = windows.some((w) => w.reached) || (Boolean(l.reached) && !passed(l.resetsAt) && !(windows.length && windows.every((w) => w.reset)));
+    // Reached with no window to show for it (a plain stop) stands until its own reset; with none known, until every
+    // window has reset.
+    const planStop = Boolean(l.reached) && (l.resetsAt !== undefined ? !passed(l.resetsAt) : !(windows.length && windows.every((w) => w.reset)));
+    const reached = windows.some((w) => w.reached) || planStop;
     const blocking: (number | undefined)[] = windows.filter((w) => w.reached).map((w) => w.resetsAt);
     if (l.reached && !passed(l.resetsAt) && (l.resetsAt !== undefined || !blocking.length)) blocking.push(l.resetsAt);
     const known = blocking.filter((t): t is number => t !== undefined);
     const liftsAt = reached && !blocking.includes(undefined) && known.length ? Math.max(...known) : undefined;
     const top = windows.filter((w) => w.pct !== undefined).sort((a, b) => b.pct! - a.pct!)[0];
+    const reportedAt = reportedOf(l, now);
     return {
         windows,
         reached,
         usingCredits: usingCredits(l, reached, (i) => windows[i]!.reached),
         liftsAt,
-        stale: now - l.at > STALE_MS,
+        reportedAt,
+        stale: now - reportedAt > STALE_MS,
         top,
     };
+}
+
+/** When the oldest figure still shown was reported (a window that has reset shows none): the plan's report, or a window kept from an earlier one. */
+export function reportedOf(l: PlanLimits, now: number): number {
+    return Math.min(l.at, ...l.windows.filter((w) => w.resetsAt === undefined || w.resetsAt > now).map((w) => w.at ?? l.at));
 }

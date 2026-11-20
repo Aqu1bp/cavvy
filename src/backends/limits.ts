@@ -79,15 +79,19 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId =
         const usedPercent = percent(w.utilization, 100);
         // Its own status (2.1.322) says whether it's at its limit; without one, a full window is.
         // allowed_warning is still allowed: its share already says how near it is.
+        // reached: true (rejected), false (said to be allowed), or unsaid.
         const own = typeof w.status === "string" ? w.status : undefined;
-        windows.push({ id: label(key, 60), label: claudeLabel(key), usedPercent, resetsAt: seconds(w.resetsAt), reached: (own ? own === "rejected" : full(w.utilization, 100)) ? true : undefined });
+        const reached = own === "rejected" ? true : own === "allowed" || own === "allowed_warning" ? false : full(w.utilization, 100) ? true : undefined;
+        windows.push({ id: label(key, 60), label: claudeLabel(key), usedPercent, resetsAt: seconds(w.resetsAt), reached });
     }
     let named: LimitWindow | undefined;
     if (type) {
         named = windows.find((x) => x.id === type);
         if (!named) windows.push((named = { id: type, label: claudeLabel(type) }));
         named.resetsAt ??= resetsAt;
+        // The report's own status is the named window's, where that window didn't say.
         if (status === "rejected") named.reached = true;
+        else if ((status === "allowed" || status === "allowed_warning") && named.reached === undefined) named.reached = false;
     }
     if (!status && !windows.length) return undefined;
     const reached = status === "rejected" ? true : status === "allowed" || status === "allowed_warning" ? false : undefined;
@@ -149,34 +153,49 @@ function zoned(y: number, mo: number, d: number, h: number, mi: number, zone: st
     return guess - (again ?? off) * 60_000;
 }
 
-/** "Nov 24, 8pm (UTC)", "1:59pm (Europe/London)": the next such time from `now` (a date without a year is the nearest one). */
-export function usageResetTime(text: string, now: number): number | undefined {
+/**
+ * "Nov 24, 8pm (UTC)", "1:59pm (Europe/London)": a reset at most `within` ms from `now` (the window's length; a
+ * minute's slack either side), else undefined. A date without a year is the nearest such day; a time alone is the
+ * next such time.
+ */
+export function usageResetTime(text: string, now: number, within = 7 * 86_400_000): number | undefined {
     const m = /^(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2}),? )?(\d{1,2})(?::(\d{2}))? ?([ap])\.?m\.?\s*\(([^()]{1,64})\)$/i.exec(text.trim());
     if (!m) return undefined;
     const [, mon, day, hour, min, ap, zone] = m;
     let h = Number(hour) % 12;
     if (ap!.toLowerCase() === "p") h += 12;
     const mi = Number(min ?? 0);
-    if (Number(hour) > 12 || mi > 59) return undefined;
-    const today = new Date(now);
+    if (Number(hour) > 12 || Number(hour) < 1 || mi > 59) return undefined;
     const at = (y: number, mo: number, d: number) => zoned(y, mo, d, h, mi, zone!.trim());
+    const ahead = (t: number | undefined) => t !== undefined && t > now - 60_000 && t <= now + within + 60_000;
+    let t: number | undefined;
     if (mon) {
         const mo = MONTHS.indexOf(mon.toLowerCase());
         const d = Number(day);
         if (mo < 0 || d < 1 || d > 31) return undefined;
-        const y = today.getUTCFullYear();
-        const times = [y - 1, y, y + 1].map((yy) => at(yy, mo, d)).filter((t): t is number => t !== undefined);
-        return times.sort((a, b) => Math.abs(a - now) - Math.abs(b - now))[0];
+        const y = new Date(now).getUTCFullYear();
+        t = [y - 1, y, y + 1].map((yy) => at(yy, mo, d)).filter((x): x is number => x !== undefined).sort((a, b) => Math.abs(a - now) - Math.abs(b - now))[0];
+    } else {
+        // A time alone: the first such time from now (today's, or tomorrow's once today's has passed).
+        for (const add of [-1, 0, 1, 2]) {
+            const d = new Date(now + add * 86_400_000);
+            const x = at(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+            if (x !== undefined && x > now - 60_000) {
+                t = x;
+                break;
+            }
+        }
     }
-    // A time alone is today's, or tomorrow's once today's has passed.
-    for (const add of [-1, 0, 1, 2]) {
-        const d = new Date(now + add * 86_400_000);
-        const t = at(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-        if (t !== undefined && t > now - 60_000) return t;
-    }
-    return undefined;
+    return ahead(t) ? t : undefined;
 }
 
+/** How long each window /usage names lasts: its reset is within that from now. */
+const USAGE_SPAN: Record<string, number> = { five_hour: 5 * 3_600_000 };
+
+/**
+ * `/usage`'s text as a report. A line is read only with a reset it can place within its window's length: one
+ * without would stand with no end (and a time alone further off is another window's, or misread).
+ */
 export function parseClaudeUsage(text: unknown, at = Date.now(), accountId = "default"): PlanLimits | undefined {
     if (typeof text !== "string" || text.length > 20_000) return undefined;
     const windows: LimitWindow[] = [];
@@ -187,12 +206,14 @@ export function parseClaudeUsage(text: unknown, at = Date.now(), accountId = "de
         if (!id || windows.some((w) => w.id === id)) continue;
         const used = Number(line[2]);
         if (!Number.isFinite(used) || used > 100) continue;
-        const resetsAt = line[3] ? usageResetTime(line[3], at) : undefined;
-        windows.push({ id, label: claudeLabel(id), usedPercent: percent(used, 1), ...(resetsAt === undefined ? {} : { resetsAt }), ...(full(used, 1) ? { reached: true } : {}) });
+        const resetsAt = line[3] ? usageResetTime(line[3], at, USAGE_SPAN[id] ?? 7 * 86_400_000) : undefined;
+        if (resetsAt === undefined) continue;
+        // The text doesn't say whether a window is at its limit (reached unsaid): a full one is taken to be.
+        windows.push({ id, label: claudeLabel(id), usedPercent: percent(used, 1), resetsAt });
     }
     if (!windows.length) return undefined;
-    const reached = windows.some((w) => w.reached);
-    return { provider: "claude-code", accountId, windows, reached, resetsAt: reached ? latestReset(windows.filter((w) => w.reached)) : undefined, at };
+    const fullOnes = windows.filter((w) => (w.usedPercent ?? 0) >= 100);
+    return { provider: "claude-code", accountId, windows, reached: fullOnes.length > 0, resetsAt: fullOnes.length ? latestReset(fullOnes) : undefined, at };
 }
 
 /** Codex's reached types that credits don't get past: a workspace's cap, not the plan's limit. */
@@ -290,6 +311,9 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
     return fullest?.resetsAt;
 }
 
+/** Two reports' resets this close are the same window period's. */
+const SAME_PERIOD_MS = 10 * 60_000;
+
 /**
  * What's known now, given an earlier report and a new one. `partial`: the new
  * one may leave anything out (a status alone, Codex's updates), so what it
@@ -306,10 +330,14 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const windows = prev.windows.flatMap((w) => {
         const n = next.windows.find((n) => n.id === w.id);
-        // Left out of a report that lists its windows: until it resets (one with no reset known goes now).
-        if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) ? [w] : [];
+        // Left out of a report that lists its windows: until it resets (one with no reset known goes now). It keeps
+        // when it was reported, so it's not taken for news.
+        if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) ? [{ ...w, at: w.at ?? prev.at }] : [];
         let merged = n;
         if (n.resetsAt === undefined && w.resetsAt !== undefined && w.resetsAt > next.at) merged = { ...merged, resetsAt: w.resetsAt };
+        // A report that doesn't say whether it's at its limit (/usage's text) leaves an earlier "reached" for the
+        // same period (the same reset, give or take /usage's rounding to the minute), while that's still ahead.
+        if (n.reached === undefined && w.reached === true && w.resetsAt !== undefined && w.resetsAt > next.at && (merged.resetsAt === undefined || Math.abs(merged.resetsAt - w.resetsAt) <= SAME_PERIOD_MS)) merged = { ...merged, reached: true };
         // An update that doesn't say whether a limit has credits leaves what was said.
         if (n.credits === undefined && w.credits !== undefined) merged = { ...merged, credits: w.credits };
         return [merged];

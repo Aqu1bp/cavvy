@@ -45,6 +45,7 @@ import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModel
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, checkPlanLimits, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
 import { findCli } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
@@ -196,6 +197,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 const UNLOAD_AFTER_MS = 30_000;
 /** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. */
 const LIMITS_FRESH_MS = 3 * 60_000;
+/** Plan checks that run at once, across accounts (each of Claude Code's is a process of a few hundred MB). */
+const LIMIT_CHECKS_AT_ONCE = 2;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long without a turn running before the server hands memory back (idleNow). */
@@ -1985,44 +1988,88 @@ export class Engine {
     private readonly planChecks = new AbortController();
     private checkingPlans: Promise<void> = Promise.resolve();
 
-    /** Plan checks running (limits.refresh), and when each account's was last asked for, by planLimitKey. */
+    /** Plan checks queued or running (limits.refresh), when each account's was last asked for, and those asked for again meanwhile: by planLimitKey. */
     private limitChecks = new Map<string, Promise<void>>();
     private limitAsked = new Map<string, number>();
+    private limitAgain = new Set<string>();
+    /** Checks running now, and those waiting for one of the LIMIT_CHECKS_AT_ONCE places. */
+    private limitRunning = 0;
+    private limitWaiting: (() => void)[] = [];
 
     /**
      * Where the plans stand now, asked of the CLIs without a turn (checkPlanLimits): when their usage is opened (the
      * rail's card, Settings → Usage), or a window shown resets. `plans`: those accounts, else every account of each
-     * CLI turned on. An account is asked one check at a time, and not again while its last report or check is a
-     * few minutes old, unless one of its windows has reset since. What a check can't read leaves the last report.
+     * CLI turned on. An account is asked one check at a time, and not again while the oldest figure shown for it
+     * (or its last check) is a few minutes old, unless one of its windows has reset since; asked during a check, it's
+     * asked once more after it. A couple of checks run at a time (Claude Code's take a process of a few hundred MB
+     * each). What a check can't read leaves the last report.
      */
     refreshLimits(plans?: { provider: string; accountId?: string }[]): Promise<void> {
         const which = plans ?? AGENT_CLIS.filter((d) => readAgentConfig(d.id)).flatMap((d) => cliAccounts(d.id).filter((a) => !a.invalid).map((a) => ({ provider: d.id, accountId: a.id })));
-        return Promise.all(which.slice(0, 20).map((p) => this.refreshPlan(p.provider, p.accountId ?? "default"))).then(() => undefined);
+        return Promise.all(which.map((p) => this.refreshPlan(p.provider, p.accountId ?? "default"))).then(() => undefined);
     }
 
     private refreshPlan(provider: string, accountId: string): Promise<void> {
         const def = agentCli(provider);
         if (!def || def.caps.planLimits === "none" || !readAgentConfig(provider) || this.stopping) return Promise.resolve();
-        if (!cliAccounts(provider).some((a) => a.id === accountId && !a.invalid)) return Promise.resolve();
+        if (!this.hasAccount(provider, accountId)) return Promise.resolve();
         // Signed out, or on an API key: no plan to ask about.
         const status = this.accountStatus.get(`${provider}:${accountId}`);
         if (status?.signedIn === false || status?.apiKey) return Promise.resolve();
         const key = planLimitKey(provider, accountId);
         const running = this.limitChecks.get(key);
-        if (running) return running;
+        if (running) {
+            // Asked again meanwhile (a window reset): once more when this one is done, where the throttle decides.
+            this.limitAgain.add(key);
+            return running;
+        }
         const now = Date.now();
         const prev = this.limits.get(key);
-        const since = Math.max(prev?.at ?? 0, this.limitAsked.get(key) ?? 0);
+        const since = Math.max(prev ? reportedOf(prev, now) : 0, this.limitAsked.get(key) ?? 0);
         if (now - since < LIMITS_FRESH_MS && !prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > since && w.resetsAt <= now)) return Promise.resolve();
         this.limitAsked.set(key, now);
-        const check = checkPlanLimits(provider, this.planChecks.signal, accountId)
-            .then((r) => {
-                if (r && !this.stopping) this.limitsReported(r.limits, false, r.full);
+        const check: Promise<void> = this.limitPlace()
+            .then((): ReturnType<typeof checkPlanLimits> | undefined => (this.stopping || this.limitChecks.get(key) !== check ? undefined : checkPlanLimits(provider, this.planChecks.signal, accountId)))
+            .then((r): void => {
+                // Not for an account removed meanwhile (accounts.remove), nor once the server is stopping.
+                if (r && !this.stopping && this.limitChecks.get(key) === check && this.hasAccount(provider, accountId)) this.limitsReported(r.limits, false, r.full);
             })
             .catch(() => undefined)
-            .finally(() => this.limitChecks.delete(key));
+            .finally(() => {
+                this.limitFree();
+                if (this.limitChecks.get(key) !== check) return;
+                this.limitChecks.delete(key);
+                if (this.limitAgain.delete(key)) void this.refreshPlan(provider, accountId);
+            });
         this.limitChecks.set(key, check);
         return check;
+    }
+
+    private hasAccount(provider: string, accountId: string): boolean {
+        return cliAccounts(provider).some((a) => a.id === accountId && !a.invalid);
+    }
+
+    /** Waits for one of the places for a plan check; limitFree gives it back. */
+    private limitPlace(): Promise<void> {
+        if (this.limitRunning < LIMIT_CHECKS_AT_ONCE) {
+            this.limitRunning++;
+            return Promise.resolve();
+        }
+        return new Promise((r) => this.limitWaiting.push(r));
+    }
+
+    private limitFree() {
+        const next = this.limitWaiting.shift();
+        if (next) next();
+        else this.limitRunning--;
+    }
+
+    /** An account removed: its checks' answers aren't wanted, nor its next. */
+    private forgetLimitChecks(provider: string, accountId: string) {
+        const key = planLimitKey(provider, accountId);
+        this.limitChecks.delete(key);
+        this.limitAsked.delete(key);
+        this.limitAgain.delete(key);
     }
 
     /**
@@ -3464,6 +3511,7 @@ export class Engine {
                 if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
+                this.forgetLimitChecks(provider, id);
                 this.limits.delete(planLimitKey(provider, id));
                 this.saveLimits();
                 this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });

@@ -175,11 +175,16 @@ if (argv[0] === "--version") {
     process.exit(0);
 }
 // -p /usage --output-format json, as 2.1.322 answers it without a model call: FAKE_USAGE_TEXT is its text (after
-// FAKE_USAGE_DELAY_MS); FAKE_USAGE_MODEL=1 answers as a CLI that sent it to the model instead.
+// FAKE_USAGE_DELAY_MS); FAKE_USAGE_MODEL=1 answers as a CLI that sent it to the model instead, FAKE_USAGE_ERROR=1
+// with an error, FAKE_USAGE_SHAPE=other with JSON of another shape. Logs the TZ it ran with.
 if (argv[0] === "-p" && argv[1] === "/usage") {
+    log({ usage: { tz: process.env.TZ } });
     if (process.env.FAKE_USAGE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_USAGE_DELAY_MS)));
     const model = process.env.FAKE_USAGE_MODEL === "1";
-    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: model ? 1 : 0, total_cost_usd: model ? 0.01 : 0, result: model ? "I can't check usage." : process.env.FAKE_USAGE_TEXT ?? "", ...(model ? {} : { local_command: "usage" }), tz: process.env.TZ }));
+    const error = process.env.FAKE_USAGE_ERROR === "1";
+    if (process.env.FAKE_USAGE_SHAPE === "other") console.log(JSON.stringify({ hello: "world" }));
+    else console.log(JSON.stringify({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: model ? 1 : 0, total_cost_usd: model ? 0.01 : 0, result: model ? "I can't check usage." : process.env.FAKE_USAGE_TEXT ?? "", ...(model ? {} : { local_command: "usage" }) }));
+    log({ usageEnd: true });
     process.exit(0);
 }
 // FAKE_EXIT_AFTER_MS: the CLI goes away that long after it starts, whatever it's doing (a crash).

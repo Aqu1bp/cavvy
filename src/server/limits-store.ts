@@ -25,7 +25,9 @@ function windowOf(v: unknown): LimitWindow | undefined {
     const id = str(w.id, 100), label = str(w.label, 60);
     if (!id || !label) return undefined;
     const used = num(w.usedPercent);
-    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits) };
+    // `at`: when this window was reported, if before its plan's report; a file without it has the plan's.
+    const at = num(w.at);
+    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }) };
 }
 
 /** One saved report, or undefined when it isn't one (a hand-edited or older file). */

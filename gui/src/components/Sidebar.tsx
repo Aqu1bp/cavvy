@@ -7,17 +7,17 @@
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
-import { planLimitKey, type SessionSummary } from "@shared/protocol";
+import type { SessionSummary } from "@shared/protocol";
 import { activate, app, checkLimits, handleFor, isUnread, limitsFor, providersFor, refreshSessions, reportError, warmFor } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
+import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, resetWatcher, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -655,14 +655,13 @@ export function Sidebar() {
         // The session's machine's plans and limits: its account ("Default" there) isn't this computer's of that name.
         return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
-    // A window the footer shows that resets while Cavvy is watching: where its plan stands now is asked for, once.
-    let ticked = now();
-    createEffect(on(now, (t) => {
-        const from = ticked;
-        ticked = t;
-        const limits = limitsFor(app.activeId);
-        const due = plans().filter((plan) => limits[planLimitKey(plan.provider, plan.accountId)]?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > from && w.resetsAt <= t));
-        if (due.length) void checkLimits(app.activeId, due.map((plan) => ({ provider: plan.provider, accountId: plan.accountId })));
+    // A window the footer shows that resets while it's on screen: where its plan stands now is asked for, once. While
+    // the rail is hidden (or Settings covers it) nothing is asked; shown again, a reset that passed meanwhile asks once.
+    // The clock doesn't tick while the window can't be seen, so its next tick does the same.
+    const crossed = resetWatcher(now());
+    createEffect(on([now, () => shellLayout().railShown && !settingsTab()], ([t, shown]) => {
+        const due = crossed(t, shown, plans(), limitsFor(app.activeId));
+        if (due.length) void checkLimits(app.activeId, due);
     }, { defer: true }));
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
