@@ -262,3 +262,15 @@ export function refModel(ref: string | undefined): { id: string } | undefined {
     const i = ref?.indexOf(":") ?? -1;
     return ref && i > 0 && i < ref.length - 1 ? { id: ref.slice(i + 1) } : undefined;
 }
+
+/** The key of an alias's served model (AppState.served). */
+export const servedKey = (provider: string, accountId: string, model: string) => JSON.stringify([provider, accountId, model]);
+
+/**
+ * What a model (an alias, "default") stands for on an account, by what's known of it, not guessed: the model a CLI
+ * last served it as there, else what the CLI listed it as, if it listed with that account. Undefined: not known, and
+ * a model limit that may cover it then counts (covers).
+ */
+export function resolvedOn(m: { provider: string; id: string; resolvedModel?: string; resolvedFor?: string }, accountId: string, served: Record<string, string>): string | undefined {
+    return served[servedKey(m.provider, accountId, m.id)] ?? (m.resolvedModel && m.resolvedFor === accountId ? m.resolvedModel : undefined);
+}

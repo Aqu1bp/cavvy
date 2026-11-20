@@ -466,3 +466,21 @@ describe("limits.refresh: where a plan stands, asked of the CLI without a turn",
         }
     });
 });
+
+test("the model an alias was served as is kept per account, saved, and listed; Claude Code's listing says what its aliases stand for", async () => {
+    const engine = new Engine();
+    const events: ServerEvent[] = [];
+    const client = { send: (e: ServerEvent) => events.push(e), subs: new Set<string>() };
+    engine.clients.add(client);
+    engine.modelServed("claude-code", "work", "default", "claude-opus-5-5");
+    engine.modelServed("claude-code", "work", "default", "claude-opus-5-5");
+    expect(events.filter((e) => e.type === "served")).toHaveLength(1);
+    expect(await engine.handle(client, "served.get", {})).toEqual([{ provider: "claude-code", accountId: "work", model: "default", served: "claude-opus-5-5" }]);
+    await engine.stop();
+    // Saved with the limits, for the next start (loadLimits).
+    const { loadServedModels } = await import("../src/server/limits-store");
+    expect(loadServedModels()).toEqual([{ provider: "claude-code", accountId: "work", model: "default", served: "claude-opus-5-5" }]);
+    // The listing: the default alias's resolved model, for the account it listed with.
+    const models = await createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!).listModels!();
+    expect(models.find((m) => m.id === "default")).toMatchObject({ resolvedModel: "claude-test-1", resolvedFor: "default" });
+});

@@ -7,12 +7,14 @@ import { renameSync, rmSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { ensureDir, paths } from "../config/paths";
 import { readJson } from "../config/settings";
-import type { LimitWindow, PlanLimits } from "./protocol";
+import type { LimitWindow, PlanLimits, ServedModel } from "./protocol";
 import { CLAUDE_SCOPES } from "./plan-meter";
 
 interface LimitsFile {
     version: 1;
     limits: PlanLimits[];
+    /** The model each alias was last served as, by CLI and account. */
+    served?: ServedModel[];
 }
 
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -51,13 +53,24 @@ export function loadPlanLimits(): PlanLimits[] {
     return f.limits.map(planLimitsOf).filter((l): l is PlanLimits => Boolean(l));
 }
 
+/** The aliases' served models saved with them; none when there's no file or they can't be read. */
+export function loadServedModels(): ServedModel[] {
+    const f = readJson<Partial<LimitsFile>>(paths.planLimits());
+    if (!f || f.version !== 1 || !Array.isArray(f.served)) return [];
+    return f.served.slice(0, 200).flatMap((v) => {
+        const o = v as unknown as Record<string, unknown>;
+        const provider = str(o?.provider, 60), accountId = str(o?.accountId, 100), model = str(o?.model, 100), served = str(o?.served, 100);
+        return provider && accountId && model && served ? [{ provider, accountId, model, served }] : [];
+    });
+}
+
 /** Replaces the file in one step, so a crash mid-write leaves the last good one. */
-export function savePlanLimits(limits: PlanLimits[]) {
+export function savePlanLimits(limits: PlanLimits[], served: ServedModel[] = []) {
     const file = paths.planLimits();
     ensureDir(dirname(file));
     const tmp = `${file}.${process.pid}.tmp`;
     try {
-        writeFileSync(tmp, JSON.stringify({ version: 1, limits } satisfies LimitsFile) + "\n", { encoding: "utf-8", mode: 0o600 });
+        writeFileSync(tmp, JSON.stringify({ version: 1, limits, ...(served.length ? { served } : {}) } satisfies LimitsFile) + "\n", { encoding: "utf-8", mode: 0o600 });
         renameSync(tmp, file);
     } catch (e) {
         rmSync(tmp, { force: true });

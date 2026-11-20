@@ -1,16 +1,16 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo } from "@shared/protocol";
-import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, toast } from "../state/app";
+import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle } from "../lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string } }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
@@ -31,8 +31,14 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const meter = createMemo(() => meterOf(limits(), now()));
     // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
     // model's limit says nothing here.
-    // The model by the one the CLI said it served (an alias's, on this account) where known; else by its id.
-    const model = () => (state()?.model ? { id: state()!.model!.id, resolved: state()!.servedModel } : p.model && { id: p.model.id });
+    // The model by the one its CLI served (this session's, else last on this account), or listed it as for this
+    // account; else by its id.
+    const model = () => {
+        const m = state()?.model ?? p.model;
+        if (!m) return undefined;
+        const listed = { provider: provider() ?? "", resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor, id: m.id };
+        return { id: m.id, resolved: state()?.servedModel ?? resolvedOn(listed, accountId(), servedFor(p.sessionId)) };
+    };
     const stop = createMemo(() => limitFor(meter(), model()));
     const name = () => planTitle(providerInfo(), accountId(), "Plan").title;
     const alternatives = () => limitAlternatives(accounts(), accountId());

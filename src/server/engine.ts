@@ -44,7 +44,7 @@ import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, checkPlanLimits, vendorOf, type AgentCliStatus } from "../backends/index";
-import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { loadPlanLimits, loadServedModels, savePlanLimits } from "./limits-store";
 import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
 import { findCli, stopTiming } from "../backends/cli";
@@ -104,6 +104,7 @@ import type {
     McpListInfo,
     McpStatus,
     PlanLimits,
+    ServedModel,
     Method,
     Methods,
     PermissionModeId,
@@ -1985,11 +1986,26 @@ export class Engine {
             const prev = this.limits.get(key);
             if (!prev || prev.at < l.at) this.limits.set(key, l);
         }
+        for (const s of loadServedModels()) if (agentCli(s.provider) && cliAccounts(s.provider).some((a) => a.id === s.accountId)) this.served.set(JSON.stringify([s.provider, s.accountId, s.model]), s);
+    }
+
+    /** The model each alias was last served as, by CLI, account and alias (a model limit covers it or not): saved with the limits. */
+    private served = new Map<string, ServedModel>();
+
+    /** A session's CLI served `model` (an alias, say) as `served` on this account. */
+    modelServed(provider: string, accountId: string, model: string, served: string) {
+        const key = JSON.stringify([provider, accountId, model]);
+        if (this.served.get(key)?.served === served) return;
+        this.served.delete(key);
+        this.served.set(key, { provider, accountId, model, served });
+        if (this.served.size > 200) this.served.delete(this.served.keys().next().value!);
+        this.saveLimits();
+        this.broadcast({ type: "served", served: { provider, accountId, model, served } });
     }
 
     private saveLimits() {
         try {
-            savePlanLimits([...this.limits.values()]);
+            savePlanLimits([...this.limits.values()], [...this.served.values()]);
         } catch (e) {
             this.log(`Couldn't save plan limits: ${(e as Error).message}`);
         }
@@ -3940,6 +3956,8 @@ export class Engine {
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
             case "limits.get":
                 return [...this.limits.values()];
+            case "served.get":
+                return [...this.served.values()];
             case "limits.refresh": {
                 const plans = Array.isArray(p.plans) ? p.plans.slice(0, 20).filter((x: any) => x && typeof x.provider === "string" && x.provider.length <= 60 && (x.accountId === undefined || (typeof x.accountId === "string" && x.accountId.length <= 100))).map((x: any) => ({ provider: x.provider as string, accountId: x.accountId as string | undefined })) : undefined;
                 await this.refreshLimits(plans);

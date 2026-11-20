@@ -471,6 +471,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         providerName: p?.name,
         id: m.id,
         name: m.name ?? m.id,
+        ...(m.resolvedModel ? { resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor } : {}),
         contextWindow: m.contextWindow,
         maxOutput: m.maxOutput,
         pricing: m.pricing,
@@ -3013,8 +3014,12 @@ export class Runtime {
             }
             case "usage": {
                 if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
-                // Which model the CLI served the alias as, on this account: a model's limit (Fable's) covers it or not.
-                if (this.servedModel !== this.view.state.servedModel) this.setState({ servedModel: this.servedModel });
+                // Which model the CLI served the alias as, on this account: a model's limit (Fable's) covers it or not. Kept
+                // for the account too, for Home and other sessions on it.
+                if (this.servedModel !== this.view.state.servedModel) {
+                    this.setState({ servedModel: this.servedModel });
+                    if (this.servedModel && this.model?.provider) this.engine.modelServed(this.model.provider, this.session.accountId(this.model.provider), this.model.id, this.servedModel);
+                }
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });

@@ -658,6 +658,9 @@ export interface ModelSummary {
     providerName?: string;
     id: string;
     name: string;
+    /** For an alias ("default"): the model the CLI listed it as, on account `resolvedFor` (ModelInfo). */
+    resolvedModel?: string;
+    resolvedFor?: string;
     contextWindow?: number;
     maxOutput?: number;
     pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -1368,6 +1371,16 @@ export interface LimitWindow {
     credits?: boolean;
 }
 
+/** The model an agent CLI last served an alias as ("default" → "claude-opus-5-5"), on an account. */
+export interface ServedModel {
+    provider: string;
+    accountId: string;
+    /** The model id asked for (an alias). */
+    model: string;
+    /** The model id the CLI said it served. */
+    served: string;
+}
+
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
 export interface PlanLimits {
     provider: string;
@@ -2029,6 +2042,8 @@ export type ServerEvent =
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits }
+    /** A CLI served an alias as this model on this account (the model limits that cover it): ServedModel. */
+    | { type: "served"; served: ServedModel }
     /** The keybindings file was saved, created or deleted. */
     | { type: "keybindings.changed"; keybindings: KeybindingsFile }
     /** A theme file in ~/.cavvy/themes was saved, added or deleted: the whole list, checked. */
@@ -2497,6 +2512,8 @@ export interface Methods {
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Asks the CLIs where these plans stand now (all turned on, without `plans`); what's new comes as `limits` events. */
+    /** The model each alias was last served as, by CLI and account (ServedModel). */
+    "served.get": { params: Record<string, never>; result: ServedModel[] };
     "limits.refresh": { params: { plans?: { provider: string; accountId?: string }[] }; result: null };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */

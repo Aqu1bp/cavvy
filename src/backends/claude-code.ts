@@ -405,6 +405,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
                             effortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels : undefined,
                             // Its result says the window; until then, the size it serves the model at.
                             contextWindow: claudeCodeWindow(x.value) ?? claudeCodeWindow(typeof x.resolvedModel === "string" ? x.resolvedModel : undefined),
+                            // What an alias stands for, on the account it was listed with (its model limits cover it or not).
+                            ...(typeof x.resolvedModel === "string" && x.resolvedModel && x.resolvedModel !== x.value ? { resolvedModel: x.resolvedModel.slice(0, 100), resolvedFor: defaultAccount(this.def.id) } : {}),
                         }),
                     );
             }

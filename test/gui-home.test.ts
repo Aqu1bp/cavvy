@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
 import { componentCode, elements, type Element } from "./gui-component-harness";
 import { ago } from "../gui/src/lib/format";
-import { limitAlternatives, limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, refModel, windowLine } from "../gui/src/lib/limits";
+import { limitAlternatives, limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, refModel, resolvedOn, servedKey, windowLine } from "../gui/src/lib/limits";
 
 const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
 // Keyed, its child gets the value; otherwise an accessor, as Solid's does.
@@ -429,7 +429,7 @@ test("the limit for Home's pill and the account's badge: the fullest window from
     expect(nearLimit(meterOf(lapsed, Date.now()))).toBeUndefined();
 });
 
-function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: PlanLimits["windows"]; model?: { id: string } } = {}) {
+function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: PlanLimits["windows"]; model?: { id: string; resolvedModel?: string; resolvedFor?: string }; served?: Record<string, string> } = {}) {
     const provider = "claude-code";
     // Noon today: a reset 106 minutes on is the same day whenever the test runs (late in the evening it wouldn't be).
     const noon = new Date().setHours(12, 0, 0, 0);
@@ -443,11 +443,11 @@ function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: 
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
         providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (o.windows ? { [planLimitKey(provider)]: limits(o.windows) } : used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => noon, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine,
+        now: () => noon, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine, resolvedOn, servedFor: () => o.served ?? {},
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
-    }) as (p: { provider?: string; sessionId?: string; home?: boolean; model?: { id: string } }) => unknown;
+    }) as (p: { provider?: string; sessionId?: string; home?: boolean; model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) => unknown;
     const tree = ComposerMeter({ provider, sessionId, home, model: o.model });
     return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("ctx-limit")) : elements(tree, "button")[0] };
 }
@@ -498,4 +498,25 @@ test("a configured model not in the list yet still counts for its model limits",
     expect(refModel("mock:a:b")).toEqual({ id: "a:b" });
     expect(refModel("nocolon")).toBeUndefined();
     expect(refModel(undefined)).toBeUndefined();
+});
+
+test("Home's pill for an alias: by what it's known to stand for on the account, never guessed", () => {
+    const later = Date.now() + 2 * 86_400_000;
+    const windows = [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: later }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: later }] as PlanLimits["windows"];
+    // Default, listed by Claude Code as Opus for this account: Fable's limit isn't its.
+    expect(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "default" } }).trigger).toBeUndefined();
+    // Or last served as Opus on this account.
+    expect(meter(true, undefined, undefined, { windows, model: { id: "default" }, served: { [servedKey("claude-code", "default", "default")]: "claude-opus-5-5" } }).trigger).toBeUndefined();
+    // Listed for another account only: not known for this one, so it may be Fable's: it warns.
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fablelimit reached");
+    // Fable chosen: its limit.
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fablelimit reached");
+});
+
+test("what an alias stands for: last served on the account first, else as listed for that account", () => {
+    const m = { provider: "claude-code", id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "default" };
+    expect(resolvedOn(m, "default", {})).toBe("claude-opus-5-5");
+    expect(resolvedOn(m, "work", {})).toBeUndefined();
+    expect(resolvedOn(m, "default", { [servedKey("claude-code", "default", "default")]: "claude-fable-1" })).toBe("claude-fable-1");
 });

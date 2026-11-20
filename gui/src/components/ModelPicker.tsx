@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, servedFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -13,7 +13,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
-import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, windowShort, type NearLimit } from "../lib/limits";
+import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, windowShort, type NearLimit } from "../lib/limits";
 import { covers } from "@shared/plan-meter";
 import { now } from "../lib/clock";
 
@@ -402,7 +402,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const modelLimit = (m: ModelSummary) => {
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
-        const served = p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined;
+        const account = selectedAccount(m.provider);
+        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, servedFor(p.sessionId));
         const model = { id: m.id, resolved: served };
         const stop = limitFor(meter, model);
         if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;

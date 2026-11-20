@@ -4,7 +4,7 @@ import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/so
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
 import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
-import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, windowShort } from "../../gui/src/lib/limits";
+import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, windowShort } from "../../gui/src/lib/limits";
 import { covers } from "../../src/server/plan-meter";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
@@ -89,7 +89,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, limitFor, limitName, windowShort, planTitle, covers, tokens, now: () => 0,
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, limitFor, limitName, windowShort, planTitle, covers, resolvedOn, servedFor: () => ({}), tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
