@@ -13,9 +13,8 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
-import { meterOf, windowShort } from "../lib/limits";
+import { limitBadge, meterOf, nearLimit, windowShort, type NearLimit } from "../lib/limits";
 import { now } from "../lib/clock";
-import { nearLimit } from "./ComposerMeter";
 
 function fuzzy(q: string, s: string): boolean {
     q = q.toLowerCase();
@@ -453,7 +452,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const accounts = (provider: string) => {
         const label = `${providerName(provider)} account`;
         const current = () => accountChoices(provider).find((a) => a.id === selectedAccount(provider));
-        const level = (pct: number, long: boolean) => <span class={`mp-acct-lv ${pct >= 100 ? "full" : ""}`}>{pct >= 100 ? (long ? "Limit reached" : "limit") : `${pct}%${long ? " used" : ""}`}</span>;
+        const level = (n: NearLimit, long: boolean) => <span class={`mp-acct-lv ${n.reached ? "full" : ""}`}>{limitBadge(n, long)}</span>;
         return (
             <span class="mp-acct" ref={(el) => (acctEl = el)} onFocusOut={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setAcctOpen(false)}>
                 <button
@@ -465,7 +464,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     onClick={(e) => openAccounts(!acctOpen(), e.detail === 0)}
                 >
                     <span class="truncate">{current()?.name ?? "Choose account"}</span>
-                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l().pct, false)}</Show>
+                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l(), false)}</Show>
                     <ChevronDown size={12} class="chev" />
                 </button>
                 <Show when={acctOpen()}>
@@ -490,7 +489,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                             </Show>
                                         </span>
                                         <span class="truncate">{a.name}</span>
-                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l().pct, true)}</Show>
+                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l(), true)}</Show>
                                     </button>
                                 );
                             }}

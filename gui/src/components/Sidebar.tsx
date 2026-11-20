@@ -273,6 +273,12 @@ function UpdateButton() {
 }
 
 /**
+ * The rail footer's watch on its plans' resets (lib/rail.ts resetWatcher), kept here rather than in the Sidebar: a
+ * docked rail that's hidden isn't there at all, and a reset that passed meanwhile is asked about when it's back.
+ */
+const railResets = resetWatcher(Date.now());
+
+/**
  * The plans' usage, beside Settings: one row however many there are. A gauge per
  * plan, its mark in a ring that fills as its fullest window does, then the
  * figure: the same size in every state, the ring and figure turning amber, then
@@ -655,12 +661,10 @@ export function Sidebar() {
         // The session's machine's plans and limits: its account ("Default" there) isn't this computer's of that name.
         return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
-    // A window the footer shows that resets while it's on screen: where its plan stands now is asked for, once. While
-    // the rail is hidden (or Settings covers it) nothing is asked; shown again, a reset that passed meanwhile asks once.
-    // The clock doesn't tick while the window can't be seen, so its next tick does the same.
-    const crossed = resetWatcher(now());
+    // A window the footer shows that resets while it's on screen: where its plan stands now is asked for, once
+    // (railResets, kept while the rail is closed and this isn't there).
     createEffect(on([now, () => shellLayout().railShown && !settingsTab()], ([t, shown]) => {
-        const due = crossed(t, shown, plans(), limitsFor(app.activeId));
+        const due = railResets(t, shown, plans(), limitsFor(app.activeId));
         if (due.length) void checkLimits(app.activeId, due);
     }, { defer: true }));
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.

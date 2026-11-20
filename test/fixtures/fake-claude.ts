@@ -171,14 +171,19 @@ if (argv[0] === "auth" && argv[1] === "status") {
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
 // --version: FAKE_CLAUDE_CLI_VERSION, else one that answers /usage in print mode.
 if (argv[0] === "--version") {
+    // FAKE_VERSION_DELAY_MS: it answers that much later.
+    log({ version: true });
+    if (process.env.FAKE_VERSION_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_VERSION_DELAY_MS)));
     console.log(`${process.env.FAKE_CLAUDE_CLI_VERSION ?? "2.1.322"} (Claude Code)`);
     process.exit(0);
 }
 // -p /usage --output-format json, as 2.1.322 answers it without a model call: FAKE_USAGE_TEXT is its text (after
 // FAKE_USAGE_DELAY_MS); FAKE_USAGE_MODEL=1 answers as a CLI that sent it to the model instead, FAKE_USAGE_ERROR=1
-// with an error, FAKE_USAGE_SHAPE=other with JSON of another shape. Logs the TZ it ran with.
+// with an error, FAKE_USAGE_SHAPE=other with JSON of another shape. Logs the TZ it ran with, and its pid.
 if (argv[0] === "-p" && argv[1] === "/usage") {
-    log({ usage: { tz: process.env.TZ } });
+    log({ usage: { tz: process.env.TZ, pid: process.pid } });
+    // FAKE_USAGE_IGNORE_TERM=1: SIGTERM doesn't stop it.
+    if (process.env.FAKE_USAGE_IGNORE_TERM === "1") process.on("SIGTERM", () => undefined);
     if (process.env.FAKE_USAGE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_USAGE_DELAY_MS)));
     const model = process.env.FAKE_USAGE_MODEL === "1";
     const error = process.env.FAKE_USAGE_ERROR === "1";

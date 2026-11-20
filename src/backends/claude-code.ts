@@ -256,6 +256,8 @@ export async function claudeUsage(providerId = "claude-code", signal?: AbortSign
     const env = accountEnv(providerId, accountId);
     const version = await runCli(bin, ["--version"], { signal, timeoutMs: 10_000, env });
     if (!claudeVersionAtLeast(/^\s*(\S+)/.exec(version.stdout)?.[1], 322)) return undefined;
+    // Stopped meanwhile (the account removed, the server stopping): /usage isn't started.
+    if (signal?.aborted) return undefined;
     const at = Date.now();
     const r = await runCli(bin, ["-p", "/usage", "--model", USAGE_NO_MODEL, "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
     // Stopped (cancelled, out of time) or crashed: nothing was said either way.

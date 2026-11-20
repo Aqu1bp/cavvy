@@ -12,11 +12,12 @@ const root = tempDir("account-limits-");
 const { BUILTIN_PROVIDERS, saveAgentConfig } = await import("../src/providers/registry");
 const { createBackend } = await import("../src/backends/index");
 const { mergeLimits, parseClaudeRateLimit, parseCodexRateLimits } = await import("../src/backends/limits");
-const { Engine } = await import("../src/server/engine");
+const { Engine, limitTiming } = await import("../src/server/engine");
+const { stopTiming } = await import("../src/backends/cli");
 const { USAGE_NO_MODEL } = await import("../src/backends/claude-code");
 const { planLimitKey } = await import("../src/server/protocol");
 const { meterOf, limitAlternatives } = await import("../gui/src/lib/limits");
-const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_ERROR", "FAKE_USAGE_SHAPE", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION"];
+const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_ERROR", "FAKE_USAGE_SHAPE", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION", "FAKE_VERSION_DELAY_MS", "FAKE_USAGE_IGNORE_TERM"];
 const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 for (const provider of ["claude-code", "codex"]) {
     const binary = join(root, provider);
@@ -305,6 +306,102 @@ describe("limits.refresh: where a plan stands, asked of the CLI without a turn",
         }
         expect(most).toBeLessThanOrEqual(2);
         expect((await engine.handle(client, "limits.get", {})).filter((l) => l.provider === "claude-code").map((l) => l.accountId).sort()).toEqual(["default", "personal", "work"]);
+        await engine.stop();
+    });
+
+    const waitFor = async (ok: () => boolean, ms = 5000) => {
+        const deadline = Date.now() + ms;
+        while (!ok() && Date.now() < deadline) await Bun.sleep(20);
+    };
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    test("an account removed while its check is starting: /usage is never started for it", async () => {
+        const { engine, client } = setup();
+        const folder = join(root, "going");
+        mkdirSync(folder, { recursive: true });
+        const { addAccount } = await import("../src/providers/accounts");
+        const added = addAccount("claude-code", { id: "going", name: "Going", folder });
+        process.env.FAKE_USAGE_TEXT = weekly(20);
+        process.env.FAKE_VERSION_DELAY_MS = "400";
+        const check = engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "going" }] });
+        await waitFor(() => lines().some((l) => l.version));
+        await engine.handle(client, "accounts.remove", { provider: "claude-code", id: "going", confirmedFolder: added.folder });
+        await check;
+        await Bun.sleep(300);
+        expect(usageRuns()).toHaveLength(0);
+        await engine.stop();
+    });
+
+    test("stopping the server stops its checks: one that ignores SIGTERM is killed, one waiting doesn't start", async () => {
+        const saved = { ...stopTiming };
+        Object.assign(stopTiming, { killMs: 300 });
+        try {
+            const { engine, client } = setup();
+            process.env.FAKE_USAGE_TEXT = weekly(20);
+            process.env.FAKE_USAGE_DELAY_MS = "20000";
+            process.env.FAKE_USAGE_IGNORE_TERM = "1";
+            void engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            expect(usageRuns()).toHaveLength(2);
+            const pids = lines().filter((l) => l.usage).map((l) => l.usage.pid as number);
+            const t = Date.now();
+            await engine.stop();
+            expect(Date.now() - t).toBeLessThan(4000);
+            expect(pids.filter(alive)).toEqual([]);
+            await Bun.sleep(300);
+            // The third account's check was waiting for a place: it never started.
+            expect(usageRuns()).toHaveLength(2);
+        } finally {
+            Object.assign(stopTiming, saved);
+        }
+    });
+
+    test("a check that waited long for its place counts from when it asked, and asking while it waits adds nothing", async () => {
+        const saved = limitTiming.freshMs;
+        limitTiming.freshMs = 600;
+        try {
+            const { engine, client } = setup();
+            process.env.FAKE_USAGE_TEXT = "Nothing to read";
+            process.env.FAKE_USAGE_DELAY_MS = "400";
+            // Default and Personal take the places; Work waits for one (400 ms) and then asks (400 ms more).
+            const all = engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            // Asked while it waits: the check it's waiting to make answers that too.
+            await Promise.all([all, engine.handle(client, "limits.refresh", { plans: work })]);
+            expect(usageRuns()).toHaveLength(3);
+            expect(usageRuns()[2].claudeConfigDir).toContain("work");
+            // Asked again as soon as it's done: it asked 400 ms ago, within the throttle, though it was queued 800 ms ago.
+            await engine.handle(client, "limits.refresh", { plans: work });
+            await Bun.sleep(200);
+            expect(usageRuns()).toHaveLength(3);
+            await engine.stop();
+        } finally {
+            limitTiming.freshMs = saved;
+        }
+    });
+
+    test("a follow-up for a window that reset during a check isn't held back by a report about another window", async () => {
+        const { engine, client } = setup();
+        process.env.FAKE_USAGE_TEXT = "Nothing to read";
+        process.env.FAKE_USAGE_DELAY_MS = "400";
+        const at = Date.now() - 10 * 60_000;
+        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: Date.now() + 150 }, { id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: reset.getTime() }], at }, false);
+        const first = engine.handle(client, "limits.refresh", { plans: work });
+        await Bun.sleep(250);
+        // The 5-hour window has reset: asked again during the check. Then a report about the week alone comes in.
+        void engine.handle(client, "limits.refresh", { plans: work });
+        await Bun.sleep(20);
+        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 52, resetsAt: reset.getTime() }], at: Date.now() }, true);
+        await first;
+        await waitFor(() => usageRuns().length >= 2);
+        expect(usageRuns()).toHaveLength(2);
         await engine.stop();
     });
 

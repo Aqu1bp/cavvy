@@ -66,18 +66,19 @@ export async function checkAgentPlan(providerId: string, signal?: AbortSignal, a
 
 /**
  * Where an account's plan limits stand now, without a turn, from the CLI itself: Codex's account/rateLimits/read
- * (all of the account's limits: `full`), Claude Code's `/usage`. Undefined when the CLI has no such check, or
+ * (all of the account's limits: `full`), Claude Code's `/usage` (`statusUnsaid`). Undefined when the CLI has no such check, or
  * its answer couldn't be read.
  */
-export async function checkPlanLimits(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ limits: PlanLimits; full: boolean } | undefined> {
+export async function checkPlanLimits(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ limits: PlanLimits; full: boolean; statusUnsaid?: boolean } | undefined> {
     switch (agentCli(providerId)?.protocol) {
         case "codex-app-server": {
             const limits = (await codexPlan(providerId, signal, accountId)).limits;
             return limits && { limits, full: true };
         }
         case "claude-stream-json": {
+            // Its text doesn't say whether a window is at its limit.
             const limits = await claudeUsage(providerId, signal, accountId);
-            return limits && { limits, full: false };
+            return limits && { limits, full: false, statusUnsaid: true };
         }
         default:
             return undefined;

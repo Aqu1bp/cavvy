@@ -74,11 +74,13 @@ export interface CliResult {
 /**
  * Run a short CLI command (status checks) with arguments only, never a shell. Cancelled (or out of time), it's
  * asked to stop, then killed stopTiming.killMs later; that long after, its output is no longer waited for (a
- * process it left behind may hold the pipes). One cancelled before it starts isn't started.
+ * process it left behind may hold the pipes), and what was read comes back. One that was stopped never reads as
+ * a success: its code is -1 if it had exited 0. One cancelled before it starts isn't started.
  */
 export async function runCli(bin: string, args: string[], opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; env?: Record<string, string> } = {}): Promise<CliResult> {
     if (opts.signal?.aborted) throw new Error(`Cancelled before ${basename(bin)} started`);
     const proc = Bun.spawn([bin, ...args], { cwd: opts.cwd ?? homedir(), env: { ...childEnv(), ...opts.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const out = collect(proc.stdout), err = collect(proc.stderr);
     let escalate: ReturnType<typeof setTimeout> | undefined;
     let abandon: ReturnType<typeof setTimeout> | undefined;
     let giveUp!: () => void;
@@ -94,14 +96,37 @@ export async function runCli(bin: string, args: string[], opts: { cwd?: string; 
     const timer = setTimeout(kill, opts.timeoutMs ?? 20_000);
     opts.signal?.addEventListener("abort", kill, { once: true });
     try {
-        const read = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).then(([stdout, stderr, code]) => ({ code, stdout, stderr }));
-        return await Promise.race([read, gaveUp.then(() => ({ code: proc.exitCode ?? -1, stdout: "", stderr: "" }))]);
+        const read = Promise.all([out.done, err.done, proc.exited]).then(([, , code]) => code);
+        const code = await Promise.race([read, gaveUp.then(() => -1)]);
+        if (code === -1) void Promise.all([out.cancel(), err.cancel()]);
+        // Stopped by us (out of time, or cancelled): not a success, whatever it exited with.
+        return { code: escalate && code === 0 ? -1 : code, stdout: out.text(), stderr: err.text() };
     } finally {
         clearTimeout(timer);
         clearTimeout(escalate);
         clearTimeout(abandon);
         opts.signal?.removeEventListener("abort", kill);
     }
+}
+
+/** A stream read as text as it comes: what's been read so far, at any time; `cancel` stops reading. */
+function collect(stream: ReadableStream<Uint8Array>): { done: Promise<void>; text: () => string; cancel: () => Promise<void> } {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const done = (async () => {
+        try {
+            for (;;) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                text += decoder.decode(value, { stream: true });
+            }
+            text += decoder.decode();
+        } catch {
+            // Cancelled, or the pipe broke: what was read stands.
+        }
+    })();
+    return { done, text: () => text, cancel: () => reader.cancel().catch(() => undefined) };
 }
 
 /** The first meaningful line of a CLI's error output, redacted. */

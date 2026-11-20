@@ -430,7 +430,7 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         const f = fixture("claude-usage-2.1.322-ultra.json");
         const l = parseClaudeUsage(f.result, f.at)!;
         expect(l.provider).toBe("claude-code");
-        expect(l.reached).toBe(false);
+        expect(l.reached).toBeUndefined();
         expect(l.windows).toEqual([
             { id: "seven_day", label: "Weekly", usedPercent: 15, resetsAt: Date.UTC(2026, 10, 24, 19, 59) },
             { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 4, resetsAt: Date.UTC(2026, 10, 24, 19, 59) },
@@ -450,8 +450,9 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
             { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 3, resetsAt: Date.UTC(2026, 10, 24, 20, 0) },
         ]);
         expect(meterOf(l, now)!.windows[0]!.reached).toBe(true);
-        expect(l.reached).toBe(true);
-        expect(l.resetsAt).toBe(Date.UTC(2026, 10, 20, 13, 59));
+        // Nor whether the plan is at its limit: that follows from its windows.
+        expect(l.reached).toBeUndefined();
+        expect(meterOf(l, now)!.reached).toBe(true);
         // A time alone that has passed today is tomorrow's; a date near the new year is the nearest one.
         expect(usageResetTime("8:30am (UTC)", now)).toBe(Date.UTC(2026, 10, 21, 8, 30));
         expect(usageResetTime("Jan 2, 9am (UTC)", Date.UTC(2026, 11, 30))).toBe(Date.UTC(2027, 0, 2, 9));
@@ -495,15 +496,32 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: rejectedAt, reached: true }], reached: true, resetsAt: rejectedAt, at };
         // /usage rounds to the minute: 7:59pm is the same period's reset.
         const same = parseClaudeUsage("Current week (all models): 97% used · resets Nov 24, 7:59pm (UTC)", at + 60_000)!;
-        const m = mergeLimits(prev, same, false);
+        const m = mergeLimits(prev, same, false, { statusUnsaid: true });
         expect(m.windows[0]!.reached).toBe(true);
         expect(m.reached).toBe(true);
+        // And the event's exact reset, not /usage's minute: the rail's watch on it doesn't fire a minute early.
+        expect(m.windows[0]!.resetsAt).toBe(rejectedAt);
         // A later period's: no longer.
         const next = parseClaudeUsage("Current week (all models): 3% used · resets Dec 1, 8pm (UTC)", rejectedAt + 60_000)!;
-        expect(mergeLimits(prev, next, false).windows[0]!.reached).toBeUndefined();
+        expect(mergeLimits(prev, next, false, { statusUnsaid: true }).windows[0]!.reached).toBeUndefined();
+        // Said to be allowed at 100% (allowed_warning), then /usage at 100% for the same period: still allowed.
+        const allowedFull: PlanLimits = { ...prev, windows: [{ ...prev.windows[0]!, usedPercent: 100, reached: false }], reached: false, resetsAt: undefined };
+        const full = mergeLimits(allowedFull, parseClaudeUsage("Current week (all models): 100% used · resets Nov 24, 7:59pm (UTC)", at + 60_000)!, false, { statusUnsaid: true });
+        expect(full.windows[0]!.reached).toBe(false);
+        expect(meterOf(full, at + 120_000)!.reached).toBe(false);
         // A report that says it's allowed: not reached.
         const allowed = parseClaudeRateLimit({ ...fixture("claude-2.1.322-opus.json"), unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: rejectedAt / 1000, status: "allowed" } } }, at + 60_000)!;
         expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.reached).toBe(false);
+    });
+
+    test("Codex: a window below its limit isn't kept reached by an earlier report for the same period", () => {
+        const resetsAt = Date.UTC(2026, 10, 20, 14, 0);
+        const prev: PlanLimits = { provider: "codex", windows: [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt, reached: true }], reached: true, resetsAt, at };
+        const update = parseCodexRateLimits({ rateLimits: { limitId: "codex", primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: resetsAt / 1000 }, rateLimitReachedType: null } }, { update: true, at: at + 60_000 })!;
+        const m = mergeLimits(prev, update.limits, update.partial);
+        expect(m.windows[0]!.reached).toBeUndefined();
+        expect(m.reached).toBe(false);
+        expect(meterOf(m, at + 120_000)!.reached).toBe(false);
     });
 
     test("a window kept from an earlier report keeps that report's time: it can make the plan's figures stale", () => {

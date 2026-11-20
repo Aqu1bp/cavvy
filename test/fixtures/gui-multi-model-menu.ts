@@ -4,14 +4,14 @@ import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/so
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
 import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
-import { meterOf } from "../../gui/src/lib/limits";
+import { limitBadge, meterOf } from "../../gui/src/lib/limits";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
 
 import { sendsAccountPick } from "../../gui/src/lib/account-pick";
 
 // ComposerMeter's, which this fixture doesn't compile: a reached plan reads 100%.
-const nearLimit = (m?: { reached: boolean }) => (m?.reached ? { pct: 100 } : undefined);
+const nearLimit = (m?: { reached: boolean }) => (m?.reached ? { pct: 100, reached: true } : undefined);
 
 const cleanups: (() => void)[] = [];
 function test(_name: string, run: () => void) {
@@ -90,7 +90,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, tokens, now: () => 0,
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.

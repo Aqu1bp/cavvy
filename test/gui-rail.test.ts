@@ -2,6 +2,7 @@
 // on its group headings, the sessions that need you, and the plan chips in its
 // footer (their tint, how they fit, and the usage card's windows).
 import { expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
 const { resetLabel } = await import("../gui/src/lib/limits");
@@ -339,4 +340,19 @@ test("a reset is asked about once, and only while the rail's footer is on screen
     expect(hidden(NOW + 3000, false, plans, all)).toEqual([]);
     expect(hidden(NOW + 4000, true, plans, all)).toEqual([{ provider: "claude-code", accountId: "max" }]);
     expect(hidden(NOW + 5000, true, plans, all)).toEqual([]);
+});
+
+test("the footer's watch outlives the rail: a docked rail that's hidden isn't there, and a reset meanwhile is asked about when it's back", () => {
+    // The Sidebar (unmounted with the rail) uses one watch made once for the window, not one of its own.
+    const src = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8");
+    const made = src.indexOf("const railResets = resetWatcher(");
+    expect(made).toBeGreaterThan(-1);
+    expect(made).toBeLessThan(src.indexOf("export function Sidebar("));
+    expect(src.slice(src.indexOf("export function Sidebar(")).includes("resetWatcher(")).toBe(false);
+    // Closed (nothing asks it), then open again past the reset: asked once.
+    const plans = [{ provider: "claude-code", accountId: "max" }];
+    const all = { [key("claude-code", "max")]: limits("claude-code", NOW, [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: NOW + 1000 }]) };
+    const watch = resetWatcher(NOW);
+    expect(watch(NOW + 500, true, plans, all)).toEqual([]);
+    expect(watch(NOW + 60_000, true, plans, all)).toEqual([{ provider: "claude-code", accountId: "max" }]);
 });

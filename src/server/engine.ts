@@ -15,7 +15,7 @@ import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
-import { mergeLimits } from "../backends/limits";
+import { mergeLimits, type MergeHow } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
@@ -195,8 +195,17 @@ const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
-/** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. */
-const LIMITS_FRESH_MS = 3 * 60_000;
+/** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. Changeable for tests. */
+export const limitTiming = { freshMs: 3 * 60_000 };
+/** A plan check (Engine.refreshPlan): queued, then running; stopped by `abort`. */
+interface LimitJob {
+    done: Promise<void>;
+    abort: AbortController;
+    /** It has its place and has asked the CLI. */
+    started: boolean;
+    /** Asked for again while it ran: once more after it; the latest reset that had passed by then (0: none). */
+    again?: number;
+}
 /** Plan checks that run at once, across accounts (each of Claude Code's is a process of a few hundred MB). */
 const LIMIT_CHECKS_AT_ONCE = 2;
 /** Deleted sessions older than a week are purged at start and this often. */
@@ -603,6 +612,9 @@ export class Engine {
         this.serverLinks?.stopWatching();
         for (const c of [...this.mcpCallbacks.values()]) c.stop();
         this.planChecks.abort();
+        // Plan checks: those waiting don't start; those running are stopped (runCli kills one that doesn't stop) and
+        // waited for, alongside the rest of the shutdown.
+        const limitChecksStopped = Promise.race([Promise.all([...this.limitJobs.values()].map((j) => j.done)), new Promise((r) => setTimeout(r, 3000))]);
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
@@ -618,6 +630,7 @@ export class Engine {
         await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
         await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
+        await limitChecksStopped;
         this.unregisterAccountRoots();
     }
 
@@ -1955,12 +1968,12 @@ export class Engine {
 
     private limits = new Map<string, PlanLimits>();
 
-    /** Never let a delayed report or a different account replace this account's meter. `full`: a whole check of the account (mergeLimits). */
-    limitsReported(limits: PlanLimits, partial: boolean, full = false) {
+    /** Never let a delayed report or a different account replace this account's meter. `full`, `statusUnsaid`: as mergeLimits takes them. */
+    limitsReported(limits: PlanLimits, partial: boolean, o: boolean | MergeHow = false) {
         const key = planLimitKey(limits.provider, limits.accountId);
         const prev = this.limits.get(key);
         if (prev && prev.at > limits.at) return;
-        const merged = mergeLimits(prev, limits, partial, full);
+        const merged = mergeLimits(prev, limits, partial, o);
         this.limits.set(key, merged);
         this.saveLimits();
         this.broadcast({ type: "limits", limits: merged });
@@ -1988,13 +2001,12 @@ export class Engine {
     private readonly planChecks = new AbortController();
     private checkingPlans: Promise<void> = Promise.resolve();
 
-    /** Plan checks queued or running (limits.refresh), when each account's was last asked for, and those asked for again meanwhile: by planLimitKey. */
-    private limitChecks = new Map<string, Promise<void>>();
+    /** Plan checks queued or running (limits.refresh), and when each account's last one started: by planLimitKey. */
+    private limitJobs = new Map<string, LimitJob>();
     private limitAsked = new Map<string, number>();
-    private limitAgain = new Set<string>();
     /** Checks running now, and those waiting for one of the LIMIT_CHECKS_AT_ONCE places. */
     private limitRunning = 0;
-    private limitWaiting: (() => void)[] = [];
+    private limitWaiting: { give: (placed: boolean) => void; signal: AbortSignal }[] = [];
 
     /**
      * Where the plans stand now, asked of the CLIs without a turn (checkPlanLimits): when their usage is opened (the
@@ -2009,7 +2021,8 @@ export class Engine {
         return Promise.all(which.map((p) => this.refreshPlan(p.provider, p.accountId ?? "default"))).then(() => undefined);
     }
 
-    private refreshPlan(provider: string, accountId: string): Promise<void> {
+    /** `crossing`: a follow-up for a window that reset at that time during the last check (LimitJob.again). */
+    private refreshPlan(provider: string, accountId: string, crossing?: number): Promise<void> {
         const def = agentCli(provider);
         if (!def || def.caps.planLimits === "none" || !readAgentConfig(provider) || this.stopping) return Promise.resolve();
         if (!this.hasAccount(provider, accountId)) return Promise.resolve();
@@ -2017,59 +2030,83 @@ export class Engine {
         const status = this.accountStatus.get(`${provider}:${accountId}`);
         if (status?.signedIn === false || status?.apiKey) return Promise.resolve();
         const key = planLimitKey(provider, accountId);
-        const running = this.limitChecks.get(key);
-        if (running) {
-            // Asked again meanwhile (a window reset): once more when this one is done, where the throttle decides.
-            this.limitAgain.add(key);
-            return running;
-        }
         const now = Date.now();
         const prev = this.limits.get(key);
+        const queued = this.limitJobs.get(key);
+        if (queued) {
+            // Still waiting for its place: it hasn't asked yet, so it answers this too. Asked during the check (a window
+            // reset, say): once more after it, remembering the latest reset that has passed by now.
+            if (queued.started) queued.again = Math.max(queued.again ?? 0, ...(prev?.windows ?? []).map((w) => (w.resetsAt !== undefined && w.resetsAt <= now ? w.resetsAt : 0)));
+            return queued.done;
+        }
         const since = Math.max(prev ? reportedOf(prev, now) : 0, this.limitAsked.get(key) ?? 0);
-        if (now - since < LIMITS_FRESH_MS && !prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > since && w.resetsAt <= now)) return Promise.resolve();
-        this.limitAsked.set(key, now);
-        const check: Promise<void> = this.limitPlace()
-            .then((): ReturnType<typeof checkPlanLimits> | undefined => (this.stopping || this.limitChecks.get(key) !== check ? undefined : checkPlanLimits(provider, this.planChecks.signal, accountId)))
+        // A follow-up for a window that reset during the last check goes ahead while that window's figure is still from
+        // before its reset (a report about another window since doesn't count).
+        const unchecked = crossing !== undefined && Boolean(prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt <= crossing && (w.at ?? prev.at) < w.resetsAt));
+        if (!unchecked && now - since < limitTiming.freshMs && !prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > since && w.resetsAt <= now)) return Promise.resolve();
+        const abort = new AbortController();
+        const stop = () => abort.abort();
+        this.planChecks.signal.addEventListener("abort", stop, { once: true });
+        const job: LimitJob = { abort, started: false, done: Promise.resolve() };
+        let placed = false;
+        job.done = this.limitPlace(abort.signal)
+            .then((got): ReturnType<typeof checkPlanLimits> | undefined => {
+                placed = got;
+                if (!got || abort.signal.aborted || this.stopping || this.limitJobs.get(key) !== job) return undefined;
+                job.started = true;
+                this.limitAsked.set(key, Date.now());
+                return checkPlanLimits(provider, abort.signal, accountId);
+            })
             .then((r): void => {
                 // Not for an account removed meanwhile (accounts.remove), nor once the server is stopping.
-                if (r && !this.stopping && this.limitChecks.get(key) === check && this.hasAccount(provider, accountId)) this.limitsReported(r.limits, false, r.full);
+                if (r && !abort.signal.aborted && !this.stopping && this.limitJobs.get(key) === job && this.hasAccount(provider, accountId)) this.limitsReported(r.limits, false, { full: r.full, statusUnsaid: r.statusUnsaid });
             })
             .catch(() => undefined)
             .finally(() => {
-                this.limitFree();
-                if (this.limitChecks.get(key) !== check) return;
-                this.limitChecks.delete(key);
-                if (this.limitAgain.delete(key)) void this.refreshPlan(provider, accountId);
+                this.planChecks.signal.removeEventListener("abort", stop);
+                if (placed) this.limitFree();
+                if (this.limitJobs.get(key) !== job) return;
+                this.limitJobs.delete(key);
+                if (job.again !== undefined && !this.stopping) void this.refreshPlan(provider, accountId, job.again);
             });
-        this.limitChecks.set(key, check);
-        return check;
+        this.limitJobs.set(key, job);
+        return job.done;
     }
 
     private hasAccount(provider: string, accountId: string): boolean {
         return cliAccounts(provider).some((a) => a.id === accountId && !a.invalid);
     }
 
-    /** Waits for one of the places for a plan check; limitFree gives it back. */
-    private limitPlace(): Promise<void> {
+    /** Waits for one of the places for a plan check (true), or until `signal` gives up waiting (false); limitFree gives a place back. */
+    private limitPlace(signal: AbortSignal): Promise<boolean> {
+        if (signal.aborted) return Promise.resolve(false);
         if (this.limitRunning < LIMIT_CHECKS_AT_ONCE) {
             this.limitRunning++;
-            return Promise.resolve();
+            return Promise.resolve(true);
         }
-        return new Promise((r) => this.limitWaiting.push(r));
+        return new Promise((resolve) => {
+            const entry = { give: (placed: boolean) => (signal.removeEventListener("abort", leave), resolve(placed)), signal };
+            const leave = () => {
+                this.limitWaiting = this.limitWaiting.filter((w) => w !== entry);
+                resolve(false);
+            };
+            signal.addEventListener("abort", leave, { once: true });
+            this.limitWaiting.push(entry);
+        });
     }
 
     private limitFree() {
         const next = this.limitWaiting.shift();
-        if (next) next();
+        if (next) next.give(true);
         else this.limitRunning--;
     }
 
-    /** An account removed: its checks' answers aren't wanted, nor its next. */
+    /** An account removed: its check is stopped (its answer isn't wanted), and its next isn't held back. */
     private forgetLimitChecks(provider: string, accountId: string) {
         const key = planLimitKey(provider, accountId);
-        this.limitChecks.delete(key);
+        this.limitJobs.get(key)?.abort.abort();
+        this.limitJobs.delete(key);
         this.limitAsked.delete(key);
-        this.limitAgain.delete(key);
     }
 
     /**

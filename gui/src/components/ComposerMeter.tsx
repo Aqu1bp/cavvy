@@ -5,32 +5,10 @@ import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
+import { limitAlternatives, meterOf, nearLimit, windowLine } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
-/**
- * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
- * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
- * in a ring. A window that has reset since the report has no figure (meterOf), so it's never the one named.
- */
-export function nearLimit(m: Meter | undefined): { pct: number; window?: string; resets?: string } | undefined {
-    if (!m) return undefined;
-    const live = m.windows.filter((w) => !w.reset);
-    const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
-    // A reached window is the one to name, whatever another's percentage.
-    const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
-    const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
-    // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
-    if (m.reached && !w?.reached) return { pct: 100, ...(m.resets ? { resets: m.resets } : {}) };
-    // At its limit is full, whatever share the CLI last gave (a window rejected at 97%): as the rail's card says.
-    const pct = w ? (w.reached ? 100 : used(w)) : 0;
-    if (pct < 80 && !m.reached) return undefined;
-    // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
-    const resets = w?.resets ?? m.resets;
-    return { pct: Math.min(100, Math.round(pct)), window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}) };
-}
-
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
 export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
     let btn: HTMLButtonElement | undefined;

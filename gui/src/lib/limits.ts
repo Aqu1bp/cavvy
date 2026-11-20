@@ -106,6 +106,42 @@ export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets" 
     return (w.pct !== undefined ? `${w.pct}%` : "Not reported") + (w.resets ? `, resets ${w.resets}` : "");
 }
 
+/** Home's limit pill, and an account's badge in the model picker (nearLimit). */
+export interface NearLimit {
+    pct: number;
+    /** A limit is reached now (the shared meter's: a window said to be allowed at 100% isn't). */
+    reached: boolean;
+    window?: string;
+    resets?: string;
+}
+
+/**
+ * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
+ * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
+ * in a ring. A window that has reset since the report has no figure (meterOf), so it's never the one named.
+ */
+export function nearLimit(m: Meter | undefined): NearLimit | undefined {
+    if (!m) return undefined;
+    const live = m.windows.filter((w) => !w.reset);
+    const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
+    // A reached window is the one to name, whatever another's percentage.
+    const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
+    const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
+    // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
+    if (m.reached && !w?.reached) return { pct: 100, reached: true, ...(m.resets ? { resets: m.resets } : {}) };
+    // At its limit is full, whatever share the CLI last gave (a window rejected at 97%): as the rail's card says.
+    const pct = w ? (w.reached ? 100 : used(w)) : 0;
+    if (pct < 80 && !m.reached) return undefined;
+    // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
+    const resets = w?.resets ?? m.resets;
+    return { pct: Math.min(100, Math.round(pct)), reached: m.reached, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}) };
+}
+
+/** An account's badge in the model picker: "limit" once it's reached, else its share ("94%"); `long` in its list. */
+export function limitBadge(n: Pick<NearLimit, "pct" | "reached">, long: boolean): string {
+    return n.reached ? (long ? "Limit reached" : "limit") : `${n.pct}%${long ? " used" : ""}`;
+}
+
 /** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */
 export function liftsAt(m: Pick<Meter, "resets" | "windows">): string | undefined {
     if (!m.resets) return undefined;

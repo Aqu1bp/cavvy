@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
 import { componentCode, elements, type Element } from "./gui-component-harness";
 import { ago } from "../gui/src/lib/format";
-import { limitAlternatives, meterOf, windowLine } from "../gui/src/lib/limits";
+import { limitAlternatives, limitBadge, meterOf, nearLimit, windowLine } from "../gui/src/lib/limits";
 
 const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
 // Keyed, its child gets the value; otherwise an accessor, as Solid's does.
@@ -386,26 +386,31 @@ test("the worktree picker never offers another project's worktrees while this on
 
 // ---- The limit pill ---------------------------------------------------------------------------------
 
-const nearLimit = componentCode("nearLimit", {}, undefined, "ComposerMeter") as (m: ReturnType<typeof meterOf>, l?: PlanLimits, at?: number) => { pct: number; window?: string } | undefined;
 const limits = (windows: PlanLimits["windows"], o: Partial<PlanLimits> = {}): PlanLimits => ({ at: Date.now(), windows, ...o }) as PlanLimits;
 
 test("Home's limit pill shows from 80%, naming the fullest window (or the reached one)", () => {
     const at = (l: PlanLimits) => nearLimit(meterOf(l, Date.now()));
     expect(nearLimit(undefined)).toBeUndefined();
     expect(at(limits([{ label: "5-hour", usedPercent: 79 }, { label: "Weekly", usedPercent: 40 }]))).toBeUndefined();
-    expect(at(limits([{ label: "5-hour", usedPercent: 80 }]))).toEqual({ pct: 80, window: "5-hour" });
-    expect(at(limits([{ label: "5-hour", usedPercent: 62 }, { label: "Weekly", usedPercent: 94 }]))).toEqual({ pct: 94, window: "weekly" });
-    expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, window: "GPT-5 5-hour" });
-    expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, window: "weekly Opus" });
+    expect(at(limits([{ label: "5-hour", usedPercent: 80 }]))).toEqual({ pct: 80, reached: false, window: "5-hour" });
+    expect(at(limits([{ label: "5-hour", usedPercent: 62 }, { label: "Weekly", usedPercent: 94 }]))).toEqual({ pct: 94, reached: false, window: "weekly" });
+    expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, reached: false, window: "GPT-5 5-hour" });
+    expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, reached: true, window: "weekly Opus" });
     // At its limit at 97% (Claude Code said rejected): full, as the rail's card says, not 97%.
-    expect(at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))).toEqual({ pct: 100, window: "5-hour" });
-    expect(at(limits([], { reached: true }))).toEqual({ pct: 100, window: undefined });
+    expect(at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))).toEqual({ pct: 100, reached: true, window: "5-hour" });
+    // Said to be allowed at 100% (allowed_warning): its share, not a reached limit, in the pill and the picker's badge.
+    const allowed = at(limits([{ label: "5-hour", usedPercent: 100, reached: false }]))!;
+    expect(allowed).toEqual({ pct: 100, reached: false, window: "5-hour" });
+    expect([limitBadge(allowed, false), limitBadge(allowed, true)]).toEqual(["100%", "100% used"]);
+    const rejected = at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))!;
+    expect([limitBadge(rejected, false), limitBadge(rejected, true)]).toEqual(["limit", "Limit reached"]);
+    expect(at(limits([], { reached: true }))).toEqual({ pct: 100, reached: true, window: undefined });
     // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
-    expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100 });
-    expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100 });
+    expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
+    expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
     // A window that has reset since the report doesn't count, however full it was.
     const lapsed = limits([{ label: "5-hour", usedPercent: 95, resetsAt: Date.now() - 60_000 }, { label: "Weekly", usedPercent: 40 }]);
-    expect(nearLimit(meterOf(lapsed, Date.now()), lapsed, Date.now())).toBeUndefined();
+    expect(nearLimit(meterOf(lapsed, Date.now()))).toBeUndefined();
 });
 
 function meter(home: boolean, used?: number, sessionId?: string) {
@@ -422,7 +427,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
         providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => noon, limitAlternatives, meterOf, windowLine,
+        now: () => noon, limitAlternatives, meterOf, nearLimit, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),

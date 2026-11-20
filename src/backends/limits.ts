@@ -212,8 +212,8 @@ export function parseClaudeUsage(text: unknown, at = Date.now(), accountId = "de
         windows.push({ id, label: claudeLabel(id), usedPercent: percent(used, 1), resetsAt });
     }
     if (!windows.length) return undefined;
-    const fullOnes = windows.filter((w) => (w.usedPercent ?? 0) >= 100);
-    return { provider: "claude-code", accountId, windows, reached: fullOnes.length > 0, resetsAt: fullOnes.length ? latestReset(fullOnes) : undefined, at };
+    // Nor whether the plan is: that follows from its windows (planNow), and from what was said before (mergeLimits).
+    return { provider: "claude-code", accountId, windows, at };
 }
 
 /** Codex's reached types that credits don't get past: a workspace's cap, not the plan's limit. */
@@ -315,17 +315,29 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
 const SAME_PERIOD_MS = 10 * 60_000;
 
 /**
+ * How a report is merged: `full`, a whole check of the account (Codex's read), replaces what was known;
+ * `statusUnsaid`, a report that can't say whether a window is at its limit (Claude Code's /usage text).
+ */
+export interface MergeHow {
+    full?: boolean;
+    statusUnsaid?: boolean;
+}
+
+/**
  * What's known now, given an earlier report and a new one. `partial`: the new
  * one may leave anything out (a status alone, Codex's updates), so what it
  * doesn't say stands. Otherwise it lists the windows it's about, and a window
  * it leaves out stands until its own reset (Claude Code lists only the
  * windows of the turn's model); `full`: it's a whole check of the account
- * (Codex's read), so it replaces what was known. A reported window keeps an
+ * (Codex's read), so it replaces what was known; `statusUnsaid`: it can't say
+ * whether a window is at its limit (/usage), so it keeps what was said of
+ * the same period. A reported window keeps an
  * omitted reset while that reset is still ahead; a limit reached earlier
  * stands while a full window (or, with none to show for it, its reset time)
  * says so.
  */
-export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean, full = false): PlanLimits {
+export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean, how: boolean | MergeHow = false): PlanLimits {
+    const { full = false, statusUnsaid = false } = typeof how === "boolean" ? { full: how } : how;
     if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const windows = prev.windows.flatMap((w) => {
@@ -335,9 +347,12 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
         if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) ? [{ ...w, at: w.at ?? prev.at }] : [];
         let merged = n;
         if (n.resetsAt === undefined && w.resetsAt !== undefined && w.resetsAt > next.at) merged = { ...merged, resetsAt: w.resetsAt };
-        // A report that doesn't say whether it's at its limit (/usage's text) leaves an earlier "reached" for the
-        // same period (the same reset, give or take /usage's rounding to the minute), while that's still ahead.
-        if (n.reached === undefined && w.reached === true && w.resetsAt !== undefined && w.resetsAt > next.at && (merged.resetsAt === undefined || Math.abs(merged.resetsAt - w.resetsAt) <= SAME_PERIOD_MS)) merged = { ...merged, reached: true };
+        // A report that can't say whether a window is at its limit (/usage's text) leaves what an earlier one said of
+        // the same period (the same reset, give or take /usage's rounding to the minute), and that one's exact reset,
+        // while it's still ahead.
+        if (statusUnsaid && w.resetsAt !== undefined && w.resetsAt > next.at && (merged.resetsAt === undefined || Math.abs(merged.resetsAt - w.resetsAt) <= SAME_PERIOD_MS)) {
+            merged = { ...merged, resetsAt: w.resetsAt, ...(n.reached === undefined && w.reached !== undefined ? { reached: w.reached } : {}) };
+        }
         // An update that doesn't say whether a limit has credits leaves what was said.
         if (n.credits === undefined && w.credits !== undefined) merged = { ...merged, credits: w.credits };
         return [merged];
