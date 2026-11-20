@@ -15,7 +15,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
-const { parseClaudeRateLimit, parseClaudeUsage, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews, usageResetTime, limitStopReport, limitStopOf, limitPlanTitle } = await import("../src/backends/limits");
+const { parseClaudeRateLimit, parseClaudeUsage, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews, usageResetTime, limitStopReport, limitStopOf, limitPlanTitle, creditsNote } = await import("../src/backends/limits");
 const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("../src/server/usage");
 const { slashCommand } = await import("../src/commands/custom");
 const { meterOf, costText, windowLine, windowCaption, windowShort, resetLabel, emptyText, limitFor, limitName } = await import("../gui/src/lib/limits");
@@ -599,11 +599,12 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         expect(limitFor(m, { id: "fable" })).toMatchObject({ credits: false });
     });
 
-    test("an alias served by mode (opusplan) may be under Opus's or Sonnet's limit; not Fable's", () => {
+    test("an alias served by mode (opusplan) may be under Opus's or Sonnet's limit, served as either; not Fable's", () => {
         expect(covers("opus", { id: "opusplan" })).toBeUndefined();
         expect(covers("sonnet", { id: "opusplan" })).toBeUndefined();
         expect(covers("fable", { id: "opusplan" })).toBe(false);
-        expect(covers("opus", { id: "opusplan", resolved: "claude-sonnet-5" })).toBe(false);
+        // Whatever it was served as last: the next turn may be in the other mode.
+        expect(covers("opus", { id: "opusplan", resolved: "claude-sonnet-5" })).toBeUndefined();
     });
 
     test("/usage doesn't undo a window said to be at its limit with no reset known", () => {
@@ -613,6 +614,49 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         // A report that says it's allowed does.
         const allowed = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 0.97, status: "allowed" } } }, at + 120_000)!;
         expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.reached).toBe(false);
+    });
+
+    test("a window said to be at its limit with no reset known stays while reports leave it out", () => {
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: at + 86_400_000 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable" }], reached: true, at };
+        const opus = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day", unifiedWindows: { seven_day: { utilization: 0.41, resetsAt: (at + 86_400_000) / 1000, status: "allowed" } } }, at + 1)!;
+        expect(mergeLimits(prev, opus.limits, opus.partial).windows.find((w) => w.scope === "fable")?.reached).toBe(true);
+        const usage = parseClaudeUsage(`Current week (all models): 41% used · resets ${new Date(at + 86_400_000).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)`, at + 2)!;
+        expect(mergeLimits(prev, usage, false, { statusUnsaid: true }).windows.find((w) => w.scope === "fable")?.reached).toBe(true);
+    });
+
+    test("/usage keeps a bare stop's own reset, not a model window's earlier one", () => {
+        const mon = at + 86_400_000, tue = at + 2 * 86_400_000;
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: mon }], reached: true, resetsAt: tue, at };
+        const usage: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, scope: "fable", resetsAt: mon }], at: at + 1 };
+        expect(mergeLimits(prev, usage, false, { statusUnsaid: true }).resetsAt).toBe(tue);
+    });
+
+    test("a Fable rejection's credits stay on Fable's window: the week on extra usage stays on credits", () => {
+        const week = at + 3 * 86_400_000;
+        const weekly = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: { seven_day: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at)!;
+        const fable = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: false, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at + 1)!;
+        const l = mergeLimits(weekly.limits, fable.limits, fable.partial);
+        const m = meterOf(l, at + 2)!;
+        expect(m.usingCredits).toBe(true);
+        expect(limitFor(m, { id: "opus" })).toMatchObject({ credits: true });
+        expect(limitFor(m, { id: "fable" })).toMatchObject({ credits: false });
+        // The turn's notice says the latest rejection's own verdict (Fable's: not on extra usage).
+        expect(creditsNote(l)).toBe("");
+        // /cost: on credits said on the window it's on.
+        const credited = mergeLimits(weekly.limits, parseClaudeRateLimit({ ...fable.limits, status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at + 1)!.limits, false);
+        expect(limitLines(credited, at + 2).find((x) => x.startsWith("Weekly Fable"))).toMatch(/reached · using credits · resets /);
+    });
+
+    test("a window's credits don't carry into its next period, nor past its being allowed", () => {
+        const mon = at + 86_400_000;
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: mon, credits: false }], reached: true, resetsAt: mon, at };
+        const nextPeriod = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: (mon + 7 * 86_400_000) / 1000, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: (mon + 7 * 86_400_000) / 1000, status: "rejected" } } }, mon + 1)!;
+        expect(mergeLimits(prev, nextPeriod.limits, nextPeriod.partial).windows[0]!.credits).toBeUndefined();
+        const allowed = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 0.99, resetsAt: mon / 1000, status: "allowed" } } }, at + 1)!;
+        expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.credits).toBeUndefined();
+        // The same period, silent on credits: kept.
+        const same = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: mon / 1000, status: "rejected" } } }, at + 1)!;
+        expect(mergeLimits(prev, same.limits, same.partial).windows[0]!.credits).toBe(false);
     });
 
     test("credits: a model's own say, else the plan's", () => {

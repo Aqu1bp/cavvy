@@ -43,8 +43,8 @@ function PlanLimitsGroup() {
                                     <Show when={liftsAt(m!)}>{(at) => <span class="plan-reached-when">· resets {at()}</span>}</Show>
                                 </div>
                             </Show>
-                            {/* Only some models' limit reached (Fable's): amber, as the plan's other models go on. Its window says when it resets. */}
-                            <Show when={!m!.reached && m!.partly.length}>
+                            {/* Some models' limit reached (Fable's): amber, as the plan's other models go on, beside a stop of the plan's own. */}
+                            <Show when={m!.partly.length}>
                                 <div class="plan-reached credits">
                                     <Hourglass size={14} aria-hidden="true" />
                                     <span>{scopedSummary(m!.partly, () => undefined)}</span>

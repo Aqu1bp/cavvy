@@ -202,8 +202,8 @@ export function limitFor(m: Meter | undefined, model: { id: string; resolved?: s
     if (m.planStop) return { credits: m.usingCredits, ...(m.resets ? { resets: m.resets } : {}) };
     const reached = applies(m, model).filter((w) => w.reached);
     if (!reached.length) return undefined;
-    // A model's window by its own say, else the plan's; the plan's windows by the plan's (usingCredits).
-    const credits = reached.every((w) => (w.scope ? w.credits === true : m.usingCredits && w.credits !== false));
+    // Each window by its own say, else the plan's (planNow fills it in): any that stops turns wins.
+    const credits = reached.every((w) => w.credits === true);
     const last = lastToLift(reached);
     return { window: last, credits, ...(last.resets ? { resets: last.resets } : {}) };
 }
@@ -255,4 +255,10 @@ export function emptyText(s: Pick<UsageSummary, "days" | "truncated">): string {
 
 export function rangeLabel(days: UsageSummary["days"]): string {
     return days === 1 ? "24 hours" : `${days} days`;
+}
+
+/** A configured model reference ("claude-code:fable") as the model it names, for one not in the list yet. */
+export function refModel(ref: string | undefined): { id: string } | undefined {
+    const i = ref?.indexOf(":") ?? -1;
+    return ref && i > 0 && i < ref.length - 1 ? { id: ref.slice(i + 1) } : undefined;
 }

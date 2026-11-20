@@ -367,3 +367,16 @@ test("a model's limit reached (Fable's) is amber and says which; the plan's othe
 test("a window's tint is the same wherever it's drawn: amber from 75%, red from 90% and at the plan's limit", () => {
     expect([windowTone({ pct: 86, reached: false }), windowTone({ pct: 95, reached: false }), windowTone({ pct: 40, reached: false }), windowTone({ pct: 100, reached: true }), windowTone({ pct: 100, reached: true, scope: "fable" })]).toEqual(["warn", "danger", "normal", "danger", "warn"]);
 });
+
+test("the plan's own limit reached beside Fable's: both said", () => {
+    const later = NOW + 3 * 86_400_000;
+    const ultra = withAccount(claude, { plan: "ultra" } as any);
+    const [plan] = railFoot({ limits: { [key("claude-code")]: limits("claude-code", NOW, [
+        { id: "seven_day", label: "Weekly", usedPercent: 100, reached: true, resetsAt: later },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable", resetsAt: later },
+    ], { reached: true, resetsAt: later }) }, providers: [ultra], now: NOW });
+    expect(plan).toMatchObject({ reached: true, tone: "danger" });
+    expect(plan!.brief).toMatch(/^Reached, resets /);
+    expect(plan!.note).toMatch(/^Fable limit reached, resets /);
+    expect(plan!.detail).toContain("Fable limit reached");
+});

@@ -5,7 +5,7 @@ import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine } from "../lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
@@ -76,10 +76,14 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         if (ctx >= 0.7 || (stop() && credits)) return "warning";
         return "normal";
     };
-    const planLine = () => (meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined);
+    // The limit that stops this model, in words: "Fable limit reached, resets Mon 9:00 AM".
+    const stopWords = () => {
+        const st = stop();
+        return st && `${st.window ? `${limitName(st.window)} limit reached` : "Limit reached"}${st.credits ? ", using credits" : ""}${st.resets ? `, resets ${st.resets}` : ""}`;
+    };
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        stop() ? planLine() : undefined,
+        stopWords() && `${name()}: ${stopWords()}`,
     ].filter(Boolean).join(". ");
     const cli = () => Boolean(providerInfo()?.agentCli);
     const autoOff = () => !cli() && app.settings.autoCompact === false;
@@ -120,14 +124,29 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const shownPct = () => (view().pct === undefined ? undefined : Math.round(Math.min(1, urgency()) * 100));
     const ctxTone = () => ((view().pct ?? 0) >= 0.85 ? "danger" : (view().pct ?? 0) >= 0.7 ? "warning" : "");
     // Home has no session: no context to show, nothing to compact or switch. The pill says it all; when it resets is its tooltip.
+    // Home: the chosen model's limit reached ("Fable limit reached"), else its fullest window from 80% ("94% of weekly
+    // limit"); its words, tooltip and label all of that one.
     if (p.home)
         return (
-            <Show when={near()}>
-                {(n) => (
-                    <span class="ctx-limit" role="status" aria-label={planLine()} title={n().resets ? `Resets ${n().resets}` : undefined}>
+            <Show
+                when={stop()}
+                fallback={
+                    <Show when={near()}>
+                        {(n) => (
+                            <span class="ctx-limit" role="status" aria-label={`${name()}: ${n().pct}% of ${n().window ?? "plan"} limit${n().resets ? `, resets ${n().resets}` : ""}`} title={n().resets ? `Resets ${n().resets}` : undefined}>
+                                <Gauge size={14} stroke-width={2} aria-hidden="true" />
+                                <b class="num" aria-hidden="true">{n().pct}%</b>
+                                <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                            </span>
+                        )}
+                    </Show>
+                }
+            >
+                {(st) => (
+                    <span class="ctx-limit" role="status" aria-label={`${name()}: ${stopWords()}`} title={st().resets ? `Resets ${st().resets}` : undefined}>
                         <Gauge size={14} stroke-width={2} aria-hidden="true" />
-                        <b class="num" aria-hidden="true">{n().pct}%</b>
-                        <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                        <b aria-hidden="true">{st().window ? limitName(st().window!) : "Plan"}</b>
+                        <span class="lbl" aria-hidden="true">limit reached</span>
                     </span>
                 )}
             </Show>

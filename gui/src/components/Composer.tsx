@@ -18,6 +18,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
+import { refModel } from "../lib/limits";
 import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
@@ -762,7 +763,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} model={model()} home={p.variant === "home"} />;
+    // The model a turn would use: listed, else the configured reference's id (a model not in the list yet).
+    const meterModel = () => model() ?? refModel(settings().model);
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} model={meterModel()} home={p.variant === "home"} />;
     return (
         <div
             ref={root}

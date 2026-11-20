@@ -129,7 +129,8 @@ for (const reached of [false, true]) test(`unknown size stays empty${reached ? "
         // No share to say yet: the word alone.
         expect(text(m.trigger())).toBe("Context");
         expect(m.trigger().props["aria-label"]).toContain("size not known yet");
-        if (reached) expect(m.trigger().props["aria-label"]).toContain("CLI · Default usage:");
+        // The limit that stops it, named, with when it resets.
+        if (reached) expect(m.trigger().props["aria-label"]).toContain("CLI · Default: ");
         m.show();
         expect(text(m.root)).toContain("After the first reply");
         expect(all(m.root).filter(n => n.props.role === "dialog")).toHaveLength(1);
@@ -166,7 +167,7 @@ for (const current of ["default", "work"]) test(`${current}: refresh only altern
 test("reached on credits (#434): says so, and switching away doesn't claim the turn stopped", async () => {
     const m = mount({ reached: true, credits: true });
     try {
-        expect(m.trigger().props["aria-label"]).toContain("CLI · Default usage: limit reached · using credits");
+        expect(m.trigger().props["aria-label"]).toContain("CLI · Default: Limit reached, using credits");
         m.show();
         expect(text(m.root)).toContain("Limit reached, using credits");
         m.pending.resolve(accounts);
@@ -208,7 +209,7 @@ test("Home uses default account; session uses its own account", () => {
         try {
             m.setLimits(Object.fromEntries([ ["default", 100], ["work", 100] ].map(([id, pct]) => [planLimitKey("cli", id as string), { at: timestamp, reached: true, windows: [{ label: id === "work" ? "Weekly" : "5-hour", usedPercent: pct }] }])));
             m.wire();
-            expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work usage: Weekly 100%" : "CLI · Default usage: 5-hour 100%");
+            expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work: Weekly limit reached" : "CLI · Default: 5-hour limit reached");
             m.show();
             // Named by the limit that stops it, then whose plan it is.
             expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work." : "5-hour limit reachedCLI · Default.");

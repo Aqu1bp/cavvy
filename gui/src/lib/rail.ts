@@ -231,16 +231,17 @@ export function railFoot(o: {
         const short = (t?: string) => t?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
         const lifts = short(meter.resets);
         // Only some models' limit reached (Fable's): the plan's others go on, so it's said, amber, not as the plan's.
-        const partly = meter.reached ? undefined : scopedSummary(meter.partly, short);
+        // Models' limits reached (Fable's): said whether or not the plan's own is reached too.
+        const partly = scopedSummary(meter.partly, short);
         const brief = meter.reached ? `Reached${meter.usingCredits ? " · using credits" : ""}${lifts ? `, resets ${lifts}` : ""}`
             : partly ? partly
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
             : `Reset since ${reported}`;
         const line = !meter.reached && !partly && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
         // Only a model's limit reached: said under the plan's name, in the tooltip and the card, not only to a screen reader.
-        const note = partly ? brief : undefined;
+        const note = partly;
         // A stop with no window to show for it (a bare rejection) is what makes it red: said in the tooltip too.
-        const detail = [head, note ?? (meter.planStop ? brief : undefined), ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
+        const detail = [head, meter.planStop ? brief : undefined, note, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
         // The card's rows: a window that has reset since the report has no figure to show, only when it reset.
         const windows = meter.windows.map((w): RailWindow => {
             const shown = w.pct === undefined ? undefined : Math.min(100, w.pct);

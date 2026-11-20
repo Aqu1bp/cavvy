@@ -110,9 +110,10 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId =
     const blockingResets = [resetsAt, latestReset(blocking)].filter((t): t is number => t !== undefined);
     const lifts = reached && !blocking.some((w) => w.resetsAt === undefined) && blockingResets.length ? Math.max(...blockingResets) : undefined;
     const credits = claudeCredits(i);
-    // A rejection of a window of some models (Fable's) says whether extra usage carries that window: kept on it, so a
-    // later report about the plan's other models (Opus on extra usage) doesn't speak for it.
-    if (status === "rejected" && named?.scope && credits !== undefined) named.credits = credits;
+    // A rejection says whether extra usage carries the window it names: kept on that window, so a later report about
+    // another (Fable's, Opus on extra usage) doesn't speak for it. The plan's credits are the latest verdict, as the
+    // turn's notice says it.
+    if (status === "rejected" && named && credits !== undefined) named.credits = credits;
     return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, ...(credits === undefined ? {} : { credits }), at }, partial: !listed };
 }
 
@@ -355,9 +356,10 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const windows = prev.windows.flatMap((w) => {
         const n = next.windows.find((n) => n.id === w.id);
-        // Left out of a report that lists its windows: until it resets (one with no reset known goes now). It keeps
-        // when it was reported, so it's not taken for news.
-        if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) ? [{ ...w, at: w.at ?? prev.at }] : [];
+        // Left out of a report that lists its windows: until it resets; one with no reset known goes now, unless it was
+        // said to be at its limit (then until a report says otherwise). It keeps when it was reported, so it's not
+        // taken for news.
+        if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) || (w.reached === true && w.resetsAt === undefined) ? [{ ...w, at: w.at ?? prev.at }] : [];
         let merged = n;
         if (n.resetsAt === undefined && w.resetsAt !== undefined && w.resetsAt > next.at) merged = { ...merged, resetsAt: w.resetsAt };
         // A report that can't say whether a window is at its limit (/usage's text) leaves what an earlier one said of
@@ -369,8 +371,10 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
         // Said to be at its limit with no reset known: there's no telling whether /usage's figures are of a new period,
         // so it stays at its limit until a report says it's allowed (or its new reset, once known, passes).
         else if (statusUnsaid && w.reached === true && w.resetsAt === undefined && n.reached === undefined) merged = { ...merged, reached: true };
-        // An update that doesn't say whether a limit has credits leaves what was said.
-        if (n.credits === undefined && w.credits !== undefined) merged = { ...merged, credits: w.credits };
+        // An update that doesn't say whether a limit has credits leaves what was said, for the same period only (the
+        // same reset, or none known), and not once it's said to be allowed.
+        const samePeriod = merged.resetsAt === undefined || w.resetsAt === undefined || Math.abs(merged.resetsAt - w.resetsAt) <= SAME_PERIOD_MS;
+        if (n.credits === undefined && w.credits !== undefined && samePeriod && n.reached !== false) merged = { ...merged, credits: w.credits };
         return [merged];
     });
     for (const n of next.windows) if (!windows.some((w) => w.id === n.id)) windows.push(n);
@@ -384,7 +388,9 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     }
     // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset. A report
     // that may leave the stop out (sparse, or /usage's text) keeps an earlier stop's own reset while it's ahead.
-    const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined].filter((t): t is number => t !== undefined);
+    // /usage's text says nothing of a stop: an earlier one's own reset stands beside the windows', while it's ahead.
+    const kept = statusUnsaid && prev.reached && prev.resetsAt !== undefined && live(prev.resetsAt) ? prev.resetsAt : undefined;
+    const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined, kept].filter((t): t is number => t !== undefined);
     const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : (partial || statusUnsaid) && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     // Codex's updates leave credits out (null): what the last read said stands until one says otherwise.
     const credits = next.credits ?? prev.credits;
@@ -437,7 +443,7 @@ export function resetSentence(resetsAt: number | undefined, cli: string, now = D
 export function limitLines(l: PlanLimits, now = Date.now()): string[] {
     const p = planNow(l, now);
     if (!p) return [];
-    const lines = p.windows.map((w) => (w.reset ? `${w.label} · reset ${new Date(w.resetsAt!).toDateString() === new Date(now).toDateString() ? "at" : "on"} ${clockTime(w.resetsAt!, now)}` : [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resetsAt ? ` · resets ${resetPhrase(w.resetsAt, now)}` : "")));
+    const lines = p.windows.map((w) => (w.reset ? `${w.label} · reset ${new Date(w.resetsAt!).toDateString() === new Date(now).toDateString() ? "at" : "on"} ${clockTime(w.resetsAt!, now)}` : [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.reached && w.scope && w.credits === true ? " · using credits" : "") + (w.resetsAt ? ` · resets ${resetPhrase(w.resetsAt, now)}` : "")));
     // A reached window of the whole plan says when it resets (a model's, Fable's, says only its own): else the plan's
     // stop has a line of its own. On credits, that turns go on is said first.
     const shown = p.windows.some((w) => w.reached && !w.scope);
@@ -447,7 +453,8 @@ export function limitLines(l: PlanLimits, now = Date.now()): string[] {
 
 /** For a limit-reached notice: that turns go on past it, billed to credits (Claude Code's extra usage); "" when they don't. */
 export function creditsNote(l: PlanLimits | undefined, billedTo = "credits"): string {
-    return l && usingCredits(l, Boolean(l.reached)) ? ` · using credits. Turns go on, billed to ${billedTo}` : "";
+    // Claude Code's: the latest rejection's own verdict (the plan's credits), as before windows carried theirs.
+    return l && usingCredits(l, Boolean(l.reached), l.provider === "claude-code" ? () => false : undefined) ? ` · using credits. Turns go on, billed to ${billedTo}` : "";
 }
 
 /**

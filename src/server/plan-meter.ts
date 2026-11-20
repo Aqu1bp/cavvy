@@ -4,7 +4,7 @@
 // resets, so a window whose reset has passed since the report is reset, not
 // still at the figure it was reported at. Pure, so both apps and the tests use it.
 
-import { usingCredits, type PlanLimits } from "./protocol";
+import type { PlanLimits } from "./protocol";
 
 /** Older than this, a report's figures may be out of date: they're shown with its time. */
 export const STALE_MS = 15 * 60_000;
@@ -71,11 +71,12 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
     const planStop = stopLive && !windows.some((w) => w.reached);
     const reached = windows.some(planWide) || planStop;
     const blocking: (number | undefined)[] = windows.filter(planWide).map((w) => w.resetsAt);
-    if (planStop && (l.resetsAt !== undefined || !blocking.length)) blocking.push(l.resetsAt);
+    // A stop with no window reached (none blocking): it lifts at its own reset, unknown if it said none.
+    if (planStop) blocking.push(l.resetsAt);
     const known = blocking.filter((t): t is number => t !== undefined);
     const liftsAt = reached && !blocking.includes(undefined) && known.length ? Math.max(...known) : undefined;
-    // A model's reached limit goes on, on credits, by its own word, else the plan's (Claude Code's extra usage).
-    for (const w of partly) if (w.credits === undefined && l.credits !== undefined) w.credits = l.credits;
+    // A reached window goes on, on credits, by its own word, else the plan's (Claude Code's extra usage).
+    for (const w of windows) if (w.reached && w.credits === undefined && l.credits !== undefined) w.credits = l.credits;
     // The plan's own figure: a window of the whole plan's, never a model's (reached or not).
     const top = windows.filter((w) => w.pct !== undefined && !w.scope).sort((a, b) => b.pct! - a.pct!)[0];
     const reportedAt = reportedOf(l, now);
@@ -84,7 +85,8 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
         reached,
         partly,
         planStop,
-        usingCredits: usingCredits(l, reached, (i) => planWide(windows[i]!)),
+        // Each reached window of the plan by its own say, else the plan's; a stop with none by the plan's.
+        usingCredits: reached && (planStop ? l.credits === true : windows.filter(planWide).every((w) => w.credits === true)),
         liftsAt,
         reportedAt,
         stale: now - reportedAt > STALE_MS,
@@ -108,9 +110,11 @@ const MODE_ALIASES: Readonly<Record<string, readonly string[]>> = { opusplan: ["
  */
 export function covers(scope: string, model: { id: string; resolved?: string } | undefined): boolean | undefined {
     if (!model) return undefined;
+    // An alias served as one model or another by mode ("opusplan": Opus in plan mode, Sonnet otherwise) may be either,
+    // whatever it was served as last: the next turn may be in the other mode.
+    const alias = MODE_ALIASES[model.id.toLowerCase()];
+    if (alias) return alias.includes(scope) ? undefined : false;
     const id = (model.resolved || model.id).toLowerCase();
-    // An alias served as one model or another by mode ("opusplan": Opus in plan mode, Sonnet otherwise) may be either.
-    if (!model.resolved && MODE_ALIASES[id]) return MODE_ALIASES[id]!.includes(scope) ? undefined : false;
     if (id.includes(scope)) return true;
     return !model.resolved && /^(default|auto|best)?$/.test(id) ? undefined : false;
 }

@@ -135,6 +135,23 @@ test("limits: a model's limit reached is an amber line of its own, not the plan'
     } finally { f.dispose(); }
 });
 
+test("limits: the plan's own limit reached and Fable's: both banners", async () => {
+    const empty = summary(); empty.rows = []; empty.sessions = 0;
+    const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { accounts: [{ id: "default", name: "Default", plan: "ultra" }] } }];
+    const reports = { [planLimitKey("claude-code")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, reached: true, resetsAt: 1_800_000_000_000 + 86_400_000, windows: [
+        { id: "seven_day", label: "Weekly", usedPercent: 100, reached: true, resetsAt: 1_800_000_000_000 + 86_400_000 },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
+    ] } };
+    const f = mount(async () => empty, reports, providers);
+    try {
+        await tick();
+        f.segment("Usage view").onChange("limits"); await tick();
+        expect(f.cls("plan-reached").map((n) => n.props.class.trim())).toEqual(["plan-reached", "plan-reached credits"]);
+        expect(f.text()).toContain("Limit reached");
+        expect(f.text()).toContain("Fable limit reached");
+    } finally { f.dispose(); }
+});
+
 test("range and refresh requests, loading guard, stale replies and inline retry", async () => {
     const gates: ReturnType<typeof Promise.withResolvers<UsageSummary>>[] = [];
     const f = mount(() => { const gate = Promise.withResolvers<UsageSummary>(); gates.push(gate); return gate.promise; });
