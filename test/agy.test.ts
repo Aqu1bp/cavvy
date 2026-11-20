@@ -223,6 +223,11 @@ describe("the gate, by Cavvy's mode", () => {
             await bypass.run("[[run:touch x]]");
             expect(bypass.asked).toEqual([]);
             expect(decisions().at(-1)).not.toBe("auto_approve");
+            // A deny rule for the command as written still refuses it there.
+            const ruled = await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }), settings: { permissions: { deny: ["Bash(ls && pwd)"] } } });
+            await ruled.run("[[run:ls && pwd]]");
+            expect(ruled.asked).toEqual([]);
+            expect(decisions().at(-1)).not.toBe("auto_approve");
             // It's checked as run in that folder: in one Cavvy keeps from every agent (a named account's), refused.
             const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
             const named = realpathSync(tempDir("agy-account-"));
@@ -230,9 +235,11 @@ describe("the gate, by Cavvy's mode", () => {
             process.env.FAKE_AGY_CWD = named;
             try {
                 const kept = await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }) });
-                await kept.run("[[run:cat auth.json]]");
-                expect(kept.asked).toEqual([]);
-                expect(decisions().at(-1)).not.toBe("auto_approve");
+                for (const command of ["cat auth.json", "cat $PWD/auth.json"]) {
+                    await kept.run(`[[run:${command}]]`);
+                    expect(kept.asked).toEqual([]);
+                    expect(decisions().at(-1)).not.toBe("auto_approve");
+                }
             } finally {
                 saveAgentConfig("codex", { accounts: [] });
                 removeAgentConfig("codex");
