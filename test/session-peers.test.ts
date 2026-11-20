@@ -538,6 +538,45 @@ describe("in the app", () => {
         }
     }, 40_000);
 
+    test("a session on another machine starts one here: in a folder the user has opened, no freer than it, and bounded as its own are", async () => {
+        const { peerOps } = await import("../src/server/session-peers");
+        const mac = peerOps(engine.peerHost(), false);
+        const from = { id: "box/s1", title: "On box", mode: "auto" as const };
+        // The user's own computer: not in a folder they never opened in Cavvy there.
+        const strange = realpathSync(tempDir("peers-strange-"));
+        dirs.push(strange);
+        await expect(mac.start({ cwd: strange, prompt: "Look around.", title: "Look" }, from)).rejects.toThrow("isn't a folder the user has opened in Cavvy on this machine");
+        // In one they have (a session of their own was made there): started, with the prompt as a message from that session, named by its machine.
+        await (await engine.createSession(project, { mode: "default" })).ready;
+        const s = await mac.start({ cwd: project, prompt: "Write a README section about SSO sign-in.", title: "From box" }, from);
+        const n = engine.runtimes.get(s.id)!;
+        expect([n.ws.cwd, n.title, s.model]).toEqual([project, "From box", "mock:mock-opus"]);
+        // The folder's default (Manual) asks more than the starter's Auto.
+        expect(n.mode).toBe("default");
+        await until(() => turns(n).length > 0 && n.idle && turns(n).at(-1)!.status !== "running");
+        expect(turns(n)[0]!.prompt?.from?.id).toBe("box/s1");
+        // It was started by another: it starts none itself, here or on another machine.
+        expect((await startSession(n.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
+        expect(JSON.parse(readFileSync(n.session.path, "utf-8").split("\n")[0]!).startedBy).toBe("box/s1");
+        // Inside a folder they've opened (a worktree of the project's) counts as theirs.
+        const inside = join(project, "sub-tree");
+        mkdirSync(inside, { recursive: true });
+        expect((await mac.start({ cwd: inside, prompt: "In the tree.", title: "Tree" }, from)).cwd).toBe(inside);
+        // A model this machine doesn't have, an effort the model doesn't take, a folder that isn't one: refused, and nothing started.
+        const before = engine.runtimes.size;
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, from)).rejects.toThrow("isn't a model on this machine");
+        await expect(mac.start({ cwd: join(project, "missing"), prompt: "p", title: "t" }, from)).rejects.toThrow("couldn't be started");
+        expect(engine.runtimes.size).toBeLessThanOrEqual(before);
+        // No more an hour from one starter than a session may start: the refused ones above didn't count.
+        for (let i = 0; i < 3; i++) await mac.start({ cwd: project, prompt: `Task ${i}.`, title: `Task ${i}` }, from);
+        await expect(mac.start({ cwd: project, prompt: "One more.", title: "More" }, from)).rejects.toThrow("box/s1 has started 5 sessions here in the last hour");
+        // Another starter has its own count; and on a server, any folder will do.
+        const server = peerOps(engine.peerHost(), true);
+        const onServer = await server.start({ cwd: strange, prompt: "Anywhere.", title: "Anywhere" }, { id: "mac/s2", title: "On the Mac", mode: "bypassPermissions" });
+        expect(onServer.cwd).toBe(strange);
+        for (const rt of [...engine.runtimes.values()]) await until(() => !rt.busy);
+    }, 40_000);
+
     test("a session started by another runs on its Claude Code and Codex accounts", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });
         await a.ready;

@@ -1206,6 +1206,16 @@ export class Engine {
                 return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
             },
             defaultMode: (ws) => this.defaultMode(ws),
+            defaultModeIn: (cwd) => {
+                const p = resolve(expandHome(cwd));
+                if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+                return this.defaultMode(this.workspaceFor(p));
+            },
+            // Its recent folders, and what's inside one (a worktree of the project's).
+            knows: (cwd) => {
+                const p = resolve(expandHome(cwd));
+                return [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
+            },
             listings: () => this.listings,
             release: (id) => this.unloadLater(id),
             starts: this.sessionStarts,
@@ -3501,6 +3511,7 @@ export class Engine {
             }
             case "peers.list":
             case "peers.read":
+            case "peers.start":
             case "peers.send": {
                 // Asked by the user's own computer, about this server's sessions (far-peers.ts).
                 if (!this.o.away) throw new RpcError("Only a server is asked about its sessions this way.", "unsupported");
@@ -3513,6 +3524,13 @@ export class Engine {
                     // Named as this server names another machine's session (`mac/<id>`, `box/<id>`): shown in the message.
                     const from = str(f.id, "from.id");
                     if (!/^[\w.-]{1,40}\/[\w.-]{1,120}$/.test(from)) throw new RpcError("That message names no session it's from.", "invalid");
+                    if (method === "peers.start") {
+                        const prompt = checkMessage(p.prompt, "prompt");
+                        return await ops.start(
+                            { cwd: str(p.cwd, "cwd"), prompt, title: (optStr(p.title) ?? prompt).replace(/\s+/g, " ").trim().slice(0, 80), ...(optStr(p.model) ? { model: optStr(p.model)!.slice(0, 200) } : {}), ...(optStr(p.effort) ? { effort: optStr(p.effort)!.slice(0, 40) } : {}) },
+                            { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode },
+                        );
+                    }
                     return await ops.send(str(p.id, "id"), checkMessage(p.message), { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
                 } catch (e) {
                     if (e instanceof PeerError) throw new RpcError(e.message, "peer");

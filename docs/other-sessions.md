@@ -7,7 +7,7 @@ The agent in one session can reach your other Cavvy sessions: find one, read wha
 | `ListSessions` (`list_sessions`) | Lists sessions with their status, model and last activity: this project's (its repository, worktrees included), or every project's | ✓ | ✓ |
 | `ReadSession` (`read_session`) | Reads a session's recent prompts and replies, with the tools it used as one line | ✓ | ✓ |
 | `SendToSession` (`send_to_session`) | Sends a session's agent a message | ✓ | |
-| `StartSession` (`start_session`) | Starts a session in this one's folder, with a first message from it | ✓ | |
+| `StartSession` (`start_session`) | Starts a session in this one's folder, or in a folder on another of your machines, with a first message from it | ✓ | |
 
 The terminal reads sessions from disk. It can't drive a session another Cavvy process has open, so it doesn't offer sending or starting. Sub-agents (Cavvy's, and Claude Code's or Codex's own) and `cavvy -p` runs get none of these tools. Cavvy's own models get them as tools; Claude Code and Codex get them from Cavvy's MCP server (see [Sub-agents on other models](sub-agents.md)).
 
@@ -26,7 +26,12 @@ A message shows in the receiving session as a quote under "Message from another 
 In the app, sessions on your servers can be reached the same way, and a session on a server can reach your Mac's sessions and your other servers'. `ListSessions` with every project lists them after the ones here, each named by its machine: `box/<id>` for a session on server `box`, `mac/<id>` for one on your Mac, as seen from a server. `ReadSession` and `SendToSession` take that name. It goes through your Mac's desktop app, so it works while the app is open and connected to the server; otherwise the agent is told that machine isn't connected.
 
 - A message sent to a session on a server isn't refused for that session's mode: sessions there start in Bypass permissions, and the server is where they're meant to run without asking. A message from a server to a session on your Mac is held to the rule above, with the sender counted as Auto at most: a Mac session in Bypass permissions takes no work from a server.
-- Your Mac's own deny rules for these tools (`ListSessions`, `ReadSession`, `SendToSession` in `permissions.deny`) hold for what a server asks through it: about its own sessions and about your other servers'.
-- Starting a session works only on the session's own machine.
+- Your Mac's own deny rules for these tools (`ListSessions`, `ReadSession`, `SendToSession`, `StartSession` in `permissions.deny`) hold for what a server asks through it: about its own sessions and about your other servers'.
+- `StartSession` with `machine` and `folder` starts a session on another machine: on a server from your Mac, on your Mac (`mac`) or another server from a server. It gets its prompt as a message from the starter, and can answer it with `SendToSession`.
+    - On your Mac it starts only in a folder you've opened in Cavvy there (or one inside it, such as a worktree), in a mode that asks you no less than Auto and no less than that folder's default. A folder with configuration you haven't trusted is refused.
+    - On a server it starts in the starter's mode or the folder's default there, whichever asks you more.
+    - It runs on that machine's own model unless the agent names one that machine has.
+    - The bounds on starting hold across machines: a session started by another starts none, and one session starts at most 5 an hour, counted on its own machine and on the one it starts them on.
+    - `StartSession` in your Mac's `permissions.deny` refuses every start a server asks for through it.
 
 T3 Code's thread tools ([pingdotgg/t3code](https://github.com/pingdotgg/t3code), MIT) were the reference: listing by project, reading by id, messages that join a running turn, and no handing work to a session with a freer mode.

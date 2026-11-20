@@ -14,7 +14,13 @@ const row = (id: string, updatedAt: number, title = id) => ({ id, title, cwd: `/
 /** One machine's own sessions: what it was asked, and the sessions it has. */
 function machine(rows: ReturnType<typeof row>[]) {
     const sent: { id: string; text: string; from: { id: string; title: string; mode: string } }[] = [];
+    const started: { o: Record<string, unknown>; from: { id: string; title: string; mode: string } }[] = [];
     const ops: Ops = {
+        start: async (o, from) => {
+            if (o.cwd === "/nowhere") throw new PeerError("/nowhere isn't a folder");
+            started.push({ o, from });
+            return { ...row(`new${started.length}`, 99, o.title), cwd: o.cwd, model: o.model ?? "mock:opus", ...(o.effort ? { effort: o.effort as "high" } : {}) };
+        },
         list: ({ query, limit }) => rows.filter((r) => !query || r.title.includes(query)).slice(0, limit),
         read: (id) => (rows.some((r) => r.id === id) ? { text: `turns of ${id}`, title: id, turns: 1 } : undefined),
         send: async (id, text, from) => {
@@ -27,9 +33,10 @@ function machine(rows: ReturnType<typeof row>[]) {
     const ask = async (method: string, p: any) => {
         if (method === "peers.list") return ops.list(p);
         if (method === "peers.read") return ops.read(p.id, p.turns) ?? null;
+        if (method === "peers.start") return ops.start({ cwd: p.cwd, prompt: p.prompt, title: p.title, model: p.model, effort: p.effort }, p.from);
         return ops.send(p.id, p.message, p.from);
     };
-    return { ops, sent, link: { ask } };
+    return { ops, sent, started, link: { ask } };
 }
 
 test("the user's computer lists each server's sessions by the server's name, and reads and sends to them there", async () => {
@@ -164,4 +171,42 @@ test("a send another machine refuses names the session as it was asked for", asy
     const from = { id: "a", title: "A", mode: "default" as const };
     expect(await homeFarPeers(() => new Map([["box", refuse]])).send("box/s1", "hi", from).catch((e: Error) => e.message)).toBe("Session box/s1 runs in Bypass permissions mode, so it can't be sent work from there.");
     expect(await serverFarPeers(() => Promise.reject(new Error("Session s1 runs in Bypass permissions mode."))).send("mac/s1", "hi", from).catch((e: Error) => e.message)).toBe("Session mac/s1 runs in Bypass permissions mode.");
+});
+
+test("a session is started on another machine: from the user's computer on a server, from a server on the computer or another server", async () => {
+    const mac = machine([row("m1", 50)]);
+    const box = machine([row("b1", 40)]);
+    const lab = machine([row("l1", 30)]);
+    const servers = new Map([["box", box.link], ["lab", lab.link]]);
+    const from = { id: "s1", title: "Starter", mode: "bypassPermissions" as const };
+    // From the computer: on the server named, as this computer's session.
+    const home = homeFarPeers(() => servers);
+    const onBox = await home.start({ machine: "box", cwd: "/srv/app", prompt: "Run the tests.", title: "Tests", effort: "high" }, from);
+    expect([onBox.id, onBox.machine, onBox.cwd, onBox.effort]).toEqual(["box/new1", "box", "/srv/app", "high"]);
+    expect(box.started[0]).toEqual({ o: { cwd: "/srv/app", prompt: "Run the tests.", title: "Tests", model: undefined, effort: "high" }, from: { ...from, id: `${HOME_NAME}/s1` } });
+    await expect(home.start({ machine: "nope", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow('No machine "nope" to start a session on. The user\'s other machines connected now: box, lab');
+    // What the server refuses is said as it says it.
+    await expect(home.start({ machine: "box", cwd: "/nowhere", prompt: "p", title: "t" }, from)).rejects.toThrow("/nowhere isn't a folder");
+    // From a server, through the computer. On the computer itself: named as box's session, and held to Auto at most.
+    const far = serverFarPeers((op, params) => answerPeers("box", op, params, mac.ops, servers));
+    const onMac = await far.start({ machine: HOME_NAME, cwd: "/Users/me/app", prompt: "Build the app.", title: "Build" }, from);
+    expect([onMac.id, onMac.machine]).toEqual([`${HOME_NAME}/new1`, HOME_NAME]);
+    expect(mac.started[0]!.from).toEqual({ id: "box/s1", title: "Starter", mode: "auto" });
+    expect(mac.started[0]!.o).toMatchObject({ cwd: "/Users/me/app", prompt: "Build the app.", title: "Build" });
+    // On another server: passed on, from box's session, in the mode it runs in.
+    const onLab = await far.start({ machine: "lab", cwd: "/srv/lab", prompt: "Check it.", title: "Check" }, from);
+    expect([onLab.id, lab.started[0]!.from]).toEqual(["lab/new1", { id: "box/s1", title: "Starter", mode: "bypassPermissions" }]);
+    // Its own machine by name, a machine there isn't, no folder: each said.
+    await expect(far.start({ machine: "box", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow("box is this machine: leave machine out");
+    await expect(far.start({ machine: "gone", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow(`The user's other machines connected now: ${HOME_NAME}, lab`);
+    await expect(far.start({ machine: HOME_NAME, cwd: " ", prompt: "p", title: "t" }, from)).rejects.toThrow("Say which folder");
+    // The computer's deny rule for StartSession holds for what's started through it, wherever.
+    const deny = (tool: string) => (tool === "StartSession" ? "denies StartSession" : undefined);
+    const denied = serverFarPeers((op, params) => answerPeers("box", op, params, mac.ops, servers, deny));
+    const before = [mac.started.length, lab.started.length];
+    await expect(denied.start({ machine: HOME_NAME, cwd: "/Users/me/app", prompt: "p", title: "t" }, from)).rejects.toThrow("denies StartSession");
+    await expect(denied.start({ machine: "lab", cwd: "/srv/lab", prompt: "p", title: "t" }, from)).rejects.toThrow("denies StartSession");
+    expect([mac.started.length, lab.started.length]).toEqual(before);
+    // A machine that answers something that isn't a session: said, not taken for one.
+    await expect(homeFarPeers(() => new Map([["odd", { ask: async () => ({ id: "../x" }) }]])).start({ machine: "odd", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow("odd didn't say which session it started");
 });

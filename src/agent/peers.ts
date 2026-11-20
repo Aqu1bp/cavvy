@@ -63,7 +63,17 @@ export interface SessionPeers {
         read: FarPeers["read"];
         /** From this session. Throws PeerError. */
         send(id: string, message: string): ReturnType<FarPeers["send"]>;
+        /** A new session on another machine, started by this one. Throws PeerError. */
+        start(o: FarStart): ReturnType<FarPeers["start"]>;
     };
+}
+
+/** A session to start on another of the user's machines: `machine` as listings name it, `cwd` a folder of that machine's. */
+export interface FarStart extends StartChoice {
+    machine: string;
+    cwd: string;
+    prompt: string;
+    title: string;
 }
 
 /**
@@ -77,6 +87,8 @@ export interface FarPeers {
     read(id: string, turns?: number): Promise<{ text: string; title: string; turns: number } | undefined>;
     /** A message to it from `from` (this session, as that machine names it back). Throws PeerError. */
     send(id: string, message: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }>;
+    /** A new session there, given `prompt` as a message from `from`; its id names the machine. Throws PeerError. */
+    start(o: FarStart, from: { id: string; title: string; mode: PermissionMode }): Promise<PeerSummary & { effort?: Effort }>;
 }
 
 /** Whether an id names a session on another machine (`<machine>/<id>`). */
