@@ -29,7 +29,7 @@
 
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { basename, isAbsolute, join } from "path";
 import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
@@ -37,7 +37,7 @@ import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
-import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, parseClaudeUsage, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
@@ -239,6 +239,39 @@ export function describeClaudeAuth(s: ClaudeStatus): string {
     if (s.authMethod === "oauth_token" || s.subscriptionType) return `signed in with your Claude account${s.subscriptionType ? ` (${s.subscriptionType})` : ""}${via}`;
     return `signed in${s.authMethod ? ` (${s.authMethod})` : ""}${via}`;
 }
+
+/**
+ * Where an account's plan limits stand, without a turn: Claude Code answers `/usage` in print mode by itself, with
+ * no model call (2.1.322: no turns, no cost; about 3.5 s and 360 MB on a 2-core Linux server). Older versions
+ * might send it to the model as a prompt, so they aren't asked; nor is one that did (no `local_command` in its
+ * result), again. Its MCP servers and hooks stay off for it; times come in UTC. Undefined when it can't be read.
+ */
+export async function claudeUsage(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<PlanLimits | undefined> {
+    const bin = requireCli(providerId, CLAUDE_CLI);
+    if (usageRefused.has(bin)) return undefined;
+    const env = accountEnv(providerId, accountId);
+    const version = await runCli(bin, ["--version"], { signal, timeoutMs: 10_000, env });
+    if (!claudeVersionAtLeast(/^\s*(\S+)/.exec(version.stdout)?.[1], 322)) return undefined;
+    const at = Date.now();
+    const r = await runCli(bin, ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
+    let j: Record<string, unknown> | undefined;
+    try {
+        j = JSON.parse(r.stdout);
+    } catch {
+        return undefined;
+    }
+    if (!j || typeof j !== "object") return undefined;
+    if (j.local_command !== "usage" || j.num_turns !== 0 || j.total_cost_usd !== 0) {
+        // Answered by the model, or in a way not known: not asked again while Cavvy runs.
+        if (j.local_command !== "usage" && (Number(j.num_turns) > 0 || Number(j.total_cost_usd) > 0)) usageRefused.add(bin);
+        return undefined;
+    }
+    if (j.is_error === true) return undefined;
+    return parseClaudeUsage(j.result, at, accountId ?? "default");
+}
+
+/** Claude Code binaries whose `/usage` reached the model. */
+const usageRefused = new Set<string>();
 
 /** Noninteractive fast mode via --settings was added in 2.1.205. */
 export function claudeFastModeVersion(version: unknown): boolean {

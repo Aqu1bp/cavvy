@@ -2485,6 +2485,8 @@ export interface Methods {
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Asks the CLIs where these plans stand now (all turned on, without `plans`); what's new comes as `limits` events. */
+    "limits.refresh": { params: { plans?: { provider: string; accountId?: string }[] }; result: null };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */
     "usage.summary": { params: { days: UsageDays; brief?: boolean; /** This computer's own at once if its servers are slow (UsageSummary.waiting), for a window that then asks for the rest. */ first?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for. */ rest?: boolean }; result: UsageSummary };

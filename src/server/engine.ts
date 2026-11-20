@@ -43,7 +43,7 @@ import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from 
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
-import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
+import { checkAgentPlan, checkPlanLimits, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
 import { AppUpdates } from "./app-update";
 import { findCli } from "../backends/cli";
@@ -194,6 +194,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
+/** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. */
+const LIMITS_FRESH_MS = 3 * 60_000;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long without a turn running before the server hands memory back (idleNow). */
@@ -1950,12 +1952,12 @@ export class Engine {
 
     private limits = new Map<string, PlanLimits>();
 
-    /** Never let a delayed report or a different account replace this account's meter. */
-    limitsReported(limits: PlanLimits, partial: boolean) {
+    /** Never let a delayed report or a different account replace this account's meter. `full`: a whole check of the account (mergeLimits). */
+    limitsReported(limits: PlanLimits, partial: boolean, full = false) {
         const key = planLimitKey(limits.provider, limits.accountId);
         const prev = this.limits.get(key);
         if (prev && prev.at > limits.at) return;
-        const merged = mergeLimits(prev, limits, partial);
+        const merged = mergeLimits(prev, limits, partial, full);
         this.limits.set(key, merged);
         this.saveLimits();
         this.broadcast({ type: "limits", limits: merged });
@@ -1964,7 +1966,8 @@ export class Engine {
     /** The limits saved when the server last ran, for accounts that still exist; shown with their age until a newer report. */
     private loadLimits() {
         for (const l of loadPlanLimits()) {
-            if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(l.provider) || !listAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
+            // Any agent CLI that reports plan limits, for an account it still has.
+            if (agentCli(l.provider)?.caps.planLimits === "none" || !agentCli(l.provider) || !cliAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
             const key = planLimitKey(l.provider, l.accountId);
             const prev = this.limits.get(key);
             if (!prev || prev.at < l.at) this.limits.set(key, l);
@@ -1982,6 +1985,46 @@ export class Engine {
     private readonly planChecks = new AbortController();
     private checkingPlans: Promise<void> = Promise.resolve();
 
+    /** Plan checks running (limits.refresh), and when each account's was last asked for, by planLimitKey. */
+    private limitChecks = new Map<string, Promise<void>>();
+    private limitAsked = new Map<string, number>();
+
+    /**
+     * Where the plans stand now, asked of the CLIs without a turn (checkPlanLimits): when their usage is opened (the
+     * rail's card, Settings → Usage), or a window shown resets. `plans`: those accounts, else every account of each
+     * CLI turned on. An account is asked one check at a time, and not again while its last report or check is a
+     * few minutes old, unless one of its windows has reset since. What a check can't read leaves the last report.
+     */
+    refreshLimits(plans?: { provider: string; accountId?: string }[]): Promise<void> {
+        const which = plans ?? AGENT_CLIS.filter((d) => readAgentConfig(d.id)).flatMap((d) => cliAccounts(d.id).filter((a) => !a.invalid).map((a) => ({ provider: d.id, accountId: a.id })));
+        return Promise.all(which.slice(0, 20).map((p) => this.refreshPlan(p.provider, p.accountId ?? "default"))).then(() => undefined);
+    }
+
+    private refreshPlan(provider: string, accountId: string): Promise<void> {
+        const def = agentCli(provider);
+        if (!def || def.caps.planLimits === "none" || !readAgentConfig(provider) || this.stopping) return Promise.resolve();
+        if (!cliAccounts(provider).some((a) => a.id === accountId && !a.invalid)) return Promise.resolve();
+        // Signed out, or on an API key: no plan to ask about.
+        const status = this.accountStatus.get(`${provider}:${accountId}`);
+        if (status?.signedIn === false || status?.apiKey) return Promise.resolve();
+        const key = planLimitKey(provider, accountId);
+        const running = this.limitChecks.get(key);
+        if (running) return running;
+        const now = Date.now();
+        const prev = this.limits.get(key);
+        const since = Math.max(prev?.at ?? 0, this.limitAsked.get(key) ?? 0);
+        if (now - since < LIMITS_FRESH_MS && !prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > since && w.resetsAt <= now)) return Promise.resolve();
+        this.limitAsked.set(key, now);
+        const check = checkPlanLimits(provider, this.planChecks.signal, accountId)
+            .then((r) => {
+                if (r && !this.stopping) this.limitsReported(r.limits, false, r.full);
+            })
+            .catch(() => undefined)
+            .finally(() => this.limitChecks.delete(key));
+        this.limitChecks.set(key, check);
+        return check;
+    }
+
     /**
      * Without a turn: is each account of a CLI in use signed in, on what plan,
      * and, for Codex on a ChatGPT plan, where its limits stand (Claude Code says
@@ -1997,7 +2040,7 @@ export class Engine {
                 try {
                     const { status, limits } = await checkAgentPlan(provider, this.planChecks.signal, id);
                     if (this.stopping) return false;
-                    if (limits) this.limitsReported(limits, false);
+                    if (limits) this.limitsReported(limits, false, true);
                     return this.noteStatus(provider, id, status);
                 } catch {
                     // Left as it was: Settings asks again.
@@ -2040,7 +2083,7 @@ export class Engine {
                     // Codex on a plan says where its limits stand from the same app-server.
                     const { status, limits } = await checkAgentPlan(provider, undefined, a.id);
                     this.noteStatus(provider, a.id, status);
-                    if (limits) this.limitsReported(limits, false);
+                    if (limits) this.limitsReported(limits, false, true);
                 } catch (e) {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
@@ -2455,7 +2498,7 @@ export class Engine {
         forgetClient(def.id);
         await this.afterKeyChange(def.id);
         this.noteStatus(def.id, "default", st);
-        if (limits) this.limitsReported(limits, false);
+        if (limits) this.limitsReported(limits, false, true);
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
     }
 
@@ -3807,6 +3850,11 @@ export class Engine {
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
             case "limits.get":
                 return [...this.limits.values()];
+            case "limits.refresh": {
+                const plans = Array.isArray(p.plans) ? p.plans.slice(0, 20).filter((x: any) => x && typeof x.provider === "string" && x.provider.length <= 60 && (x.accountId === undefined || (typeof x.accountId === "string" && x.accountId.length <= 100))).map((x: any) => ({ provider: x.provider as string, accountId: x.accountId as string | undefined })) : undefined;
+                await this.refreshLimits(plans);
+                return null;
+            }
             case "usage.summary": {
                 const days = usageDays(p.days);
                 const reading = usageSummary(days, Date.now(), [...this.limits.values()]).then((own) => {

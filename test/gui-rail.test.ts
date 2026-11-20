@@ -4,6 +4,7 @@
 import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
+const { resetLabel } = await import("../gui/src/lib/limits");
 const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
@@ -82,9 +83,9 @@ test("both signed in: the session in view's plan first, else the one used last, 
     const providers = [claude, codex];
     // No session in view and no sessions: the latest report first.
     expect(railFoot({ limits: all, providers, now: NOW })).toEqual([
-        { provider: "codex", name: "ChatGPT plan", pct: 74, tone: "normal", reached: false, window: "Weekly", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "ChatGPT plan\nWeekly 74%",
+        { provider: "codex", accountId: "default", name: "ChatGPT plan", pct: 74, tone: "normal", reached: false, window: "Weekly", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "ChatGPT plan\nWeekly 74%",
             windows: [{ label: "Weekly", pct: 74, tone: "normal", reached: false }] },
-        { provider: "claude-code", name: "Claude Code Max", pct: 62, tone: "normal", reached: false, window: "5-hour", line: "62% of the 5-hour limit", brief: "62% of the 5-hour limit", stale: false, detail: "Claude Code Max\n5-hour 62%\nWeekly 30%",
+        { provider: "claude-code", accountId: "default", name: "Claude Code Max", pct: 62, tone: "normal", reached: false, window: "5-hour", line: "62% of the 5-hour limit", brief: "62% of the 5-hour limit", stale: false, detail: "Claude Code Max\n5-hour 62%\nWeekly 30%",
             windows: [{ label: "5-hour", pct: 62, tone: "normal", reached: false }, { label: "Weekly", pct: 30, tone: "normal", reached: false }] },
     ]);
     // The plan used last leads.
@@ -145,8 +146,13 @@ test("limits saved before a restart show with their age; a window that has reset
     const [old] = railFoot({ limits: gone, providers: [codex], now: NOW });
     expect(old!.pct).toBeUndefined();
     expect(old!.line).toMatch(/^Reset since (\d{1,2}:\d{2}|[A-Za-z]+\.?$)/);
-    // The card has the window, with nothing current to show for it.
-    expect(old!.windows).toEqual([{ label: "5-hour", tone: "normal", reached: false, resets: "Reset" }]);
+    // The card has the window, with nothing current to show for it: only when it reset.
+    expect(old!.windows).toEqual([{ label: "5-hour", tone: "normal", reached: false, reset: resetLabel(NOW - 3_600_000, NOW) }]);
+    // Nor does the chip's tooltip: no old figure, and no "resets" for a time that has passed.
+    expect(old!.detail).toContain(`5-hour · reset ${resetLabel(NOW - 3_600_000, NOW)}`);
+    expect(old!.detail).not.toMatch(/100%|resets/);
+    expect(foot!.detail).toContain("5-hour · reset ");
+    expect(foot!.detail).not.toContain("100%");
 });
 
 test("a chip's tint: amber from 75%, red from 90% and at a limit", () => {

@@ -1,5 +1,5 @@
 // Plan limits as the agent CLIs report them over their own protocols: Claude
-// Code's rate_limit_event and Codex's account/rateLimits (read, and updated).
+// Code's rate_limit_event and /usage, and Codex's account/rateLimits (read, and updated).
 // Only what a meter needs is kept: window names, percentages, reset times,
 // whether a limit is reached, and whether credits carry turns past it (#434).
 // Account ids, emails and plan names in these payloads are never read; of
@@ -7,15 +7,17 @@
 // credits.unlimited, Claude Code's isUsingOverage and overageStatus. A balance
 // or an amount never is.
 //
-// Field names are from captures of Claude Code 2.1.301 and Codex 0.163.0
-// (test/fixtures/limits); anything missing is left out, not guessed. Credits'
+// Field names are from captures of Claude Code 2.1.301 and 2.1.322 and Codex
+// 0.163.0 (test/fixtures/limits); anything missing is left out, not guessed. Credits'
 // meaning: Codex's app-server protocol (codex-rs/app-server-protocol,
 // CreditsSnapshot) and its TUI (has_usable_workspace_credits); Claude Code
 // 2.1.304, which sets isUsingOverage when the plan's limit is rejected and
 // overageStatus allows overage.
 
 import { usingCredits, type LimitWindow, type NoticeLimit, type PlanLimits } from "../server/protocol";
-import { listAccounts } from "../providers/accounts";
+import { planNow } from "../server/plan-meter";
+import { cliAccounts } from "../providers/accounts";
+import { agentCli } from "./defs";
 import { redact } from "../util/redact";
 
 /** A CLI's string shown to the user: bounded and redacted. */
@@ -58,8 +60,11 @@ function claudeLabel(key: string): string {
 /**
  * Claude Code's rate_limit_info: `status` (allowed, allowed_warning, rejected),
  * `resetsAt` and `rateLimitType` for the window it's about, and (2.1.301)
- * `unifiedWindows` with each window's `utilization` (0-1) and `resetsAt`.
- * `partial`: it didn't list the windows, so earlier ones still stand.
+ * `unifiedWindows` with each window's `utilization` (0-1) and `resetsAt`, and
+ * (2.1.322) its own `status`. It lists only the windows the turn's model
+ * counts against (Weekly Fable after a Fable turn, not after an Opus one).
+ * `partial`: it didn't list the windows, so earlier ones still stand; one that
+ * lists them leaves the others as they were until they reset (mergeLimits).
  */
 export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId = "default"): { limits: PlanLimits; partial: boolean } | undefined {
     if (!info || typeof info !== "object") return undefined;
@@ -72,7 +77,10 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId =
     for (const [key, w] of listed ?? []) {
         if (!w || typeof w !== "object") continue;
         const usedPercent = percent(w.utilization, 100);
-        windows.push({ id: label(key, 60), label: claudeLabel(key), usedPercent, resetsAt: seconds(w.resetsAt), reached: full(w.utilization, 100) ? true : undefined });
+        // Its own status (2.1.322) says whether it's at its limit; without one, a full window is.
+        // allowed_warning is still allowed: its share already says how near it is.
+        const own = typeof w.status === "string" ? w.status : undefined;
+        windows.push({ id: label(key, 60), label: claudeLabel(key), usedPercent, resetsAt: seconds(w.resetsAt), reached: (own ? own === "rejected" : full(w.utilization, 100)) ? true : undefined });
     }
     let named: LimitWindow | undefined;
     if (type) {
@@ -102,6 +110,89 @@ function claudeCredits(i: Record<string, unknown>): boolean | undefined {
     if (i.status === "rejected" && i.isUsingOverage === false) return false;
     if (i.overageStatus === "allowed" || i.overageStatus === "allowed_warning") return true;
     return i.overageStatus === "rejected" ? false : undefined;
+}
+
+/**
+ * Claude Code's `/usage`, answered in print mode without a model call (2.1.322), is text meant for people:
+ * a line per window, "Current week (all models): 15% used · resets Nov 24, 8pm (UTC)". Only those lines are
+ * read; the rest (tips about this machine's sessions) never is. A line it can't read is left out; with no line
+ * read, undefined, so the last report stands.
+ */
+const USAGE_WINDOWS: [RegExp, string][] = [
+    [/^current session$/i, "five_hour"],
+    [/^current week \(all models\)$/i, "seven_day"],
+    [/^current week \(opus\)$/i, "seven_day_opus"],
+    [/^current week \(sonnet\)$/i, "seven_day_sonnet"],
+    [/^current week \(fable\)$/i, "seven_day_overage_included"],
+];
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Minutes a time zone is ahead of UTC at `ms`; undefined for a name Intl doesn't know. */
+function zoneOffset(zone: string, ms: number): number | undefined {
+    try {
+        const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(ms).map((p) => [p.type, p.value]));
+        const wall = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute));
+        return Math.round((wall - Math.floor(ms / 60_000) * 60_000) / 60_000);
+    } catch {
+        return undefined;
+    }
+}
+
+/** A wall time in `zone` as ms. */
+function zoned(y: number, mo: number, d: number, h: number, mi: number, zone: string): number | undefined {
+    const guess = Date.UTC(y, mo, d, h, mi);
+    const off = zoneOffset(zone, guess);
+    if (off === undefined) return undefined;
+    // Once more at the corrected time, for a day the clocks change.
+    const again = zoneOffset(zone, guess - off * 60_000);
+    return guess - (again ?? off) * 60_000;
+}
+
+/** "Nov 24, 8pm (UTC)", "1:59pm (Europe/London)": the next such time from `now` (a date without a year is the nearest one). */
+export function usageResetTime(text: string, now: number): number | undefined {
+    const m = /^(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2}),? )?(\d{1,2})(?::(\d{2}))? ?([ap])\.?m\.?\s*\(([^()]{1,64})\)$/i.exec(text.trim());
+    if (!m) return undefined;
+    const [, mon, day, hour, min, ap, zone] = m;
+    let h = Number(hour) % 12;
+    if (ap!.toLowerCase() === "p") h += 12;
+    const mi = Number(min ?? 0);
+    if (Number(hour) > 12 || mi > 59) return undefined;
+    const today = new Date(now);
+    const at = (y: number, mo: number, d: number) => zoned(y, mo, d, h, mi, zone!.trim());
+    if (mon) {
+        const mo = MONTHS.indexOf(mon.toLowerCase());
+        const d = Number(day);
+        if (mo < 0 || d < 1 || d > 31) return undefined;
+        const y = today.getUTCFullYear();
+        const times = [y - 1, y, y + 1].map((yy) => at(yy, mo, d)).filter((t): t is number => t !== undefined);
+        return times.sort((a, b) => Math.abs(a - now) - Math.abs(b - now))[0];
+    }
+    // A time alone is today's, or tomorrow's once today's has passed.
+    for (const add of [-1, 0, 1, 2]) {
+        const d = new Date(now + add * 86_400_000);
+        const t = at(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+        if (t !== undefined && t > now - 60_000) return t;
+    }
+    return undefined;
+}
+
+export function parseClaudeUsage(text: unknown, at = Date.now(), accountId = "default"): PlanLimits | undefined {
+    if (typeof text !== "string" || text.length > 20_000) return undefined;
+    const windows: LimitWindow[] = [];
+    for (const raw of text.split("\n").slice(0, 40)) {
+        const line = /^\s*([^:]{1,60}):\s*(\d{1,3}(?:\.\d+)?)%\s*used\b(?:\s*[·•-]\s*resets\s+(.+?))?\s*$/i.exec(raw.replace(/\x1b\[[0-9;]*m/g, ""));
+        if (!line) continue;
+        const id = USAGE_WINDOWS.find(([re]) => re.test(line[1]!.trim()))?.[1];
+        if (!id || windows.some((w) => w.id === id)) continue;
+        const used = Number(line[2]);
+        if (!Number.isFinite(used) || used > 100) continue;
+        const resetsAt = line[3] ? usageResetTime(line[3], at) : undefined;
+        windows.push({ id, label: claudeLabel(id), usedPercent: percent(used, 1), ...(resetsAt === undefined ? {} : { resetsAt }), ...(full(used, 1) ? { reached: true } : {}) });
+    }
+    if (!windows.length) return undefined;
+    const reached = windows.some((w) => w.reached);
+    return { provider: "claude-code", accountId, windows, reached, resetsAt: reached ? latestReset(windows.filter((w) => w.reached)) : undefined, at };
 }
 
 /** Codex's reached types that credits don't get past: a workspace's cap, not the plan's limit. */
@@ -200,24 +291,30 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
 }
 
 /**
- * What's known now, given an earlier report and a new one (`partial`: the
- * new one may leave things out). A reported window keeps an omitted reset
- * while that reset is still ahead; a limit reached earlier stands while a
- * full window (or, with none to show for it, its reset time) says so.
+ * What's known now, given an earlier report and a new one. `partial`: the new
+ * one may leave anything out (a status alone, Codex's updates), so what it
+ * doesn't say stands. Otherwise it lists the windows it's about, and a window
+ * it leaves out stands until its own reset (Claude Code lists only the
+ * windows of the turn's model); `full`: it's a whole check of the account
+ * (Codex's read), so it replaces what was known. A reported window keeps an
+ * omitted reset while that reset is still ahead; a limit reached earlier
+ * stands while a full window (or, with none to show for it, its reset time)
+ * says so.
  */
-export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean): PlanLimits {
-    if (!prev || !partial || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
-    const windows = prev.windows.map((w) => {
+export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean, full = false): PlanLimits {
+    if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
+    const live = (t: number | undefined) => t === undefined || t > next.at;
+    const windows = prev.windows.flatMap((w) => {
         const n = next.windows.find((n) => n.id === w.id);
-        if (!n) return w;
+        // Left out of a report that lists its windows: until it resets (one with no reset known goes now).
+        if (!n) return partial || (w.resetsAt !== undefined && w.resetsAt > next.at) ? [w] : [];
         let merged = n;
         if (n.resetsAt === undefined && w.resetsAt !== undefined && w.resetsAt > next.at) merged = { ...merged, resetsAt: w.resetsAt };
         // An update that doesn't say whether a limit has credits leaves what was said.
         if (n.credits === undefined && w.credits !== undefined) merged = { ...merged, credits: w.credits };
-        return merged;
+        return [merged];
     });
     for (const n of next.windows) if (!windows.some((w) => w.id === n.id)) windows.push(n);
-    const live = (t: number | undefined) => t === undefined || t > next.at;
     const exhausted = windows.filter((w) => w.reached && live(w.resetsAt));
     let reached = exhausted.length ? true : next.reached;
     if (reached === undefined) {
@@ -228,7 +325,7 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     }
     // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset.
     const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined].filter((t): t is number => t !== undefined);
-    const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
+    const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : partial && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     // Codex's updates leave credits out (null): what the last read said stands until one says otherwise.
     const credits = next.credits ?? prev.credits;
     return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(credits === undefined ? {} : { credits }), at: next.at };
@@ -273,13 +370,17 @@ export function resetSentence(resetsAt: number | undefined, cli: string, now = D
     return resetsAt ? `It resets ${resetPhrase(resetsAt, now)}.` : `${cli} didn't say when it resets.`;
 }
 
-/** One line per window, for the terminal's /cost: "5-hour 62% · resets at 4:40 PM (in 2h 5m)". */
+/**
+ * One line per window, for the terminal's /cost: "5-hour 62% · resets at 4:40 PM (in 2h 5m)", or, for one that
+ * has reset since the report, "5-hour · reset at 9:52 AM" (planNow: the GUI's meter says the same).
+ */
 export function limitLines(l: PlanLimits, now = Date.now()): string[] {
-    const lines = l.windows.map((w) => [w.label, w.usedPercent !== undefined ? `${w.usedPercent}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resetsAt ? ` · resets ${resetPhrase(w.resetsAt, now)}` : ""));
-    const shown = l.windows.some((w) => w.reached);
-    const credits = usingCredits(l, Boolean(l.reached));
+    const p = planNow(l, now);
+    if (!p) return [];
+    const lines = p.windows.map((w) => (w.reset ? `${w.label} · reset ${new Date(w.resetsAt!).toDateString() === new Date(now).toDateString() ? "at" : "on"} ${clockTime(w.resetsAt!, now)}` : [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resetsAt ? ` · resets ${resetPhrase(w.resetsAt, now)}` : "")));
+    const shown = p.windows.some((w) => w.reached);
     // A reached window says when it resets; on credits, that turns go on is said first.
-    if (l.reached && (!shown || credits)) lines.unshift(`Limit reached${credits ? " · using credits" : ""}${!shown && l.resetsAt ? ` · resets ${resetPhrase(l.resetsAt, now)}` : ""}`);
+    if (p.reached && (!shown || p.usingCredits)) lines.unshift(`Limit reached${p.usingCredits ? " · using credits" : ""}${!shown && p.liftsAt ? ` · resets ${resetPhrase(p.liftsAt, now)}` : ""}`);
     return lines;
 }
 
@@ -313,11 +414,11 @@ export function limitNews(seen: Map<string, string>, window: string, status: str
 
 /** A local display name is safe in notices; signed-in email and plan stay out. */
 export function limitAccountLabel(provider: string, accountId = "default"): string {
-    return `${provider === "codex" ? "Codex" : "Claude Code"} · ${accountName(provider, accountId)}`;
+    return `${agentCli(provider)?.name ?? provider} · ${accountName(provider, accountId)}`;
 }
 
 function accountName(provider: string, accountId: string): string {
-    return listAccounts(provider).find((a) => a.id === accountId)?.name ?? accountId;
+    return cliAccounts(provider).find((a) => a.id === accountId)?.name ?? accountId;
 }
 
 /** The window of a reached limit ("5-hour"), when the report names one. */

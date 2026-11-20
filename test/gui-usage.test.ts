@@ -17,7 +17,7 @@ function summary(): UsageSummary {
         series: [{ ...total, at: 1_800_000_000_000, sessions: 1, sources: { "claude-code": total, codex: zero(), api: zero() } }], interval: "day", accounts: [], buckets: [], limits: [], sessions: 1, approxDated: 0 };
 }
 function mount(call = async (_method: string, _params: any): Promise<UsageSummary> => summary(), limitReports: any = {}, providers: any[] = [], noModel = false) {
-    const requests: any[] = []; const tabs: string[] = []; let limitRefreshes = 0;
+    const requests: any[] = []; const tabs: string[] = []; let limitRefreshes = 0; let limitChecks = 0;
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
         createElement: (tag: string) => ({ tag, props: {} as any, children: [] as any[] }),
@@ -32,7 +32,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const compiled = transformSync(source, { filename: "UsageView.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const scope = { renderer, ...solid, ...usage, ...limits, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
-        app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; },
+        app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
         RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null,
@@ -55,7 +55,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         button: (label: string) => nodes().find(n => n.tag === "button" && n.props["aria-label"] === label).props,
         buttonText: (text: string) => nodes().find(n => n.tag === "button" && walk(n.children).join("") === text).props,
         cls: (c: string) => nodes().filter(n => typeof n === "object" && String(n.props?.class ?? "").split(/\s+/).includes(c)),
-        get limitRefreshes() { return limitRefreshes; } };
+        get limitRefreshes() { return limitRefreshes; }, get limitChecks() { return limitChecks; } };
 }
 const tick = () => Bun.sleep(0);
 

@@ -1,9 +1,9 @@
 // Local transcript history and the existing per-account plan limit reports.
 import { machine as windowMachine } from "../lib/platform";
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { Hourglass, Info, KeyRound, RotateCcw } from "lucide-solid";
 import { planLimitKey, type UsageBucket, type UsageDays, type UsageSource, type UsageSummary, type UsageTotals } from "@shared/protocol";
-import { app, noModel, refreshLimits, rpc } from "../state/app";
+import { app, checkLimits, noModel, refreshLimits, rpc } from "../state/app";
 import { setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
 import { plural, tokens } from "../lib/format";
@@ -20,7 +20,7 @@ function PlanLimitsGroup() {
     const plans = () => Object.values(app.limits).map((l) => ({ l, m: meterOf(l, now()) })).filter((x) => x.m);
     const name = (id: string) => app.providers.find((p) => p.id === id);
     return (
-        <Show when={plans().length} fallback={<p class="set-note">Plan limits show here after a Claude Code or Codex turn.</p>}>
+        <Show when={plans().length} fallback={<p class="set-note">Plan limits show here after a turn on a plan.</p>}>
             <For each={plans()}>
                 {({ l, m }) => (
                     <>
@@ -153,7 +153,7 @@ function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary give
         // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
         if (windowMachine) return "";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
-        return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
+        return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.reset ? `weekly limit reset ${weekly.reset}` : weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };
     const groups = () => SOURCES.map((s) => ({ s, list: p.accounts.filter((a) => a.source === s).sort((x, y) => amount(y, p.metric) - amount(x, p.metric)) })).filter((g) => g.list.length);
     return <>
@@ -264,7 +264,8 @@ export function UsageView() {
         const mine = ++seq;
         setLoading(true); setError("");
         try {
-            if (view() === "limits") await refreshLimits();
+            // Where the plans stand now: the CLIs are asked (the server skips what was just reported), then shown.
+            if (view() === "limits") await checkLimits().then(refreshLimits);
             else {
                 const asked = days();
                 const r = await rpc.call("usage.summary", { days: asked, first: true });
@@ -280,6 +281,8 @@ export function UsageView() {
         finally { if (mine === seq) setLoading(false); }
     };
     createEffect(on([days, view], () => void load()));
+    // Opened: the plans' limits (Limits, and By account's weekly figure) are asked for once, whichever view shows first.
+    onMount(() => void checkLimits());
     // Another range keeps the last one on screen, dimmed, until its own arrives: no flash, no jump.
     const stale = () => loading() && data()?.days !== days();
     return <div class="usage-view" aria-busy={loading()}>

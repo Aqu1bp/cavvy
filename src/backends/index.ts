@@ -3,7 +3,7 @@
 import { accountEnv } from "../providers/accounts";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
-import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
+import { ClaudeCodeBackend, claudeStatus, claudeUsage, describeClaudeAuth } from "./claude-code";
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
 import { findCli } from "./cli";
@@ -58,10 +58,30 @@ export async function checkAgentCli(providerId: string, signal?: AbortSignal, ac
 
 /**
  * As checkAgentCli, and for Codex on a ChatGPT plan, where its limits stand
- * (from the same app-server). Claude Code reports its limits only in a turn.
+ * (from the same app-server). Claude Code's take a check of their own (checkPlanLimits).
  */
 export async function checkAgentPlan(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
     return checkCli(providerId, signal, accountId, true);
+}
+
+/**
+ * Where an account's plan limits stand now, without a turn, from the CLI itself: Codex's account/rateLimits/read
+ * (all of the account's limits: `full`), Claude Code's `/usage`. Undefined when the CLI has no such check, or
+ * its answer couldn't be read.
+ */
+export async function checkPlanLimits(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ limits: PlanLimits; full: boolean } | undefined> {
+    switch (agentCli(providerId)?.protocol) {
+        case "codex-app-server": {
+            const limits = (await codexPlan(providerId, signal, accountId)).limits;
+            return limits && { limits, full: true };
+        }
+        case "claude-stream-json": {
+            const limits = await claudeUsage(providerId, signal, accountId);
+            return limits && { limits, full: false };
+        }
+        default:
+            return undefined;
+    }
 }
 
 async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {

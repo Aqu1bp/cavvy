@@ -15,7 +15,7 @@ const { mergeLimits, parseClaudeRateLimit, parseCodexRateLimits } = await import
 const { Engine } = await import("../src/server/engine");
 const { planLimitKey } = await import("../src/server/protocol");
 const { meterOf, limitAlternatives } = await import("../gui/src/lib/limits");
-const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG"];
+const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION"];
 const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 for (const provider of ["claude-code", "codex"]) {
     const binary = join(root, provider);
@@ -101,8 +101,8 @@ test("RPC state rejects older snapshots independently for each account", async (
     engine.limitsReported(report("codex", "personal", 5, 10), false);
     const all = await engine.handle(client, "limits.get", {});
     const keyed = Object.fromEntries(all.map((l) => [planLimitKey(l.provider, l.accountId), l]));
-    expect(meterOf(keyed[planLimitKey("codex", "personal")], 30)?.top).toBe(80);
-    expect(meterOf(keyed[planLimitKey("codex", "work")], 30)?.top).toBe(10);
+    expect(meterOf(keyed[planLimitKey("codex", "personal")], 30)?.top?.pct).toBe(80);
+    expect(meterOf(keyed[planLimitKey("codex", "work")], 30)?.top?.pct).toBe(10);
     expect(planLimitKey("codex", "personal")).not.toBe(planLimitKey("claude-code", "personal"));
     await engine.stop();
 });
@@ -186,4 +186,86 @@ test("a newer Codex read on another account does not suppress a delayed account 
     expect(reports).toHaveLength(1);
     expect(reports[0]!.limits).toMatchObject({ provider: "codex", accountId: "personal" });
     expect(work.find((e) => e.type === "limits")!.limits).toMatchObject({ provider: "codex", accountId: "work", reached: true });
+});
+
+describe("limits.refresh: where a plan stands, asked of the CLI without a turn", () => {
+    const usageLog = join(root, "usage.log");
+    /** The fake Claude Code's /usage runs so far, and the TZ each ran with. */
+    const usageRuns = () => (existsSync(usageLog) ? readFileSync(usageLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.argv?.[0] === "-p" && l.argv[1] === "/usage") : []);
+    const setup = () => {
+        rmSync(usageLog, { force: true });
+        process.env.FAKE_LOG = usageLog;
+        const engine = new Engine();
+        const events: ServerEvent[] = [];
+        const client = { send: (e: ServerEvent) => events.push(e), subs: new Set<string>() };
+        engine.clients.add(client);
+        return { engine, events, client };
+    };
+    const reset = new Date(Date.now() + 2 * 86_400_000);
+    const when = `${reset.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)`;
+
+    test("Claude Code's /usage: one check at a time per account, not again while it's fresh; no MCP servers or hooks; UTC", async () => {
+        const { engine, events, client } = setup();
+        process.env.FAKE_USAGE_TEXT = `You are currently using your subscription to power your Claude Code usage\n\nCurrent week (all models): 15% used · resets ${when}\nCurrent week (Fable): 4% used · resets ${when}\n\nWhat's contributing to your usage?\n  95%  a tip`;
+        process.env.FAKE_USAGE_DELAY_MS = "200";
+        const plans = [{ provider: "claude-code", accountId: "work" }];
+        await Promise.all([engine.handle(client, "limits.refresh", { plans }), engine.handle(client, "limits.refresh", { plans })]);
+        expect(usageRuns()).toHaveLength(1);
+        expect(usageRuns()[0].argv).toEqual(expect.arrayContaining(["--output-format", "json", "--no-session-persistence", "--strict-mcp-config"]));
+        expect(usageRuns()[0].claudeConfigDir).toContain("work");
+        const all = await engine.handle(client, "limits.get", {});
+        const work = all.find((l) => l.provider === "claude-code" && l.accountId === "work")!;
+        expect(work.windows.map((w) => [w.label, w.usedPercent])).toEqual([["Weekly", 15], ["Weekly Fable", 4]]);
+        expect(new Date(work.windows[0]!.resetsAt!).getUTCHours()).toBe(20);
+        expect(events.some((e) => e.type === "limits" && e.limits.accountId === "work")).toBe(true);
+        // Fresh: not asked again.
+        await engine.handle(client, "limits.refresh", { plans });
+        expect(usageRuns()).toHaveLength(1);
+        await engine.stop();
+    });
+
+    test("a window that has reset since the last report is asked about at once", async () => {
+        const { engine, client } = setup();
+        process.env.FAKE_USAGE_TEXT = `Current week (all models): 1% used · resets ${when}`;
+        const at = Date.now();
+        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: at + 50 }, { id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: reset.getTime() }], at }, false);
+        // Just reported: not asked.
+        await engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "work" }] });
+        expect(usageRuns()).toHaveLength(0);
+        await Bun.sleep(100);
+        await engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "work" }] });
+        expect(usageRuns()).toHaveLength(1);
+        const work = (await engine.handle(client, "limits.get", {})).find((l) => l.provider === "claude-code" && l.accountId === "work")!;
+        // The weekly figure is new; the 5-hour window /usage didn't list has reset, so it's gone.
+        expect(work.windows.map((w) => [w.id, w.usedPercent])).toEqual([["seven_day", 1]]);
+        await engine.stop();
+    });
+    // Last: a CLI the model answered is remembered while Cavvy runs.
+    test("an answer it can't read keeps the last report; one the model answered isn't asked for again; an older CLI isn't asked", async () => {
+        const { engine, client } = setup();
+        engine.limitsReported(report("claude-code", "personal", 40, Date.now() - 10 * 60_000), false);
+        const plans = [{ provider: "claude-code", accountId: "personal" }];
+        process.env.FAKE_USAGE_TEXT = "Something else entirely";
+        await engine.handle(client, "limits.refresh", { plans });
+        expect(usageRuns()).toHaveLength(1);
+        const kept = (await engine.handle(client, "limits.get", {})).find((l) => l.accountId === "personal" && l.provider === "claude-code")!;
+        expect(kept.windows[0]!.usedPercent).toBe(40);
+        await engine.stop();
+
+        const second = setup();
+        process.env.FAKE_CLAUDE_CLI_VERSION = "2.1.310";
+        await second.engine.handle(second.client, "limits.refresh", { plans });
+        expect(usageRuns()).toHaveLength(0);
+        delete process.env.FAKE_CLAUDE_CLI_VERSION;
+        process.env.FAKE_USAGE_MODEL = "1";
+        // A whole check (no plans): every account of each CLI turned on.
+        await second.engine.handle(second.client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "work" }] });
+        expect(usageRuns()).toHaveLength(1);
+        await second.engine.stop();
+        const third = setup();
+        await third.engine.handle(third.client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "personal" }] });
+        expect(usageRuns()).toHaveLength(0);
+        await third.engine.stop();
+    });
+
 });

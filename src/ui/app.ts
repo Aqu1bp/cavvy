@@ -1608,7 +1608,7 @@ export class App {
                 {
                     const key = planLimitKey(e.limits.provider, e.limits.accountId);
                     const prev = this.planLimits.get(key);
-                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial));
+                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial, e.full));
                 }
                 break;
             case "usage":

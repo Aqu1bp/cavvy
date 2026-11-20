@@ -169,6 +169,19 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
+// --version: FAKE_CLAUDE_CLI_VERSION, else one that answers /usage in print mode.
+if (argv[0] === "--version") {
+    console.log(`${process.env.FAKE_CLAUDE_CLI_VERSION ?? "2.1.322"} (Claude Code)`);
+    process.exit(0);
+}
+// -p /usage --output-format json, as 2.1.322 answers it without a model call: FAKE_USAGE_TEXT is its text (after
+// FAKE_USAGE_DELAY_MS); FAKE_USAGE_MODEL=1 answers as a CLI that sent it to the model instead.
+if (argv[0] === "-p" && argv[1] === "/usage") {
+    if (process.env.FAKE_USAGE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_USAGE_DELAY_MS)));
+    const model = process.env.FAKE_USAGE_MODEL === "1";
+    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: model ? 1 : 0, total_cost_usd: model ? 0.01 : 0, result: model ? "I can't check usage." : process.env.FAKE_USAGE_TEXT ?? "", ...(model ? {} : { local_command: "usage" }), tz: process.env.TZ }));
+    process.exit(0);
+}
 // FAKE_EXIT_AFTER_MS: the CLI goes away that long after it starts, whatever it's doing (a crash).
 if (process.env.FAKE_EXIT_AFTER_MS) setTimeout(() => process.exit(3), Number(process.env.FAKE_EXIT_AFTER_MS));
 // A one-off (--tools "" with a system prompt): the question's answer is FAKE_ONEOFF_ANSWER, as one result.

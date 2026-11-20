@@ -1,17 +1,19 @@
 // What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import { usingCredits, type AccountInfo, type PlanLimits, type UsageRow, type UsageSummary } from "@shared/protocol";
+import type { AccountInfo, PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
+import { planNow, STALE_MS } from "@shared/plan-meter";
 
-/** Older than this, a report is shown with "as of" its time. */
-export const STALE_MS = 15 * 60_000;
+export { STALE_MS };
 
 export interface MeterWindow {
     label: string;
-    /** 0-100, or undefined when the CLI didn't say. */
+    /** 0-100, or undefined when the CLI didn't say or the window has reset since it did. */
     pct?: number;
-    /** "4:40 PM", "Mon"; with the time and how long when it's reached ("Mon 9:00 AM, in 2d 3h"). */
+    /** When it resets: "4:40 PM", "Mon"; with the time and how long when it's reached ("Mon 9:00 AM, in 2d 3h"). */
     resets?: string;
+    /** When it reset, once that has passed since the report ("9:52 AM", "Wed"): usage started again then. */
+    reset?: string;
     reached: boolean;
 }
 
@@ -25,8 +27,8 @@ export interface Meter {
     resets?: string;
     /** "as of 2:02 PM" when the numbers may be out of date. */
     asOf?: string;
-    /** The fullest window's percentage, for the compact chip. */
-    top?: number;
+    /** The fullest window that hasn't reset since the report, for the compact chip. */
+    top?: MeterWindow;
 }
 
 function clock(ms: number): string {
@@ -47,49 +49,56 @@ export function until(ms: number, now: number): string {
     return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
 }
 
-/** A reset time: today's as a time, a later day's by weekday (within a week) or date; `exact` adds the time and how long. */
+/**
+ * A time beside its verb ("resets", "reset", "as of"): today's as a time, another day less than a week either side
+ * by weekday, else by date; `exact` adds the time, and how long until it when it's ahead. A weekday names
+ * one day only within that span, so a past time never reads as the next one.
+ */
 export function resetLabel(ms: number, now: number, exact = false): string {
     const d = new Date(ms);
-    const day = sameDay(ms, now) ? "" : ms - now < 6.5 * 86_400_000 ? d.toLocaleDateString(undefined, { weekday: "short" }) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const day = sameDay(ms, now) ? "" : Math.abs(ms - now) < 6.5 * 86_400_000 ? d.toLocaleDateString(undefined, { weekday: "short" }) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     if (!exact) return day || clock(ms);
     return `${day ? `${day} ` : ""}${clock(ms)}${ms > now ? `, in ${until(ms, now)}` : ""}`;
 }
 
 export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefined {
-    // Nothing known but that a limit is reached is still worth saying.
-    if (!l || (!l.windows.length && !l.reached)) return undefined;
-    const passed = (t?: number) => t !== undefined && t <= now;
-    const windows = l.windows.map((w) => {
-        const reached = Boolean(w.reached || (w.usedPercent ?? 0) >= 100) && !passed(w.resetsAt);
-        return { label: w.label, pct: w.usedPercent, reached, resets: w.resetsAt ? resetLabel(w.resetsAt, now, reached) : undefined };
-    });
-    const reached = windows.some((w) => w.reached) || (Boolean(l.reached) && !passed(l.resetsAt) && !(l.windows.length && l.windows.every((w) => passed(w.resetsAt))));
-    const blockingResets = l.windows.filter((_, i) => windows[i]!.reached).map((w) => w.resetsAt);
-    if (l.reached && !passed(l.resetsAt) && (l.resetsAt !== undefined || !blockingResets.length)) blockingResets.push(l.resetsAt);
-    const knownResets = blockingResets.filter((t): t is number => t !== undefined);
-    const resetsAt = !blockingResets.includes(undefined) && knownResets.length ? Math.max(...knownResets) : undefined;
-    const stale = now - l.at > STALE_MS || l.windows.some((w) => passed(w.resetsAt));
-    const pcts = windows.map((w) => w.pct).filter((p): p is number => p !== undefined);
+    const p = planNow(l, now);
+    if (!l || !p) return undefined;
+    const windows = p.windows.map((w): MeterWindow => ({
+        label: w.label,
+        pct: w.pct,
+        reached: w.reached,
+        ...(w.resetsAt === undefined ? {} : w.reset ? { reset: resetLabel(w.resetsAt, now) } : { resets: resetLabel(w.resetsAt, now, w.reached) }),
+    }));
     return {
         windows,
-        reached,
-        usingCredits: usingCredits(l, reached, (i) => windows[i]!.reached),
-        resets: reached && resetsAt ? resetLabel(resetsAt, now, true) : undefined,
-        asOf: stale ? `as of ${sameDay(l.at, now) ? clock(l.at) : resetLabel(l.at, now, true).replace(/, in .*$/, "")}` : undefined,
-        top: pcts.length ? Math.max(...pcts) : undefined,
+        reached: p.reached,
+        usingCredits: p.usingCredits,
+        resets: p.liftsAt ? resetLabel(p.liftsAt, now, true) : undefined,
+        asOf: p.stale ? `as of ${sameDay(l.at, now) ? clock(l.at) : resetLabel(l.at, now, true)}` : undefined,
+        top: p.top ? windows[p.windows.indexOf(p.top)] : undefined,
     };
 }
 
-/** "5-hour 62% · resets 4:40 PM" */
+/** "5-hour 62% · resets 4:40 PM", "5-hour · reset 9:52 AM" */
 export function windowLine(w: MeterWindow): string {
+    if (w.reset) return `${w.label} · reset ${w.reset}`;
     return [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resets ? ` · resets ${w.resets}` : "");
+}
+
+/** "5-hour 62%", "5-hour reset 9:52 AM": a window in a short list (a tooltip's); nothing when there's no figure. */
+export function windowShort(w: MeterWindow): string | undefined {
+    if (w.reset) return `${w.label} reset ${w.reset}`;
+    return w.pct !== undefined ? `${w.label} ${w.pct}%` : undefined;
 }
 
 /**
  * "40%, resets 4:40 PM": a window's bar caption in Usage (its name is beside it). A reached one isn't called reached
- * again (the plan's banner says so), only when it resets; "Reached" only when it's all there is to say.
+ * again (the plan's banner says so), only when it resets; "Reached" only when it's all there is to say. One that
+ * has reset since the report says when: "Reset 9:52 AM".
  */
-export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets">): string {
+export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets" | "reset">): string {
+    if (w.reset) return `Reset ${w.reset}`;
     if (w.pct === undefined && w.reached) return w.resets ? `Resets ${w.resets}` : "Reached";
     return (w.pct !== undefined ? `${w.pct}%` : "Not reported") + (w.resets ? `, resets ${w.resets}` : "");
 }

@@ -7,8 +7,8 @@
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
-import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, limitsFor, providersFor, refreshSessions, reportError, warmFor } from "../state/app";
+import { planLimitKey, type SessionSummary } from "@shared/protocol";
+import { activate, app, checkLimits, handleFor, isUnread, limitsFor, providersFor, refreshSessions, reportError, warmFor } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
@@ -282,7 +282,7 @@ function UpdateButton() {
  * go first; only then do chips fold into "+N", the plain ones first
  * (lib/rail.ts planFit). The row opens every window's detail.
  */
-function PlanRow(p: { plans: RailPlan[] }) {
+function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
     const [open, setOpen] = createSignal(false);
     const [tight, setTight] = createSignal(false);
     const [folded, setFolded] = createSignal(0);
@@ -321,7 +321,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
     const label = () => `Plan usage. ${p.plans.map((plan) => `${plan.name}: ${plan.brief}`).join(". ")}`;
     return (
         <>
-            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => (!open() && p.check(), setOpen(!open()))}>
                 <For each={p.plans}>{(plan, i) => (
                     <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
                         <PlanGauge plan={plan} />
@@ -351,7 +351,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
                                 <span class="truncate">{w.label}</span>
                                 <span class="pu-bar" aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
                                 <b>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</b>
-                                <Show when={w.resets}>{(r) => <span class="pu-r" title={`Resets ${r()}`}>Resets {r()}</span>}</Show>
+                                <Show when={w.reset ? `Reset ${w.reset}` : w.resets && `Resets ${w.resets}`}>{(r) => <span class="pu-r" title={r()}>{r()}</span>}</Show>
                             </div>
                         )}</For>
                     </div>
@@ -655,6 +655,15 @@ export function Sidebar() {
         // The session's machine's plans and limits: its account ("Default" there) isn't this computer's of that name.
         return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
+    // A window the footer shows that resets while Cavvy is watching: where its plan stands now is asked for, once.
+    let ticked = now();
+    createEffect(on(now, (t) => {
+        const from = ticked;
+        ticked = t;
+        const limits = limitsFor(app.activeId);
+        const due = plans().filter((plan) => limits[planLimitKey(plan.provider, plan.accountId)]?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > from && w.resetsAt <= t));
+        if (due.length) void checkLimits(app.activeId, due.map((plan) => ({ provider: plan.provider, accountId: plan.accountId })));
+    }, { defer: true }));
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
@@ -1094,7 +1103,7 @@ export function Sidebar() {
 
             <div class="side-foot">
                 <Show when={plans().length} fallback={<span class="grow" />}>
-                    <PlanRow plans={plans()} />
+                    <PlanRow plans={plans()} check={() => void checkLimits(app.activeId, plans().map((plan) => ({ provider: plan.provider, accountId: plan.accountId })))} />
                 </Show>
                 <UpdateButton />
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>

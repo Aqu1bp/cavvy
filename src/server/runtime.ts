@@ -3022,11 +3022,11 @@ export class Runtime {
                 this.compacted(e.summary, e.idle, e.kept);
                 break;
             case "limits":
-                this.engine.limitsReported(e.limits, e.partial);
+                this.engine.limitsReported(e.limits, e.partial, e.full);
                 break;
             case "subagent":
                 // A sub-agent on an agent CLI reports the same account's limits.
-                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial, e.event.full);
                 else this.subagentEvent(e.parentId, e.label, e.event);
                 break;
             case "goal":

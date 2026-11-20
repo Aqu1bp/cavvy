@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
-import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
+import { planLimitKey, type AccountInfo } from "@shared/protocol";
 import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
@@ -12,11 +12,11 @@ import { Popover } from "./ui/Popover";
 /**
  * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
  * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
- * in a ring. A window that has reset since the report says nothing now (as in the rail's footer), so it's skipped.
+ * in a ring. A window that has reset since the report has no figure (meterOf), so it's never the one named.
  */
-export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now()): { pct: number; window?: string; resets?: string } | undefined {
+export function nearLimit(m: Meter | undefined): { pct: number; window?: string; resets?: string } | undefined {
     if (!m) return undefined;
-    const live = m.windows.filter((_, i) => (l?.windows[i]?.resetsAt ?? Infinity) > at);
+    const live = m.windows.filter((w) => !w.reset);
     const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
     // A reached window is the one to name, whatever another's percentage.
     const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
@@ -108,7 +108,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     };
     const reachedWindow = () => meter()?.windows.find((w) => w.reached);
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
-    const near = createMemo(() => (p.home ? nearLimit(meter(), limits(), now()) : undefined));
+    const near = createMemo(() => (p.home ? nearLimit(meter()) : undefined));
     const width = () => (meter()?.reached ? 280 : 256);
     // Unavailable, not disabled: the tooltip still says why, to the pointer and the keyboard.
     const compactTitle = () => (!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : undefined);

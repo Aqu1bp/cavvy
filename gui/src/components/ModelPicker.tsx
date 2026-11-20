@@ -13,7 +13,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
-import { meterOf } from "../lib/limits";
+import { meterOf, windowShort } from "../lib/limits";
 import { now } from "../lib/clock";
 import { nearLimit } from "./ComposerMeter";
 
@@ -231,12 +231,11 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
     const limitOf = (provider: string, id: string) => limitsFor(p.sessionId)[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
-        const l = limitOf(provider, id);
-        return nearLimit(meterOf(l, now()), l, now());
+        return nearLimit(meterOf(limitOf(provider, id), now()));
     };
     const accountTip = (provider: string, a: Partial<AccountInfo> & { id: string }) => {
         const m = meterOf(limitOf(provider, a.id), now());
-        const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.filter((w) => w.pct !== undefined).map((w) => `${w.label} ${w.pct}%`).join(", ");
+        const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.map(windowShort).filter(Boolean).join(", ");
         return [accountDetail(a), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {

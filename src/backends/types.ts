@@ -191,8 +191,8 @@ export interface SessionHost {
     context?(contextTokens: number, window?: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
-    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
-    limits?(limits: PlanLimits, partial: boolean): void;
+    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows; `full`: all of the account's, replacing what was known). */
+    limits?(limits: PlanLimits, partial: boolean, full?: boolean): void;
     /** Run Cavvy's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
