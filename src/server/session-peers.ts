@@ -24,7 +24,10 @@ export interface PeerHost {
     open(id: string): Promise<Runtime>;
     create(cwd: string, o: { mode: PermissionMode; accounts: Record<string, string>; startedBy: string }): Promise<Runtime>;
     defaultMode(ws: Workspace): PermissionMode;
-    /** The mode a session made in `cwd` starts in (throws when the folder can't be opened: not one, untrusted with configuration). */
+    /**
+     * The mode a session another machine's starts in `cwd` gets (throws when the folder can't be opened: not one,
+     * untrusted with configuration): the folder's default, and on the user's own computer no freer than their own settings say.
+     */
     defaultModeIn(cwd: string): PermissionMode;
     /**
      * `cwd` as the folder it really is (links followed), when that's one the user has worked in here or one inside
@@ -105,6 +108,15 @@ function listHere(host: PeerHost, disk: ReturnType<typeof diskPeers>, o: { limit
     return { rows: [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt), capped: listed.capped };
 }
 
+/** The mode a session another machine's starts in `cwd` would get; Plan (which sends and starts nothing) where the folder can't be opened now. */
+function startModeOf(host: PeerHost, cwd: string): PermissionMode {
+    try {
+        return host.defaultModeIn(cwd);
+    } catch {
+        return "plan";
+    }
+}
+
 /**
  * What a session on another of the user's machines asks of this one's (src/server/far-peers.ts): list, read and send
  * to its sessions, by their ids here. `server`: this Cavvy is a server, which a session's mode can't be freer than
@@ -127,14 +139,18 @@ export function peerOps(host: PeerHost, server: boolean) {
         },
         send: async (id: string, text: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }> => {
             const rt = await reach(host, id);
-            // Not the session that started this one: its task came from there, in the mode the user set for the folder.
-            const starter = (rt.session.meta.startedBy ?? host.starts.startedBy.get(rt.id)) === from.id;
-            if (!server && !starter && freerMode(rt.mode, from.mode)) throw new PeerError(
-                    // From another machine (`<machine>/<id>`): it counts as Auto at most here, whatever it runs in there.
-                    from.id.includes("/")
-                        ? `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than a session on another machine counts for here (${modeName(from.mode)} mode at most), so it can't be sent work from there. Ask the user to send it themselves.`
-                        : `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than the sending session's ${modeName(from.mode)} mode, so it can't be sent work from there. Ask the user to send it themselves.`,
-                );
+            if (!server && freerMode(rt.mode, from.mode)) {
+                // The session that started this one may, while this one asks no less than one it could start now would:
+                // its task came from there, in the mode the user set for the folder. Which session asks is that machine's word.
+                const starter = (rt.session.meta.startedBy ?? host.starts.startedBy.get(rt.id)) === from.id && !freerMode(rt.mode, startModeOf(host, rt.ws.cwd));
+                if (!starter)
+                    throw new PeerError(
+                        // From another machine (`<machine>/<id>`): it counts as Auto at most here, whatever it runs in there.
+                        from.id.includes("/")
+                            ? `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than a session on another machine counts for here (${modeName(from.mode)} mode at most), so it can't be sent work from there. Ask the user to send it themselves.`
+                            : `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than the sending session's ${modeName(from.mode)} mode, so it can't be sent work from there. Ask the user to send it themselves.`,
+                    );
+            }
             const delivery = deliverTo(host, rt, { id: from.id, title: from.title }, text);
             return { text: deliveryText(runtimeSummary(rt), delivery), delivery, title: runtimeSummary(rt).title };
         },

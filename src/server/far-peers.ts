@@ -229,7 +229,8 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         const from: From = { id: `${asker}/${f.id}`, title: f.title, mode };
         const message = checkMessage(params.message);
         // Into one of this computer's: a server's session counts as Auto at most, so one here in Bypass takes no work
-        // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't).
+        // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't),
+        // but for the session that started it, in the mode it was started in (peerOps).
         allowed("SendToSession");
         if (s.on === HOME_NAME) {
             return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });

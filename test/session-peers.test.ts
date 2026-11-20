@@ -557,7 +557,7 @@ describe("in the app", () => {
         }
     }, 40_000);
 
-    test("a session on another machine starts one here: in a folder the user has opened, no freer than it, and bounded as its own are", async () => {
+    test("a session on another machine starts one here: in a folder the user has opened, in the folder's default mode, and bounded as its own are", async () => {
         const { peerOps } = await import("../src/server/session-peers");
         const mac = peerOps(engine.peerHost(), false);
         const from = { id: "box/s1", title: "On box", mode: "auto" as const };
@@ -606,17 +606,29 @@ describe("in the app", () => {
         dirs.push(free);
         writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: true, defaultMode: "bypassPermissions" } }));
         const manual = { id: "lab/manual", title: "Manual on lab", mode: "default" as const };
-        let freer: Rt;
         try {
             await (await engine.createSession(free, { mode: "default" })).ready;
-            freer = engine.runtimes.get((await mac.start({ cwd: free, prompt: "Tidy the notes.", title: "Free" }, manual)).id)!;
+            const freer = engine.runtimes.get((await mac.start({ cwd: free, prompt: "Tidy the notes.", title: "Free" }, manual)).id)!;
+            expect(freer.mode).toBe("bypassPermissions");
+            // A message named as from the session that started it is taken; one named as from another there isn't.
+            expect((await mac.send(freer.id, "And the tests.", manual)).text).toStartWith(`Sent to session ${freer.id} `);
+            await expect(mac.send(freer.id, "From another.", { ...manual, id: "lab/other" })).rejects.toThrow("can't be sent work from there");
         } finally {
             writeFileSync(settingsFile, settings);
         }
-        expect(freer.mode).toBe("bypassPermissions");
-        // The session that started it can send it more; another on that server, in a mode that asks more, can't.
-        expect((await mac.send(freer.id, "And the tests.", manual)).text).toStartWith(`Sent to session ${freer.id} `);
-        await expect(mac.send(freer.id, "From another.", { ...manual, id: "lab/other" })).rejects.toThrow("can't be sent work from there");
+        // A project's own settings can ask more of the user than the user's do, not less: Auto there doesn't make a Manual default Auto.
+        const own = realpathSync(createDemoProject(tempDir("peers-own-"), { git: false }));
+        dirs.push(own);
+        mkdirSync(join(own, ".cavvy"), { recursive: true });
+        writeFileSync(join(own, ".cavvy", "settings.json"), JSON.stringify({ permissions: { defaultMode: "auto" } }));
+        (await import("../src/config/trust")).trustFolder(own);
+        expect((await engine.createSession(own)).mode).toBe("auto");
+        const loosened = engine.runtimes.get((await mac.start({ cwd: own, prompt: "Again.", title: "Loosened" }, manual)).id)!;
+        expect(loosened.mode).toBe("default");
+        // Once the user has put it in a freer mode than one started now would get, its starter's messages are held to the rule again.
+        expect((await mac.send(loosened.id, "More.", manual)).text).toStartWith(`Sent to session ${loosened.id} `);
+        loosened.setMode("auto");
+        await expect(mac.send(loosened.id, "Still more.", manual)).rejects.toThrow("can't be sent work from there");
         // No more an hour from one starter than a session may start: the refused ones above didn't count.
         for (let i = 0; i < 3; i++) await mac.start({ cwd: project, prompt: `Task ${i}.`, title: `Task ${i}` }, from);
         await expect(mac.start({ cwd: project, prompt: "One more.", title: "More" }, from)).rejects.toThrow("box/s1 has started 5 sessions here in the last hour");

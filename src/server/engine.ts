@@ -68,7 +68,7 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { peerOps, type PeerHost } from "./session-peers";
-import { checkMessage, PeerError, type FarPeers } from "../agent/peers";
+import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
 import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
@@ -1209,7 +1209,10 @@ export class Engine {
             defaultModeIn: (cwd) => {
                 const p = resolve(expandHome(cwd));
                 if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
-                return this.defaultMode(this.workspaceFor(p));
+                const mode = this.defaultMode(this.workspaceFor(p));
+                // On the user's own computer, no freer than their own settings file says: the folder's file can ask
+                // for more of the user (Manual, Plan), but isn't their word on what another machine's session gets.
+                return onServer() ? mode : narrowerMode(mode, defaultMode(loadScope("user", p), p).mode);
             },
             // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
             // so a link inside one that leads elsewhere isn't inside it. A recent folder counts only while the path it
