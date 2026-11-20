@@ -317,7 +317,7 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
-    /** A read-only agent on Claude Code or Codex: the mode of the session it works for (its own is one where they ask about everything). */
+    /** A read-only agent on a CLI (Claude Code, Codex, OpenCode and the like): the mode of the session it works for (its own is one where the CLI asks about everything). */
     sessionMode?: () => PermissionMode;
     /** Sub-agents: the folder its memory is kept in, which isn't Cavvy configuration for it. */
     memoryDir?: string;
@@ -3297,7 +3297,8 @@ export class Agent {
         const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
-        // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own calls are.
+        // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own
+        // calls are, in another folder or over the network too (the session itself runs anything there unasked).
         const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
         const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.runningIn ?? this.state.cwd;
