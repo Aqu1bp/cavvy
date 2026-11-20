@@ -47,9 +47,10 @@ function PlanLimitsGroup() {
                                             <b>{w.label}</b>
                                             <span class="useb-sub num">{windowCaption(w)}</span>
                                         </div>
-                                        <Show when={w.pct !== undefined}>
-                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.max(0, Math.min(100, w.pct!))}>
-                                                <i style={{ width: `${Math.max(0, Math.min(100, w.pct!))}%` }} />
+                                        {/* One that has reset since the report: an empty bar, as usage started again then. */}
+                                        <Show when={w.pct !== undefined || w.reset}>
+                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={w.reset ? undefined : Math.max(0, Math.min(100, w.pct!))} aria-valuetext={w.reset ? `Reset ${w.reset}` : undefined}>
+                                                <i style={{ width: `${w.reset ? 0 : Math.max(0, Math.min(100, w.pct!))}%` }} />
                                             </div>
                                         </Show>
                                     </div>
