@@ -1212,7 +1212,9 @@ export class Engine {
                 return this.defaultMode(this.workspaceFor(p));
             },
             // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
-            // so a link inside one that leads elsewhere isn't inside it.
+            // so a link inside one that leads elsewhere isn't inside it. A recent folder counts only while the path it
+            // was opened by is still the folder itself: one put in its place since as a link (by a session working in
+            // the folder above it, say) would lead wherever that link does.
             known: (cwd) => {
                 const real = (path: string) => {
                     try {
@@ -1223,7 +1225,7 @@ export class Engine {
                 };
                 const p = real(resolve(expandHome(cwd)));
                 if (!p || !isDir(p)) return undefined;
-                const roots = [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].flatMap((r) => real(r) ?? []);
+                const roots = [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].filter((r) => real(r) === r);
                 return roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)) ? p : undefined;
             },
             listings: () => this.listings,

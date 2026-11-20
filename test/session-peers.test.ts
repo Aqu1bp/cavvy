@@ -565,6 +565,16 @@ describe("in the app", () => {
         // A link inside an opened folder that leads out of it isn't inside it.
         symlinkSync(strange, join(project, "way-out"));
         await expect(mac.start({ cwd: join(project, "way-out"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
+        // Nor is an opened folder that has since been put aside for a link to somewhere else.
+        const swapped = join(realpathSync(tempDir("peers-swap-")), "app");
+        dirs.push(join(swapped, ".."));
+        mkdirSync(swapped);
+        await (await engine.createSession(swapped, { mode: "default" })).ready;
+        expect((await mac.start({ cwd: swapped, prompt: "While it's a folder.", title: "Folder" }, { ...from, id: "lab/swap" })).cwd).toBe(swapped);
+        for (const rt of [...engine.runtimes.values()]) if (rt.ws.cwd === swapped) await until(() => !rt.busy);
+        rmSync(swapped, { recursive: true, force: true });
+        symlinkSync(strange, swapped);
+        await expect(mac.start({ cwd: swapped, prompt: "p", title: "t" }, { ...from, id: "lab/swap" })).rejects.toThrow("isn't a folder the user has opened");
         // A model this machine doesn't have, a folder that isn't one: refused, and nothing started.
         const before = engine.runtimes.size;
         await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, from)).rejects.toThrow("isn't a model on this machine");

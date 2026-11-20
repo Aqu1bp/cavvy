@@ -112,8 +112,8 @@ const startRefused = (e: unknown): never => {
 };
 /** What an unanswered start ends with, wherever it's said: how it's known for one across the machines it's told through. */
 const LOOK_FIRST = "look with ListSessions (all: true) before starting it again.";
-/** A call that got no answer, as the connections say it (watch.ts request, engine.ts peers.call): the whole of what they say. */
-const NO_ANSWER = /^(?:[\w.-]+ didn't answer\.|[\w.-]+ went away before it answered\.|Cavvy on your computer didn't answer in time\.)$/;
+/** A call that got no answer, as the connections say it (watch.ts request; engine.ts peers.call, dropHub): the whole of what they say. */
+const NO_ANSWER = /^(?:[\w.-]+ didn't answer\.|[\w.-]+ went away before it answered\.|Cavvy on your computer didn't answer in time\.|Cavvy on your computer went away before it answered\.)$/;
 
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));

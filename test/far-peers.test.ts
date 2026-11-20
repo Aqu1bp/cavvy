@@ -212,7 +212,7 @@ test("a session is started on another machine: from the user's computer on a ser
     // One that names a session but no folder, or doesn't answer at all: it may have started, which is said, and told apart from a refusal.
     const { PeerUnsure } = await import("../src/agent/peers");
     const unsure = async (ask: () => Promise<unknown>) => homeFarPeers(() => new Map([["slow", { ask }]])).start({ machine: "slow", cwd: "/x", prompt: "p", title: "t" }, from).catch((e) => e);
-    for (const e of [await unsure(async () => ({ id: "n1" })), await unsure(() => Promise.reject(new Error("slow didn't answer."))), await unsure(() => Promise.reject(new Error("slow went away before it answered.")))]) {
+    for (const e of [await unsure(async () => ({ id: "n1" })), await unsure(() => Promise.reject(new Error("slow didn't answer."))), await unsure(() => Promise.reject(new Error("slow went away before it answered."))), await serverFarPeers(() => Promise.reject(new Error("Cavvy on your computer went away before it answered."))).start({ machine: "mac", cwd: "/x", prompt: "p", title: "t" }, from).catch((e) => e), await serverFarPeers(() => Promise.reject(new Error("Cavvy on your computer didn't answer in time."))).start({ machine: "mac", cwd: "/x", prompt: "p", title: "t" }, from).catch((e) => e)]) {
         expect(e).toBeInstanceOf(PeerUnsure);
         expect((e as Error).message).toContain("look with ListSessions (all: true) before starting it again");
     }
