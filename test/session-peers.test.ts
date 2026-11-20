@@ -136,6 +136,8 @@ describe("what the agent reads", () => {
         const text = formatWakes([w]);
         expect(text).toContain("The agent in another of the user's sessions started this session, with the task below");
         expect(text).toContain("do it as you would one the user gave you, under this session's own permission mode and rules");
+        // The user may have got there first (the task joins a turn they started): theirs stands.
+        expect(text).toContain("What the user has told this session themselves comes first");
         expect(text).not.toContain("only within what the user asked of this session");
         expect(text).toContain("Session box/s1 (“Build”) started this session to do this:\n\nrun the tests on the Mac");
         expect(text).toContain("send a message to session box/s1");
@@ -645,12 +647,10 @@ describe("in the app", () => {
         a.session.setAccount("codex", "work");
         const s = await startSession(a.toolState.peers, { prompt: "Write the changelog.", title: "Changelog" });
         const id = /Started session (\S+)/.exec(s.text)![1]!;
-        expect(engine.runtimes.get(id)!.session.accountId("codex")).toBe("work");
-        // Done, or let go already: nothing has it open, so it's unloaded a moment after its turn.
-        await until(() => {
-            const rt = engine.runtimes.get(id);
-            return !rt || (turns(rt).length > 0 && rt.idle);
-        });
+        // Held here: nothing has it open, so the engine lets go of it a moment after its turn.
+        const started = engine.runtimes.get(id)!;
+        expect(started.session.accountId("codex")).toBe("work");
+        await until(() => turns(started).length > 0 && started.idle);
     });
 
     describe("a model and effort to start on", () => {
