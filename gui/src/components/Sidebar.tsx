@@ -350,6 +350,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
                             <span class="truncate">{plan.name}</span>
                             <Show when={plan.asOf}>{(at) => <span class="pu-asof">{at()}</span>}</Show>
                         </div>
+                        <Show when={plan.note}>{(n) => <div class="pu-note">{n()}</div>}</Show>
                         <For each={plan.windows} fallback={<div class="pu-w none">Usage shows after a turn</div>}>{(w) => (
                             <div class={`pu-w ${w.tone}`}>
                                 <span class="truncate">{w.label}</span>

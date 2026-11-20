@@ -139,6 +139,8 @@ export interface RailPlan {
     line: string;
     /** The line for a row beside another plan's, which has no room for the age: "62% of the 5-hour limit". */
     brief: string;
+    /** Only a model's limit reached, while the plan's other models go on: "Fable limit reached, resets Mon". */
+    note?: string;
     /** Reported a while ago (or before a window reset): the figures may be out of date. */
     stale: boolean;
     /** "as of 2:02 PM", when stale. */
@@ -235,7 +237,9 @@ export function railFoot(o: {
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
             : `Reset since ${reported}`;
         const line = !meter.reached && !partly && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
-        const detail = [head, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
+        // Only a model's limit reached: said under the plan's name, in the tooltip and the card, not only to a screen reader.
+        const note = partly ? brief : undefined;
+        const detail = [head, note, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
         // The card's rows: a window that has reset since the report has no figure to show, only when it reset.
         const windows = meter.windows.map((w): RailWindow => {
             const shown = w.pct === undefined ? undefined : Math.min(100, w.pct);
@@ -248,7 +252,7 @@ export function railFoot(o: {
         return {
             provider: info.id, accountId, name, pct, tone, reached: meter.reached,
             window: meter.reached ? undefined : top?.label, lifts: meter.reached ? lifts : undefined,
-            line, brief, stale: Boolean(meter.asOf), asOf: meter.asOf, detail, windows,
+            line, brief, ...(note ? { note } : {}), stale: Boolean(meter.asOf), asOf: meter.asOf, detail, windows,
         };
     });
 }

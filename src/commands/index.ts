@@ -73,7 +73,7 @@ import { agentCli } from "../backends/defs";
 import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
-import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { clockTime, limitLines, limitPlanTitle } from "../backends/limits";
 import { reportedOf } from "../server/plan-meter";
 import { describeJob, shortTime } from "../agent/schedule";
 import { NO_SCHEDULES } from "../agent/schedule-host";
@@ -1101,7 +1101,7 @@ function costCommand(app: App) {
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     for (const l of app.planLimits.values()) {
-        const name = limitAccountLabel(l.provider, l.accountId);
+        const name = limitPlanTitle(l.provider, l.accountId);
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
         lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(reportedOf(l, Date.now()))}.`));

@@ -15,7 +15,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
-const { parseClaudeRateLimit, parseClaudeUsage, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews, usageResetTime, limitStopReport } = await import("../src/backends/limits");
+const { parseClaudeRateLimit, parseClaudeUsage, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews, usageResetTime, limitStopReport, limitStopOf, limitPlanTitle } = await import("../src/backends/limits");
 const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("../src/server/usage");
 const { slashCommand } = await import("../src/commands/custom");
 const { meterOf, costText, windowLine, windowCaption, windowShort, resetLabel, emptyText, limitFor } = await import("../gui/src/lib/limits");
@@ -530,43 +530,84 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         expect(meterOf(m, lifts + 1)!.reached).toBe(false);
     });
 
-    test("a model's limit (Fable's) reached stops Fable models, not the plan: on every surface", () => {
-        const info = { status: "rejected", resetsAt: 1795550400, rateLimitType: "seven_day_overage_included", overageStatus: "rejected", isUsingOverage: false, unifiedWindows: { seven_day: { utilization: 0.4, resetsAt: 1795550400, status: "allowed" }, seven_day_overage_included: { utilization: 1, resetsAt: 1795550400, status: "rejected" } } };
+    test("a model's limit (Fable's) reached: the turn's stop keeps its reset; the meter shows the window, not the plan", () => {
+        const fableReset = 1795550400_000;
+        const info = { status: "rejected", resetsAt: fableReset / 1000, rateLimitType: "seven_day_overage_included", overageStatus: "rejected", isUsingOverage: false, unifiedWindows: { seven_day: { utilization: 0.4, resetsAt: fableReset / 1000, status: "allowed" }, seven_day_overage_included: { utilization: 1, resetsAt: fableReset / 1000, status: "rejected" } } };
         const r = parseClaudeRateLimit(info, at)!.limits;
-        expect(r.reached).toBe(false);
-        expect(r.resetsAt).toBeUndefined();
-        // Its extra usage is the window's to say; the plan's stays as it was.
-        expect(r.credits).toBeUndefined();
-        expect(r.windows.find((w) => w.id === "seven_day_overage_included")).toMatchObject({ scope: "fable", reached: true, credits: false });
+        // As on main: the turn was stopped, so the report says so, with when it lifts (the error, the resume).
+        expect(r).toMatchObject({ reached: true, resetsAt: fableReset, credits: false });
+        expect(limitStopOf(r, r.resetsAt)).toEqual({ resetsAt: fableReset, window: "Weekly Fable" });
+        expect(r.windows.find((w) => w.id === "seven_day_overage_included")).toMatchObject({ scope: "fable", reached: true });
+        // The meter: that stop is the Fable window's (the same period), so the plan isn't at its limit.
         const m = meterOf(r, at)!;
         expect(m.reached).toBe(false);
-        expect(m.partly.map((w) => w.label)).toEqual(["Weekly Fable"]);
+        expect(m.partly.map((w) => [w.label, w.credits])).toEqual([["Weekly Fable", false]]);
         expect(m.top?.label).toBe("Weekly");
-        // A turn on Fable runs into it; one on Opus doesn't; an alias that names no model may.
-        expect(limitFor(m, { id: "fable", name: "Fable (claude-fable-1)" })).toMatchObject({ scope: "fable", credits: false });
-        expect(limitFor(m, { id: "default", name: "Default (recommended) (claude-opus-5-5)" })).toBeUndefined();
+        // A session on Fable runs into it (by the model the CLI served); one served Opus doesn't; an alias not yet
+        // served may.
+        expect(limitFor(m, { id: "fable", resolved: "claude-fable-1" })).toMatchObject({ scope: "fable", credits: false });
+        expect(limitFor(m, { id: "default", resolved: "claude-opus-5-5" })).toBeUndefined();
         expect(limitFor(m, { id: "default" })).toMatchObject({ scope: "fable" });
-        expect(covers("fable", { id: "claude-opus-5-5" })).toBe(false);
-        // The terminal: no "Limit reached" for the plan; the window says it.
+        expect(covers("fable", { id: "opus" })).toBe(false);
+        // The terminal: no plan stop line; the window says it.
         const lines = limitLines(r, at);
         expect(lines.some((l) => l.startsWith("Limit reached"))).toBe(false);
         expect(lines.find((l) => l.startsWith("Weekly Fable"))).toMatch(/^Weekly Fable 100% reached · resets /);
         // A plan-wide rejection after it: the plan is reached.
-        const week = parseClaudeRateLimit({ ...info, rateLimitType: "seven_day", unifiedWindows: { seven_day: { utilization: 1, resetsAt: 1795550400, status: "rejected" } } }, at + 1)!;
+        const week = parseClaudeRateLimit({ ...info, rateLimitType: "seven_day", unifiedWindows: { seven_day: { utilization: 1, resetsAt: fableReset / 1000, status: "rejected" } } }, at + 1)!;
         expect(meterOf(mergeLimits(r, week.limits, week.partial), at + 2)!.reached).toBe(true);
     });
 
-    test("a turn stopped on a reached Fable limit doesn't mark the plan reached; one on another model does", () => {
-        const known: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, resetsAt: at + 86_400_000, reached: true, scope: "fable" }], reached: false, at };
-        const fableStop = limitStopReport("claude-code", "default", known, { id: "fable" });
-        expect(fableStop.reached).toBeUndefined();
-        expect(fableStop.windows).toMatchObject([{ id: "seven_day_overage_included", reached: true, credits: false }]);
-        expect(meterOf(mergeLimits(known, fableStop, true), at + 1)!.reached).toBe(false);
-        expect(limitStopReport("claude-code", "default", known, { id: "opus", name: "Opus (claude-opus-5-5)" }).reached).toBe(true);
-        // The stop came first, the event naming Fable's window after: not the plan's limit after all.
-        const stop = limitStopReport("claude-code", "default");
-        const event = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: (at + 86_400_000) / 1000, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: (at + 86_400_000) / 1000, status: "rejected" } } }, at + 1)!;
-        expect(meterOf(mergeLimits(stop, event.limits, event.partial), at + 2)!.reached).toBe(false);
+    test("a stop that a reached model limit explains isn't the plan's; one it doesn't is", () => {
+        const fableReset = at + 3 * 86_400_000;
+        const fable = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: fableReset / 1000, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: fableReset / 1000, status: "rejected" } } }, at)!;
+        // A nameless repeat of the rejection: still Fable's.
+        const repeat = parseClaudeRateLimit({ status: "rejected" }, at + 1)!;
+        const merged = mergeLimits(fable.limits, repeat.limits, repeat.partial);
+        expect(meterOf(merged, at + 2)!.reached).toBe(false);
+        // A turn's generic stop (no event yet) while /usage showed Fable full: Fable's, not the plan's.
+        const usage = parseClaudeUsage(`Current week (all models): 40% used · resets ${new Date(fableReset).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)\nCurrent week (Fable): 100% used · resets ${new Date(fableReset).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)`, at)!;
+        const stopped = mergeLimits(usage, { ...limitStopReport("claude-code", "default"), at: at + 1 }, true);
+        expect(stopped.reached).toBe(true);
+        expect(meterOf(stopped, at + 2)!.reached).toBe(false);
+        expect(meterOf(stopped, at + 2)!.partly.map((w) => w.label)).toEqual(["Weekly Fable"]);
+        // A stop with a reset of another period (a 5-hour window's, say) is the plan's, beside the Fable window.
+        const other = { ...merged, resetsAt: at + 2 * 3_600_000 };
+        expect(meterOf(other, at + 2)!.reached).toBe(true);
+        expect(limitLines(other, at + 2)[0]).toMatch(/^Limit reached · resets /);
+    });
+
+    test("Codex: a model's limit by its id (stable), reached as Codex says, whatever its share", () => {
+        const snap = (limitId: string, limitName: string | null, used: number, reachedType: string | null, windows = true) => ({ limitId, limitName, ...(windows ? { primary: { usedPercent: used, windowDurationMins: 300, resetsAt: Math.round(at / 1000) + 3600 } } : {}), rateLimitReachedType: reachedType });
+        const read = (spark: object) => parseCodexRateLimits({ rateLimitsByLimitId: { codex: snap("codex", null, 30, null), spark } }, { at })!.limits;
+        // "GPT-5 Spark" is the name; "gpt-5.3-codex-spark" the id: the id is what model ids have.
+        const l = read(snap("gpt-5.3-codex-spark", "GPT-5 Spark", 40, "rate_limit_reached"));
+        const w = l.windows.find((w) => w.id === "gpt-5.3-codex-spark:primary")!;
+        expect(w).toMatchObject({ scope: "gpt-5.3-codex-spark", reached: true, label: "GPT-5 Spark 5-hour" });
+        const m = meterOf(l, at)!;
+        expect(m.reached).toBe(false);
+        expect(limitFor(m, { id: "gpt-5.3-codex-spark" })?.scope).toBe("gpt-5.3-codex-spark");
+        expect(limitFor(m, { id: "gpt-5.3-codex" })).toBeUndefined();
+        // No windows to show it: a row of its own, still that model's.
+        const bare = read(snap("gpt-5.3-codex-spark", "GPT-5 Spark", 0, "rate_limit_reached", false));
+        expect(bare.windows.find((w) => w.id === "gpt-5.3-codex-spark:limit")).toMatchObject({ reached: true, scope: "gpt-5.3-codex-spark", label: "GPT-5 Spark limit" });
+        expect(meterOf(bare, at)!.reached).toBe(false);
+        // An id that doesn't look like a model's: taken to cover the plan, so the block shows.
+        expect(meterOf(read(snap("codex_spark", "Spark", 40, "rate_limit_reached")), at)!.reached).toBe(true);
+        // A sparse update saying it's reached: so at that scope.
+        const update = parseCodexRateLimits({ rateLimits: snap("gpt-5.3-codex-spark", "GPT-5 Spark", 55, "rate_limit_reached") }, { at: at + 1, update: true })!;
+        expect(update.limits.windows[0]).toMatchObject({ reached: true, scope: "gpt-5.3-codex-spark" });
+    });
+
+    test("the terminal names a plan as the GUI does", () => {
+        expect(limitPlanTitle("claude-code")).toBe("Claude Code");
+        expect(limitPlanTitle("codex")).toBe("Codex");
+    });
+
+    test("credits: a model's own say, else the plan's", () => {
+        const base: PlanLimits = { provider: "codex", windows: [{ id: "s:primary", label: "Spark 5-hour", usedPercent: 100, reached: true, scope: "spark", resetsAt: at + 3_600_000 }], reached: true, resetsAt: at + 3_600_000, credits: true, at };
+        expect(limitFor(meterOf(base, at), { id: "x-spark" })?.credits).toBe(true);
+        expect(limitFor(meterOf({ ...base, windows: [{ ...base.windows[0]!, credits: false }] }, at), { id: "x-spark" })?.credits).toBe(false);
     });
 
     test("Codex: a window below its limit isn't kept reached by an earlier report for the same period", () => {

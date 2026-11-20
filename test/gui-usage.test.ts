@@ -114,7 +114,7 @@ test("limits: a model's limit reached is an amber line of its own, not the plan'
     const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { plan: "Claude subscription", accounts: [{ id: "default", name: "Default", plan: "ultra" }] } }];
     const reports = { [planLimitKey("claude-code")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, reached: false, windows: [
         { id: "seven_day", label: "Weekly", usedPercent: 86, resetsAt: 1_800_000_000_000 + 86_400_000 },
-        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
     ] } };
     const f = mount(async () => empty, reports, providers);
     try {
@@ -127,6 +127,9 @@ test("limits: a model's limit reached is an amber line of its own, not the plan'
         expect(f.cls("plan-reached").map((n) => n.props.class)).toEqual(["plan-reached credits"]);
         // 86% is amber, as in the card; Fable's reached limit amber too.
         expect(f.cls("useb").map((n) => n.props.class.trim())).toEqual(["useb warn", "useb warn"]);
+        // Rejected at 97%: the bar full, as the rail's card draws it; the caption still says 97%.
+        expect(f.cls("useb-bar").map((n) => n.props["aria-valuenow"])).toEqual([86, 100]);
+        expect(f.text()).toContain("97%, resets");
     } finally { f.dispose(); }
 });
 

@@ -10,7 +10,7 @@ import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; name?: string } }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
@@ -31,7 +31,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const meter = createMemo(() => meterOf(limits(), now()));
     // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
     // model's limit says nothing here.
-    const stop = createMemo(() => limitFor(meter(), state()?.model ?? p.model));
+    // The model by the one the CLI said it served (an alias's, on this account) where known; else by its id.
+    const model = () => (state()?.model ? { id: state()!.model!.id, resolved: state()!.servedModel } : p.model && { id: p.model.id });
+    const stop = createMemo(() => limitFor(meter(), model()));
     const name = () => planTitle(providerInfo(), accountId(), "Plan").title;
     const alternatives = () => limitAlternatives(accounts(), accountId());
     // A limit can arrive before Settings has ever checked account status.
@@ -89,7 +91,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         return `Compacts on its own at ${tokens(v.full!)}, leaving room for the answer.${whole}`;
     };
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
-    const near = createMemo(() => (p.home ? nearLimit(meter(), p.model) : undefined));
+    const near = createMemo(() => (p.home ? nearLimit(meter(), model()) : undefined));
     const width = () => (stop() ? 280 : 256);
     // Unavailable, not disabled: the tooltip still says why, to the pointer and the keyboard.
     const compactTitle = () => (!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : undefined);

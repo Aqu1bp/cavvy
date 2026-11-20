@@ -398,7 +398,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const modelLimit = (m: ModelSummary) => {
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
-        return meter && !meter.reached ? meter.partly.find((w) => covers(w.scope!, m) === true) : undefined;
+        return meter && !meter.reached ? meter.partly.find((w) => covers(w.scope!, { id: m.id }) === true) : undefined;
     };
     const rowView = (r: Row) => {
         const name = modelName(r.m);

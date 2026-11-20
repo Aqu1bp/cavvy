@@ -142,6 +142,11 @@ const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 };
 const argv = process.argv.slice(2);
+/** With FAKE_FAMILY_MODELS=1, the model a family alias (--model opus|fable) is served as. */
+const familyModel = () => {
+    const m = argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
+    return process.env.FAKE_FAMILY_MODELS === "1" && (m === "opus" || m === "fable") ? `claude-${m}-test` : undefined;
+};
 /** Each --plugin-dir's skills, as <plugin>:<folder>. */
 function pluginSkills(): string[] {
     return argv.flatMap((a, i) => {
@@ -404,7 +409,7 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
             ? // A subscription's turn: its history written to the one-hour cache.
               { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: Number(process.env.FAKE_CACHE_1H), cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: Number(process.env.FAKE_CACHE_1H) } }
             : { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
-        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? "claude-test-1"]: { contextWindow: 200000 } },
+        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? familyModel() ?? "claude-test-1"]: { contextWindow: 200000 } },
         ...extra,
     });
 }

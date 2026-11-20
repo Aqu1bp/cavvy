@@ -1003,8 +1003,18 @@
 }
 
 .pu-plan > .pu-h,
-.pu-plan > .pu-w.none {
+.pu-plan > .pu-w.none,
+.pu-plan > .pu-note {
     grid-column: 1 / -1;
+}
+
+/* Only a model's limit reached (Fable's): said under the plan's name, amber like its row. */
+.pu-note {
+    margin: calc(-2 * var(--sp)) 0 calc(4 * var(--sp));
+    padding-left: calc(21 * var(--sp));
+    font-size: 0.75rem;
+    line-height: calc(16 * var(--sp));
+    color: var(--warn);
 }
 
 .pu-plan + .pu-plan {

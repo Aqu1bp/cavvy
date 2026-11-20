@@ -2,7 +2,7 @@
 // server's data and the time (no DOM, so they're tested from test/).
 
 import type { AccountInfo, PlanLimits, ProviderInfo, UsageRow, UsageSummary } from "@shared/protocol";
-import { covers, planNow, STALE_MS } from "@shared/plan-meter";
+import { covers, planNow, planTitle as corePlanTitle, STALE_MS } from "@shared/plan-meter";
 
 export { STALE_MS };
 
@@ -145,10 +145,11 @@ export interface NearLimit {
  * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
  * in a ring. A window that has reset since the report has no figure (meterOf), so it's never the one named.
  */
-export function nearLimit(m: Meter | undefined, model?: { id: string; name?: string }): NearLimit | undefined {
+export function nearLimit(m: Meter | undefined, model?: { id: string; resolved?: string }): NearLimit | undefined {
     if (!m) return undefined;
-    // A model's reached limit (Fable's) counts only for a model it covers (or may): not for an account as a whole.
-    const live = m.windows.filter((w) => !w.reset && !(w.reached && w.scope && (!model || covers(w.scope, model) === false)));
+    // A model's limit (Fable's) counts only for a model it covers (or may), however full: not for another model, nor
+    // for an account as a whole (no model: the picker's badge).
+    const live = m.windows.filter((w) => !w.reset && !(w.scope && (!model || covers(w.scope, model) === false)));
     const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
     // A reached window is the one to name, whatever another's percentage.
     const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
@@ -177,23 +178,16 @@ export function scopeName(scope: string): string {
  * What a turn on `model` runs into now: the plan's limit, or a reached window of some models that covers it (or
  * may: an alias like "default" can't be told). Undefined when nothing stops it. `credits`: it goes on, on credits.
  */
-export function limitFor(m: Meter | undefined, model: { id: string; name?: string } | undefined): { window?: MeterWindow; credits: boolean; scope?: string } | undefined {
+export function limitFor(m: Meter | undefined, model: { id: string; resolved?: string } | undefined): { window?: MeterWindow; credits: boolean; scope?: string } | undefined {
     if (!m) return undefined;
     if (m.reached) return { window: m.windows.find((w) => w.reached && !w.scope), credits: m.usingCredits };
     const w = m.partly.find((w) => covers(w.scope!, model) !== false);
     return w ? { window: w, credits: w.credits === true, scope: w.scope } : undefined;
 }
 
-/**
- * A plan as every surface names it: the CLI and its plan ("Claude Code Max", "Codex Plus"; the CLI alone until it
- * has said which plan), and the account's name too when the CLI has more than one.
- */
+/** A plan as every surface names it (plan-meter.ts planTitle), from what the server lists of its CLI. */
 export function planTitle(info: Pick<ProviderInfo, "name" | "agentCli"> | undefined, accountId = "default", fallback = ""): { title: string; plan: string; account?: string } {
-    const accounts = info?.agentCli?.accounts ?? [];
-    const account = accounts.find((a) => a.id === accountId);
-    const plan = account?.plan ? `${info!.name} ${account.plan.charAt(0).toUpperCase()}${account.plan.slice(1)}` : info?.name ?? fallback;
-    const name = accounts.length > 1 ? account?.name ?? (accountId === "default" ? "Default" : accountId) : undefined;
-    return { title: name ? `${plan} · ${name}` : plan, plan, ...(name ? { account: name } : {}) };
+    return corePlanTitle(info && { name: info.name, accounts: info.agentCli?.accounts }, accountId, fallback);
 }
 
 /** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */

@@ -819,6 +819,8 @@ export interface SessionState {
     /** The other worktree of the session's repository the agent works in now; unset while it works in the session's own folder. */
     workingIn?: WorkingIn;
     model?: ModelSummary;
+    /** The model id the CLI said it served for the model (an alias's resolution, on the session's account); unset until its first usage. */
+    servedModel?: string;
     mode: PermissionModeId;
     bypassAllowed: boolean;
     effort?: EffortLevel;

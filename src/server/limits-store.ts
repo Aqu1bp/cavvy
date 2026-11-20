@@ -8,6 +8,7 @@ import { dirname } from "path";
 import { ensureDir, paths } from "../config/paths";
 import { readJson } from "../config/settings";
 import type { LimitWindow, PlanLimits } from "./protocol";
+import { CLAUDE_SCOPES } from "./plan-meter";
 
 interface LimitsFile {
     version: 1;
@@ -27,8 +28,9 @@ function windowOf(v: unknown): LimitWindow | undefined {
     const used = num(w.usedPercent);
     // `at`: when this window was reported, if before its plan's report; a file without it has the plan's.
     const at = num(w.at);
-    // `scope`: the model family a window counts, a word of model ids.
-    const scope = str(w.scope, 40);
+    // `scope`: the model family a window counts, a word of model ids; for a file from before it was saved, Claude
+    // Code's model windows' by their ids.
+    const scope = str(w.scope, 60) ?? CLAUDE_SCOPES[id];
     return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }), ...(scope && /^[a-z][a-z0-9.-]*$/.test(scope) ? { scope } : {}) };
 }
 

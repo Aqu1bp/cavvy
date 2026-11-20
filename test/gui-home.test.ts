@@ -408,11 +408,17 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
     expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
     expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
-    // A model's limit reached (Fable's) counts on Home only for a model it covers.
+    // A model's limit (Fable's) counts on Home only for a model it covers, reached or not; never for the account's badge.
     const fable = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable" } as any], { reached: false });
-    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable", name: "Fable (claude-fable-1)" })).toMatchObject({ pct: 100, reached: false, window: "weekly Fable", scope: "fable" });
-    expect(nearLimit(meterOf(fable, Date.now()), { id: "opus", name: "Opus (claude-opus-5)" })).toBeUndefined();
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable" })).toMatchObject({ pct: 100, reached: false, window: "weekly Fable", scope: "fable" });
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "opus" })).toBeUndefined();
     expect(nearLimit(meterOf(fable, Date.now()))).toBeUndefined();
+    const near = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 86, scope: "fable" } as any]);
+    expect(nearLimit(meterOf(near, Date.now()), { id: "opus" })).toBeUndefined();
+    expect(nearLimit(meterOf(near, Date.now()))).toBeUndefined();
+    expect(nearLimit(meterOf(near, Date.now()), { id: "fable" })).toMatchObject({ pct: 86, window: "weekly Fable" });
+    // An alias the CLI hasn't served yet may be Fable: counted.
+    expect(nearLimit(meterOf(near, Date.now()), { id: "default" })).toMatchObject({ pct: 86 });
     // A window that has reset since the report doesn't count, however full it was.
     const lapsed = limits([{ label: "5-hour", usedPercent: 95, resetsAt: Date.now() - 60_000 }, { label: "Weekly", usedPercent: 40 }]);
     expect(nearLimit(meterOf(lapsed, Date.now()))).toBeUndefined();

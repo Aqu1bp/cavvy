@@ -1271,7 +1271,7 @@ export class CodexTurn {
         if (error?.codexErrorInfo !== "usageLimitExceeded" || this.limitHit) return;
         this.limitHit = true;
         this.limitUpdates.revision++;
-        this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default", this.limits, this.t.model), true);
+        this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
     }
 
     /**

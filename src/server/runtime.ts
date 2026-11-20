@@ -2131,7 +2131,7 @@ export class Runtime {
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         // Another account may serve the alias as another model: known again from its first usage.
         this.servedModel = undefined;
-        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
+        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") }, servedModel: undefined });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
@@ -2263,6 +2263,7 @@ export class Runtime {
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.servedModel = undefined;
+        if (this.view.state.servedModel !== undefined) this.setState({ servedModel: undefined });
         this.client = client;
         this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
@@ -3010,6 +3011,8 @@ export class Runtime {
             }
             case "usage": {
                 if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
+                // Which model the CLI served the alias as, on this account: a model's limit (Fable's) covers it or not.
+                if (this.servedModel !== this.view.state.servedModel) this.setState({ servedModel: this.servedModel });
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });

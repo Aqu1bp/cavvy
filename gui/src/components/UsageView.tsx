@@ -15,6 +15,9 @@ const RANGES = [1, 7, 30, 90].map(v => ({ value: String(v), label: v === 1 ? "24
 const VIEWS = [{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }, { value: "limits", label: "Limits" }];
 const [days, setDays] = createSignal<UsageDays>(7);
 
+/** How full a window's bar is: all of it at its limit, else its share. */
+const barShare = (w: { pct?: number; reached: boolean }) => (w.reached ? 100 : Math.max(0, Math.min(100, w.pct ?? 0)));
+
 /** Each plan as a heading (its mark, plan and account), then a bar per limit window. */
 function PlanLimitsGroup() {
     const plans = () => Object.values(app.limits).map((l) => ({ l, m: meterOf(l, now()) })).filter((x) => x.m);
@@ -54,9 +57,10 @@ function PlanLimitsGroup() {
                                             <span class="useb-sub num">{windowCaption(w)}</span>
                                         </div>
                                         {/* One that has reset since the report: an empty bar, as usage started again then. */}
-                                        <Show when={w.pct !== undefined || w.reset}>
-                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={w.reset ? undefined : Math.max(0, Math.min(100, w.pct!))} aria-valuetext={w.reset ? `Reset ${w.reset}` : undefined}>
-                                                <i style={{ width: `${w.reset ? 0 : Math.max(0, Math.min(100, w.pct!))}%` }} />
+                                        <Show when={w.pct !== undefined || w.reset || w.reached}>
+                                            {/* At its limit, full (as the rail's card draws it), whatever share the CLI last gave: the caption has that. */}
+                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={w.reset ? undefined : barShare(w)} aria-valuetext={w.reset ? `Reset ${w.reset}` : undefined}>
+                                                <i style={{ width: `${w.reset ? 0 : barShare(w)}%` }} />
                                             </div>
                                         </Show>
                                     </div>

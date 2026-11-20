@@ -341,8 +341,16 @@ test("a model's limit reached (Fable's) is amber and says which; the plan's othe
     expect(plan).toMatchObject({ reached: false, pct: 40, tone: "warn", window: "Weekly" });
     expect(plan!.brief).toMatch(/^Fable limit reached, resets [A-Za-z]+\.?$/);
     expect(plan!.windows.map((w) => [w.label, w.reached, w.tone])).toEqual([["Weekly", false, "normal"], ["Weekly Fable", true, "warn"]]);
-    // Not the "Limit" row a plan-wide stop has.
+    // Not the "Limit" row a plan-wide stop has; said in the tooltip and the card, not only to a screen reader.
     expect(plan!.windows.some((w) => w.label === "Limit")).toBe(false);
+    expect(plan!.note).toBe(plan!.brief);
+    expect(plan!.detail.split("\n")[1]).toBe(plan!.brief);
+    // A window of the whole plan at 95% is red, as its row is (windowTone): the chip follows the plan's own figure.
+    const [high] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [{ ...all[key("claude-code")]!.windows[0]!, usedPercent: 95 }, all[key("claude-code")]!.windows[1]!] } }, providers: [ultra], now: NOW });
+    expect(high).toMatchObject({ pct: 95, tone: "danger", reached: false });
+    // A stop the Fable window explains (the same reset) isn't the plan's.
+    const [stop] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
+    expect(stop).toMatchObject({ reached: false, tone: "warn" });
 });
 
 test("a window's tint is the same wherever it's drawn: amber from 75%, red from 90% and at the plan's limit", () => {
