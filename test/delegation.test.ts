@@ -1353,6 +1353,14 @@ describe("Codex as the main agent", () => {
             expect(await writes.run("go")).toBe("done");
             expect(writes.asked).toEqual([]);
             expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            // What Bypass itself stops to ask about (Cavvy's own credentials, by name) is refused, not asked.
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "cat ~/.cavvy/credentials.json";
+            const store = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            store.switchMode("bypassPermissions");
+            expect(await store.run("go")).toBe("done");
+            expect(store.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
             // In a folder outside the session's (another checkout), which Manual asks about as well.
             rmSync(LOG, { force: true });
             const outside = realpathSync(tempDir("deleg-outside-"));

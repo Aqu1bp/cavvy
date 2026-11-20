@@ -3328,7 +3328,9 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
-        // Past the read-only check above and the deny rules: it runs.
+        // Past the read-only check above and the deny rules: it runs. What Bypass itself would stop to ask about (a command
+        // that names Cavvy's own credentials) is refused: nothing is asked in a session in Bypass.
+        if (bypass && decision.behavior === "ask") return { allow: false, message: `${decision.reason ?? "This needs the user's approval."} A read-only agent can't do that: report what should be read instead.`, stop: false };
         if (bypass && decision.behavior === "allow") ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
