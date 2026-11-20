@@ -570,7 +570,7 @@ describe("in the app", () => {
         const s = await mac.start({ cwd: project, prompt: "Write a README section about SSO sign-in.", title: "From box" }, from);
         const n = engine.runtimes.get(s.id)!;
         expect([n.ws.cwd, n.title, s.model]).toEqual([project, "From box", "mock:mock-opus"]);
-        // The folder's default (Manual) asks more than the starter's Auto.
+        // The folder's default here (Manual), not the starter's Auto.
         expect(n.mode).toBe("default");
         await until(() => turns(n).length > 0 && n.idle && turns(n).at(-1)!.status !== "running");
         expect(turns(n)[0]!.prompt?.from?.id).toBe("box/s1");
@@ -599,6 +599,24 @@ describe("in the app", () => {
         await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, from)).rejects.toThrow("isn't a model on this machine");
         await expect(mac.start({ cwd: join(project, "missing"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
         expect(engine.runtimes.size).toBeLessThanOrEqual(before);
+        // Whatever the starter runs in: where the user's default is Bypass, a Manual starter's session runs in Bypass.
+        const settingsFile = join(iso.home, "settings.json");
+        const settings = readFileSync(settingsFile, "utf-8");
+        const free = realpathSync(createDemoProject(tempDir("peers-free-"), { git: false }));
+        dirs.push(free);
+        writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: true, defaultMode: "bypassPermissions" } }));
+        const manual = { id: "lab/manual", title: "Manual on lab", mode: "default" as const };
+        let freer: Rt;
+        try {
+            await (await engine.createSession(free, { mode: "default" })).ready;
+            freer = engine.runtimes.get((await mac.start({ cwd: free, prompt: "Tidy the notes.", title: "Free" }, manual)).id)!;
+        } finally {
+            writeFileSync(settingsFile, settings);
+        }
+        expect(freer.mode).toBe("bypassPermissions");
+        // The session that started it can send it more; another on that server, in a mode that asks more, can't.
+        expect((await mac.send(freer.id, "And the tests.", manual)).text).toStartWith(`Sent to session ${freer.id} `);
+        await expect(mac.send(freer.id, "From another.", { ...manual, id: "lab/other" })).rejects.toThrow("can't be sent work from there");
         // No more an hour from one starter than a session may start: the refused ones above didn't count.
         for (let i = 0; i < 3; i++) await mac.start({ cwd: project, prompt: `Task ${i}.`, title: `Task ${i}` }, from);
         await expect(mac.start({ cwd: project, prompt: "One more.", title: "More" }, from)).rejects.toThrow("box/s1 has started 5 sessions here in the last hour");

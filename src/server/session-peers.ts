@@ -127,7 +127,9 @@ export function peerOps(host: PeerHost, server: boolean) {
         },
         send: async (id: string, text: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }> => {
             const rt = await reach(host, id);
-            if (!server && freerMode(rt.mode, from.mode)) throw new PeerError(
+            // Not the session that started this one: its task came from there, in the mode the user set for the folder.
+            const starter = (rt.session.meta.startedBy ?? host.starts.startedBy.get(rt.id)) === from.id;
+            if (!server && !starter && freerMode(rt.mode, from.mode)) throw new PeerError(
                     // From another machine (`<machine>/<id>`): it counts as Auto at most here, whatever it runs in there.
                     from.id.includes("/")
                         ? `Session ${id} runs in ${modeName(rt.mode)} mode, which asks the user less than a session on another machine counts for here (${modeName(from.mode)} mode at most), so it can't be sent work from there. Ask the user to send it themselves.`
@@ -138,9 +140,9 @@ export function peerOps(host: PeerHost, server: boolean) {
         },
         /**
          * A new session here in `cwd`, started by one on another machine (`from`, named `<machine>/<id>`), with `prompt`
-         * as a message from it. On the user's own computer: only in a folder they've worked in there, and in a mode that
-         * asks no less than Auto (answerPeers caps `from.mode`); everywhere: no freer than the starter's mode or the
-         * folder's default, and no more an hour from one starter than a session may start here.
+         * as a message from it. On the user's own computer: only in a folder they've worked in there, and in that
+         * folder's default mode, as the user set it there, whatever the starter runs in. On a server: no freer than the
+         * starter's mode or the folder's default. Everywhere: no more an hour from one starter than a session may start here.
          */
         start: async (o: { cwd: string; prompt: string; title: string } & StartChoice, from: { id: string; title: string; mode: PermissionMode }): Promise<PeerSummary & { effort?: Effort }> => {
             // On the user's own computer: the folder it really is (a link inside an opened folder may lead out of it), and
@@ -170,7 +172,7 @@ export function peerOps(host: PeerHost, server: boolean) {
                 if (asked?.efforts && o.effort !== undefined && !asked.efforts.includes(o.effort as Effort)) throw new PeerError(`${asked.ref} doesn't take "${redact(o.effort).slice(0, 40)}" effort. It takes: ${asked.efforts.join(", ") || "none"}.`);
                 let rt: Runtime;
                 try {
-                    const mode = narrowerMode(from.mode, host.defaultModeIn(cwd));
+                    const mode = server ? narrowerMode(from.mode, host.defaultModeIn(cwd)) : host.defaultModeIn(cwd);
                     made = true;
                     rt = await host.create(cwd, { mode, accounts: {}, startedBy: from.id });
                 } catch (e) {

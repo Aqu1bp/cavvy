@@ -187,11 +187,11 @@ test("a session is started on another machine: from the user's computer on a ser
     await expect(home.start({ machine: "nope", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow('No machine "nope" to start a session on. The user\'s other machines connected now: box, lab');
     // What the server refuses is said as it says it.
     await expect(home.start({ machine: "box", cwd: "/nowhere", prompt: "p", title: "t" }, from)).rejects.toThrow("/nowhere isn't a folder");
-    // From a server, through the computer. On the computer itself: named as box's session, and held to Auto at most.
+    // From a server, through the computer. On the computer itself: named as box's session (the mode there is the computer's own to set).
     const far = serverFarPeers((op, params) => answerPeers("box", op, params, mac.ops, servers));
     const onMac = await far.start({ machine: HOME_NAME, cwd: "/Users/me/app", prompt: "Build the app.", title: "Build" }, from);
     expect([onMac.id, onMac.machine]).toEqual([`${HOME_NAME}/new1`, HOME_NAME]);
-    expect(mac.started[0]!.from).toEqual({ id: "box/s1", title: "Starter", mode: "auto" });
+    expect(mac.started[0]!.from).toEqual({ id: "box/s1", title: "Starter", mode: "bypassPermissions" });
     expect(mac.started[0]!.o).toMatchObject({ cwd: "/Users/me/app", prompt: "Build the app.", title: "Build" });
     // On another server: passed on, from box's session, in the mode it runs in.
     const onLab = await far.start({ machine: "lab", cwd: "/srv/lab", prompt: "Check it.", title: "Check" }, from);

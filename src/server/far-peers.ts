@@ -202,9 +202,9 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         allowed("StartSession");
         // Named as the receiving machine names the asker's sessions: through this computer, by the asker's name.
         const from: From = { id: `${asker}/${f.id}`, title: f.title, mode: f.mode };
-        // On this computer: a server's session counts as Auto at most, so what it starts here asks no less than Auto does.
+        // On this computer: in the folder's default mode here, whatever the starter runs in (peerOps).
         if (machine === HOME_NAME) {
-            const s = await here.start(o, { ...from, mode: f.mode === "bypassPermissions" ? "auto" : f.mode });
+            const s = await here.start(o, from);
             return { ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME };
         }
         const link = others.get(machine);
