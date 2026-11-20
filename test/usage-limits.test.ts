@@ -514,6 +514,17 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.reached).toBe(false);
     });
 
+    test("a stop with its own reset and no window, then /usage: still reached, and still lifting then", () => {
+        const lifts = at + 3 * 3_600_000;
+        const stop = parseClaudeRateLimit({ status: "rejected", resetsAt: lifts / 1000 }, at)!;
+        const prev = mergeLimits(undefined, stop.limits, stop.partial);
+        const usage = parseClaudeUsage("Current week (all models): 30% used · resets Nov 24, 8pm (UTC)", at + 60_000)!;
+        const m = mergeLimits(prev, usage, false, { statusUnsaid: true });
+        expect(m.reached).toBe(true);
+        expect(m.resetsAt).toBe(lifts);
+        expect(meterOf(m, lifts + 1)!.reached).toBe(false);
+    });
+
     test("Codex: a window below its limit isn't kept reached by an earlier report for the same period", () => {
         const resetsAt = Date.UTC(2026, 10, 20, 14, 0);
         const prev: PlanLimits = { provider: "codex", windows: [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt, reached: true }], reached: true, resetsAt, at };

@@ -17,7 +17,7 @@ const { stopTiming } = await import("../src/backends/cli");
 const { USAGE_NO_MODEL } = await import("../src/backends/claude-code");
 const { planLimitKey } = await import("../src/server/protocol");
 const { meterOf, limitAlternatives } = await import("../gui/src/lib/limits");
-const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_ERROR", "FAKE_USAGE_SHAPE", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION", "FAKE_VERSION_DELAY_MS", "FAKE_USAGE_IGNORE_TERM"];
+const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_ERROR", "FAKE_USAGE_SHAPE", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION", "FAKE_VERSION_DELAY_MS", "FAKE_USAGE_IGNORE_TERM", "FAKE_USAGE_PARTIAL", "FAKE_AUTH_HANG"];
 const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 for (const provider of ["claude-code", "codex"]) {
     const binary = join(root, provider);
@@ -216,7 +216,7 @@ describe("limits.refresh: where a plan stands, asked of the CLI without a turn",
         process.env.FAKE_USAGE_TEXT = weekly(15);
         process.env.FAKE_USAGE_DELAY_MS = "200";
         await Promise.all([engine.handle(client, "limits.refresh", { plans: work }), engine.handle(client, "limits.refresh", { plans: work })]);
-        // The second ask, during the first check, asked once more after it: the throttle then held it.
+        // The second ask, during the first check, shares it.
         expect(usageRuns()).toHaveLength(1);
         const argv: string[] = usageRuns()[0].argv;
         expect(argv).toEqual(expect.arrayContaining(["--output-format", "json", "--no-session-persistence", "--strict-mcp-config"]));
@@ -250,26 +250,6 @@ describe("limits.refresh: where a plan stands, asked of the CLI without a turn",
         const got = (await engine.handle(client, "limits.get", {})).find((l) => l.provider === "claude-code" && l.accountId === "work")!;
         // The weekly figure is new; the 5-hour window /usage didn't list has reset, so it's gone.
         expect(got.windows.map((w) => [w.id, w.usedPercent])).toEqual([["seven_day", 1]]);
-        await engine.stop();
-    });
-
-    test("asked again during a check (a reset passed meanwhile): checked once more after it", async () => {
-        const { engine, client } = setup();
-        // An answer it can't read: the last report stands, with its 5-hour window resetting during the check.
-        process.env.FAKE_USAGE_TEXT = "Nothing to read";
-        process.env.FAKE_USAGE_DELAY_MS = "400";
-        const at = Date.now() - 10 * 60_000;
-        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: Date.now() + 150 }, { id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: reset.getTime() }], at }, false);
-        const first = engine.handle(client, "limits.refresh", { plans: work });
-        await Bun.sleep(250);
-        await engine.handle(client, "limits.refresh", { plans: work });
-        await first;
-        const deadline = Date.now() + 5000;
-        while (usageRuns().length < 2 && Date.now() < deadline) await Bun.sleep(50);
-        expect(usageRuns()).toHaveLength(2);
-        await Bun.sleep(600);
-        // One follow-up at most.
-        expect(usageRuns()).toHaveLength(2);
         await engine.stop();
     });
 
@@ -387,22 +367,71 @@ describe("limits.refresh: where a plan stands, asked of the CLI without a turn",
         }
     });
 
-    test("a follow-up for a window that reset during a check isn't held back by a report about another window", async () => {
+    test("a CLI turned off while its checks wait or run: none starts, nor is any answer kept", async () => {
+        // Turned off as Settings does it once its named accounts are gone: no agents entry (written directly, as
+        // removeAgentConfig keeps a CLI with named accounts on).
+        const { paths } = await import("../src/config/paths");
+        const saved = readFileSync(paths.providers(), "utf8");
         const { engine, client } = setup();
-        process.env.FAKE_USAGE_TEXT = "Nothing to read";
+        process.env.FAKE_USAGE_TEXT = weekly(30);
         process.env.FAKE_USAGE_DELAY_MS = "400";
-        const at = Date.now() - 10 * 60_000;
-        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: Date.now() + 150 }, { id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: reset.getTime() }], at }, false);
-        const first = engine.handle(client, "limits.refresh", { plans: work });
-        await Bun.sleep(250);
-        // The 5-hour window has reset: asked again during the check. Then a report about the week alone comes in.
-        void engine.handle(client, "limits.refresh", { plans: work });
-        await Bun.sleep(20);
-        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 52, resetsAt: reset.getTime() }], at: Date.now() }, true);
-        await first;
-        await waitFor(() => usageRuns().length >= 2);
-        expect(usageRuns()).toHaveLength(2);
-        await engine.stop();
+        try {
+            const all = engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            const pf = JSON.parse(saved);
+            delete pf.agents["claude-code"];
+            writeFileSync(paths.providers(), JSON.stringify(pf));
+            await all;
+            await Bun.sleep(200);
+            // The third was waiting for a place: it didn't start; the two running were answered for nothing.
+            expect(usageRuns()).toHaveLength(2);
+            expect((await engine.handle(client, "limits.get", {})).filter((l) => l.provider === "claude-code")).toEqual([]);
+        } finally {
+            writeFileSync(paths.providers(), saved);
+            await engine.stop();
+        }
+    });
+
+    test("stopping the server waits for a check stopped by its account's removal, as long as it takes to kill it", async () => {
+        const saved = { ...stopTiming };
+        Object.assign(stopTiming, { killMs: 300 });
+        try {
+            const { engine, client } = setup();
+            const folder = join(root, "parting");
+            mkdirSync(folder, { recursive: true });
+            const { addAccount } = await import("../src/providers/accounts");
+            const added = addAccount("claude-code", { id: "parting", name: "Parting", folder });
+            process.env.FAKE_USAGE_TEXT = weekly(20);
+            process.env.FAKE_USAGE_DELAY_MS = "20000";
+            process.env.FAKE_USAGE_IGNORE_TERM = "1";
+            void engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "parting" }] });
+            await waitFor(() => usageRuns().length === 1);
+            const pid = lines().find((l) => l.usage).usage.pid as number;
+            await engine.handle(client, "accounts.remove", { provider: "claude-code", id: "parting", confirmedFolder: added.folder });
+            await engine.stop();
+            expect(alive(pid)).toBe(false);
+        } finally {
+            Object.assign(stopTiming, saved);
+        }
+    });
+
+    test("a /usage or sign-in check stopped before it finished says nothing: no refusal, no sign-in", async () => {
+        const { claudeUsage, claudeStatus } = await import("../src/backends/claude-code");
+        setup();
+        // Half an answer, then nothing: cancelled, it isn't taken for an answer that wasn't /usage's.
+        process.env.FAKE_USAGE_PARTIAL = "1";
+        const c = new AbortController();
+        setTimeout(() => c.abort(), 400);
+        expect(await claudeUsage("claude-code", c.signal, "personal")).toBeUndefined();
+        delete process.env.FAKE_USAGE_PARTIAL;
+        process.env.FAKE_USAGE_TEXT = weekly(12);
+        expect((await claudeUsage("claude-code", undefined, "personal"))?.windows[0]?.usedPercent).toBe(12);
+        // A whole "signed in" answer from a run that had to be stopped isn't one.
+        process.env.FAKE_AUTH_HANG = "1";
+        const d = new AbortController();
+        setTimeout(() => d.abort(), 400);
+        await expect(claudeStatus("claude-code", d.signal, "personal")).rejects.toThrow(/didn't answer/);
+        delete process.env.FAKE_AUTH_HANG;
     });
 
     // Last: an account whose answer wasn't a local one is remembered while Cavvy runs.

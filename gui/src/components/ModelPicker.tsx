@@ -452,7 +452,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const accounts = (provider: string) => {
         const label = `${providerName(provider)} account`;
         const current = () => accountChoices(provider).find((a) => a.id === selectedAccount(provider));
-        const level = (n: NearLimit, long: boolean) => <span class={`mp-acct-lv ${n.reached ? "full" : ""}`}>{limitBadge(n, long)}</span>;
+        // Read through the accessor in the JSX, so an open picker follows the account's limit as it changes.
+        const level = (n: () => NearLimit, long: boolean) => <span class={`mp-acct-lv ${n().reached ? "full" : ""}`}>{limitBadge(n(), long)}</span>;
         return (
             <span class="mp-acct" ref={(el) => (acctEl = el)} onFocusOut={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setAcctOpen(false)}>
                 <button
@@ -464,7 +465,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     onClick={(e) => openAccounts(!acctOpen(), e.detail === 0)}
                 >
                     <span class="truncate">{current()?.name ?? "Choose account"}</span>
-                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l(), false)}</Show>
+                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l, false)}</Show>
                     <ChevronDown size={12} class="chev" />
                 </button>
                 <Show when={acctOpen()}>
@@ -489,7 +490,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                             </Show>
                                         </span>
                                         <span class="truncate">{a.name}</span>
-                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l(), true)}</Show>
+                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l, true)}</Show>
                                     </button>
                                 );
                             }}

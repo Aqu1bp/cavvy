@@ -166,6 +166,8 @@ if (argv.includes("--agents")) {
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";
     console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: process.env.FAKE_PLAN ?? "max", ...(process.env.FAKE_EMAIL ? { email: process.env.FAKE_EMAIL } : {}) } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
+    // FAKE_AUTH_HANG=1: having said it, it doesn't exit.
+    if (process.env.FAKE_AUTH_HANG === "1") await new Promise((r) => setTimeout(r, 30_000));
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
@@ -184,6 +186,11 @@ if (argv[0] === "-p" && argv[1] === "/usage") {
     log({ usage: { tz: process.env.TZ, pid: process.pid } });
     // FAKE_USAGE_IGNORE_TERM=1: SIGTERM doesn't stop it.
     if (process.env.FAKE_USAGE_IGNORE_TERM === "1") process.on("SIGTERM", () => undefined);
+    // FAKE_USAGE_PARTIAL=1: the start of its answer, then nothing.
+    if (process.env.FAKE_USAGE_PARTIAL === "1") {
+        process.stdout.write('{"type":"result","subtype":"success","is_er');
+        await new Promise((r) => setTimeout(r, 30_000));
+    }
     if (process.env.FAKE_USAGE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_USAGE_DELAY_MS)));
     const model = process.env.FAKE_USAGE_MODEL === "1";
     const error = process.env.FAKE_USAGE_ERROR === "1";

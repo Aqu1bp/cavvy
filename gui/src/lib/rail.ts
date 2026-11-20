@@ -256,20 +256,14 @@ export function railFoot(o: {
     });
 }
 
-/**
- * The rail's watch on its plans' resets, tick by tick (the shared clock: no timer of its own): the plans with a
- * window that has reset since it last looked, to ask where they stand now. Only while the footer is on screen
- * (`shown`); shown again, a reset that passed meanwhile counts once. The clock doesn't tick while the window can't
- * be seen, so its next tick does the same.
- */
-export function resetWatcher(start: number) {
-    let seen = start;
-    return (now: number, shown: boolean, plans: readonly Pick<RailPlan, "provider" | "accountId">[], limits: Record<string, PlanLimits>): { provider: string; accountId: string }[] => {
-        if (!shown) return [];
-        const from = seen;
-        seen = now;
-        return plans
-            .filter((p) => limits[planLimitKey(p.provider, p.accountId)]?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > from && w.resetsAt <= now))
-            .map((p) => ({ provider: p.provider, accountId: p.accountId }));
+/** A plan's place in the footer: its CLI and account. */
+export const planKey = (p: Pick<RailPlan, "provider" | "accountId">) => `${p.provider}\0${p.accountId}`;
+
+/** `plans` in the order `held` had them (planKey), any new ones after: the card keeps its order while it's open. */
+export function heldOrder<T extends Pick<RailPlan, "provider" | "accountId">>(plans: readonly T[], held: readonly string[]): T[] {
+    const at = (p: T) => {
+        const i = held.indexOf(planKey(p));
+        return i < 0 ? Infinity : i;
     };
+    return [...plans].sort((a, b) => at(a) - at(b));
 }

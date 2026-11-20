@@ -180,3 +180,28 @@ test("a CLI that isn't turned on isn't asked", async () => {
     expect(existsSync(process.env.FAKE_LOG)).toBe(false);
     await engine.stop();
 });
+
+test("turning a CLI off stops its plan check: its answer isn't kept", async () => {
+    saveAgentConfig("claude-code", { path: claudeBin });
+    const log = join(root, "turned-off.log");
+    rmSync(log, { force: true });
+    process.env.FAKE_LOG = log;
+    process.env.FAKE_USAGE_TEXT = "Current week (all models): 30% used · resets " + new Date(Date.now() + 2 * 86_400_000).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) + ", 8pm (UTC)";
+    process.env.FAKE_USAGE_DELAY_MS = "3000";
+    const engine = engineOf();
+    const c = client();
+    try {
+        const check = engine.handle(c, "limits.refresh", { plans: [{ provider: "claude-code" }] });
+        await until(async () => (existsSync(log) && readFileSync(log, "utf8").includes('"usage"') ? true : undefined), 5000);
+        const t = Date.now();
+        await engine.handle(c, "providers.removeKey", { provider: "claude-code" });
+        await check;
+        // Stopped, not waited out.
+        expect(Date.now() - t).toBeLessThan(2500);
+        expect(await engine.handle(c, "limits.get", {})).toEqual([]);
+    } finally {
+        delete process.env.FAKE_USAGE_TEXT;
+        delete process.env.FAKE_USAGE_DELAY_MS;
+        await engine.stop();
+    }
+});

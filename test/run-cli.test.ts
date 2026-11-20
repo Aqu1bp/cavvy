@@ -61,3 +61,20 @@ test("one that ignores SIGTERM is killed, and one that left its pipes open isn't
         Object.assign(stopTiming, saved);
     }
 });
+
+test("one that exited 0 by itself, whose helper keeps its output open a little past the deadline, is its own answer", async () => {
+    const saved = { ...stopTiming };
+    Object.assign(stopTiming, { killMs: 1500 });
+    try {
+        const quick = script("quick", "echo done\n(sleep 0.4) &\nexit 0");
+        const r = await runCli(quick, [], { timeoutMs: 100 });
+        expect(r).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+        // Stopped by us: it says so.
+        const slow = script("slow", "echo begun\nsleep 5");
+        const s = await runCli(slow, [], { timeoutMs: 100 });
+        expect(s.stopped).toBe("timeout");
+        expect(s.code).not.toBe(0);
+    } finally {
+        Object.assign(stopTiming, saved);
+    }
+});

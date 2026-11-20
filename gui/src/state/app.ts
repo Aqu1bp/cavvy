@@ -1525,9 +1525,9 @@ export async function refreshProjects() {
 let watchingEditor = false;
 
 /**
- * Asks where plans stand now (limits.refresh), for `sessionId`'s machine: when their usage is opened, or a window
- * shown resets. The answers come as `limits` events; a check that fails leaves what's shown. The server skips an
- * account reported or checked a moment ago.
+ * Asks where plans stand now (limits.refresh), for `sessionId`'s machine: when their usage is opened (the rail's
+ * card, Settings → Usage). The answers come as `limits` events; a check that fails leaves what's shown. The server
+ * skips an account reported or checked a moment ago.
  */
 export function checkLimits(sessionId?: string, plans?: { provider: string; accountId?: string }[]): Promise<void> {
     return rpcFor(sessionId).call("limits.refresh", plans ? { plans } : {}).then(() => undefined, () => undefined);

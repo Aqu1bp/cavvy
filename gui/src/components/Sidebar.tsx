@@ -12,12 +12,12 @@ import { activate, app, checkLimits, handleFor, isUnread, limitsFor, providersFo
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, resetWatcher, type RailPlan } from "../lib/rail";
+import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, heldOrder, planKey, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -273,12 +273,6 @@ function UpdateButton() {
 }
 
 /**
- * The rail footer's watch on its plans' resets (lib/rail.ts resetWatcher), kept here rather than in the Sidebar: a
- * docked rail that's hidden isn't there at all, and a reset that passed meanwhile is asked about when it's back.
- */
-const railResets = resetWatcher(Date.now());
-
-/**
  * The plans' usage, beside Settings: one row however many there are. A gauge per
  * plan, its mark in a ring that fills as its fullest window does, then the
  * figure: the same size in every state, the ring and figure turning amber, then
@@ -290,6 +284,10 @@ const railResets = resetWatcher(Date.now());
  */
 function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
     const [open, setOpen] = createSignal(false);
+    // The card's order as it opened: the check it asks for doesn't move its plans under the pointer (railFoot puts the
+    // latest report first).
+    const [held, setHeld] = createSignal<string[]>([]);
+    const cardPlans = () => (open() ? heldOrder(p.plans, held()) : p.plans);
     const [tight, setTight] = createSignal(false);
     const [folded, setFolded] = createSignal(0);
     /** A plan on its own without its window: the whole of it didn't fit (never "resets 2:4"). */
@@ -327,7 +325,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
     const label = () => `Plan usage. ${p.plans.map((plan) => `${plan.name}: ${plan.brief}`).join(". ")}`;
     return (
         <>
-            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => (!open() && p.check(), setOpen(!open()))}>
+            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => (!open() && (setHeld(p.plans.map(planKey)), p.check()), setOpen(!open()))}>
                 <For each={p.plans}>{(plan, i) => (
                     <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
                         <PlanGauge plan={plan} />
@@ -345,7 +343,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
             {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
             <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
                 <div class="menu-head">Plan usage</div>
-                <For each={p.plans}>{(plan) => (
+                <For each={cardPlans()}>{(plan) => (
                     <div class="pu-plan">
                         <div class="pu-h" title={plan.detail}>
                             <ProviderIcon id={plan.provider} name={plan.name} size={14} />
@@ -661,12 +659,6 @@ export function Sidebar() {
         // The session's machine's plans and limits: its account ("Default" there) isn't this computer's of that name.
         return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
-    // A window the footer shows that resets while it's on screen: where its plan stands now is asked for, once
-    // (railResets, kept while the rail is closed and this isn't there).
-    createEffect(on([now, () => shellLayout().railShown && !settingsTab()], ([t, shown]) => {
-        const due = railResets(t, shown, plans(), limitsFor(app.activeId));
-        if (due.length) void checkLimits(app.activeId, due);
-    }, { defer: true }));
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.

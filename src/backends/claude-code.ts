@@ -217,6 +217,8 @@ export interface ClaudeStatus {
 export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
     const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
+    // Stopped before it finished: it didn't say, whatever it had written.
+    if (r.stopped) throw new ProviderError(`claude auth status didn't answer (${r.stopped === "timeout" ? "out of time" : "cancelled"})`);
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -255,13 +257,14 @@ export async function claudeUsage(providerId = "claude-code", signal?: AbortSign
     if (usageRefused.has(refusal)) return undefined;
     const env = accountEnv(providerId, accountId);
     const version = await runCli(bin, ["--version"], { signal, timeoutMs: 10_000, env });
+    if (version.stopped) return undefined;
     if (!claudeVersionAtLeast(/^\s*(\S+)/.exec(version.stdout)?.[1], 322)) return undefined;
     // Stopped meanwhile (the account removed, the server stopping): /usage isn't started.
     if (signal?.aborted) return undefined;
     const at = Date.now();
     const r = await runCli(bin, ["-p", "/usage", "--model", USAGE_NO_MODEL, "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
-    // Stopped (cancelled, out of time) or crashed: nothing was said either way.
-    if (signal?.aborted || (r.code !== 0 && !r.stdout.trim())) return undefined;
+    // Stopped (cancelled, out of time: its output may be cut short) or crashed: nothing was said either way.
+    if (r.stopped || signal?.aborted || (r.code !== 0 && !r.stdout.trim())) return undefined;
     let j: unknown;
     try {
         j = JSON.parse(r.stdout);

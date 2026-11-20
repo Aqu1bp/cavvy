@@ -69,43 +69,61 @@ export interface CliResult {
     code: number;
     stdout: string;
     stderr: string;
+    /** It didn't finish: stopped out of time or cancelled (runCli), its output perhaps cut short. Not an answer either way. */
+    stopped?: "timeout" | "aborted";
 }
 
 /**
- * Run a short CLI command (status checks) with arguments only, never a shell. Cancelled (or out of time), it's
- * asked to stop, then killed stopTiming.killMs later; that long after, its output is no longer waited for (a
- * process it left behind may hold the pipes), and what was read comes back. One that was stopped never reads as
- * a success: its code is -1 if it had exited 0. One cancelled before it starts isn't started.
+ * Run a short CLI command (status checks) with arguments only, never a shell. Out of time or cancelled, it's
+ * asked to stop, then killed stopTiming.killMs later; that long after, its output is no longer waited for, and
+ * what was read comes back. A run it had to stop says so (`stopped`) and never reads as a success (code -1 if it
+ * had exited 0): its output may be cut short. One that had already exited by itself, whose output a process it
+ * left behind keeps open, gets the same grace for its output to end, and is its own result if it does. One
+ * cancelled before it starts isn't started.
  */
 export async function runCli(bin: string, args: string[], opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; env?: Record<string, string> } = {}): Promise<CliResult> {
     if (opts.signal?.aborted) throw new Error(`Cancelled before ${basename(bin)} started`);
     const proc = Bun.spawn([bin, ...args], { cwd: opts.cwd ?? homedir(), env: { ...childEnv(), ...opts.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const out = collect(proc.stdout), err = collect(proc.stderr);
+    let exited = false;
+    void proc.exited.then(() => (exited = true), () => (exited = true));
+    /** Why we stopped it (it hadn't exited), or, for one that had, why its output stopped being waited for. */
+    let stopped: CliResult["stopped"];
+    let why: CliResult["stopped"];
     let escalate: ReturnType<typeof setTimeout> | undefined;
     let abandon: ReturnType<typeof setTimeout> | undefined;
     let giveUp!: () => void;
     const gaveUp = new Promise<void>((r) => (giveUp = r));
-    const kill = () => {
-        if (escalate) return;
+    const later = () => (abandon ??= setTimeout(giveUp, stopTiming.killMs));
+    const end = (reason: NonNullable<CliResult["stopped"]>) => {
+        if (why) return;
+        why = reason;
+        // Gone by itself: only its output is waited for, a little longer.
+        if (exited) return void later();
+        stopped = reason;
         proc.kill();
         escalate = setTimeout(() => {
             proc.kill("SIGKILL");
-            abandon = setTimeout(giveUp, stopTiming.killMs);
+            later();
         }, stopTiming.killMs);
     };
-    const timer = setTimeout(kill, opts.timeoutMs ?? 20_000);
-    opts.signal?.addEventListener("abort", kill, { once: true });
+    const timer = setTimeout(() => end("timeout"), opts.timeoutMs ?? 20_000);
+    const onAbort = () => end("aborted");
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     try {
         const read = Promise.all([out.done, err.done, proc.exited]).then(([, , code]) => code);
-        const code = await Promise.race([read, gaveUp.then(() => -1)]);
-        if (code === -1) void Promise.all([out.cancel(), err.cancel()]);
-        // Stopped by us (out of time, or cancelled): not a success, whatever it exited with.
-        return { code: escalate && code === 0 ? -1 : code, stdout: out.text(), stderr: err.text() };
+        const code = await Promise.race([read, gaveUp.then(() => undefined)]);
+        if (code === undefined) {
+            void Promise.all([out.cancel(), err.cancel()]);
+            return { code: -1, stdout: out.text(), stderr: err.text(), stopped: stopped ?? why ?? "timeout" };
+        }
+        if (!stopped) return { code, stdout: out.text(), stderr: err.text() };
+        return { code: code === 0 ? -1 : code, stdout: out.text(), stderr: err.text(), stopped };
     } finally {
         clearTimeout(timer);
         clearTimeout(escalate);
         clearTimeout(abandon);
-        opts.signal?.removeEventListener("abort", kill);
+        opts.signal?.removeEventListener("abort", onAbort);
     }
 }
 

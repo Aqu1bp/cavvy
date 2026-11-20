@@ -4,14 +4,12 @@ import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/so
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
 import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
-import { limitBadge, meterOf } from "../../gui/src/lib/limits";
+import { limitBadge, meterOf, nearLimit, windowShort } from "../../gui/src/lib/limits";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
 
 import { sendsAccountPick } from "../../gui/src/lib/account-pick";
 
-// ComposerMeter's, which this fixture doesn't compile: a reached plan reads 100%.
-const nearLimit = (m?: { reached: boolean }) => (m?.reached ? { pct: 100, reached: true } : undefined);
 
 const cleanups: (() => void)[] = [];
 function test(_name: string, run: () => void) {
@@ -19,7 +17,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; machineLimits?: Record<string, any>; limits?: Record<string, any>; away?: string } = {}) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; machineLimits?: Record<string, any>; limits?: Record<string, any> | (() => Record<string, any>); away?: string } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -90,17 +88,17 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, tokens, now: () => 0,
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, windowShort, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
-        app: { models: [], providers: more.providers ?? [], limits: more.limits ?? {} },
+        app: { models: [], providers: more.providers ?? [], get limits() { return (typeof more.limits === "function" ? more.limits() : more.limits) ?? {}; } },
         refreshModelsFor() {}, connFor: () => "open", awayMachine: () => more.away,
         modelsFor: () => [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])],
         // Another machine's session has that machine's providers, never the window's own.
         providersFor: () => (more.away === undefined ? more.providers : more.machineProviders) ?? [],
         // And that machine's accounts' limits.
-        limitsFor: () => (more.away === undefined ? more.limits : more.machineLimits) ?? {},
+        limitsFor: () => (more.away === undefined ? (typeof more.limits === "function" ? more.limits() : more.limits) : more.machineLimits) ?? {},
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
@@ -256,6 +254,21 @@ test("a subscription's account is a button in its heading, opening its accounts:
     expect(f.accountPicks).toEqual(["cli:p"]);
     expect(f.accountItems()).toEqual([]);
     expect(f.doc.activeElement).toBe(button);
+});
+
+test("an account's badge follows its limit while the picker is open: allowed at 100% is its share, rejected is reached", () => {
+    const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
+    const accounts = [{ id: "default", name: "Work" }, { id: "p", name: "Personal" }];
+    const at = (usedPercent: number, reached: boolean) => ({ [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ id: "five_hour", label: "5-hour", usedPercent, reached }], at: 0 } });
+    const [limits, setLimits] = createSignal<Record<string, any>>(at(100, false));
+    const f = picker(true, { groups: [{ provider: "cli", providerName: "CLI", models: [cli] }], providers: [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }], limits });
+    f.tabs()[2].click();
+    f.accountButton().focus(); f.key("Enter");
+    expect(f.accountItems().map(text)).toEqual(["Work", "Personal100% used", "Add account"]);
+    setLimits(at(97, true));
+    expect(f.accountItems().map(text)).toEqual(["Work", "PersonalLimit reached", "Add account"]);
+    setLimits(at(100, false));
+    expect(f.accountItems().map(text)).toEqual(["Work", "Personal100% used", "Add account"]);
 });
 
 test("another machine's session opened here is offered that machine's accounts, not this computer's, limits or Add account", () => {

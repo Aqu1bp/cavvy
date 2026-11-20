@@ -366,9 +366,10 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
         // Reached with no window to show for it (credits, say): until its reset, when known.
         else reached = prev.reached && live(prev.resetsAt) ? true : prev.reached === undefined ? undefined : false;
     }
-    // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset.
+    // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset. A report
+    // that may leave the stop out (sparse, or /usage's text) keeps an earlier stop's own reset while it's ahead.
     const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined].filter((t): t is number => t !== undefined);
-    const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : partial && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
+    const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : (partial || statusUnsaid) && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     // Codex's updates leave credits out (null): what the last read said stands until one says otherwise.
     const credits = next.credits ?? prev.credits;
     return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(credits === undefined ? {} : { credits }), at: next.at };
