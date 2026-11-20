@@ -131,6 +131,21 @@ describe("what the agent reads", () => {
         expect(wakesFrom([{ source: "monitor", label: "m", text: "t", at: 0 }])).toBeUndefined();
     });
 
+    test("what a session was started with is its task, not a request to weigh against the user's", () => {
+        const w = { ...peerWake({ id: "box/s1", title: "Build" }, "run the tests on the Mac", true), at: 0 };
+        const text = formatWakes([w]);
+        expect(text).toContain("The agent in another of the user's sessions started this session, with the task below");
+        expect(text).toContain("do it as you would one the user gave you, under this session's own permission mode and rules");
+        expect(text).not.toContain("only within what the user asked of this session");
+        expect(text).toContain("Session box/s1 (“Build”) started this session to do this:\n\nrun the tests on the Mac");
+        expect(text).toContain("send a message to session box/s1");
+        // Shown in the transcript as any message from it is.
+        expect(wakesFrom([w])).toEqual({ id: "box/s1", title: "Build" });
+        // With anything else arriving in the same turn, the careful reading holds for all of it.
+        const later = { ...peerWake({ id: "s2", title: "Other" }, "and this too"), at: 0 };
+        expect(formatWakes([w, later])).toContain("only within what the user asked of this session");
+    });
+
     test("modes: no handing work to a session that asks less; a new one gets the narrower", () => {
         expect(freerMode("bypassPermissions", "default")).toBe(true);
         expect(freerMode("default", "auto")).toBe(false);
@@ -515,6 +530,8 @@ describe("in the app", () => {
             const r = await startSession(a.toolState.peers, { prompt: `Task ${i}.`, title: `Task ${i}` });
             expect(r.isError).toBeFalsy();
             ids.push(/Started session (\S+)/.exec(r.text)![1]!);
+            // The first is used further down: a window has it open, so it isn't let go a moment after its turn.
+            if (i === 0) (client as any).subs.add(ids[0]);
         }
         expect((await startSession(a.toolState.peers, { prompt: "One more." })).text).toContain("started 5 sessions in the last hour");
         const child = engine.runtimes.get(ids[0]!)!;
@@ -629,7 +646,11 @@ describe("in the app", () => {
         const s = await startSession(a.toolState.peers, { prompt: "Write the changelog.", title: "Changelog" });
         const id = /Started session (\S+)/.exec(s.text)![1]!;
         expect(engine.runtimes.get(id)!.session.accountId("codex")).toBe("work");
-        await until(() => turns(engine.runtimes.get(id)!).length > 0 && engine.runtimes.get(id)!.idle);
+        // Done, or let go already: nothing has it open, so it's unloaded a moment after its turn.
+        await until(() => {
+            const rt = engine.runtimes.get(id);
+            return !rt || (turns(rt).length > 0 && rt.idle);
+        });
     });
 
     describe("a model and effort to start on", () => {

@@ -77,14 +77,14 @@ async function reach(host: PeerHost, id: string): Promise<Runtime> {
 }
 
 /** `text` given to `rt` as a message from `from`: how it will be taken. */
-function deliverTo(host: PeerHost, rt: Runtime, from: { id: string; title: string }, text: string): Delivery {
+function deliverTo(host: PeerHost, rt: Runtime, from: { id: string; title: string }, text: string, task = false): Delivery {
     const wakes = rt.toolState.wakes;
     if (!wakes) throw new PeerError(`Session ${rt.id} can't take messages.`);
     const waits = rt.wakeWaitsFor;
     // As it will be taken: into the running turn (or the one coming: a goal's next, the user's queued message), a turn of
     // its own when idle; held by Esc, the hourly limit, the user's answer or a missing account.
     const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "turn" ? "joined" : "started";
-    wakes.push(peerWake(from, text));
+    wakes.push(peerWake(from, text, task));
     host.release(rt.id);
     return delivery;
 }
@@ -199,7 +199,7 @@ export function peerOps(host: PeerHost, server: boolean) {
                 }
                 host.starts.startedBy.set(rt.id, from.id);
                 rt.rename(o.title);
-                deliverTo(host, rt, { id: from.id, title: from.title }, o.prompt);
+                deliverTo(host, rt, { id: from.id, title: from.title }, o.prompt, true);
                 const runs = rt.settings().effort;
                 return { ...runtimeSummary(rt), effort: runs && efforts.includes(runs) ? runs : undefined };
             } catch (e) {
@@ -232,7 +232,7 @@ function askedModel(host: PeerHost, ref: string): { ref: string; provider: strin
 export function appPeers(host: PeerHost, self: Runtime, far?: () => FarPeers | undefined): SessionPeers {
     const disk = diskPeers(() => self.id, () => self.ws.cwd);
     const mode = modeName;
-    const deliver = (rt: Runtime, text: string): Delivery => deliverTo(host, rt, { id: self.id, title: titleOf(self) }, text);
+    const deliver = (rt: Runtime, text: string, task = false): Delivery => deliverTo(host, rt, { id: self.id, title: titleOf(self) }, text, task);
 
     /**
      * The model and effort to start a session on: as asked (a model a provider set up here has, an effort it takes), else
@@ -368,7 +368,7 @@ export function appPeers(host: PeerHost, self: Runtime, far?: () => FarPeers | u
             if (chosen.effort && (chosen.asked || chosen.effort !== rt.settings().effort)) rt.setEffort(chosen.effort);
             host.starts.startedBy.set(rt.id, self.id);
             rt.rename(title);
-            deliver(rt, prompt);
+            deliver(rt, prompt, true);
             // The effort it runs at, said only where the model takes it (a provider puts another at the nearest it takes).
             const runs = rt.settings().effort;
             return { ...runtimeSummary(rt), effort: runs && chosen.efforts.includes(runs) ? runs : undefined };

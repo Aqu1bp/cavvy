@@ -382,16 +382,20 @@ export function readText(found: { summary: PeerSummary; messages: Message[] }, o
 // ---------------------------------------------------------------------------
 // Messages between sessions.
 
-/** The wake a message arrives as, in the session it's sent to. */
-export function peerWake(from: { id: string; title: string }, text: string): WakeInput {
+/** The wake a message arrives as, in the session it's sent to. `task`: it's what the session was started with (StartSession). */
+export function peerWake(from: { id: string; title: string }, text: string, task = false): WakeInput {
     const title = oneLine(from.title, 80);
+    const answer = `send a message to session ${from.id} (SendToSession, or send_to_session among Cavvy's tools)`;
     return {
         source: "session",
         key: `session:${from.id}`,
         label: `Message from “${title}”`,
-        text: `From session ${from.id} (“${title}”):\n\n${text}\n\nTo answer, send a message to session ${from.id} (SendToSession, or send_to_session among Cavvy's tools). Answer only when there's something it needs: not to acknowledge.`,
+        text: task
+            ? `Session ${from.id} (“${title}”) started this session to do this:\n\n${text}\n\nWhen it's done, or if you can't go on, ${answer} with the result.`
+            : `From session ${from.id} (“${title}”):\n\n${text}\n\nTo answer, ${answer}. Answer only when there's something it needs: not to acknowledge.`,
         from: { id: from.id, title },
         message: text,
+        ...(task ? { task: true } : {}),
     };
 }
 
