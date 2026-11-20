@@ -1327,6 +1327,47 @@ describe("Codex as the main agent", () => {
         expect(steer).toContain("Only read-only commands run: plain commands such as cat");
     }, 20_000);
 
+    test("in a session in Bypass a read-only agent asks about nothing: what Manual would ask about runs, and what isn't read-only is refused", async () => {
+        // Read-only, and one Manual asks about (it names a file that may hold credentials).
+        process.env.FAKE_COMMAND = "cat .env";
+        writeFileSync(join(cwd, ".env"), "A=1\n");
+        try {
+            // On Codex.
+            process.env.FAKE_SCENARIO = "mcp";
+            process.env.FAKE_CODEX_SCENARIO = "cmd";
+            calls([{ tool: "delegate", args: { task: "Read the settings", description: "Read", model: "codex:gpt-test", agent: "explore" } }]);
+            const manual = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            expect(await manual.run("go")).toBe("done");
+            expect(manual.asked.map((a) => a.input.command)).toEqual(["cat .env"]);
+            rmSync(LOG, { force: true });
+            const onCodex = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            onCodex.switchMode("bypassPermissions");
+            expect(await onCodex.run("go")).toBe("done");
+            expect(onCodex.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "cat .env" });
+            // It stays read-only there.
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "touch y";
+            const writes = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            writes.switchMode("bypassPermissions");
+            expect(await writes.run("go")).toBe("done");
+            expect(writes.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            // On Claude Code.
+            process.env.FAKE_COMMAND = "cat .env";
+            process.env.FAKE_CODEX_SCENARIO = "mcp";
+            process.env.FAKE_SCENARIO = "bash";
+            calls([{ tool: "delegate", args: { task: "Read the settings", description: "Read", model: "claude-code:default", agent: "explore" } }]);
+            const onClaude = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+            onClaude.switchMode("bypassPermissions");
+            expect(await onClaude.run("go")).toBe("done");
+            expect(onClaude.asked).toEqual([]);
+            expect(received().find((m) => m.type === "control_response" && m.response?.response?.behavior)!.response.response.behavior).toBe("allow");
+        } finally {
+            rmSync(join(cwd, ".env"), { force: true });
+        }
+    }, 30_000);
+
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {
         process.env.FAKE_CODEX_SCENARIO = "mcp";
         process.env.FAKE_SCENARIO = "hang";

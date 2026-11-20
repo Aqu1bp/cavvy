@@ -317,6 +317,8 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
+    /** A read-only agent on Claude Code or Codex: the mode of the session it works for (its own is one where they ask about everything). */
+    sessionMode?: () => PermissionMode;
     /** Sub-agents: the folder its memory is kept in, which isn't Cavvy configuration for it. */
     memoryDir?: string;
     maxTurns?: number;
@@ -3295,7 +3297,9 @@ export class Agent {
         const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
-        const mode = childMode(this.o.mode.get(), own?.permissionMode);
+        // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own calls are.
+        const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
+        const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.runningIn ?? this.state.cwd;
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
         if (req.exempt) {
@@ -3322,6 +3326,8 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        // Past the read-only check above and the deny rules: it runs.
+        if (bypass && decision.behavior === "allow") ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -4004,6 +4010,7 @@ export class Agent {
             parentFastMode: () => this.fastMode(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
+            sessionMode: backend && def.readOnly ? (this.o.sessionMode ?? (() => parentMode.get())) : undefined,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and Cavvy refuses).
             // In auto, Codex's is its read-only auto mode: reads run in its read-only sandbox without asking. Claude Code's
             // stays in default, where every command comes to Cavvy, which runs read-only ones without asking.
