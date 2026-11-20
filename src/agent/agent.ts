@@ -3331,7 +3331,8 @@ export class Agent {
         }
         // In Bypass nothing is asked about, whatever the backend wanted confirmed: past the deny rules (and, for a read-only
         // agent, the read-only check above), it runs.
-        if (mode === "bypassPermissions" && decision.behavior === "allow") ruled = true;
+        // Not what Claude Code asks about from its own bypass mode: that's a hook of the user's own saying ask.
+        if (mode === "bypassPermissions" && decision.behavior === "allow" && !req.ownBypassAsk) ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -3353,7 +3354,8 @@ export class Agent {
                     if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds Cavvy's credential store.`, stop: false };
                 }
             }
-            ruled = false;
+            // Asked about, but in Bypass (Codex can keep an earlier mode's policy until its turn ends).
+            ruled = mode === "bypassPermissions" && decision.behavior === "allow";
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
         let title = req.title ?? tool.name;

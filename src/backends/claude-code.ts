@@ -2080,7 +2080,9 @@ class ClaudeTurn {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
-        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
+        // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
+        const ownBypassAsk = MODES[this.cliSession.mode()] === "bypassPermissions";
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

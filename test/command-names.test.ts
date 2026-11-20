@@ -183,9 +183,10 @@ describe("programs run through wrappers", () => {
         }
     });
 
-    test("catastrophic commands behind a wrapper still ask in bypass mode", () => {
+    test("catastrophic commands behind a wrapper still ask (read in Accept edits; Bypass asks about nothing)", () => {
         for (const cmd of ["exec sh -c 'rm -rf ~'", "env bash -c 'rm -rf ~'", "nohup sh -c 'rm -rf ~'", "nice -n 5 zsh -c 'rm -rf ~'", "timeout 9 sh -c 'rm -rf /'", "env -S 'rm -rf' ~", "command -p rm -rf ~"]) {
             expect([cmd, check(cmd, "acceptEdits")]).toMatchObject([cmd, { behavior: "ask", dangerous: true }]);
+            expect([cmd, check(cmd, "bypassPermissions").behavior]).toEqual([cmd, "allow"]);
         }
     });
 

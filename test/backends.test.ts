@@ -2027,6 +2027,20 @@ describe("review findings (PR #1)", () => {
         expect(asked.asked).toHaveLength(1);
         expect(asked.asked[0]!.decision.reason).toContain(`write ${join(realpathSync(cwd), "secrets")}`);
         expect(granted()?.permissions?.fileSystem?.write).toEqual([join(realpathSync(cwd), "secrets")]);
+        // In Bypass nothing is asked about: granted, past the deny rules.
+        rmSync(LOG, { force: true });
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: false }) });
+        await bypass.run("go");
+        expect(bypass.asked).toHaveLength(0);
+        expect(granted()?.permissions?.fileSystem?.write).toEqual([join(realpathSync(cwd), "secrets")]);
+    });
+
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) still reaches the user", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        // The stand-in asks about what an ask rule names, as the CLI does for a hook that says ask.
+        const a = await makeAgent({ provider: "claude-code", mode: "bypassPermissions", settings: { permissions: { ask: ["Bash(npm test)"] } }, ask: () => ({ allow: false }) });
+        await a.run("go");
+        expect(a.asked.map((r) => r.input.command)).toEqual(["npm test"]);
     });
 
     test("4. switching to plan mode mid-turn stops Codex's turn and goes on under plan mode", async () => {

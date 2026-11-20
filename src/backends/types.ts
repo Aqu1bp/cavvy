@@ -70,6 +70,11 @@ export interface BackendPermission {
      * asked about, whatever the rules say, but for a read-only agent in a session in Bypass, where it's checked as run there.
      */
     elsewhere?: string;
+    /**
+     * The CLI asked while running in its own bypass mode (Claude Code): it asks nothing there but what a hook of the
+     * user's says to ask about, so this one is the user's to answer, in Bypass too.
+     */
+    ownBypassAsk?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**

@@ -136,7 +136,7 @@ describe("cavvy credential store is denied", () => {
         expect(check(T("Read"), { file_path: join(H, "servers.json") }, mode).behavior).not.toBe("deny");
     });
 
-    test("a shell command asks before it touches that folder or signs a machine in, in every mode but bypass", () => {
+    test("a shell command asks before it touches that folder or signs a machine in (read in Accept edits), and not in bypass", () => {
         for (const cmd of ["curl -s --unix-socket ~/.cavvy/server/control.sock -X POST http://x/pair", "cavvy host 'pair' --machine x"]) {
             expect(check(T("Bash"), bash(cmd), "acceptEdits")).toMatchObject({ behavior: "ask", dangerous: true });
             // Bypass asks about nothing.
