@@ -4,7 +4,7 @@
 // the session first when it isn't open (and letting it go again once it's
 // done, as one no window shows is).
 
-import { deliveryText, diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PEER_LIMITS, PeerError, peerWake, readFromDisk, readText, type Delivery, type FarPeers, type FarStart, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
+import { deliveryText, diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PEER_LIMITS, PeerError, PeerUnsure, peerWake, readFromDisk, readText, type Delivery, type FarPeers, type FarStart, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
 import { findSessionAnywhere, sessionHolder } from "../agent/session";
 import type { Effort } from "../config/settings";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
@@ -26,8 +26,11 @@ export interface PeerHost {
     defaultMode(ws: Workspace): PermissionMode;
     /** The mode a session made in `cwd` starts in (throws when the folder can't be opened: not one, untrusted with configuration). */
     defaultModeIn(cwd: string): PermissionMode;
-    /** `cwd` is a folder the user has worked in here, or one inside it (a worktree of theirs). */
-    knows(cwd: string): boolean;
+    /**
+     * `cwd` as the folder it really is (links followed), when that's one the user has worked in here or one inside
+     * it (a worktree of theirs); undefined when it isn't, or isn't a folder.
+     */
+    known(cwd: string): string | undefined;
     /** The models the providers set up here list. */
     listings(): ProviderListing[];
     /** Let it go once it has nothing to do, unless a window has it open. */
@@ -38,6 +41,11 @@ export interface PeerHost {
 
 /** Sessions one may start an hour: an agent that starts sessions needs the user before it starts many. */
 export const MAX_STARTS_PER_HOUR = 5;
+/**
+ * Sessions another machine's sessions may start here an hour, all of them together: which session asks is that
+ * machine's word, so the count that holds is by machine.
+ */
+export const MAX_STARTS_PER_MACHINE_HOUR = 10;
 
 function statusOf(rt: Runtime): PeerStatus {
     if (rt.status === "waiting") return "waiting";
@@ -135,22 +143,32 @@ export function peerOps(host: PeerHost, server: boolean) {
          * folder's default, and no more an hour from one starter than a session may start here.
          */
         start: async (o: { cwd: string; prompt: string; title: string } & StartChoice, from: { id: string; title: string; mode: PermissionMode }): Promise<PeerSummary & { effort?: Effort }> => {
-            if (!server && !host.knows(o.cwd)) throw new PeerError(`${redact(o.cwd).slice(0, 300)} isn't a folder the user has opened in Cavvy on this machine, so a session can't be started there from another machine. Ask the user to open it there once.`);
+            // On the user's own computer: the folder it really is (a link inside an opened folder may lead out of it), and
+            // that one is where the session is made and what its trust is read for.
+            const cwd = server ? o.cwd : host.known(o.cwd);
+            if (cwd === undefined) throw new PeerError(`${redact(o.cwd).slice(0, 300)} isn't a folder the user has opened in Cavvy on this machine, so a session can't be started there from another machine. Ask the user to open it there once.`);
             const now = Date.now();
-            const times = (host.starts.times.get(from.id) ?? []).filter((t) => now - t < 3_600_000);
-            if (times.length >= MAX_STARTS_PER_HOUR) throw new PeerError(`Session ${from.id} has started ${MAX_STARTS_PER_HOUR} sessions here in the last hour, as many as it may. Ask the user before starting more.`);
-            host.starts.times.set(from.id, [...times, now]);
+            // By session; and on the user's own computer by the server it's on too: which session it is is that server's word.
+            const machine = `${from.id.slice(0, from.id.indexOf("/"))}/`;
+            const keys: [string, number, string][] = [[from.id, MAX_STARTS_PER_HOUR, `Session ${from.id} has started ${MAX_STARTS_PER_HOUR} sessions here in the last hour, as many as it may. Ask the user before starting more.`]];
+            if (!server) keys.push([machine, MAX_STARTS_PER_MACHINE_HOUR, `Sessions on ${machine.slice(0, -1)} have started ${MAX_STARTS_PER_MACHINE_HOUR} sessions here in the last hour, as many as they may together. Ask the user before starting more.`]);
+            for (const [key, most, why] of keys) if ((host.starts.times.get(key) ?? []).filter((t) => now - t < 3_600_000).length >= most) throw new PeerError(why);
+            for (const [key] of keys) host.starts.times.set(key, [...(host.starts.times.get(key) ?? []).filter((t) => now - t < 3_600_000), now]);
             const uncount = () => {
-                const list = host.starts.times.get(from.id) ?? [];
-                const i = list.indexOf(now);
-                if (i >= 0) list.splice(i, 1);
+                for (const [key] of keys) {
+                    const list = host.starts.times.get(key) ?? [];
+                    const i = list.indexOf(now);
+                    if (i >= 0) list.splice(i, 1);
+                }
             };
             try {
                 // A model asked for has to be one this machine has, said before anything is made.
                 const asked = o.model === undefined ? undefined : askedModel(host, o.model);
+                // And an effort that model doesn't take, where it's known which it takes.
+                if (asked?.efforts && o.effort !== undefined && !asked.efforts.includes(o.effort as Effort)) throw new PeerError(`${asked.ref} doesn't take "${redact(o.effort).slice(0, 40)}" effort. It takes: ${asked.efforts.join(", ") || "none"}.`);
                 let rt: Runtime;
                 try {
-                    rt = await host.create(o.cwd, { mode: narrowerMode(from.mode, host.defaultModeIn(o.cwd)), accounts: {}, startedBy: from.id });
+                    rt = await host.create(cwd, { mode: narrowerMode(from.mode, host.defaultModeIn(cwd)), accounts: {}, startedBy: from.id });
                 } catch (e) {
                     throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);
                 }
@@ -189,7 +207,7 @@ export function peerOps(host: PeerHost, server: boolean) {
 }
 
 /** A model another machine's session asked to start one on: one a provider set up here lists. Throws PeerError, with the models there are. */
-function askedModel(host: PeerHost, ref: string): { ref: string; provider: string } {
+function askedModel(host: PeerHost, ref: string): { ref: string; provider: string; efforts?: Effort[] } {
     const listings = host.listings();
     const shown = (t: string) => `"${redact(t).slice(0, 120)}"`;
     const refuse = (why: string, provider?: string, match?: string): never => {
@@ -200,8 +218,9 @@ function askedModel(host: PeerHost, ref: string): { ref: string; provider: strin
     if (!p || !def) return refuse(`${shown(ref)} isn't a model on this machine.`, getProvider(ref.split(":")[0]!.trim())?.id);
     if (!p.id) return refuse(`Say which of ${def.name}'s models.`, def.id);
     const listed = listings.find((l) => l.provider.id === def.id)?.models ?? [];
-    if (listed.length ? !listed.some((m) => m.id === p.id) : !resolveModelInfo(ref)) return refuse(`${def.name} has no model ${shown(p.id)} on this machine.`, def.id, p.id);
-    return { ref, provider: def.id };
+    const info = listed.find((m) => m.id === p.id);
+    if (listed.length ? !info : !resolveModelInfo(ref)) return refuse(`${def.name} has no model ${shown(p.id)} on this machine.`, def.id, p.id);
+    return { ref, provider: def.id, ...(info ? { efforts: modelEfforts(info) } : {}) };
 }
 
 /** `far`: the user's other machines' sessions, as they can be reached when asked (none: not from here). */
@@ -286,7 +305,8 @@ export function appPeers(host: PeerHost, self: Runtime, far?: () => FarPeers | u
                         try {
                             return await f.start(o, { id: self.id, title: titleOf(self), mode: self.mode });
                         } catch (e) {
-                            uncount();
+                            // Not answered: it may have started, and counts. Refused: it didn't.
+                            if (!(e instanceof PeerUnsure)) uncount();
                             throw e;
                         }
                     },

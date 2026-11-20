@@ -9,7 +9,7 @@
 import { homedir } from "os";
 import { findMatch, parseRule } from "../permissions/rules";
 import { MCP_SERVER_NAME } from "../config/name";
-import { checkMessage, PeerError, type Delivery, type FarPeers, type FarStart, type PeerSummary, type StartChoice } from "../agent/peers";
+import { checkMessage, PeerError, PeerUnsure, type Delivery, type FarPeers, type FarStart, type PeerSummary, type StartChoice } from "../agent/peers";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 
@@ -74,7 +74,8 @@ function readOf(id: string, v: unknown): Read {
 /** The session a machine says it started, named as this machine names it (`<machine>/<id>`); a PeerError when what it answered isn't one. */
 function startedOn(on: string, v: unknown): Started {
     const row = rowFrom(v, on);
-    if (!row) throw new PeerError(`${on} didn't say which session it started.`);
+    // The session and where it is: one without a folder isn't one it started.
+    if (!row?.cwd) throw new PeerUnsure(`${on} didn't say which session it started. It may have started one all the same: look with ListSessions (all: true) before starting it again.`);
     const effort = EFFORT_LEVELS.find((e) => e === (v as { effort?: unknown }).effort);
     return { ...row, ...(effort ? { effort } : {}) };
 }
@@ -97,6 +98,16 @@ function fromOf(params: Record<string, unknown>): { id: string; title: string; m
     if (!mode) throw new PeerError("That message doesn't say what mode its session runs in.");
     return { id: f.id, title: str(f.title, 300), mode };
 }
+
+/**
+ * As `refused`, for a start: a machine that didn't answer (in time, or went away) may have started the session all
+ * the same, which is said, and told apart from a refusal (the starter's count keeps it).
+ */
+const startRefused = (e: unknown): never => {
+    const said = e instanceof Error ? e.message : String(e);
+    if (/didn't answer|went away before it answered/.test(said)) throw new PeerUnsure(`${said} The session may have started all the same: look with ListSessions (all: true) before starting it again.`);
+    throw new PeerError(said);
+};
 
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
@@ -142,7 +153,7 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
         start: async ({ machine, ...o }, from) => {
             const link = servers().get(machine);
             if (!link) throw new PeerError(noMachine(machine, [...servers().keys()]));
-            return startedOn(machine, await link.ask("peers.start", { ...o, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refused));
+            return startedOn(machine, await link.ask("peers.start", { ...o, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(startRefused));
         },
     };
 }
@@ -192,7 +203,7 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         }
         const link = others.get(machine);
         if (!link) throw new PeerError(noMachine(machine, [HOME_NAME, ...others.keys()]));
-        return startedOn(machine, await link.ask("peers.start", { ...o, from }).catch(refused));
+        return startedOn(machine, await link.ask("peers.start", { ...o, from }).catch(startRefused));
     }
     const id = str(params.id, 300);
     const s = split(id);
@@ -246,10 +257,10 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
         read: async (id, turns) => readOf(id, await call("read", { id, turns }).catch(refused)),
         send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refusedOf(id))),
         start: async (o, from) => {
-            const v = await call("start", { ...o, from }).catch(refused);
+            const v = await call("start", { ...o, from }).catch(startRefused);
             // Already named as this machine names it (`mac/<id>`, `box/<id>`).
             const s = v && typeof v === "object" ? split(String((v as { id?: unknown }).id ?? "")) : undefined;
-            if (!s || !/^[\w.-]{1,40}$/.test(s.on)) throw new PeerError("The user's computer didn't say which session was started.");
+            if (!s || !/^[\w.-]{1,40}$/.test(s.on)) throw new PeerUnsure("The user's computer didn't say which session was started. One may have been all the same: look with ListSessions (all: true) before starting it again.");
             return startedOn(s.on, { ...(v as object), id: s.id });
         },
     };

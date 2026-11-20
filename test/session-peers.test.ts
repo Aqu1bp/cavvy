@@ -562,20 +562,49 @@ describe("in the app", () => {
         const inside = join(project, "sub-tree");
         mkdirSync(inside, { recursive: true });
         expect((await mac.start({ cwd: inside, prompt: "In the tree.", title: "Tree" }, from)).cwd).toBe(inside);
-        // A model this machine doesn't have, an effort the model doesn't take, a folder that isn't one: refused, and nothing started.
+        // A link inside an opened folder that leads out of it isn't inside it.
+        symlinkSync(strange, join(project, "way-out"));
+        await expect(mac.start({ cwd: join(project, "way-out"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
+        // A model this machine doesn't have, a folder that isn't one: refused, and nothing started.
         const before = engine.runtimes.size;
         await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, from)).rejects.toThrow("isn't a model on this machine");
-        await expect(mac.start({ cwd: join(project, "missing"), prompt: "p", title: "t" }, from)).rejects.toThrow("couldn't be started");
+        await expect(mac.start({ cwd: join(project, "missing"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
         expect(engine.runtimes.size).toBeLessThanOrEqual(before);
         // No more an hour from one starter than a session may start: the refused ones above didn't count.
         for (let i = 0; i < 3; i++) await mac.start({ cwd: project, prompt: `Task ${i}.`, title: `Task ${i}` }, from);
         await expect(mac.start({ cwd: project, prompt: "One more.", title: "More" }, from)).rejects.toThrow("box/s1 has started 5 sessions here in the last hour");
+        // Which session asks is the server's word: all of one server's together start no more than 10 an hour here.
+        for (let i = 0; i < 5; i++) await mac.start({ cwd: project, prompt: `Other ${i}.`, title: `Other ${i}` }, { ...from, id: `box/other${i}` });
+        await expect(mac.start({ cwd: project, prompt: "An eleventh.", title: "Eleventh" }, { ...from, id: "box/yet-another" })).rejects.toThrow("Sessions on box have started 10 sessions here in the last hour");
         // Another starter has its own count; and on a server, any folder will do.
         const server = peerOps(engine.peerHost(), true);
         const onServer = await server.start({ cwd: strange, prompt: "Anywhere.", title: "Anywhere" }, { id: "mac/s2", title: "On the Mac", mode: "bypassPermissions" });
         expect(onServer.cwd).toBe(strange);
         for (const rt of [...engine.runtimes.values()]) await until(() => !rt.busy);
     }, 40_000);
+
+    test("a start on another machine counts against the starter's hour unless that machine refused it", async () => {
+        const { appPeers } = await import("../src/server/session-peers");
+        const { PeerUnsure } = await import("../src/agent/peers");
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        await a.ready;
+        let answer: () => never = () => {
+            throw new PeerError("box refused it.");
+        };
+        const peers = appPeers(engine.peerHost(), a, () => ({ list: async () => [], read: async () => undefined, send: async () => ({ text: "", delivery: "started" as const, title: "" }), start: async () => answer() }));
+        const start = () => startSession(peers, { prompt: "Over there.", machine: "box", folder: "/srv/app" });
+        // Refused: as if never asked, however often.
+        for (let i = 0; i < 7; i++) expect((await start()).text).toBe("box refused it.");
+        // Not answered: it may have started, so it counts, and the sixth isn't asked for.
+        answer = () => {
+            throw new PeerUnsure("box didn't answer. The session may have started all the same.");
+        };
+        for (let i = 0; i < 5; i++) expect((await start()).text).toContain("may have started all the same");
+        expect((await start()).text).toContain("started 5 sessions in the last hour");
+        // A folder without a machine, a machine without a folder: said before anything is asked.
+        expect((await startSession(peers, { prompt: "p", folder: "/srv/app" })).text).toContain("folder is for a session on another machine");
+        expect((await startSession(peers, { prompt: "p", machine: "box" })).text).toContain("Say which folder on box");
+    });
 
     test("a session started by another runs on its Claude Code and Codex accounts", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });

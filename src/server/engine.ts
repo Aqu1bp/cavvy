@@ -1211,10 +1211,20 @@ export class Engine {
                 if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
                 return this.defaultMode(this.workspaceFor(p));
             },
-            // Its recent folders, and what's inside one (a worktree of the project's).
-            knows: (cwd) => {
-                const p = resolve(expandHome(cwd));
-                return [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
+            // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
+            // so a link inside one that leads elsewhere isn't inside it.
+            known: (cwd) => {
+                const real = (path: string) => {
+                    try {
+                        return realpathSync(path);
+                    } catch {
+                        return undefined;
+                    }
+                };
+                const p = real(resolve(expandHome(cwd)));
+                if (!p || !isDir(p)) return undefined;
+                const roots = [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].flatMap((r) => real(r) ?? []);
+                return roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)) ? p : undefined;
             },
             listings: () => this.listings,
             release: (id) => this.unloadLater(id),
@@ -2407,7 +2417,9 @@ export class Engine {
                         // This computer's own rules for the session tools hold for what a server asks through it: of its sessions, and of the other servers'.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
                         if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about sessions on other machines.";
-                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.` : undefined;
+                        if (peersDenied(settings.permissions?.deny ?? [], tool)) return `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.`;
+                        // A rule that asks first: there's nobody to ask for a call from another machine, so it isn't made.
+                        return peersDenied(settings.permissions?.ask ?? [], tool) ? `Your computer's settings ask before ${tool}, and a call from another machine can't be asked about there, so it isn't made. Ask the user to do it themselves.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.

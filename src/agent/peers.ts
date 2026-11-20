@@ -102,6 +102,8 @@ export interface StartChoice {
 
 /** A refusal the model is told as it is. */
 export class PeerError extends Error {}
+/** Another machine didn't say whether it did what was asked: it may have. */
+export class PeerUnsure extends PeerError {}
 
 const SHOWN_PER_PROVIDER = 12;
 const SHOWN_OF_ONE = 200;

@@ -209,4 +209,13 @@ test("a session is started on another machine: from the user's computer on a ser
     expect([mac.started.length, lab.started.length]).toEqual(before);
     // A machine that answers something that isn't a session: said, not taken for one.
     await expect(homeFarPeers(() => new Map([["odd", { ask: async () => ({ id: "../x" }) }]])).start({ machine: "odd", cwd: "/x", prompt: "p", title: "t" }, from)).rejects.toThrow("odd didn't say which session it started");
+    // One that names a session but no folder, or doesn't answer at all: it may have started, which is said, and told apart from a refusal.
+    const { PeerUnsure } = await import("../src/agent/peers");
+    const unsure = async (ask: () => Promise<unknown>) => homeFarPeers(() => new Map([["slow", { ask }]])).start({ machine: "slow", cwd: "/x", prompt: "p", title: "t" }, from).catch((e) => e);
+    for (const e of [await unsure(async () => ({ id: "n1" })), await unsure(() => Promise.reject(new Error("slow didn't answer."))), await unsure(() => Promise.reject(new Error("slow went away before it answered.")))]) {
+        expect(e).toBeInstanceOf(PeerUnsure);
+        expect((e as Error).message).toContain("look with ListSessions (all: true) before starting it again");
+    }
+    const refusal = await unsure(() => Promise.reject(new Error("slow isn't connected.")));
+    expect([refusal instanceof PeerUnsure, refusal instanceof PeerError]).toEqual([false, true]);
 });
