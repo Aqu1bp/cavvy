@@ -5,7 +5,9 @@ import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
 const { resetLabel } = await import("../gui/src/lib/limits");
-const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph, heldOrder, planKey, windowTone } = await import("../gui/src/lib/rail");
+const { asking, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, railGlyph } = await import("../gui/src/lib/rail");
+const { foldOrder, planFit, planTone, railFoot, windowTone } = await import("../gui/src/lib/rail-plans");
+const { heldOrder, planKey } = await import("../gui/src/lib/plan-card");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");

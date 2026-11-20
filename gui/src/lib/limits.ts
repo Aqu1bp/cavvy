@@ -1,8 +1,8 @@
 // What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import type { AccountInfo, PlanLimits, ProviderInfo, UsageRow, UsageSummary } from "@shared/protocol";
-import { covers, planNow, planTitle as corePlanTitle, STALE_MS } from "@shared/plan-meter";
+import type { AccountInfo, PlanLimits, ProviderInfo } from "@shared/protocol";
+import { covers, planNow, planTitle, STALE_MS } from "@shared/plan-meter";
 
 export { STALE_MS };
 
@@ -123,16 +123,6 @@ export function windowShort(w: MeterWindow): string | undefined {
     return w.pct !== undefined ? `${w.label} ${w.pct}%` : undefined;
 }
 
-/**
- * "40%, resets 4:40 PM": a window's bar caption in Usage (its name is beside it). A reached one isn't called reached
- * again (the plan's banner says so), only when it resets; "Reached" only when it's all there is to say. One that
- * has reset since the report says when: "Reset 9:52 AM".
- */
-export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets" | "reset">): string {
-    if (w.reset) return `Reset ${w.reset}`;
-    if (w.pct === undefined && w.reached) return w.resets ? `Resets ${w.resets}` : "Reached";
-    return (w.pct !== undefined ? `${w.pct}%` : "Not reported") + (w.resets ? `, resets ${w.resets}` : "");
-}
 
 /** Home's limit pill, and an account's badge in the model picker (nearLimit). */
 export interface NearLimit {
@@ -153,18 +143,12 @@ export interface NearLimit {
  */
 export function nearLimit(m: Meter | undefined, model?: { id: string; resolved?: string }): NearLimit | undefined {
     if (!m) return undefined;
-    // The plan's stop with no window to show (a bare rejection): every model's, until it lifts.
-    if (m.planStop) return { pct: 100, reached: true, ...(m.resets ? { resets: m.resets } : {}) };
-    // The limits that apply to this model (no model: the account's own, its plan's windows only).
-    const live = model ? applies(m, model) : m.windows.filter((w) => !w.reset && !w.scope);
-    const reached = live.filter((w) => w.reached);
     const named = (w: MeterWindow) => w.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase());
-    // At a limit: the one that lifts last, full, whatever share the CLI last gave (a window rejected at 97%).
-    if (reached.length) {
-        const w = lastToLift(reached);
-        return { pct: 100, reached: true, window: named(w), ...(w.resets ? { resets: w.resets } : {}), ...(w.scope ? { scope: w.scope } : {}) };
-    }
-    const w = live.filter((w) => w.pct !== undefined).sort((a, b) => b.pct! - a.pct!)[0];
+    // At a limit (limitFor: no model is the account's own, its plan's windows only): the one that lifts last, full,
+    // whatever share the CLI last gave (a window rejected at 97%); the plan's stop with none to show, as such.
+    const st = limitFor(m, model);
+    if (st) return { pct: 100, reached: true, ...(st.window ? { window: named(st.window) } : {}), ...(st.resets ? { resets: st.resets } : {}), ...(st.window?.scope ? { scope: st.window.scope } : {}) };
+    const w = applies(m, model).filter((w) => w.pct !== undefined).sort((a, b) => b.pct! - a.pct!)[0];
     if (!w || w.pct! < 80) return undefined;
     return { pct: Math.min(100, Math.round(w.pct!)), reached: false, window: named(w), ...(w.resets ? { resets: w.resets } : {}) };
 }
@@ -213,49 +197,18 @@ function lastToLift(ws: MeterWindow[]): MeterWindow {
     return ws.reduce((a, b) => (b.resetsAt === undefined || (a.resetsAt !== undefined && b.resetsAt > a.resetsAt) ? b : a));
 }
 
-/** A plan as every surface names it (plan-meter.ts planTitle), from what the server lists of its CLI. */
-export function planTitle(info: Pick<ProviderInfo, "name" | "agentCli"> | undefined, accountId = "default", fallback = ""): { title: string; plan: string; account?: string } {
-    return corePlanTitle(info && { name: info.name, accounts: info.agentCli?.accounts }, accountId, fallback);
-}
+export { planTitle };
 
-/** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */
-export function liftsAt(m: Pick<Meter, "resets" | "windows">): string | undefined {
-    if (!m.resets) return undefined;
-    const reached = m.windows.filter((w) => w.reached);
-    return reached.length === 1 && reached[0]!.resets === m.resets ? undefined : m.resets;
-}
 
 /** Only a fresh CLI status can offer a usable alternative; no identity enters the transcript. */
 export function limitAlternatives(accounts: AccountInfo[], accountId: string): AccountInfo[] {
     return accounts.filter((a) => a.id !== accountId && a.signedIn === true);
 }
 
-export function usd(n: number): string {
-    if (n === 0) return "$0.00";
-    if (n < 0.01) return "<$0.01";
-    if (n < 99.995) return `$${n.toFixed(2)}`;
-    return `$${Math.round(n).toLocaleString("en-US")}`;
-}
 
-/** A row's or the total's cost: "unknown" when none of it had a price, "$X + unknown" when part didn't. Never "$0" for unpriced usage. */
-export function costText(r: Pick<UsageRow, "cost" | "unknown">): string {
-    if (!r.unknown) return usd(r.cost);
-    return r.cost > 0 ? `${usd(r.cost)} + unknown` : "unknown";
-}
 
-/** Tokens in: what wasn't read from the cache (cache writes are new input). */
-export function tokensIn(r: Pick<UsageRow, "inputTokens" | "cacheWriteTokens">): number {
-    return r.inputTokens + r.cacheWriteTokens;
-}
 
-/** What the Usage view says when there are no rows: not "no usage" when it didn't get to read everything. */
-export function emptyText(s: Pick<UsageSummary, "days" | "truncated">): string {
-    return s.truncated ? `Nothing read yet: ${s.truncated}` : `No usage in the last ${rangeLabel(s.days)}.`;
-}
 
-export function rangeLabel(days: UsageSummary["days"]): string {
-    return days === 1 ? "24 hours" : `${days} days`;
-}
 
 /** A configured model reference ("claude-code:fable") as the model it names, for one not in the list yet. */
 export function refModel(ref: string | undefined): { id: string } | undefined {

@@ -3,7 +3,8 @@
 
 import { expect, test } from "bun:test";
 import { fromWireLimits, wireReplacer } from "../src/server/timeline";
-import { liftsAt, meterOf, windowCaption, windowLine } from "../gui/src/lib/limits";
+import { meterOf, windowLine } from "../gui/src/lib/limits";
+import { liftsAt, windowCaption } from "../gui/src/lib/usage-limits";
 import type { PlanLimits } from "../src/server/protocol";
 
 const now = Date.UTC(2026, 9, 28, 9, 0);

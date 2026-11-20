@@ -486,7 +486,7 @@ export function limitNews(seen: Map<string, string>, window: string, status: str
  */
 export function limitPlanTitle(provider: string, accountId = "default", plan?: string): string {
     const accounts = cliAccounts(provider).map((a) => (a.id === accountId && plan ? { ...a, plan } : a));
-    return planTitle({ name: agentCli(provider)?.name ?? provider, accounts }, accountId).title;
+    return planTitle({ name: agentCli(provider)?.name ?? provider, agentCli: { accounts } }, accountId).title;
 }
 
 /** A local display name is safe in notices; signed-in email and plan stay out. */

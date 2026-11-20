@@ -68,7 +68,8 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
             solid.createRenderEffect(() => { slot.content = node.content = resolve(value); });
         },
     };
-    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
+    // The plans' footer is loaded lazily (PlanFooter.tsx, its own tests): not part of these.
+    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/lazy\(\(\) => import\("\.\/PlanFooter"\)[^;]*;/, "() => null;");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)

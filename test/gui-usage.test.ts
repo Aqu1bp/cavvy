@@ -6,7 +6,8 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import * as usage from "../gui/src/lib/usage";
 import * as limits from "../gui/src/lib/limits";
-import { scopedSummary } from "../gui/src/lib/rail";
+import * as usageLimits from "../gui/src/lib/usage-limits";
+import { scopedSummary } from "../gui/src/lib/rail-plans";
 import { plural, tokens } from "../gui/src/lib/format";
 import { planLimitKey } from "../src/server/protocol";
 import type { UsageSummary, UsageTotals } from "../src/server/protocol";
@@ -32,7 +33,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const source = readFileSync(new URL("../gui/src/components/UsageView.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     const compiled = transformSync(source, { filename: "UsageView.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const scope = { renderer, ...solid, ...usage, ...limits, scopedSummary, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
+    const scope = { renderer, ...solid, ...usage, ...limits, ...usageLimits, scopedSummary, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
         app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
@@ -227,7 +228,7 @@ test("token counts roll over to the next unit; costs group thousands", () => {
     expect([999, 1000, 9_949, 9_960, 12_400, 999_499, 999_600, 9_960_000, 854e6, 999.6e6, 1e9, 1.24e9, 12.4e9].map((n) => tokens(n)))
         .toEqual(["999", "1.0k", "9.9k", "10k", "12k", "999k", "1.0M", "10M", "854M", "1.0B", "1.0B", "1.2B", "12B"]);
     expect([854e6, 1.236e9, 999_960].map((n) => tokens(n, 3))).toEqual(["854M", "1.24B", "1M"]);
-    expect([0, 0.004, 4.123, 41.2, 99.996, 763.4, 2184.2].map(limits.usd)).toEqual(["$0.00", "<$0.01", "$4.12", "$41.20", "$100", "$763", "$2,184"]);
+    expect([0, 0.004, 4.123, 41.2, 99.996, 763.4, 2184.2].map(usageLimits.usd)).toEqual(["$0.00", "<$0.01", "$4.12", "$41.20", "$100", "$763", "$2,184"]);
 });
 
 test("axis ticks: every 6 hours, each day of a week, weekly over a month, month starts over 90 days", () => {

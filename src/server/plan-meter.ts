@@ -123,8 +123,8 @@ export function covers(scope: string, model: { id: string; resolved?: string } |
  * A plan as every surface names it: the CLI and its plan ("Claude Code Max", "Codex Plus"; the CLI alone until it
  * has said which plan), and the account's name too when the CLI has more than one.
  */
-export function planTitle(cli: { name: string; accounts?: readonly { id: string; name: string; plan?: string }[] } | undefined, accountId = "default", fallback = ""): { title: string; plan: string; account?: string } {
-    const accounts = cli?.accounts ?? [];
+export function planTitle(cli: { name: string; agentCli?: { accounts?: readonly { id: string; name: string; plan?: string }[] } } | undefined, accountId = "default", fallback = ""): { title: string; plan: string; account?: string } {
+    const accounts = cli?.agentCli?.accounts ?? [];
     const account = accounts.find((a) => a.id === accountId);
     const plan = account?.plan ? `${cli!.name} ${account.plan.charAt(0).toUpperCase()}${account.plan.slice(1)}` : cli?.name ?? fallback;
     const name = accounts.length > 1 ? account?.name ?? (accountId === "default" ? "Default" : accountId) : undefined;
