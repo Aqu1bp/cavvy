@@ -580,6 +580,12 @@ describe("in the app", () => {
         const server = peerOps(engine.peerHost(), true);
         const onServer = await server.start({ cwd: strange, prompt: "Anywhere.", title: "Anywhere" }, { id: "mac/s2", title: "On the Mac", mode: "bypassPermissions" });
         expect(onServer.cwd).toBe(strange);
+        // Refused once the session was made (an effort its model doesn't take): its folder's start-up has run, so it counts.
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", effort: "bogus" }, { ...from, id: "lab/eff" })).rejects.toThrow('doesn\'t take "bogus" effort');
+        expect((engine as any).sessionStarts.times.get("lab/eff")).toHaveLength(1);
+        // Refused before (a model this machine hasn't): it doesn't.
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, { ...from, id: "lab/early" })).rejects.toThrow("isn't a model on this machine");
+        expect((engine as any).sessionStarts.times.get("lab/early") ?? []).toHaveLength(0);
         for (const rt of [...engine.runtimes.values()]) await until(() => !rt.busy);
     }, 40_000);
 

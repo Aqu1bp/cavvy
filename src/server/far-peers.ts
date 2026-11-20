@@ -75,7 +75,7 @@ function readOf(id: string, v: unknown): Read {
 function startedOn(on: string, v: unknown): Started {
     const row = rowFrom(v, on);
     // The session and where it is: one without a folder isn't one it started.
-    if (!row?.cwd) throw new PeerUnsure(`${on} didn't say which session it started. It may have started one all the same: look with ListSessions (all: true) before starting it again.`);
+    if (!row?.cwd.trim()) throw new PeerUnsure(`${on} didn't say which session it started. It may have started one all the same: ${LOOK_FIRST}`);
     const effort = EFFORT_LEVELS.find((e) => e === (v as { effort?: unknown }).effort);
     return { ...row, ...(effort ? { effort } : {}) };
 }
@@ -105,9 +105,15 @@ function fromOf(params: Record<string, unknown>): { id: string; title: string; m
  */
 const startRefused = (e: unknown): never => {
     const said = e instanceof Error ? e.message : String(e);
-    if (/didn't answer|went away before it answered/.test(said)) throw new PeerUnsure(`${said} The session may have started all the same: look with ListSessions (all: true) before starting it again.`);
+    // Said so already, by a machine this one asked through.
+    if (said.includes(LOOK_FIRST)) throw new PeerUnsure(said);
+    if (NO_ANSWER.test(said)) throw new PeerUnsure(`${said} The session may have started all the same: ${LOOK_FIRST}`);
     throw new PeerError(said);
 };
+/** What an unanswered start ends with, wherever it's said: how it's known for one across the machines it's told through. */
+const LOOK_FIRST = "look with ListSessions (all: true) before starting it again.";
+/** A call that got no answer, as the connections say it (watch.ts request, engine.ts peers.call): the whole of what they say. */
+const NO_ANSWER = /^(?:[\w.-]+ didn't answer\.|[\w.-]+ went away before it answered\.|Cavvy on your computer didn't answer in time\.)$/;
 
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
@@ -260,7 +266,7 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
             const v = await call("start", { ...o, from }).catch(startRefused);
             // Already named as this machine names it (`mac/<id>`, `box/<id>`).
             const s = v && typeof v === "object" ? split(String((v as { id?: unknown }).id ?? "")) : undefined;
-            if (!s || !/^[\w.-]{1,40}$/.test(s.on)) throw new PeerUnsure("The user's computer didn't say which session was started. One may have been all the same: look with ListSessions (all: true) before starting it again.");
+            if (!s || !/^[\w.-]{1,40}$/.test(s.on)) throw new PeerUnsure(`The user's computer didn't say which session was started. One may have been all the same: ${LOOK_FIRST}`);
             return startedOn(s.on, { ...(v as object), id: s.id });
         },
     };

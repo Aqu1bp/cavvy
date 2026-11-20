@@ -218,4 +218,13 @@ test("a session is started on another machine: from the user's computer on a ser
     }
     const refusal = await unsure(() => Promise.reject(new Error("slow isn't connected.")));
     expect([refusal instanceof PeerUnsure, refusal instanceof PeerError]).toEqual([false, true]);
+    // A refusal that only mentions those words (a folder's name) is a refusal.
+    const named = await unsure(() => Promise.reject(new Error("/srv/slow didn't answer. isn't a folder")));
+    expect(named instanceof PeerUnsure).toBe(false);
+    // Through the computer to another server that doesn't answer: still known for unanswered where it was asked from,
+    // as the computer's connection to a server tells it (its error's words, nothing else).
+    const silent = { ask: () => Promise.reject(new Error("lab didn't answer.")) };
+    const relayed = serverFarPeers((op, params) => answerPeers("box", op, params, mac.ops, new Map([["box", box.link], ["lab", silent]])).catch((e: Error) => Promise.reject(new Error(e.message))));
+    const lost = await relayed.start({ machine: "lab", cwd: "/srv/lab", prompt: "p", title: "t" }, from).catch((e) => e);
+    expect([lost instanceof PeerUnsure, (lost as Error).message]).toEqual([true, "lab didn't answer. The session may have started all the same: look with ListSessions (all: true) before starting it again."]);
 });

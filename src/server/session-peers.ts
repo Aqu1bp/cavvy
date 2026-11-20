@@ -161,6 +161,8 @@ export function peerOps(host: PeerHost, server: boolean) {
                     if (i >= 0) list.splice(i, 1);
                 }
             };
+            // Once the session is made its folder's start-up has run: refused after that, it still counts.
+            let made = false;
             try {
                 // A model asked for has to be one this machine has, said before anything is made.
                 const asked = o.model === undefined ? undefined : askedModel(host, o.model);
@@ -168,7 +170,9 @@ export function peerOps(host: PeerHost, server: boolean) {
                 if (asked?.efforts && o.effort !== undefined && !asked.efforts.includes(o.effort as Effort)) throw new PeerError(`${asked.ref} doesn't take "${redact(o.effort).slice(0, 40)}" effort. It takes: ${asked.efforts.join(", ") || "none"}.`);
                 let rt: Runtime;
                 try {
-                    rt = await host.create(cwd, { mode: narrowerMode(from.mode, host.defaultModeIn(cwd)), accounts: {}, startedBy: from.id });
+                    const mode = narrowerMode(from.mode, host.defaultModeIn(cwd));
+                    made = true;
+                    rt = await host.create(cwd, { mode, accounts: {}, startedBy: from.id });
                 } catch (e) {
                     throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);
                 }
@@ -199,7 +203,7 @@ export function peerOps(host: PeerHost, server: boolean) {
                 const runs = rt.settings().effort;
                 return { ...runtimeSummary(rt), effort: runs && efforts.includes(runs) ? runs : undefined };
             } catch (e) {
-                uncount();
+                if (!made) uncount();
                 throw e;
             }
         },
@@ -218,9 +222,10 @@ function askedModel(host: PeerHost, ref: string): { ref: string; provider: strin
     if (!p || !def) return refuse(`${shown(ref)} isn't a model on this machine.`, getProvider(ref.split(":")[0]!.trim())?.id);
     if (!p.id) return refuse(`Say which of ${def.name}'s models.`, def.id);
     const listed = listings.find((l) => l.provider.id === def.id)?.models ?? [];
-    const info = listed.find((m) => m.id === p.id);
-    if (listed.length ? !info : !resolveModelInfo(ref)) return refuse(`${def.name} has no model ${shown(p.id)} on this machine.`, def.id, p.id);
-    return { ref, provider: def.id, ...(info ? { efforts: modelEfforts(info) } : {}) };
+    // One its provider lists; where the provider lists none, what's known of the model by its name.
+    const info = listed.find((m) => m.id === p.id) ?? (listed.length ? undefined : resolveModelInfo(ref));
+    if (!info) return refuse(`${def.name} has no model ${shown(p.id)} on this machine.`, def.id, p.id);
+    return { ref, provider: def.id, efforts: modelEfforts(info) };
 }
 
 /** `far`: the user's other machines' sessions, as they can be reached when asked (none: not from here). */
