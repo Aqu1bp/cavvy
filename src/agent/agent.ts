@@ -3294,12 +3294,13 @@ export class Agent {
 
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
-        const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
         // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own
         // calls are, in another folder or over the network too (the session itself runs anything there unasked).
         const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
+        // There, a command in another folder is checked as it runs: from that folder, as Codex's come (`cd <folder> && …`).
+        const input = bypass && req.elsewhere && tool.name === "Bash" ? { ...req.input, command: `cd '${req.elsewhere.replace(/'/g, `'\\''`)}' && ${String(req.input.command ?? "")}` } : req.input;
         const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.runningIn ?? this.state.cwd;
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.

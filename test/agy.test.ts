@@ -223,6 +223,20 @@ describe("the gate, by Cavvy's mode", () => {
             await bypass.run("[[run:touch x]]");
             expect(bypass.asked).toEqual([]);
             expect(decisions().at(-1)).not.toBe("auto_approve");
+            // It's checked as run in that folder: in one Cavvy keeps from every agent (a named account's), refused.
+            const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+            const named = realpathSync(tempDir("agy-account-"));
+            saveAgentConfig("codex", { accounts: [{ id: "named", name: "Named", folder: named, managed: true }] });
+            process.env.FAKE_AGY_CWD = named;
+            try {
+                const kept = await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }) });
+                await kept.run("[[run:cat auth.json]]");
+                expect(kept.asked).toEqual([]);
+                expect(decisions().at(-1)).not.toBe("auto_approve");
+            } finally {
+                saveAgentConfig("codex", { accounts: [] });
+                removeAgentConfig("codex");
+            }
         } finally {
             delete process.env.FAKE_AGY_CWD;
         }

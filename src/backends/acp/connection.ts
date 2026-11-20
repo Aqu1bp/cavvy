@@ -1040,7 +1040,7 @@ export class AcpConnection implements CliConnection {
             ...(req.title ? { title: req.title } : {}),
             ...(req.reason ? { reason: req.reason } : {}),
             asksAlways: true,
-            ...(bypass ? { hooksOnly: true } : own?.elsewhere ? { elsewhere: true } : {}),
+            ...(bypass ? { hooksOnly: true } : own?.elsewhere && own.dir ? { elsewhere: own.dir } : {}),
             ...(main && call.toolUseId ? { callId: call.toolUseId } : {}),
             ...(label ? { agentLabel: label } : {}),
             // Checked on what Grok left of it: a yes isn't remembered for what was cut.

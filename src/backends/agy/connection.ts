@@ -523,7 +523,7 @@ export class AgyConnection implements CliConnection {
             ...(req.ask ? { title: req.ask } : {}),
             ...(req.reason ? { reason: req.reason } : {}),
             asksAlways: true,
-            ...(bypass ? { hooksOnly: true } : req.elsewhere ? { elsewhere: true } : {}),
+            ...(bypass ? { hooksOnly: true } : req.elsewhere && req.dir ? { elsewhere: req.dir } : {}),
             ...(row ? { callId: row.id } : {}),
             ...(label ? { agentLabel: label } : {}),
             signal,
