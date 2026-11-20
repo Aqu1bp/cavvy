@@ -7,7 +7,7 @@ import { app, checkLimits, noModel, refreshLimits, rpc } from "../state/app";
 import { setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
 import { plural, tokens } from "../lib/format";
-import { costText, emptyText, liftsAt, meterOf, rangeLabel, usd, windowCaption } from "../lib/limits";
+import { costText, emptyText, liftsAt, meterOf, planTitle, rangeLabel, scopeName, usd, windowCaption, windowTone } from "../lib/limits";
 import { axisTicks, byAccount, niceTop, pct, periodLabel, periodName, processed, share, sourceOf, SOURCES, type AccountTotal } from "../lib/usage";
 import { Segmented, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -26,8 +26,7 @@ function PlanLimitsGroup() {
                     <>
                         <h3 class="set-h usage-plan-name">
                             <ProviderIcon id={l.provider} name={name(l.provider)?.name} size={13} />
-                            {name(l.provider)?.agentCli?.plan ?? name(l.provider)?.name ?? l.provider}
-                            {" · "}{name(l.provider)?.agentCli?.accounts?.find((a) => a.id === (l.accountId ?? "default"))?.name ?? l.accountId ?? "Default"}
+                            {planTitle(name(l.provider), l.accountId, l.provider).title}
                             <Show when={m!.asOf}>
                                 <span class="plan-asof"> · {m!.asOf}</span>
                             </Show>
@@ -40,9 +39,16 @@ function PlanLimitsGroup() {
                                     <Show when={liftsAt(m!)}>{(at) => <span class="plan-reached-when">· resets {at()}</span>}</Show>
                                 </div>
                             </Show>
+                            {/* Only some models' limit reached (Fable's): amber, as the plan's other models go on. Its window says when it resets. */}
+                            <Show when={!m!.reached && m!.partly.length}>
+                                <div class="plan-reached credits">
+                                    <Hourglass size={14} aria-hidden="true" />
+                                    <span>{m!.partly.map((w) => `${scopeName(w.scope!)} limit reached${w.credits ? " · using credits" : ""}`).join(", ")}</span>
+                                </div>
+                            </Show>
                             <For each={m!.windows}>
                                 {(w) => (
-                                    <div class={`useb ${w.reached ? "reached" : ""}`}>
+                                    <div class={`useb ${windowTone(w)}`}>
                                         <div class="useb-top">
                                             <b>{w.label}</b>
                                             <span class="useb-sub num">{windowCaption(w)}</span>
@@ -72,7 +78,6 @@ const amount = (r: Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheRead
 const costFigure = (r: { cost: number; unknown: boolean; estimated?: boolean }) => (r.unknown && !r.cost ? "—" : `${r.estimated ? "~" : ""}${usd(r.cost)}${r.unknown ? "+" : ""}`);
 const figure = (r: Parameters<typeof amount>[0] & { unknown: boolean }, m: Metric) => (m === "tokens" ? tokens(processed(r)) : costFigure(r));
 /** The CLIs report plans in lower case ("max"). */
-const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
 
 /**
  * Kept separate from loading so the actual dashboard can also be rendered in tests. One total, split the same
@@ -154,7 +159,7 @@ function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary give
         // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
         if (windowMachine) return "";
         const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
-        return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.reset ? `weekly limit reset ${weekly.reset}` : weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
+        return [planTitle(info(a), a.accountId).plan, weekly?.reset ? `weekly limit reset ${weekly.reset}` : weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };
     const groups = () => SOURCES.map((s) => ({ s, list: p.accounts.filter((a) => a.source === s).sort((x, y) => amount(y, p.metric) - amount(x, p.metric)) })).filter((g) => g.list.length);
     return <>

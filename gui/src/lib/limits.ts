@@ -1,8 +1,8 @@
 // What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import type { AccountInfo, PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
-import { planNow, STALE_MS } from "@shared/plan-meter";
+import type { AccountInfo, PlanLimits, ProviderInfo, UsageRow, UsageSummary } from "@shared/protocol";
+import { covers, planNow, STALE_MS } from "@shared/plan-meter";
 
 export { STALE_MS };
 
@@ -15,12 +15,18 @@ export interface MeterWindow {
     /** When it reset, once that has passed since the report ("9:52 AM", "Wed"): usage started again then. */
     reset?: string;
     reached: boolean;
+    /** The model family it counts, for a window of some models' ("fable"): reached, it stops those only. */
+    scope?: string;
+    /** Reached, but carried on credits: a model limit's own. */
+    credits?: boolean;
 }
 
 export interface Meter {
     windows: MeterWindow[];
-    /** A limit is reached now (and hasn't reset since). */
+    /** A limit of the whole plan is reached now (and hasn't reset since). */
     reached: boolean;
+    /** Windows of some models reached now ("Weekly Fable"): those models are stopped, the plan's others aren't. */
+    partly: MeterWindow[];
     /** Reached, but turns go on past it, billed to credits (Codex) or extra usage (Claude Code). */
     usingCredits: boolean;
     /** When a reached limit resets, as a phrase ("4:40 PM, in 2h 5m"). */
@@ -71,16 +77,32 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
         pct: w.pct,
         reached: w.reached,
         ...(w.resetsAt === undefined ? {} : w.reset ? { reset: resetLabel(w.resetsAt, now) } : { resets: resetLabel(w.resetsAt, now, w.reached) }),
+        ...(w.scope ? { scope: w.scope } : {}),
+        ...(w.credits === undefined ? {} : { credits: w.credits }),
     }));
     return {
         windows,
         reached: p.reached,
+        partly: p.partly.map((w) => windows[p.windows.indexOf(w)]!),
         usingCredits: p.usingCredits,
         resets: p.liftsAt ? resetLabel(p.liftsAt, now, true) : undefined,
         asOf: p.stale ? `as of ${sameDay(p.reportedAt, now) ? clock(p.reportedAt) : resetLabel(p.reportedAt, now, true)}` : undefined,
         reportedAt: p.reportedAt,
         top: p.top ? windows[p.windows.indexOf(p.top)] : undefined,
     };
+}
+
+/** How near its limit a plan (or one of its windows) is: amber from 75%, red from 90% and at the limit. */
+export type PlanTone = "normal" | "warn" | "danger";
+
+export function planTone(pct: number | undefined, reached = false): PlanTone {
+    if (reached || (pct ?? 0) >= 90) return "danger";
+    return (pct ?? 0) >= 75 ? "warn" : "normal";
+}
+
+/** A window's tint, wherever it's drawn (the rail's card, Usage's bars): a model's limit reached (scope) is amber, as its plan is, since the plan's other models go on. */
+export function windowTone(w: Pick<MeterWindow, "pct" | "reached" | "scope">): PlanTone {
+    return w.reached && w.scope ? "warn" : planTone(w.pct === undefined ? undefined : Math.min(100, w.pct), w.reached);
 }
 
 /** "5-hour 62% · resets 4:40 PM", "5-hour · reset 9:52 AM" */
@@ -113,16 +135,20 @@ export interface NearLimit {
     reached: boolean;
     window?: string;
     resets?: string;
+    /** The model family of the window named, when it's a reached limit of some models only. */
+    scope?: string;
 }
 
 /**
- * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
+ * Home's limit pill (for the model chosen there), and an account's badge in the model picker (for no model in
+ * particular): the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
  * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
  * in a ring. A window that has reset since the report has no figure (meterOf), so it's never the one named.
  */
-export function nearLimit(m: Meter | undefined): NearLimit | undefined {
+export function nearLimit(m: Meter | undefined, model?: { id: string; name?: string }): NearLimit | undefined {
     if (!m) return undefined;
-    const live = m.windows.filter((w) => !w.reset);
+    // A model's reached limit (Fable's) counts only for a model it covers (or may): not for an account as a whole.
+    const live = m.windows.filter((w) => !w.reset && !(w.reached && w.scope && (!model || covers(w.scope, model) === false)));
     const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
     // A reached window is the one to name, whatever another's percentage.
     const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
@@ -134,12 +160,40 @@ export function nearLimit(m: Meter | undefined): NearLimit | undefined {
     if (pct < 80 && !m.reached) return undefined;
     // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
     const resets = w?.resets ?? m.resets;
-    return { pct: Math.min(100, Math.round(pct)), reached: m.reached, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}) };
+    return { pct: Math.min(100, Math.round(pct)), reached: m.reached, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}), ...(!m.reached && w?.reached && w.scope ? { scope: w.scope } : {}) };
 }
 
-/** An account's badge in the model picker: "limit" once it's reached, else its share ("94%"); `long` in its list. */
+/** An account's badge in the model picker: "limit" once its plan's limit is reached, else its share ("94%"); `long` in its list. A model's own limit marks that model's row. */
 export function limitBadge(n: Pick<NearLimit, "pct" | "reached">, long: boolean): string {
     return n.reached ? (long ? "Limit reached" : "limit") : `${n.pct}%${long ? " used" : ""}`;
+}
+
+/** A model family as it's named to the user: "fable" → "Fable". */
+export function scopeName(scope: string): string {
+    return scope.charAt(0).toUpperCase() + scope.slice(1);
+}
+
+/**
+ * What a turn on `model` runs into now: the plan's limit, or a reached window of some models that covers it (or
+ * may: an alias like "default" can't be told). Undefined when nothing stops it. `credits`: it goes on, on credits.
+ */
+export function limitFor(m: Meter | undefined, model: { id: string; name?: string } | undefined): { window?: MeterWindow; credits: boolean; scope?: string } | undefined {
+    if (!m) return undefined;
+    if (m.reached) return { window: m.windows.find((w) => w.reached && !w.scope), credits: m.usingCredits };
+    const w = m.partly.find((w) => covers(w.scope!, model) !== false);
+    return w ? { window: w, credits: w.credits === true, scope: w.scope } : undefined;
+}
+
+/**
+ * A plan as every surface names it: the CLI and its plan ("Claude Code Max", "Codex Plus"; the CLI alone until it
+ * has said which plan), and the account's name too when the CLI has more than one.
+ */
+export function planTitle(info: Pick<ProviderInfo, "name" | "agentCli"> | undefined, accountId = "default", fallback = ""): { title: string; plan: string; account?: string } {
+    const accounts = info?.agentCli?.accounts ?? [];
+    const account = accounts.find((a) => a.id === accountId);
+    const plan = account?.plan ? `${info!.name} ${account.plan.charAt(0).toUpperCase()}${account.plan.slice(1)}` : info?.name ?? fallback;
+    const name = accounts.length > 1 ? account?.name ?? (accountId === "default" ? "Default" : accountId) : undefined;
+    return { title: name ? `${plan} · ${name}` : plan, plan, ...(name ? { account: name } : {}) };
 }
 
 /** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */

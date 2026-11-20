@@ -1517,6 +1517,8 @@ for await (const chunk of Bun.stdin.stream()) {
                             models: [
                                 { value: "default", supportsFastMode: true, resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
                                 { value: "sonnet", resolvedModel: "claude-test-2", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
+                                // FAKE_FAMILY_MODELS=1: models of the families with limits of their own, for those limits' checks.
+                                ...(process.env.FAKE_FAMILY_MODELS === "1" ? [{ value: "opus", resolvedModel: "claude-opus-test", displayName: "Opus", supportedEffortLevels: ["low", "high"] }, { value: "fable", resolvedModel: "claude-fable-test", displayName: "Fable", supportedEffortLevels: ["low", "high"] }] : []),
                             ],
                             account: { tokenSource: "none" },
                         },

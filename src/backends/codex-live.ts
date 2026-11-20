@@ -296,7 +296,7 @@ export class CodexLiveConnection extends CodexTurn {
         this.outFor(id).failure = redact(String(error?.message ?? fallback));
         if (error?.codexErrorInfo === "usageLimitExceeded") {
             this.limitUpdates.revision++;
-            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
+            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default", this.limits, this.t.model), true);
         }
     }
 

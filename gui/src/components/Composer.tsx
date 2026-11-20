@@ -762,7 +762,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} home={p.variant === "home"} />;
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? settings().model?.split(":")[0]} model={model()} home={p.variant === "home"} />;
     return (
         <div
             ref={root}

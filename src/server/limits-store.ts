@@ -27,7 +27,9 @@ function windowOf(v: unknown): LimitWindow | undefined {
     const used = num(w.usedPercent);
     // `at`: when this window was reported, if before its plan's report; a file without it has the plan's.
     const at = num(w.at);
-    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }) };
+    // `scope`: the model family a window counts, a word of model ids.
+    const scope = str(w.scope, 40);
+    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }), ...(scope && /^[a-z][a-z0-9.-]*$/.test(scope) ? { scope } : {}) };
 }
 
 /** One saved report, or undefined when it isn't one (a hand-edited or older file). */

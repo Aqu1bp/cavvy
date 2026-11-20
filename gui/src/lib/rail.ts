@@ -5,7 +5,7 @@
 import type { PlanLimits, ProviderInfo, SessionSummary } from "@shared/protocol";
 import { planLimitKey } from "../../../src/server/protocol";
 import type { SidebarEntry } from "./session-order";
-import { meterOf, resetLabel, windowLine } from "./limits";
+import { meterOf, planTitle, planTone, resetLabel, scopeName, windowLine, windowTone, type PlanTone } from "./limits";
 
 /** The glyph at the start of a row: working, waiting for you, finished since you looked, stopped, or quiet. */
 export type RailGlyph = "running" | "waiting" | "done" | "error" | "new" | "idle";
@@ -98,13 +98,7 @@ export function needsLine(waiting: readonly Pick<SessionSummary, "title" | "wait
     return `${waiting.length} sessions need you`;
 }
 
-/** How near its limit a plan (or one of its windows) is: amber from 75%, red from 90% and at the limit. */
-export type PlanTone = "normal" | "warn" | "danger";
-
-export function planTone(pct: number | undefined, reached = false): PlanTone {
-    if (reached || (pct ?? 0) >= 90) return "danger";
-    return (pct ?? 0) >= 75 ? "warn" : "normal";
-}
+export { planTone, windowTone, type PlanTone } from "./limits";
 
 /** One of a plan's windows (5-hour, weekly), for the usage card. */
 export interface RailWindow {
@@ -222,34 +216,37 @@ export function railFoot(o: {
     });
     plans.sort((a, b) => Number(b.info.id === o.provider) - Number(a.info.id === o.provider) || rank(a.info.id) - rank(b.info.id) || (b.limits?.at ?? 0) - (a.limits?.at ?? 0));
     return plans.map(({ info, accountId, account, limits }): RailPlan => {
-        const plan = account?.plan ? capital(account.plan) : undefined;
-        const name = plan ? `${info.name} ${plan}` : info.agentCli!.plan;
+        // As every surface names it (planTitle): the account's name in it when there are several.
+        const name = planTitle(info, accountId).title;
         const meter = meterOf(limits, o.now);
-        const many = (info.agentCli!.accounts?.length ?? 0) > 1;
-        const who = [many ? account?.name : undefined, account?.email].filter(Boolean).join(", ");
-        const head = who ? `${name} (${who})` : name;
+        const head = account?.email ? `${name} (${account.email})` : name;
         if (!limits || !meter) return { provider: info.id, accountId, name, tone: "normal", reached: false, line: "Usage shows after a turn", brief: "Usage shows after a turn", stale: false, detail: `${head}\nNo usage reported yet: it shows after your first turn.`, windows: [] };
         // The window nearest its limit is the one that matters now; one that has reset since the report says nothing.
         const top = meter.top;
         const pct = meter.reached ? 100 : top?.pct;
         // When it was reported, and when a reached limit lifts, as briefly as can be: "2:02 PM", "Mon".
         const reported = resetLabel(meter.reportedAt, o.now);
-        const lifts = meter.resets?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
+        const short = (t?: string) => t?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
+        const lifts = short(meter.resets);
+        // Only some models' limit reached (Fable's): the plan's others go on, so it's said, amber, not as the plan's.
+        const partly = meter.reached ? undefined : meter.partly[0];
         const brief = meter.reached ? `Reached${meter.usingCredits ? " · using credits" : ""}${lifts ? `, resets ${lifts}` : ""}`
+            : partly ? `${scopeName(partly.scope!)} limit reached${partly.credits ? " · using credits" : ""}${partly.resets ? `, resets ${short(partly.resets)}` : ""}`
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
             : `Reset since ${reported}`;
-        const line = !meter.reached && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
+        const line = !meter.reached && !partly && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
         const detail = [head, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
         // The card's rows: a window that has reset since the report has no figure to show, only when it reset.
         const windows = meter.windows.map((w): RailWindow => {
             const shown = w.pct === undefined ? undefined : Math.min(100, w.pct);
-            return { label: w.label, pct: shown, tone: planTone(shown, w.reached), reached: w.reached, ...(w.reset ? { reset: w.reset } : w.resets ? { resets: w.resets.replace(/, in .*$/, "") } : {}) };
+            return { label: w.label, pct: shown, tone: windowTone(w), reached: w.reached, ...(w.reset ? { reset: w.reset } : w.resets ? { resets: w.resets.replace(/, in .*$/, "") } : {}) };
         });
         // A limit reached that none of the windows is (only that, or Codex's workspace limit beside
         // windows with room left): a row of its own says so, first.
-        if (meter.reached && !windows.some((w) => w.reached)) windows.unshift({ label: "Limit", tone: "danger", reached: true, resets: lifts });
+        if (meter.reached && !meter.windows.some((w) => w.reached && !w.scope)) windows.unshift({ label: "Limit", tone: "danger", reached: true, resets: lifts });
+        const tone = meter.reached ? planTone(pct, true) : partly && planTone(pct) === "normal" ? "warn" : planTone(pct);
         return {
-            provider: info.id, accountId, name, pct, tone: planTone(pct, meter.reached), reached: meter.reached,
+            provider: info.id, accountId, name, pct, tone, reached: meter.reached,
             window: meter.reached ? undefined : top?.label, lifts: meter.reached ? lifts : undefined,
             line, brief, stale: Boolean(meter.asOf), asOf: meter.asOf, detail, windows,
         };

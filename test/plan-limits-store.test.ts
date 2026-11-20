@@ -110,10 +110,12 @@ test("whether turns go on using credits (#434) is saved as a flag, and nothing e
 
 test("a window kept from an earlier report is saved with when that was; an older file's have the plan's time", () => {
     writeFileSync(paths.planLimits(), JSON.stringify({ version: 1, limits: [
-        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000 }, { id: "x", label: "X", at: "soon" }] },
+        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000, scope: "fable" }, { id: "x", label: "X", at: "soon", scope: "Not A Word!" }] },
     ] }));
     const [l] = loadPlanLimits();
     expect(l!.windows.map((w) => w.at)).toEqual([undefined, 1000, undefined]);
+    // And the models a window counts, when it's one of some models' (a word of their ids, nothing else).
+    expect(l!.windows.map((w) => w.scope)).toEqual([undefined, "fable", undefined]);
 });
 
 test("a broken or foreign file is ignored", async () => {

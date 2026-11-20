@@ -143,7 +143,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
     const Picker = component(source(), "ModelPicker", {
         app, modelsFor: () => app.models, providersFor: () => app.providers, limitsFor: () => app.limits, refreshModelsFor: stub, connFor: () => "open", awayMachine: () => undefined, effortAt, effortKey, effortLevels, effortOf, takesEffort, setEffort, setFastMode: stub, setSettingsTab: stub,
         Menu: (p: { open: boolean; children: unknown }) => solid.createMemo(() => (p.open ? p.children : null)),
-        menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined, limitBadge: () => "",
+        menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined, limitBadge: () => "", planTitle: () => ({ title: "", plan: "" }), scopeName: (s: string) => s, covers: () => false,
         now: () => 0, sendsAccountPick: () => false, setAccount: stub, prefs: { favoriteModels: [] }, setPrefs: stub, handleFor: () => undefined, noModel: () => false, refreshModels: stub, setModel: stub,
         setAddAccountFor: stub, toast: stub, isMod: () => false, mod: "Ctrl", withShortcut: (label: string) => label, requestAnimationFrame: () => 0,
         ...names(["ProviderIcon", "Spinner", "Check", "ChevronDown", "ChevronLeft", "ChevronRight", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "Zap"]),

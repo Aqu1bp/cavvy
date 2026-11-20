@@ -1354,6 +1354,12 @@ export interface LimitWindow {
     /** When this window was last reported (ms), when it's older than the plan's report (`at`): kept from an earlier one. */
     at?: number;
     /**
+     * Only for a window that counts some models (Claude Code's Weekly Fable, Opus, Sonnet; a Codex model's limit):
+     * the family it covers, a word of their model ids ("fable", "spark"). Reached, it stops those models, not the
+     * plan (plan-meter.ts covers).
+     */
+    scope?: string;
+    /**
      * Only on a window of another metered limit than the plan's own (a Codex model's): whether
      * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
      * stops there, whatever the plan's credits.

@@ -1813,7 +1813,7 @@ class ClaudeTurn {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
+            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default", this.limits, this.t.model), true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";

@@ -35,7 +35,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
-        RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null,
+        RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null, Hourglass: () => null,
         Segmented: (p: any) => ({ tag: "segmented", props: p, children: [] }),
     };
     const component = new Function(...Object.keys(scope), `${js}; return UsageView;`)(...Object.values(scope));
@@ -102,9 +102,31 @@ test("by account: shown once a subscription has two, named from the provider, wi
         expect(f.text()).toContain("By account");
         expect(f.text()).toContain("2 accounts");
         expect(f.text()).toContain("Work");
-        expect(f.text()).toContain("Max, weekly limit 31% used");
+        // The plan as every surface names it (planTitle); one that hasn't said its plan, by the CLI.
+        expect(f.text()).toContain("Claude Code Max, weekly limit 31% used");
         expect(f.text()).toContain("Personal");
-        expect(f.text()).toContain("Claude subscription");
+        expect(f.text()).not.toContain("Claude subscription");
+    } finally { f.dispose(); }
+});
+
+test("limits: a model's limit reached is an amber line of its own, not the plan's; bars are tinted as the rail's card; plans named as everywhere", async () => {
+    const empty = summary(); empty.rows = []; empty.sessions = 0;
+    const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { plan: "Claude subscription", accounts: [{ id: "default", name: "Default", plan: "ultra" }] } }];
+    const reports = { [planLimitKey("claude-code")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, reached: false, windows: [
+        { id: "seven_day", label: "Weekly", usedPercent: 86, resetsAt: 1_800_000_000_000 + 86_400_000 },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
+    ] } };
+    const f = mount(async () => empty, reports, providers);
+    try {
+        await tick();
+        f.segment("Usage view").onChange("limits"); await tick();
+        expect(f.text()).toContain("Claude Code Ultra");
+        expect(f.text()).not.toContain("Claude subscription");
+        expect(f.text()).toContain("Fable limit reached");
+        expect(f.text()).not.toContain("Limit reached");
+        expect(f.cls("plan-reached").map((n) => n.props.class)).toEqual(["plan-reached credits"]);
+        // 86% is amber, as in the card; Fable's reached limit amber too.
+        expect(f.cls("useb").map((n) => n.props.class.trim())).toEqual(["useb warn", "useb warn"]);
     } finally { f.dispose(); }
 });
 

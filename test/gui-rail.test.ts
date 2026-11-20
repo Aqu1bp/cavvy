@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
 const { resetLabel } = await import("../gui/src/lib/limits");
-const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph, heldOrder, planKey } = await import("../gui/src/lib/rail");
+const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph, heldOrder, planKey, windowTone } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");
@@ -60,7 +60,8 @@ test("a plan that hasn't reported yet shows its name and an empty ring", () => {
     expect(plan!.pct).toBeUndefined();
     // A report with nothing in it says nothing either.
     const [empty] = railFoot({ limits: { [key("codex")]: limits("codex", NOW, []) }, providers: [codex], now: NOW });
-    expect(empty).toMatchObject({ name: "ChatGPT plan", line: "Usage shows after a turn" });
+    // Named by the CLI until it has said which plan (planTitle).
+    expect(empty).toMatchObject({ name: "Codex", line: "Usage shows after a turn" });
     expect(empty!.pct).toBeUndefined();
 });
 
@@ -83,7 +84,7 @@ test("both signed in: the session in view's plan first, else the one used last, 
     const providers = [claude, codex];
     // No session in view and no sessions: the latest report first.
     expect(railFoot({ limits: all, providers, now: NOW })).toEqual([
-        { provider: "codex", accountId: "default", name: "ChatGPT plan", pct: 74, tone: "normal", reached: false, window: "Weekly", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "ChatGPT plan\nWeekly 74%",
+        { provider: "codex", accountId: "default", name: "Codex", pct: 74, tone: "normal", reached: false, window: "Weekly", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "Codex\nWeekly 74%",
             windows: [{ label: "Weekly", pct: 74, tone: "normal", reached: false }] },
         { provider: "claude-code", accountId: "default", name: "Claude Code Max", pct: 62, tone: "normal", reached: false, window: "5-hour", line: "62% of the 5-hour limit", brief: "62% of the 5-hour limit", stale: false, detail: "Claude Code Max\n5-hour 62%\nWeekly 30%",
             windows: [{ label: "5-hour", pct: 62, tone: "normal", reached: false }, { label: "Weekly", pct: 30, tone: "normal", reached: false }] },
@@ -102,10 +103,11 @@ test("the session in view's account is the one shown, named when there are sever
         [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 10 }]),
         [key("codex", "work")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 55 }]),
     };
-    expect(railFoot({ limits: all, providers: [two], now: NOW })[0]).toMatchObject({ name: "Codex Plus", pct: 10 });
+    // Several accounts: the account's name too, as every surface says it (planTitle).
+    expect(railFoot({ limits: all, providers: [two], now: NOW })[0]).toMatchObject({ name: "Codex Plus · Default", pct: 10 });
     const [work] = railFoot({ limits: all, providers: [two], provider: "codex", account: "work", now: NOW });
-    expect(work).toMatchObject({ name: "Codex Pro", pct: 55 });
-    expect(work!.detail.split("\n")[0]).toBe("Codex Pro (Work, me@work.example)");
+    expect(work).toMatchObject({ name: "Codex Pro · Work", pct: 55 });
+    expect(work!.detail.split("\n")[0]).toBe("Codex Pro · Work (me@work.example)");
 });
 
 test("a reached limit fills the ring and says when it resets", () => {
@@ -327,4 +329,22 @@ test("the plan card keeps its order while it's open, though a check moves the ne
     const held = [codex, claude].map(planKey);
     expect(heldOrder([claude, codex], held)).toEqual([codex, claude]);
     expect(heldOrder([other, claude, codex], held)).toEqual([codex, claude, other]);
+});
+
+test("a model's limit reached (Fable's) is amber and says which; the plan's other models go on", () => {
+    const ultra = withAccount(claude, { plan: "ultra" } as any);
+    const all = { [key("claude-code")]: limits("claude-code", NOW, [
+        { id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: NOW + 3 * 86_400_000 },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, resetsAt: NOW + 3 * 86_400_000, reached: true, scope: "fable" },
+    ], { reached: false }) };
+    const [plan] = railFoot({ limits: all, providers: [ultra], now: NOW });
+    expect(plan).toMatchObject({ reached: false, pct: 40, tone: "warn", window: "Weekly" });
+    expect(plan!.brief).toMatch(/^Fable limit reached, resets [A-Za-z]+\.?$/);
+    expect(plan!.windows.map((w) => [w.label, w.reached, w.tone])).toEqual([["Weekly", false, "normal"], ["Weekly Fable", true, "warn"]]);
+    // Not the "Limit" row a plan-wide stop has.
+    expect(plan!.windows.some((w) => w.label === "Limit")).toBe(false);
+});
+
+test("a window's tint is the same wherever it's drawn: amber from 75%, red from 90% and at the plan's limit", () => {
+    expect([windowTone({ pct: 86, reached: false }), windowTone({ pct: 95, reached: false }), windowTone({ pct: 40, reached: false }), windowTone({ pct: 100, reached: true }), windowTone({ pct: 100, reached: true, scope: "fable" })]).toEqual(["warn", "danger", "normal", "danger", "warn"]);
 });

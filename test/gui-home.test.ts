@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
 import { componentCode, elements, type Element } from "./gui-component-harness";
 import { ago } from "../gui/src/lib/format";
-import { limitAlternatives, limitBadge, meterOf, nearLimit, windowLine } from "../gui/src/lib/limits";
+import { limitAlternatives, limitBadge, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine } from "../gui/src/lib/limits";
 
 const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
 // Keyed, its child gets the value; otherwise an accessor, as Solid's does.
@@ -408,6 +408,11 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
     expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
     expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
+    // A model's limit reached (Fable's) counts on Home only for a model it covers.
+    const fable = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable" } as any], { reached: false });
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable", name: "Fable (claude-fable-1)" })).toMatchObject({ pct: 100, reached: false, window: "weekly Fable", scope: "fable" });
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "opus", name: "Opus (claude-opus-5)" })).toBeUndefined();
+    expect(nearLimit(meterOf(fable, Date.now()))).toBeUndefined();
     // A window that has reset since the report doesn't count, however full it was.
     const lapsed = limits([{ label: "5-hour", usedPercent: 95, resetsAt: Date.now() - 60_000 }, { label: "Weekly", usedPercent: 40 }]);
     expect(nearLimit(meterOf(lapsed, Date.now()))).toBeUndefined();
@@ -427,7 +432,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
         providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => noon, limitAlternatives, meterOf, nearLimit, windowLine,
+        now: () => noon, limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine,
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
@@ -445,7 +450,7 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     expect(elements(pill.trigger, "Gauge")).toHaveLength(1);
     expect(text(pill.trigger)).toBe("94%of 5-hour limit");
     expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
-    expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude subscription · Default usage: 5-hour 94% · resets /);
+    expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude Code usage: 5-hour 94% · resets /);
     // Home has no session: nothing to compact or switch, so no card to open; when it resets is the tooltip.
     expect(pill.trigger!.props.role).toBe("status");
     expect(pill.trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M$/);

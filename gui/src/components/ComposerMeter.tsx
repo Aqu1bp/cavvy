@@ -5,12 +5,12 @@ import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, meterOf, nearLimit, windowLine } from "../lib/limits";
+import { limitAlternatives, limitFor, meterOf, nearLimit, planTitle, scopeName, windowLine } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; name?: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
@@ -29,12 +29,15 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // The plan limits of the session's machine's accounts: another machine's session opened here has that machine's.
     const limits = () => limitsFor(p.sessionId)[planLimitKey(provider() ?? "", accountId())];
     const meter = createMemo(() => meterOf(limits(), now()));
-    const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
+    // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
+    // model's limit says nothing here.
+    const stop = createMemo(() => limitFor(meter(), state()?.model ?? p.model));
+    const name = () => planTitle(providerInfo(), accountId(), "Plan").title;
     const alternatives = () => limitAlternatives(accounts(), accountId());
     // A limit can arrive before Settings has ever checked account status.
     const refreshKey = createMemo(() => {
         const others = providerInfo()?.agentCli?.accounts?.filter((a) => a.id !== accountId()).map((a) => a.id);
-        return p.sessionId && meter()?.reached && others?.length ? JSON.stringify([provider(), accountId(), limits()?.at, others]) : undefined;
+        return p.sessionId && stop() && others?.length ? JSON.stringify([provider(), accountId(), limits()?.at, others]) : undefined;
     });
     createEffect(on(refreshKey, (key) => {
         setAccounts([]);
@@ -55,7 +58,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
             close();
             // On credits the turn didn't stop: there's nothing to send again.
-            toast(meter()?.usingCredits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
+            toast(stop()?.credits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
         } catch (error) { reportError(error); }
         finally { setSwitching(false); }
     }
@@ -66,15 +69,15 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // A reached limit is the one plan state shown here, since it stops this session: red while it blocks,
     // amber past it on credits, where nothing is blocked but it costs (#426).
     const tone = (): "danger" | "warning" | "normal" => {
-        const ctx = view().pct ?? 0, credits = Boolean(meter()?.usingCredits);
-        if (ctx >= 0.85 || (meter()?.reached && !credits)) return "danger";
-        if (ctx >= 0.7 || (meter()?.reached && credits)) return "warning";
+        const ctx = view().pct ?? 0, credits = Boolean(stop()?.credits);
+        if (ctx >= 0.85 || (stop() && !credits)) return "danger";
+        if (ctx >= 0.7 || (stop() && credits)) return "warning";
         return "normal";
     };
     const planLine = () => (meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined);
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        meter()?.reached ? planLine() : undefined,
+        stop() ? planLine() : undefined,
     ].filter(Boolean).join(". ");
     const cli = () => Boolean(providerInfo()?.agentCli);
     const autoOff = () => !cli() && app.settings.autoCompact === false;
@@ -85,10 +88,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         if (cli()) return v.early ? `${providerInfo()?.name ?? "The CLI"} compacts at ${tokens(v.full!)}, your auto-compact setting.${whole}` : `${providerInfo()?.name ?? "The CLI"} decides when to compact.${whole}`;
         return `Compacts on its own at ${tokens(v.full!)}, leaving room for the answer.${whole}`;
     };
-    const reachedWindow = () => meter()?.windows.find((w) => w.reached);
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
-    const near = createMemo(() => (p.home ? nearLimit(meter()) : undefined));
-    const width = () => (meter()?.reached ? 280 : 256);
+    const near = createMemo(() => (p.home ? nearLimit(meter(), p.model) : undefined));
+    const width = () => (stop() ? 280 : 256);
     // Unavailable, not disabled: the tooltip still says why, to the pointer and the keyboard.
     const compactTitle = () => (!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : undefined);
     const compactItem = () => (
@@ -153,12 +155,12 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                         if (to && !panel?.contains(to) && to !== btn) close();
                     }}>
                     {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
-                    <Show when={meter()?.reached}>
-                        <section class={`cx-limit ${meter()!.usingCredits ? "credits" : ""}`} aria-label="Plan limit">
+                    <Show when={stop()}>{(st) => (
+                        <section class={`cx-limit ${st().credits ? "credits" : ""}`} aria-label="Plan limit">
                             <Gauge size={15} aria-hidden="true" />
                             <div>
-                                <b>{meter()!.usingCredits ? "Limit reached, using credits" : "Limit reached"}</b>
-                                <span>{name()}{reachedWindow() ? `, ${reachedWindow()!.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase())} limit` : ""}.<Show when={meter()!.resets ?? reachedWindow()?.resets}>{(r) => <> Resets {r()}.</>}</Show></span>
+                                <b>{`${st().scope ? `${scopeName(st().scope!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</b>
+                                <span>{name()}{st().window ? `, ${st().window!.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase())} limit` : ""}.<Show when={(st().scope ? undefined : meter()?.resets) ?? st().window?.resets}>{(r) => <> Resets {r()}.</>}</Show></span>
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
@@ -167,7 +169,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                                 </Show>
                             </div>
                         </section>
-                    </Show>
+                    )}</Show>
                     {/* What the context holds, the bar under it, then the one thing to do. (What the session has used is
                         Settings → Usage's.) */}
                     <div class="cx-info">

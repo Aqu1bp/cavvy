@@ -4,7 +4,8 @@ import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/so
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
 import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
-import { limitBadge, meterOf, nearLimit, windowShort } from "../../gui/src/lib/limits";
+import { limitBadge, meterOf, nearLimit, planTitle, scopeName, windowShort } from "../../gui/src/lib/limits";
+import { covers } from "../../src/server/plan-meter";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
 
@@ -88,7 +89,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, windowShort, tokens, now: () => 0,
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, limitBadge, windowShort, planTitle, scopeName, covers, tokens, now: () => 0,
         // The effort of the model in use, under the list (none of these models takes one).
         takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         // None of the window's own: what's offered is the session's machine's (modelsFor), whichever that is.
@@ -238,7 +239,7 @@ test("a subscription's account is a button in its heading, opening its accounts:
     const items = f.accountItems;
     expect(items().map(text)).toEqual(["Work", "PersonalLimit reached", "Add account"]);
     expect(items().map((r) => r.props["aria-checked"])).toEqual([true, false, undefined]);
-    expect(items()[1].props.title).toBe("Max. Limit reached");
+    expect(items()[1].props.title).toBe("CLI Max · Personal. Limit reached");
     expect(f.doc.activeElement).toBe(items()[0]);
     // Arrows move through the list; they don't switch accounts: only activating one does.
     f.key("ArrowDown");
@@ -269,6 +270,25 @@ test("an account's badge follows its limit while the picker is open: allowed at 
     expect(f.accountItems().map(text)).toEqual(["Work", "PersonalLimit reached", "Add account"]);
     setLimits(at(100, false));
     expect(f.accountItems().map(text)).toEqual(["Work", "Personal100% used", "Add account"]);
+});
+
+test("a model whose model limit is reached (Fable's) is marked as an account at its limit is; the plan's other models aren't", () => {
+    const fable = { ref: "cli:fable", id: "fable", name: "Fable", provider: "cli" };
+    const opus = { ref: "cli:opus", id: "opus", name: "Opus", provider: "cli" };
+    const accounts = [{ id: "default", name: "Default", plan: "ultra" }];
+    const week = Date.now() + 86_400_000;
+    const f = picker(true, {
+        groups: [{ provider: "cli", providerName: "CLI", models: [fable, opus] }],
+        providers: [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }],
+        limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: false, at: Date.now(), windows: [{ id: "w", label: "Weekly", usedPercent: 40, resetsAt: week }, { id: "f", label: "Weekly Fable", usedPercent: 100, reached: true, resetsAt: week, scope: "fable" }] } },
+    });
+    f.tabs()[2].click();
+    const rows = all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick"));
+    const marks = rows.map((r) => all(r).filter((n) => (n.props.class ?? "").split(" ").includes("mr-lim")).map(text).join(""));
+    expect(rows.map(text).map((t) => t.replace(/Ctrl\+\d/, ""))).toEqual(["Fablelimit", "Opus"]);
+    expect(marks).toEqual(["limit", ""]);
+    // The account isn't at a limit: no badge for it.
+    expect(text(f.accountButton())).toBe("Default");
 });
 
 test("another machine's session opened here is offered that machine's accounts, not this computer's, limits or Add account", () => {
