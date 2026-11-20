@@ -417,6 +417,10 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     expect(nearLimit(meterOf(near, Date.now()), { id: "opus" })).toBeUndefined();
     expect(nearLimit(meterOf(near, Date.now()))).toBeUndefined();
     expect(nearLimit(meterOf(near, Date.now()), { id: "fable" })).toMatchObject({ pct: 86, window: "weekly Fable" });
+    // The plan's limit reached comes first, with its own lift time, over Fable's earlier reset.
+    const both = limits([{ label: "Weekly", usedPercent: 100, reached: true, resetsAt: Date.now() + 3 * 86_400_000 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: Date.now() + 86_400_000 } as any], { reached: true, resetsAt: Date.now() + 3 * 86_400_000 });
+    const m = meterOf(both, Date.now())!;
+    expect(nearLimit(m, { id: "fable" })).toMatchObject({ pct: 100, reached: true, window: "weekly", resets: m.resets });
     // An alias the CLI hasn't served yet may be Fable: counted.
     expect(nearLimit(meterOf(near, Date.now()), { id: "default" })).toMatchObject({ pct: 86 });
     // A window that has reset since the report doesn't count, however full it was.

@@ -7,7 +7,8 @@ import { app, checkLimits, noModel, refreshLimits, rpc } from "../state/app";
 import { setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
 import { plural, tokens } from "../lib/format";
-import { costText, emptyText, liftsAt, meterOf, planTitle, rangeLabel, scopeName, usd, windowCaption, windowTone } from "../lib/limits";
+import { costText, emptyText, liftsAt, meterOf, planTitle, rangeLabel, usd, windowCaption, windowTone } from "../lib/limits";
+import { scopedSummary } from "../lib/rail";
 import { axisTicks, byAccount, niceTop, pct, periodLabel, periodName, processed, share, sourceOf, SOURCES, type AccountTotal } from "../lib/usage";
 import { Segmented, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -46,7 +47,7 @@ function PlanLimitsGroup() {
                             <Show when={!m!.reached && m!.partly.length}>
                                 <div class="plan-reached credits">
                                     <Hourglass size={14} aria-hidden="true" />
-                                    <span>{m!.partly.map((w) => `${scopeName(w.scope!)} limit reached${w.credits ? " · using credits" : ""}`).join(", ")}</span>
+                                    <span>{scopedSummary(m!.partly, () => undefined)}</span>
                                 </div>
                             </Show>
                             <For each={m!.windows}>
@@ -162,7 +163,8 @@ function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary give
         if (a.source === "api") return "API key";
         // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
         if (windowMachine) return "";
-        const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
+        // The plan's own weekly window, not a model's (Weekly Fable).
+        const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => !w.scope && /week/i.test(w.label));
         return [planTitle(info(a), a.accountId).plan, weekly?.reset ? `weekly limit reset ${weekly.reset}` : weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };
     const groups = () => SOURCES.map((s) => ({ s, list: p.accounts.filter((a) => a.source === s).sort((x, y) => amount(y, p.metric) - amount(x, p.metric)) })).filter((g) => g.list.length);

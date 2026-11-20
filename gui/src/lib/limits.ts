@@ -151,17 +151,20 @@ export function nearLimit(m: Meter | undefined, model?: { id: string; resolved?:
     // for an account as a whole (no model: the picker's badge).
     const live = m.windows.filter((w) => !w.reset && !(w.scope && (!model || covers(w.scope, model) === false)));
     const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
+    // The plan's limit reached comes first, with when it lifts: a model's (Fable's) can't say more than that.
+    if (m.reached) {
+        const w = live.find((w) => w.reached && !w.scope);
+        return { pct: 100, reached: true, ...(w ? { window: w.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()) } : {}), ...(m.resets ?? w?.resets ? { resets: m.resets ?? w?.resets } : {}) };
+    }
     // A reached window is the one to name, whatever another's percentage.
     const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
     const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
-    // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
-    if (m.reached && !w?.reached) return { pct: 100, reached: true, ...(m.resets ? { resets: m.resets } : {}) };
     // At its limit is full, whatever share the CLI last gave (a window rejected at 97%): as the rail's card says.
     const pct = w ? (w.reached ? 100 : used(w)) : 0;
-    if (pct < 80 && !m.reached) return undefined;
+    if (pct < 80) return undefined;
     // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
     const resets = w?.resets ?? m.resets;
-    return { pct: Math.min(100, Math.round(pct)), reached: m.reached, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}), ...(!m.reached && w?.reached && w.scope ? { scope: w.scope } : {}) };
+    return { pct: Math.min(100, Math.round(pct)), reached: false, window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}), ...(w?.reached && w.scope ? { scope: w.scope } : {}) };
 }
 
 /** An account's badge in the model picker: "limit" once its plan's limit is reached, else its share ("94%"); `long` in its list. A model's own limit marks that model's row. */
@@ -180,9 +183,12 @@ export function scopeName(scope: string): string {
  */
 export function limitFor(m: Meter | undefined, model: { id: string; resolved?: string } | undefined): { window?: MeterWindow; credits: boolean; scope?: string } | undefined {
     if (!m) return undefined;
-    if (m.reached) return { window: m.windows.find((w) => w.reached && !w.scope), credits: m.usingCredits };
-    const w = m.partly.find((w) => covers(w.scope!, model) !== false);
-    return w ? { window: w, credits: w.credits === true, scope: w.scope } : undefined;
+    const covering = m.partly.filter((w) => covers(w.scope!, model) !== false);
+    if (!m.reached && !covering.length) return undefined;
+    // Several apply (the plan's, on credits, and Fable's, with none): any that stops turns wins.
+    const credits = (!m.reached || m.usingCredits) && covering.every((w) => w.credits === true);
+    if (m.reached) return { window: m.windows.find((w) => w.reached && !w.scope), credits };
+    return { window: covering[0], credits, scope: covering[0]!.scope };
 }
 
 /** A plan as every surface names it (plan-meter.ts planTitle), from what the server lists of its CLI. */

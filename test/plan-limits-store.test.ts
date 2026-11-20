@@ -110,12 +110,17 @@ test("whether turns go on using credits (#434) is saved as a flag, and nothing e
 
 test("a window kept from an earlier report is saved with when that was; an older file's have the plan's time", () => {
     writeFileSync(paths.planLimits(), JSON.stringify({ version: 1, limits: [
-        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000, scope: "fable" }, { id: "x", label: "X", at: "soon", scope: "Not A Word!" }] },
-        // Saved before scopes were: Claude Code's model windows get theirs by id.
-        { provider: "claude-code", accountId: "work", at: 2000, windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100 }, { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 3 }] },
+        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000 }, { id: "x", label: "X", at: "soon", scope: "fable" }] },
+        // Saved before scopes were: Claude Code's model windows get theirs by id. Which models a stop is, kept when it's one of them.
+        { provider: "claude-code", accountId: "work", at: 2000, reached: true, stopScope: "fable", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100 }, { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 3 }] },
+        // Another CLI's windows have none, whatever the file says; nor a stop of a scope that isn't one.
+        { provider: "codex", accountId: "default", at: 2000, reached: true, stopScope: "spark", windows: [{ id: "spark:primary", label: "Spark 5-hour", usedPercent: 100, scope: "spark" }] },
     ] }));
-    const [l, old] = loadPlanLimits();
+    const [l, old, codex] = loadPlanLimits();
     expect(old!.windows.map((w) => w.scope)).toEqual(["fable", "opus"]);
+    expect(old!.stopScope).toBe("fable");
+    expect(codex!.windows[0]!.scope).toBeUndefined();
+    expect(codex!.stopScope).toBeUndefined();
     expect(l!.windows.map((w) => w.at)).toEqual([undefined, 1000, undefined]);
     // And the models a window counts, when it's one of some models' (a word of their ids, nothing else).
     expect(l!.windows.map((w) => w.scope)).toEqual([undefined, "fable", undefined]);

@@ -1380,6 +1380,12 @@ export interface PlanLimits {
     /** When the reached limit resets (ms), when known. */
     resetsAt?: number;
     /**
+     * The reached limit is a window of some models' (its scope, "fable"): only when the CLI said so, naming that window
+     * in the rejection. Absent, a reached limit is the whole plan's. "*" only on a report not yet merged: a rejection
+     * that names none, the same as the last named one if that still stands (mergeLimits).
+     */
+    stopScope?: string;
+    /**
      * Past a reached limit, turns go on, billed to credits: Codex's credits, Claude Code's extra
      * usage. False when the CLI said they won't (none, or a turn stopped on the limit anyway);
      * absent when it didn't say. A flag only: no balance or amount is ever kept.

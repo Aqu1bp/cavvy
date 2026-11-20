@@ -6,6 +6,7 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import * as usage from "../gui/src/lib/usage";
 import * as limits from "../gui/src/lib/limits";
+import { scopedSummary } from "../gui/src/lib/rail";
 import { plural, tokens } from "../gui/src/lib/format";
 import { planLimitKey } from "../src/server/protocol";
 import type { UsageSummary, UsageTotals } from "../src/server/protocol";
@@ -31,7 +32,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const source = readFileSync(new URL("../gui/src/components/UsageView.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     const compiled = transformSync(source, { filename: "UsageView.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const scope = { renderer, ...solid, ...usage, ...limits, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
+    const scope = { renderer, ...solid, ...usage, ...limits, scopedSummary, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
         app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
@@ -95,7 +96,8 @@ test("by account: shown once a subscription has two, named from the provider, wi
     const row = (accountId: string, cost: number) => ({ ...two.rows[0]!, source: "claude-code" as const, accountId, cost });
     two.accounts = [row("default", 1.5), row("second", 0.5)];
     const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { plan: "Claude subscription", accounts: [{ id: "default", name: "Work", plan: "max" }, { id: "second", name: "Personal" }] } }];
-    const limitReports = { [planLimitKey("claude-code", "default")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, windows: [{ id: "week", label: "Weekly", usedPercent: 31 }] } };
+    // Fable's weekly window first: By account's figure is the plan's own weekly window, not a model's.
+    const limitReports = { [planLimitKey("claude-code", "default")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 95, scope: "fable" }, { id: "week", label: "Weekly", usedPercent: 31 }] } };
     const f = mount(async () => two, limitReports, providers);
     try {
         await tick();

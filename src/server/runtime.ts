@@ -2129,9 +2129,11 @@ export class Runtime {
         this.schedules.cancelLimitResume("account");
         // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
-        // Another account may serve the alias as another model: known again from its first usage.
-        this.servedModel = undefined;
-        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") }, servedModel: undefined });
+        // Another account may serve the alias as another model: known again from its first usage. Only for the
+        // session's own CLI: another's account doesn't serve its model.
+        const served = provider === this.model?.provider ? undefined : this.servedModel;
+        this.servedModel = served;
+        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") }, servedModel: served });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).

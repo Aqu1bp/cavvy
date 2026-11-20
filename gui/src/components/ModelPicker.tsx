@@ -394,11 +394,21 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         return { text: "No models." };
     };
 
-    /** A model stopped by a model limit (Fable's) of its account's plan, while the plan's others go on: that window. */
+    /**
+     * A model stopped by a model limit (Fable's) of its account's plan, while the plan's others go on: that window, and
+     * whether it's sure. The session's own model by the one its CLI served (as the composer); an alias not served yet
+     * may be under it.
+     */
     const modelLimit = (m: ModelSummary) => {
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
-        return meter && !meter.reached ? meter.partly.find((w) => covers(w.scope!, { id: m.id }) === true) : undefined;
+        if (!meter || meter.reached) return undefined;
+        const served = p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined;
+        for (const w of meter.partly) {
+            const c = covers(w.scope!, { id: m.id, resolved: served });
+            if (c !== false) return { w, sure: c === true };
+        }
+        return undefined;
     };
     const rowView = (r: Row) => {
         const name = modelName(r.m);
@@ -441,7 +451,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                         <span class="mr-name truncate">{name}</span>
                         {/* Its model limit reached: marked as an account at its limit is. */}
                         <Show when={stopped()}>
-                            {(w) => <span class="mp-acct-lv full mr-lim" title={`${scopeName(w().scope!)} limit reached${w().resets ? `, resets ${w().resets}` : ""}`}>limit</span>}
+                            {(s) => <span class="mp-acct-lv full mr-lim" title={`${s().sure ? `${scopeName(s().w.scope!)} limit reached` : `May be under the ${scopeName(s().w.scope!)} limit, reached`}${s().w.resets ? `, resets ${s().w.resets}` : ""}`}>limit</span>}
                         </Show>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>

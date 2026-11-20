@@ -15,9 +15,6 @@ export const STALE_MS = 15 * 60_000;
  */
 export const CLAUDE_SCOPES: Readonly<Record<string, string>> = { seven_day_opus: "opus", seven_day_sonnet: "sonnet", seven_day_overage_included: "fable" };
 
-/** A stop's reset this close to a window's is that window's period (/usage rounds to the minute). */
-const SAME_PERIOD_MS = 10 * 60_000;
-
 export interface WindowNow {
     id: string;
     label: string;
@@ -49,7 +46,7 @@ export interface PlanNow {
     reportedAt: number;
     /** Reported long enough ago that the figures may be out of date. */
     stale: boolean;
-    /** The fullest window that hasn't reset since the report, of those that aren't a model's reached limit (partly says those). */
+    /** The fullest window of the whole plan (not a model's) that hasn't reset since the report. */
     top?: WindowNow;
 }
 
@@ -66,11 +63,10 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
     const planWide = (w: WindowNow) => w.reached && !w.scope;
     const partly = windows.filter((w) => w.reached && w.scope);
     // A stop the CLI reported (a turn was refused) stands until its own reset; with none known, until every window
-    // has reset. It's a model's limit's (Fable's), not the plan's, when such a window is reached for the same period,
-    // or either says no period (Codex's model limit with no window, a turn's stop before its event).
+    // has reset. It's a model's limit's (Fable's), not the plan's, only when the CLI said so (stopScope) and that
+    // window is reached: never by inference, so a stop of the whole plan is never hidden.
     const stopLive = Boolean(l.reached) && (l.resetsAt !== undefined ? !passed(l.resetsAt) : !(windows.length && windows.every((w) => w.reset)));
-    const samePeriod = (w: WindowNow) => l.resetsAt === undefined || w.resetsAt === undefined || Math.abs(w.resetsAt - l.resetsAt) <= SAME_PERIOD_MS;
-    const scopedStop = stopLive && partly.some(samePeriod);
+    const scopedStop = stopLive && l.stopScope !== undefined && partly.some((w) => w.scope === l.stopScope);
     const planStop = stopLive && !scopedStop;
     const reached = windows.some(planWide) || planStop;
     const blocking: (number | undefined)[] = windows.filter(planWide).map((w) => w.resetsAt);
@@ -79,7 +75,8 @@ export function planNow(l: PlanLimits | undefined, now: number): PlanNow | undef
     const liftsAt = reached && !blocking.includes(undefined) && known.length ? Math.max(...known) : undefined;
     // A model's reached limit goes on, on credits, by its own word, else the plan's (Claude Code's extra usage).
     for (const w of partly) if (w.credits === undefined && l.credits !== undefined) w.credits = l.credits;
-    const top = windows.filter((w) => w.pct !== undefined && !partly.includes(w)).sort((a, b) => b.pct! - a.pct!)[0];
+    // The plan's own figure: a window of the whole plan's, never a model's (reached or not).
+    const top = windows.filter((w) => w.pct !== undefined && !w.scope).sort((a, b) => b.pct! - a.pct!)[0];
     const reportedAt = reportedOf(l, now);
     return {
         windows,

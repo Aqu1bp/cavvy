@@ -5,7 +5,7 @@
 import type { PlanLimits, ProviderInfo, SessionSummary } from "@shared/protocol";
 import { planLimitKey } from "../../../src/server/protocol";
 import type { SidebarEntry } from "./session-order";
-import { meterOf, planTitle, planTone, resetLabel, scopeName, windowLine, windowTone, type PlanTone } from "./limits";
+import { meterOf, planTitle, planTone, resetLabel, scopeName, windowLine, windowTone, type MeterWindow, type PlanTone } from "./limits";
 
 /** The glyph at the start of a row: working, waiting for you, finished since you looked, stopped, or quiet. */
 export type RailGlyph = "running" | "waiting" | "done" | "error" | "new" | "idle";
@@ -231,9 +231,9 @@ export function railFoot(o: {
         const short = (t?: string) => t?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
         const lifts = short(meter.resets);
         // Only some models' limit reached (Fable's): the plan's others go on, so it's said, amber, not as the plan's.
-        const partly = meter.reached ? undefined : meter.partly[0];
+        const partly = meter.reached ? undefined : scopedSummary(meter.partly, short);
         const brief = meter.reached ? `Reached${meter.usingCredits ? " · using credits" : ""}${lifts ? `, resets ${lifts}` : ""}`
-            : partly ? `${scopeName(partly.scope!)} limit reached${partly.credits ? " · using credits" : ""}${partly.resets ? `, resets ${short(partly.resets)}` : ""}`
+            : partly ? partly
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
             : `Reset since ${reported}`;
         const line = !meter.reached && !partly && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
@@ -267,4 +267,17 @@ export function heldOrder<T extends Pick<RailPlan, "provider" | "accountId">>(pl
         return i < 0 ? Infinity : i;
     };
     return [...plans].sort((a, b) => at(a) - at(b));
+}
+
+/**
+ * Models' limits reached (scope), as one line: "Fable limit reached, resets Mon"; several, "Fable and Opus limits
+ * reached", with when they reset only if that's the same for all.
+ */
+export function scopedSummary(reached: readonly Pick<MeterWindow, "scope" | "resets" | "credits">[], short: (t?: string) => string | undefined = (t) => t): string | undefined {
+    if (!reached.length) return undefined;
+    const names = [...new Set(reached.map((w) => scopeName(w.scope!)))];
+    const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]!;
+    const resets = [...new Set(reached.map((w) => short(w.resets)))];
+    const credits = reached.every((w) => w.credits === true);
+    return `${list} limit${names.length > 1 ? "s" : ""} reached${credits ? " · using credits" : ""}${resets.length === 1 && resets[0] ? `, resets ${resets[0]}` : ""}`;
 }

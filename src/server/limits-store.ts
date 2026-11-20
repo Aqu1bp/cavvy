@@ -20,7 +20,10 @@ const num = (v: unknown): number | undefined => (typeof v === "number" && Number
 const credits = (v: unknown): { credits?: boolean } => (typeof v === "boolean" ? { credits: v } : {});
 const str = (v: unknown, max: number): string | undefined => (typeof v === "string" && v && v.length <= max ? v : undefined);
 
-function windowOf(v: unknown): LimitWindow | undefined {
+/** The model families Claude Code's windows count (CLAUDE_SCOPES): the only scopes kept. */
+const SCOPES = new Set(Object.values(CLAUDE_SCOPES));
+
+function windowOf(v: unknown, provider: string): LimitWindow | undefined {
     if (!v || typeof v !== "object") return undefined;
     const w = v as Record<string, unknown>;
     const id = str(w.id, 100), label = str(w.label, 60);
@@ -28,10 +31,10 @@ function windowOf(v: unknown): LimitWindow | undefined {
     const used = num(w.usedPercent);
     // `at`: when this window was reported, if before its plan's report; a file without it has the plan's.
     const at = num(w.at);
-    // `scope`: the model family a window counts, a word of model ids; for a file from before it was saved, Claude
-    // Code's model windows' by their ids.
-    const scope = str(w.scope, 60) ?? CLAUDE_SCOPES[id];
-    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }), ...(scope && /^[a-z][a-z0-9.-]*$/.test(scope) ? { scope } : {}) };
+    // `scope`: the model family a window of Claude Code's counts, by its id (a file from before scopes were saved
+    // has them too); none for another CLI's.
+    const scope = provider === "claude-code" ? CLAUDE_SCOPES[id] : undefined;
+    return { id, label, usedPercent: used === undefined ? undefined : Math.max(0, Math.min(100, used)), resetsAt: num(w.resetsAt), reached: typeof w.reached === "boolean" ? w.reached : undefined, ...credits(w.credits), ...(at === undefined ? {} : { at }), ...(scope ? { scope } : {}) };
 }
 
 /** One saved report, or undefined when it isn't one (a hand-edited or older file). */
@@ -40,8 +43,10 @@ export function planLimitsOf(v: unknown): PlanLimits | undefined {
     const l = v as Record<string, unknown>;
     const provider = str(l.provider, 60), at = num(l.at);
     if (!provider || at === undefined || !Array.isArray(l.windows)) return undefined;
-    const windows = l.windows.slice(0, 12).map(windowOf).filter((w): w is LimitWindow => Boolean(w));
-    return { provider, accountId: str(l.accountId, 100) ?? "default", windows, reached: typeof l.reached === "boolean" ? l.reached : undefined, resetsAt: num(l.resetsAt), ...credits(l.credits), at };
+    const windows = l.windows.slice(0, 12).map((w) => windowOf(w, provider)).filter((w): w is LimitWindow => Boolean(w));
+    // Which models a stop is, as the CLI said: one of the scopes its windows have.
+    const stopScope = l.reached === true && typeof l.stopScope === "string" && SCOPES.has(l.stopScope) && provider === "claude-code" ? l.stopScope : undefined;
+    return { provider, accountId: str(l.accountId, 100) ?? "default", windows, reached: typeof l.reached === "boolean" ? l.reached : undefined, resetsAt: num(l.resetsAt), ...(stopScope ? { stopScope } : {}), ...credits(l.credits), at };
 }
 
 /** What was saved; nothing when there's no file or it can't be read. */

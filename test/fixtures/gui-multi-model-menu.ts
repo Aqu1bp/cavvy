@@ -18,7 +18,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; machineLimits?: Record<string, any>; limits?: Record<string, any> | (() => Record<string, any>); away?: string } = {}) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; machineProviders?: any[]; machineLimits?: Record<string, any>; limits?: Record<string, any> | (() => Record<string, any>); away?: string; /** A session on `current`, whose CLI served it as `served`. */ session?: { current: string; served?: string } } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -101,12 +101,12 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
         // And that machine's accounts' limits.
         limitsFor: () => (more.away === undefined ? (typeof more.limits === "function" ? more.limits() : more.limits) : more.machineLimits) ?? {},
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
-        prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, noModel: () => false, refreshModels() {},
+        prefs: { favoriteModels: [] }, setPrefs() {}, handleFor: () => (more.session ? { view: { state: { servedModel: more.session.served, accounts: {} } } } : undefined), noModel: () => false, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
         isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string, action: string) => (action === "chat:modelPicker" ? `${label} (Ctrl+/)` : label), ProviderIcon: () => node("icon"),
         ...Object.fromEntries(["Brain", "Check", "ChevronDown", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "UserRound", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
     });
-    cleanups.push(renderer.render(() => ModelPicker({ get open() { return open(); }, setOpen, currentRef: models[0]!.ref, compare: { available, why: "Requires a Git project" } }), root));
+    cleanups.push(renderer.render(() => ModelPicker({ get open() { return open(); }, setOpen, currentRef: more.session?.current ?? models[0]!.ref, ...(more.session ? { sessionId: "s" } : {}), compare: { available, why: "Requires a Git project" } }), root));
     const find = (predicate: (n: Node) => boolean) => adapt(all(root).find(predicate)!);
     const trigger = find((n) => n.tag === "button" && n.props["aria-haspopup"] === "dialog");
     const key = (key: string, extra: Record<string, any> = {}) => {
@@ -289,6 +289,27 @@ test("a model whose model limit is reached (Fable's) is marked as an account at 
     expect(marks).toEqual(["limit", ""]);
     // The account isn't at a limit: no badge for it.
     expect(text(f.accountButton())).toBe("Default");
+});
+
+test("an alias row: the session's by the model its CLI served; another not served yet may be under the limit", () => {
+    const dflt = { ref: "cli:default", id: "default", name: "Default (recommended)", provider: "cli" };
+    const fable = { ref: "cli:fable", id: "fable", name: "Fable", provider: "cli" };
+    const week = Date.now() + 86_400_000;
+    const opts = (served?: string) => ({
+        groups: [{ provider: "cli", providerName: "CLI", models: [dflt, fable] }],
+        providers: [{ id: "cli", name: "CLI", agentCli: { accounts: [{ id: "default", name: "Default" }], defaultAccount: "default" } }],
+        limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: false, at: Date.now(), windows: [{ id: "f", label: "Weekly Fable", usedPercent: 100, reached: true, resetsAt: week, scope: "fable" }] } },
+        session: { current: "cli:default", served },
+    });
+    const marks = (f: ReturnType<typeof picker>) => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("mr-lim"))?.props.title ?? "");
+    // Served as Opus: Default isn't under it.
+    const opus = picker(true, opts("claude-opus-5"));
+    opus.tabs()[2].click();
+    expect(marks(opus)).toEqual(["", expect.stringMatching(/^Fable limit reached, resets /)]);
+    // Not served yet: it may be.
+    const unknown = picker(true, opts());
+    unknown.tabs()[2].click();
+    expect(marks(unknown)).toEqual([expect.stringMatching(/^May be under the Fable limit, reached, resets /), expect.stringMatching(/^Fable limit reached/)]);
 });
 
 test("another machine's session opened here is offered that machine's accounts, not this computer's, limits or Add account", () => {

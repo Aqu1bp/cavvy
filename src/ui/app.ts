@@ -222,6 +222,8 @@ export class App {
     private turnTokens = 0;
     /** The agent CLIs' plan limits as last reported, by provider and account (/cost shows them). */
     planLimits = new Map<string, PlanLimits>();
+    /** Each account's plan as its CLI said when this terminal checked it ("max"), by planLimitKey: for /cost's headings. */
+    accountPlans = new Map<string, string>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;

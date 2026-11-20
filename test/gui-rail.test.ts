@@ -348,9 +348,18 @@ test("a model's limit reached (Fable's) is amber and says which; the plan's othe
     // A window of the whole plan at 95% is red, as its row is (windowTone): the chip follows the plan's own figure.
     const [high] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [{ ...all[key("claude-code")]!.windows[0]!, usedPercent: 95 }, all[key("claude-code")]!.windows[1]!] } }, providers: [ultra], now: NOW });
     expect(high).toMatchObject({ pct: 95, tone: "danger", reached: false });
-    // A stop the Fable window explains (the same reset) isn't the plan's.
-    const [stop] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
+    // A stop the CLI said was Fable's isn't the plan's; one it didn't say of is, though Fable's window is reached.
+    const [stop] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000, stopScope: "fable" } }, providers: [ultra], now: NOW });
     expect(stop).toMatchObject({ reached: false, tone: "warn" });
+    const [plain] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, reached: true, resetsAt: NOW + 3 * 86_400_000 } }, providers: [ultra], now: NOW });
+    expect(plain).toMatchObject({ reached: true, tone: "danger" });
+    // The chip's figure is the plan's own window, never a model's, even one fuller and not reached.
+    const opus = { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 96, resetsAt: NOW + 3 * 86_400_000, scope: "opus" };
+    const [headline] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [all[key("claude-code")]!.windows[0]!, opus] } }, providers: [ultra], now: NOW });
+    expect(headline).toMatchObject({ pct: 40, window: "Weekly", tone: "normal" });
+    // Two models' limits reached: both said, in one line.
+    const [both] = railFoot({ limits: { [key("claude-code")]: { ...all[key("claude-code")]!, windows: [...all[key("claude-code")]!.windows, { ...opus, usedPercent: 100, reached: true }] } }, providers: [ultra], now: NOW });
+    expect(both!.note).toMatch(/^Fable and Opus limits reached, resets [A-Za-z]+\.?$/);
 });
 
 test("a window's tint is the same wherever it's drawn: amber from 75%, red from 90% and at the plan's limit", () => {

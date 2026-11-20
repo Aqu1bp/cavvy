@@ -110,7 +110,10 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId =
     const blockingResets = [resetsAt, latestReset(blocking)].filter((t): t is number => t !== undefined);
     const lifts = reached && !blocking.some((w) => w.resetsAt === undefined) && blockingResets.length ? Math.max(...blockingResets) : undefined;
     const credits = claudeCredits(i);
-    return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, ...(credits === undefined ? {} : { credits }), at }, partial: !listed };
+    // Which models the stop is: only as the CLI said, naming a window of some models (Fable's). One naming none (and
+    // listing none) repeats the last named rejection, if that still stands ("*", resolved by mergeLimits).
+    const stopScope = status !== "rejected" ? undefined : named ? named.scope : !listed ? SAME_STOP : undefined;
+    return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, ...(stopScope ? { stopScope } : {}), ...(credits === undefined ? {} : { credits }), at }, partial: !listed };
 }
 
 /**
@@ -264,31 +267,14 @@ function codexWindows(s: Record<string, any>, read: boolean): LimitWindow[] {
     const name = limitId === "codex" ? "" : `${label(typeof s.limitName === "string" && s.limitName ? s.limitName : limitId, 30)} `;
     // Codex's own limit's credits are the plan's (PlanLimits.credits); another limit's go with its windows.
     const credits = isCodexLimit(s) ? undefined : codexCredits(s, read);
-    // Another limit counts its models only: those whose id has its limit id (a stable slug, unlike its display name:
-    // "gpt-5.3-codex-spark" for "GPT-5 Spark"). One that doesn't look like a model's slug is taken to cover the plan,
-    // so a block is shown rather than hidden.
-    const scope = isCodexLimit(s) ? undefined : modelScope(limitId);
-    // Codex says this limit is reached (its reached type), whatever its windows' shares: they're at it.
-    const said = isCodexLimit(s) ? false : Boolean(codexReachedType(s));
     const out: LimitWindow[] = [];
     for (const slot of ["primary", "secondary"] as const) {
         const w = s[slot];
         if (!w || typeof w !== "object") continue;
         const usedPercent = percent(w.usedPercent, 1);
-        out.push({ id: `${limitId}:${slot}`, label: `${name}${codexWindowLabel(w.windowDurationMins, slot)}`, usedPercent, resetsAt: seconds(w.resetsAt), reached: said || full(w.usedPercent, 1) ? true : undefined, ...(credits === undefined ? {} : { credits }), ...(scope ? { scope } : {}) });
+        out.push({ id: `${limitId}:${slot}`, label: `${name}${codexWindowLabel(w.windowDurationMins, slot)}`, usedPercent, resetsAt: seconds(w.resetsAt), reached: full(w.usedPercent, 1) ? true : undefined, ...(credits === undefined ? {} : { credits }) });
     }
-    // Reached with no window to show it: a row of its own, so it's that limit's, not the plan's.
-    if (said && !out.length) out.push({ id: `${limitId}:limit`, label: `${name.trim() || limitId} limit`, reached: true, ...(credits === undefined ? {} : { credits }), ...(scope ? { scope } : {}) });
     return out;
-}
-
-/**
- * A model limit's id as the part of model ids it covers ("gpt-5.3-codex-spark"); undefined when it doesn't look
- * like a model's slug (lower case, words joined by "-" or "."), or is Codex's own.
- */
-function modelScope(limitId: string): string | undefined {
-    const id = limitId.trim().toLowerCase();
-    return /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(id) && id.length <= 60 && id !== "codex" ? id : undefined;
 }
 
 /** Why Codex says a limit is reached (RateLimitReachedType), in words. */
@@ -315,14 +301,12 @@ export function parseCodexRateLimits(r: unknown, opts: { update?: boolean; at?: 
     }
     if (!snapshots.length) return undefined;
     const windows = snapshots.flatMap((s) => codexWindows(s, !opts.update));
-    // Reached, whichever limit it is (a turn on its model stops): whether that's the plan or a model's is the meter's
-    // to show (planNow), from the windows' scopes.
     const flagged = snapshots.some((s) => codexReachedType(s)) || o.ordinaryUsageAllowed === false;
     // A full read says it isn't reached; an update's null only means it didn't say.
     const reached = flagged || windows.some((w) => w.reached) ? true : opts.update ? undefined : false;
     const own = snapshots.find(isCodexLimit);
     const credits = own ? codexCredits(own, !opts.update) : undefined;
-    return { limits: { provider: "codex", accountId: opts.accountId ?? "default", windows, reached, resetsAt: reached ? limitResetsAt(windows.filter((w) => !w.id.endsWith(":limit"))) : undefined, ...(credits === undefined ? {} : { credits }), at: opts.at ?? Date.now() }, partial: Boolean(opts.update) };
+    return { limits: { provider: "codex", accountId: opts.accountId ?? "default", windows, reached, resetsAt: reached ? limitResetsAt(windows) : undefined, ...(credits === undefined ? {} : { credits }), at: opts.at ?? Date.now() }, partial: Boolean(opts.update) };
 }
 
 function latestReset(windows: LimitWindow[]): number | undefined {
@@ -339,6 +323,9 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
     const fullest = [...windows].filter((w) => w.resetsAt !== undefined).sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0];
     return fullest?.resetsAt;
 }
+
+/** PlanLimits.stopScope of a rejection that names no window: the same stop as the last named one, if it still stands. */
+export const SAME_STOP = "*";
 
 /** Two reports' resets this close are the same window period's. */
 const SAME_PERIOD_MS = 10 * 60_000;
@@ -367,7 +354,11 @@ export interface MergeHow {
  */
 export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean, how: boolean | MergeHow = false): PlanLimits {
     const { full = false, statusUnsaid = false } = typeof how === "boolean" ? { full: how } : how;
-    if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
+    if (!prev || full || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) {
+        if (next.stopScope !== SAME_STOP) return next;
+        const { stopScope: _, ...rest } = next;
+        return rest;
+    }
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const windows = prev.windows.flatMap((w) => {
         const n = next.windows.find((n) => n.id === w.id);
@@ -401,7 +392,12 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : (partial || statusUnsaid) && live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     // Codex's updates leave credits out (null): what the last read said stands until one says otherwise.
     const credits = next.credits ?? prev.credits;
-    return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(credits === undefined ? {} : { credits }), at: next.at };
+    // Which models the stop is, only as the CLI said: a rejection naming a window of some models says so; one naming
+    // none repeats the last, while that stands; any other stop (a plan-wide window's, a turn's own) is the plan's;
+    // a report that doesn't speak of a stop leaves what was said, while the stop stands.
+    const prevScope = prev.reached && live(prev.resetsAt) ? prev.stopScope : undefined;
+    const stopScope = !reached ? undefined : next.reached === true ? (next.stopScope === SAME_STOP ? prevScope : next.stopScope) : prevScope;
+    return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, ...(stopScope ? { stopScope } : {}), ...(credits === undefined ? {} : { credits }), at: next.at };
 }
 
 /** "4:40 PM" today, else "Mon 20 Oct, 9:00 AM" (local time). */
@@ -486,9 +482,13 @@ export function limitNews(seen: Map<string, string>, window: string, status: str
     return was !== now;
 }
 
-/** A plan's heading in the terminal, as the GUI names it (planTitle): the CLI, and the account's name when there are several. */
-export function limitPlanTitle(provider: string, accountId = "default"): string {
-    return planTitle({ name: agentCli(provider)?.name ?? provider, accounts: cliAccounts(provider) }, accountId).title;
+/**
+ * A plan's heading in the terminal, as the GUI names it (planTitle): the CLI and its plan (`plan`, as the CLI said it:
+ * "max"), and the account's name when there are several.
+ */
+export function limitPlanTitle(provider: string, accountId = "default", plan?: string): string {
+    const accounts = cliAccounts(provider).map((a) => (a.id === accountId && plan ? { ...a, plan } : a));
+    return planTitle({ name: agentCli(provider)?.name ?? provider, accounts }, accountId).title;
 }
 
 /** A local display name is safe in notices; signed-in email and plan stay out. */
