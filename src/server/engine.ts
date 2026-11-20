@@ -1209,13 +1209,12 @@ export class Engine {
             defaultModeIn: (cwd) => {
                 const p = resolve(expandHome(cwd));
                 if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
-                const valid = (m: PermissionMode): PermissionMode => (PERMISSION_MODES.includes(m) ? m : "default");
-                const folder = valid(this.defaultMode(this.workspaceFor(p)));
+                // Each as a session made here would come out: Manual for what isn't a mode, and for Bypass where it isn't turned on (Runtime).
+                const real = (m: PermissionMode): PermissionMode => (!PERMISSION_MODES.includes(m) || (m === "bypassPermissions" && !this.bypassAllowed(p)) ? "default" : m);
+                const folder = real(this.defaultMode(this.workspaceFor(p)));
                 // On the user's own computer, no freer than their own settings file says: the folder's file can ask
                 // for more of the user (Manual, Plan), but isn't their word on what another machine's session gets.
-                const mode = onServer() ? folder : narrowerMode(folder, valid(defaultMode(loadScope("user", p), p).mode));
-                // As a session made here comes out: Bypass only where it's turned on (Runtime).
-                return mode === "bypassPermissions" && !this.bypassAllowed(p) ? "default" : mode;
+                return onServer() ? folder : narrowerMode(folder, real(defaultMode(loadScope("user", p), p).mode));
             },
             // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
             // so a link inside one that leads elsewhere isn't inside it. A recent folder counts only while the path it

@@ -631,6 +631,13 @@ describe("in the app", () => {
         expect((await engine.createSession(own)).mode).toBe("auto");
         const loosened = engine.runtimes.get((await mac.start({ cwd: own, prompt: "Again.", title: "Loosened" }, manual)).id)!;
         expect(loosened.mode).toBe("default");
+        // Nor where the user's own default is a Bypass that isn't turned on: that's Manual, not the project's Auto.
+        writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: false, defaultMode: "bypassPermissions" } }));
+        try {
+            expect(engine.peerHost().defaultModeIn(own)).toBe("default");
+        } finally {
+            writeFileSync(settingsFile, settings);
+        }
         // Once the user has put it in a freer mode than one started now would get, its starter's messages are held to the rule again.
         expect((await mac.send(loosened.id, "More.", manual)).text).toStartWith(`Sent to session ${loosened.id} `);
         loosened.setMode("auto");
