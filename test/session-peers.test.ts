@@ -613,6 +613,12 @@ describe("in the app", () => {
             // A message named as from the session that started it is taken; one named as from another there isn't.
             expect((await mac.send(freer.id, "And the tests.", manual)).text).toStartWith(`Sent to session ${freer.id} `);
             await expect(mac.send(freer.id, "From another.", { ...manual, id: "lab/other" })).rejects.toThrow("can't be sent work from there");
+            // Bypass turned off since: one started now would run in Manual, so the starter's messages are held to the rule again.
+            writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: false, defaultMode: "bypassPermissions" } }));
+            await expect(mac.send(freer.id, "After it was turned off.", manual)).rejects.toThrow("can't be sent work from there");
+            // A default that isn't a mode is Manual, whatever the project's file says.
+            writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: true, defaultMode: "everything" } }));
+            expect(engine.peerHost().defaultModeIn(free)).toBe("default");
         } finally {
             writeFileSync(settingsFile, settings);
         }
