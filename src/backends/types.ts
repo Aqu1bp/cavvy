@@ -65,6 +65,8 @@ export interface BackendPermission {
     callId?: string;
     /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
     hookDecision?: "allow" | "ask";
+    /** A command in a folder outside the session's: asked about, whatever the rules say, but for a read-only agent in a session in Bypass. */
+    elsewhere?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**

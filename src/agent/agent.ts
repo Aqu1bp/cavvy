@@ -3361,8 +3361,9 @@ export class Agent {
         }
         // Codex was told to ask only so PreToolUse hooks would see the call (bypass mode): the mode decides, as it would have.
         if (req.hooksOnly && decision.behavior === "allow") ruled = true;
-        // A PreToolUse hook that asks wants the user, whatever the rules say.
-        if (req.hookDecision === "ask") ruled = false;
+        // A PreToolUse hook that asks wants the user, whatever the rules say. So does a command in another folder
+        // (Grok, Antigravity), but for a read-only agent in a session in Bypass.
+        if (req.hookDecision === "ask" || (req.elsewhere && !bypass)) ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };

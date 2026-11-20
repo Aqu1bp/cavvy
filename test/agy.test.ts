@@ -60,7 +60,7 @@ afterEach(async () => {
     await (c as any).shutdown?.();
 });
 
-async function makeAgent(o: { untrusted?: boolean; mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
+async function makeAgent(o: { untrusted?: boolean; mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[]; readOnlyIn?: PermissionMode } = {}) {
     const settings = o.settings ?? {};
     const events: AgentEvent[] = [];
     const asked: PermissionRequest[] = [];
@@ -77,6 +77,8 @@ async function makeAgent(o: { untrusted?: boolean; mode?: PermissionMode; settin
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        // A read-only sub-agent of a session in that mode.
+        ...(o.readOnlyIn ? { readOnly: true, isSubagent: true, sessionMode: () => o.readOnlyIn! } : {}),
         host: {
             drainQueued: () => o.queued?.splice(0) ?? [],
             emit: (e) => events.push(e),
@@ -205,6 +207,25 @@ describe("the gate, by Cavvy's mode", () => {
         await a.run("[[tool:open_browser_url]]");
         expect(a.asked.map((r) => r.tool.name)).toEqual(["Antigravity_generate_image", "Antigravity_open_browser_url"]);
         expect(decisions()).toEqual(["auto_approve", "auto_approve", "auto_approve"]);
+    });
+
+    test("a read-only agent's command in another folder is asked about, but not in a session in Bypass", async () => {
+        process.env.FAKE_AGY_CWD = realpathSync(tempDir("agy-other-"));
+        try {
+            const manual = await makeAgent({ readOnlyIn: "default", ask: () => ({ allow: false }) });
+            await manual.run("[[run:ls]]");
+            expect(manual.asked.map((r) => r.tool.name)).toEqual(["Bash"]);
+            const bypass = await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }) });
+            await bypass.run("[[run:ls]]");
+            expect(bypass.asked).toEqual([]);
+            expect(decisions().at(-1)).toBe("auto_approve");
+            // Not read-only: refused there too, and nobody is asked.
+            await bypass.run("[[run:touch x]]");
+            expect(bypass.asked).toEqual([]);
+            expect(decisions().at(-1)).not.toBe("auto_approve");
+        } finally {
+            delete process.env.FAKE_AGY_CWD;
+        }
     });
 
     test("its subagents' messages to each other go without asking, in Plan too", async () => {

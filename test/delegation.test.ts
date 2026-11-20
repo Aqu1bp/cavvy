@@ -1353,6 +1353,21 @@ describe("Codex as the main agent", () => {
             expect(await writes.run("go")).toBe("done");
             expect(writes.asked).toEqual([]);
             expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            // In a folder outside the session's (another checkout), which Manual asks about as well.
+            rmSync(LOG, { force: true });
+            const outside = realpathSync(tempDir("deleg-outside-"));
+            process.env.FAKE_COMMAND = "wc -l notes.txt";
+            process.env.FAKE_COMMAND_CWD = outside;
+            try {
+                const away = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+                away.switchMode("bypassPermissions");
+                expect(await away.run("go")).toBe("done");
+                expect(away.asked).toEqual([]);
+                expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+            } finally {
+                delete process.env.FAKE_COMMAND_CWD;
+                rmSync(outside, { recursive: true, force: true });
+            }
             // On Claude Code.
             process.env.FAKE_COMMAND = "cat .env";
             process.env.FAKE_CODEX_SCENARIO = "mcp";
