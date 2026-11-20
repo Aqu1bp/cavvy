@@ -432,6 +432,8 @@ export class ClaudeConnection implements CliConnection {
     ) {
         this.caps = { ...def.caps, live: { model: true, effort: true, mode: "control" } };
         this.resuming = resumed;
+        // Started for this turn, in its mode.
+        this.cliMode = MODES[(turn() as LiveTurnConfig | undefined)?.t.mode ?? "default"];
         this.done = this.read();
     }
 
@@ -738,16 +740,17 @@ export class ClaudeConnection implements CliConnection {
 
     /** Cavvy's mode changed: Claude Code takes it now, between turns too (its background sub-agents follow it). */
     setMode(mode: Parameters<SessionHost["setMode"]>[0]): void {
-        this.cliMode = MODES[mode];
-        void this.control({ subtype: "set_permission_mode", mode: MODES[mode] });
+        // Its mode once it says so: what it asks about till then, it asks under the earlier one.
+        void this.control({ subtype: "set_permission_mode", mode: MODES[mode] }).then((r) => {
+            if (r?.subtype === "success") this.cliMode = MODES[mode];
+        });
     }
 
     /**
-     * The mode Claude Code was last put in, once it has been since it started (till then, the one it was started
-     * in: its turn's). Cavvy's own can be ahead of it between turns, when a background sub-agent may still ask
-     * under the earlier one.
+     * The mode Claude Code is in: the one it was started in (its first turn's), then each it took. Cavvy's own can
+     * be ahead of it between turns, when a background sub-agent may still ask under the earlier one.
      */
-    private cliMode?: string;
+    private cliMode: string = MODES.default;
 
     async close(): Promise<void> {
         this.hookAbort.abort();
@@ -2045,7 +2048,7 @@ export class ClaudeConnection implements CliConnection {
         const background = typeof req.agent_id === "string" && this.tasks.get(req.agent_id)?.status === "running";
         liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
         // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
-        const ownBypassAsk = (this.cliMode ?? MODES[this.cfg.mode]) === "bypassPermissions";
+        const ownBypassAsk = this.cliMode === "bypassPermissions";
         const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow && a.mode) this.cliMode = MODES[a.mode];
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
