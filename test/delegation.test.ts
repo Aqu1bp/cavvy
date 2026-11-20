@@ -1353,14 +1353,14 @@ describe("Codex as the main agent", () => {
             expect(await writes.run("go")).toBe("done");
             expect(writes.asked).toEqual([]);
             expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
-            // What Bypass itself stops to ask about (Cavvy's own credentials, by name) is refused, not asked.
+            // Nor is it asked about what the other modes always ask about (Cavvy's own credentials, by name): Bypass asks about nothing.
             rmSync(LOG, { force: true });
             process.env.FAKE_COMMAND = "cat ~/.cavvy/credentials.json";
             const store = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
             store.switchMode("bypassPermissions");
             expect(await store.run("go")).toBe("done");
             expect(store.asked).toEqual([]);
-            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
             // In a folder outside the session's (another checkout), which Manual asks about as well.
             rmSync(LOG, { force: true });
             const outside = realpathSync(tempDir("deleg-outside-"));
@@ -2331,12 +2331,12 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining("non-interactive") });
         expect(existsSync(ran)).toBe(false);
 
-        // Bypass mode doesn't approve it either.
+        // Bypass asks about nothing: it runs.
         const bypass = await makeAgent({ provider: "claude-code", secrets, ui, ask: () => ({ allow: false }) });
         bypass.switchMode("bypassPermissions");
         await bypass.run("go");
-        expect(bypass.asked).toHaveLength(1);
-        expect(existsSync(ran)).toBe(false);
+        expect(bypass.asked).toHaveLength(0);
+        expect(existsSync(ran)).toBe(true);
 
         calls([{ tool: "run_with_secrets", args: { command: `echo "$RULE_TOKEN"`, secrets: ["RULE_TOKEN"] } }]);
         const ruled = await makeAgent({ provider: "claude-code", secrets, ui, settings: { permissions: { allow: ["Bash(echo:*)"] } } });
@@ -2372,7 +2372,6 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
             const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
             calls([{ tool, args }]);
             const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__cavvy__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
-            t.switchMode("bypassPermissions");
             await t.run("go");
             expect(mcpResults().at(-1)?.isError).toBe(true);
             expect(t.asked).toHaveLength(1);

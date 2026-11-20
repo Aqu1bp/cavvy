@@ -440,7 +440,7 @@ describe("permissions: a Monitor command is checked like the same Bash command",
         const { checker, dir } = mk({});
         expect(checker.check(tool, input("rm -rf build"), "plan", dir).behavior).toBe("deny");
         expect(checker.check(tool, input("tail -f app.log | grep --line-buffered ERROR"), "plan", dir).behavior).not.toBe("deny");
-        expect(checker.check(tool, input("rm -rf /"), "bypassPermissions", dir)).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(checker.check(tool, input("rm -rf /"), "acceptEdits", dir)).toMatchObject({ behavior: "ask", dangerous: true });
     });
 
     test("an approval offers a Bash rule for the command", () => {

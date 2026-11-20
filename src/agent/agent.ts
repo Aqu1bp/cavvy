@@ -3061,14 +3061,15 @@ export class Agent {
     private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>, lent = false): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
-        // Like the command check below, explicit asks still apply in bypass mode.
+        // Checked as in the default mode, for its deny rules and the ask rules that name it.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         // A denied call is refused as denied, whatever its input; one that can't run isn't asked about.
         const invalid = await refusal?.();
         if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
-        if (lent || decision.behavior !== "ask" || !decision.rule) return undefined;
+        // Nor is one asked about in Bypass.
+        if (lent || decision.behavior !== "ask" || !decision.rule || this.inBypass()) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
         const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
         if (signal.aborted) return refuse("Interrupted by user");
@@ -3218,8 +3219,8 @@ export class Agent {
     /**
      * run_with_secrets (Claude Code, Codex): one command with Cavvy's Bash and those secrets. The CLI approves
      * Cavvy's tools without asking, so the check is here, at least as strict as backendPermission's for a
-     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
-     * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
+     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule or Bypass runs it without
+     * asking (no other mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
      */
     private async runWithSecrets(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
@@ -3234,7 +3235,7 @@ export class Agent {
         const decision = this.o.checker.check(BashTool, input, "default", cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         const names = o.names.join(", ");
-        if (!(decision.behavior === "allow" && decision.rule)) {
+        if (!(decision.behavior === "allow" && decision.rule) && mode !== "bypassPermissions") {
             if (!this.o.host.askPermission) return refuse("Permission to run a command with secrets was not granted (non-interactive session).");
             const ask = {
                 ...decision,
@@ -3328,10 +3329,9 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
-        // Past the read-only check above and the deny rules: it runs. What Bypass itself would stop to ask about (a command
-        // that names Cavvy's own credentials) is refused: nothing is asked in a session in Bypass.
-        if (bypass && decision.behavior === "ask") return { allow: false, message: `${decision.reason ?? "This needs the user's approval."} A read-only agent can't do that: report what should be read instead.`, stop: false };
-        if (bypass && decision.behavior === "allow") ruled = true;
+        // In Bypass nothing is asked about, whatever the backend wanted confirmed: past the deny rules (and, for a read-only
+        // agent, the read-only check above), it runs.
+        if (mode === "bypassPermissions" && decision.behavior === "allow") ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -3366,7 +3366,7 @@ export class Agent {
         if (req.hooksOnly && decision.behavior === "allow") ruled = true;
         // A PreToolUse hook that asks wants the user, whatever the rules say. So does a command in another folder
         // (Grok, Antigravity), but for a read-only agent in a session in Bypass.
-        if (req.hookDecision === "ask" || (req.elsewhere && !bypass)) ruled = false;
+        if (req.hookDecision === "ask" || (req.elsewhere && mode !== "bypassPermissions")) ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
@@ -3419,6 +3419,11 @@ export class Agent {
 
     // -----------------------------------------------------------------------
     // Tools
+
+    /** The session is in Bypass (a read-only agent's own mode is another: `sessionMode`): nothing is asked about. */
+    private inBypass(): boolean {
+        return (this.o.sessionMode?.() ?? this.o.mode.get()) === "bypassPermissions";
+    }
 
     private findTool(name: string): Tool<any> | undefined {
         return this.tools.find((t) => t.name === name);
