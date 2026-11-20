@@ -834,6 +834,22 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => r.includes("Monitor notification 1."))).toBe(true);
     });
 
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) still reaches the user", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const asked: PermissionRequest[] = [];
+        // The stand-in asks about what an ask rule names, as the CLI does for a hook that says ask.
+        const a = await makeAgent({
+            settings: { permissions: { ask: ["Bash(npm test)"] } },
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        a.setMode("bypassPermissions");
+        await a.run("go");
+        expect(asked.map((r) => r.input.command)).toEqual(["npm test"]);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];

@@ -67,7 +67,7 @@ export interface BackendPermission {
     hookDecision?: "allow" | "ask";
     /**
      * A command the backend runs in this folder, outside the session's (Grok, Antigravity; Codex's come as `cd <folder> && …`):
-     * asked about, whatever the rules say, but for a read-only agent in a session in Bypass, where it's checked as run there.
+     * asked about, whatever the rules say, but in Bypass, where it's checked as run there.
      */
     elsewhere?: string;
     /**

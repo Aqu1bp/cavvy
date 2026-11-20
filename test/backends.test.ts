@@ -2008,7 +2008,7 @@ describe("review findings (PR #1)", () => {
         expect((toolEnds(a.events)[0] as any).result.content).toMatch(/Denied by permission rule Edit\(secrets\/\*\*\)/);
     });
 
-    test("4. Codex's requests for more permissions: refused in plan mode and past deny rules, otherwise asked", async () => {
+    test("4. Codex's requests for more permissions: refused in plan mode and past deny rules, granted unasked in Bypass, otherwise asked", async () => {
         process.env.FAKE_SCENARIO = "perms";
         const granted = () => logLines().find((l) => "granted" in l)?.granted;
         const plan = await makeAgent({ provider: "codex", mode: "plan", ask: () => ({ allow: true }) });

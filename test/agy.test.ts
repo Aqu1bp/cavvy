@@ -234,11 +234,13 @@ describe("the gate, by Cavvy's mode", () => {
             saveAgentConfig("codex", { accounts: [{ id: "named", name: "Named", folder: named, managed: true }] });
             process.env.FAKE_AGY_CWD = named;
             try {
-                const kept = await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }) });
-                for (const command of ["cat auth.json", "cat $PWD/auth.json"]) {
-                    await kept.run(`[[run:${command}]]`);
-                    expect(kept.asked).toEqual([]);
-                    expect(decisions().at(-1)).not.toBe("auto_approve");
+                // A read-only agent of a session in Bypass, and a session in Bypass itself.
+                for (const kept of [await makeAgent({ readOnlyIn: "bypassPermissions", ask: () => ({ allow: false }) }), await makeAgent({ mode: "bypassPermissions", ask: () => ({ allow: false }) })]) {
+                    for (const command of ["cat auth.json", "cat $PWD/auth.json"]) {
+                        await kept.run(`[[run:${command}]]`);
+                        expect(kept.asked).toEqual([]);
+                        expect(decisions().at(-1)).not.toBe("auto_approve");
+                    }
                 }
             } finally {
                 saveAgentConfig("codex", { accounts: [] });

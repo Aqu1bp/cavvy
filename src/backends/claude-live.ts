@@ -2034,7 +2034,9 @@ export class ClaudeConnection implements CliConnection {
         // One of a background sub-agent's (its task is running in the background): not the turn's to withdraw.
         const background = typeof req.agent_id === "string" && this.tasks.get(req.agent_id)?.status === "running";
         liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}) });
+        // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
+        const ownBypassAsk = MODES[this.host.mode()] === "bypassPermissions";
+        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

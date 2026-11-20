@@ -3302,8 +3302,8 @@ export class Agent {
         const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
         const input = req.input;
         const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
-        // There, a command the backend runs in another folder is checked as run from that folder.
-        const cwd = bypass && req.elsewhere ? req.elsewhere : (this.runningIn ?? this.state.cwd);
+        // In Bypass, where a command the backend runs in another folder isn't asked about, it's checked as run from that folder.
+        const cwd = mode === "bypassPermissions" && req.elsewhere ? req.elsewhere : (this.runningIn ?? this.state.cwd);
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
         if (req.exempt) {
             const d = this.o.checker.check(tool, input, "bypassPermissions", cwd, { memoryDir: this.o.memoryDir });
