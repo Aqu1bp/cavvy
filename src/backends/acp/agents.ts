@@ -88,8 +88,9 @@ export interface GateTool {
     reason?: string;
     /** It can't be checked (what decides it was cut): refused with this. */
     refuse?: string;
-    /** It runs somewhere else than the session's folder: always asked about. */
+    /** It runs somewhere else than the session's folder (`dir`, as the volume has it): always asked about. */
     elsewhere?: boolean;
+    dir?: string;
     /** One of the agent's own that only reads or keeps its own state (its to-do list, its plan mode): let go. */
     free?: boolean;
 }
@@ -365,7 +366,7 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
             if (cut(command)) return tooLong("The command");
             // Run in another folder than Cavvy's (a subagent's own cwd, a worktree): Cavvy's checks assume its own.
             const elsewhere = Boolean(call.cwd && canonical(call.cwd) !== canonical(cwd));
-            return { toolName: "Bash", input: { command, ...(str(i.description) && !cut(i.description) ? { description: i.description } : {}) }, ...(elsewhere ? { elsewhere, reason: `It runs in ${call.cwd}.` } : {}) };
+            return { toolName: "Bash", input: { command, ...(str(i.description) && !cut(i.description) ? { description: i.description } : {}) }, ...(elsewhere ? { elsewhere, dir: canonical(call.cwd!), reason: `It runs in ${call.cwd}.` } : {}) };
         }
         case "write": {
             const file = path("file_path", "path");

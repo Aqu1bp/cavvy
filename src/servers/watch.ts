@@ -250,7 +250,7 @@ export class MachineWatch {
     }
 
     /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts), or for a search here. */
-    ask(method: "peers.list" | "peers.read" | "peers.send" | "sessions.search" | "sessions.searchWarm" | "usage.summary" | "mcp.callback" | "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> {
+    ask(method: "peers.list" | "peers.read" | "peers.send" | "peers.start" | "sessions.search" | "sessions.searchWarm" | "usage.summary" | "mcp.callback" | "sessions.trash", params: Record<string, unknown>, ms?: number): Promise<unknown> {
         return this.request(method, params, PEERS_ANSWER, ms);
     }
 

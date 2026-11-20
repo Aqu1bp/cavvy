@@ -69,7 +69,7 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { peerOps, type PeerHost } from "./session-peers";
-import { checkMessage, PeerError, type FarPeers } from "../agent/peers";
+import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
 import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
@@ -1222,6 +1222,33 @@ export class Engine {
                 return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
             },
             defaultMode: (ws) => this.defaultMode(ws),
+            defaultModeIn: (cwd) => {
+                const p = resolve(expandHome(cwd));
+                if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+                // Each as a session made here would come out: Manual for what isn't a mode, and for Bypass where it isn't turned on (Runtime).
+                const real = (m: PermissionMode): PermissionMode => (!PERMISSION_MODES.includes(m) || (m === "bypassPermissions" && !this.bypassAllowed(p)) ? "default" : m);
+                const folder = real(this.defaultMode(this.workspaceFor(p)));
+                // On the user's own computer, no freer than their own settings file says: the folder's file can ask
+                // for more of the user (Manual, Plan), but isn't their word on what another machine's session gets.
+                return onServer() ? folder : narrowerMode(folder, real(defaultMode(loadScope("user", p), p).mode));
+            },
+            // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
+            // so a link inside one that leads elsewhere isn't inside it. A recent folder counts only while the path it
+            // was opened by is still the folder itself: one put in its place since as a link (by a session working in
+            // the folder above it, say) would lead wherever that link does.
+            known: (cwd) => {
+                const real = (path: string) => {
+                    try {
+                        return realpathSync(path);
+                    } catch {
+                        return undefined;
+                    }
+                };
+                const p = real(resolve(expandHome(cwd)));
+                if (!p || !isDir(p)) return undefined;
+                const roots = [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].filter((r) => real(r) === r);
+                return roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)) ? p : undefined;
+            },
             listings: () => this.listings,
             release: (id) => this.unloadLater(id),
             starts: this.sessionStarts,
@@ -2544,7 +2571,9 @@ export class Engine {
                         // This computer's own rules for the session tools hold for what a server asks through it: of its sessions, and of the other servers'.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
                         if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about sessions on other machines.";
-                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.` : undefined;
+                        if (peersDenied(settings.permissions?.deny ?? [], tool)) return `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.`;
+                        // A rule that asks first: there's nobody to ask for a call from another machine, so it isn't made.
+                        return peersDenied(settings.permissions?.ask ?? [], tool) ? `Your computer's settings ask before ${tool}, and a call from another machine can't be asked about there, so it isn't made. Ask the user to do it themselves.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
@@ -3649,6 +3678,7 @@ export class Engine {
             }
             case "peers.list":
             case "peers.read":
+            case "peers.start":
             case "peers.send": {
                 // Asked by the user's own computer, about this server's sessions (far-peers.ts).
                 if (!this.o.away) throw new RpcError("Only a server is asked about its sessions this way.", "unsupported");
@@ -3661,6 +3691,13 @@ export class Engine {
                     // Named as this server names another machine's session (`mac/<id>`, `box/<id>`): shown in the message.
                     const from = str(f.id, "from.id");
                     if (!/^[\w.-]{1,40}\/[\w.-]{1,120}$/.test(from)) throw new RpcError("That message names no session it's from.", "invalid");
+                    if (method === "peers.start") {
+                        const prompt = checkMessage(p.prompt, "prompt");
+                        return await ops.start(
+                            { cwd: str(p.cwd, "cwd"), prompt, title: (optStr(p.title) ?? prompt).replace(/\s+/g, " ").trim().slice(0, 80), ...(optStr(p.model) ? { model: optStr(p.model)!.slice(0, 200) } : {}), ...(optStr(p.effort) ? { effort: optStr(p.effort)!.slice(0, 40) } : {}) },
+                            { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode },
+                        );
+                    }
                     return await ops.send(str(p.id, "id"), checkMessage(p.message), { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
                 } catch (e) {
                     if (e instanceof PeerError) throw new RpcError(e.message, "peer");

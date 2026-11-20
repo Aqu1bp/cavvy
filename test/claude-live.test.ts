@@ -834,6 +834,22 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => r.includes("Monitor notification 1."))).toBe(true);
     });
 
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) still reaches the user", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const asked: PermissionRequest[] = [];
+        // The stand-in asks about what an ask rule names, as the CLI does for a hook that says ask.
+        const a = await makeAgent({
+            settings: { permissions: { ask: ["Bash(npm test)"] } },
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        a.setMode("bypassPermissions");
+        await a.run("go");
+        expect(asked.map((r) => r.input.command)).toEqual(["npm test"]);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];
@@ -850,6 +866,23 @@ describe("background work across turns", () => {
         expect(asked[0]!.background).toBe(true);
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
+    });
+
+    test("switched to Bypass between turns, a background sub-agent's request under the earlier mode isn't asked about", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-ask";
+        const asked: PermissionRequest[] = [];
+        const a = await makeAgent({
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        expect(await a.run("start it")).toBe("done");
+        // Cavvy's mode, which Claude Code hears of at its next turn: its sub-agent still asks as in Manual.
+        a.setMode("bypassPermissions");
+        await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
     });
 
     test("a background sub-agent's permission prompt after Esc stopped its turn is still asked, and its answer reaches it", async () => {

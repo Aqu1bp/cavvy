@@ -2193,6 +2193,8 @@ export interface Methods {
     "peers.list": { params: { query?: string; limit: number }; result: unknown[] };
     "peers.read": { params: { id: string; turns?: number }; result: unknown };
     "peers.send": { params: { id: string; message: string; from: { id: string; title: string; mode: string } }; result: unknown };
+    /** A new session on this server in `cwd`, started by a session on another machine (`from`), with `prompt` as its first message. */
+    "peers.start": { params: { cwd: string; prompt: string; title?: string; model?: string; effort?: string; from: { id: string; title: string; mode: string } }; result: unknown };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
