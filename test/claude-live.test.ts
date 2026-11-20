@@ -868,6 +868,23 @@ describe("background work across turns", () => {
         await until(() => wakes.length > 0, 5000, "its report");
     });
 
+    test("switched to Bypass between turns, a background sub-agent's request under the earlier mode isn't asked about", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-ask";
+        const asked: PermissionRequest[] = [];
+        const a = await makeAgent({
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        expect(await a.run("start it")).toBe("done");
+        // Cavvy's mode, which Claude Code hears of at its next turn: its sub-agent still asks as in Manual.
+        a.setMode("bypassPermissions");
+        await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
+    });
+
     test("a background sub-agent's permission prompt after Esc stopped its turn is still asked, and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-hang";
         process.env.FAKE_BACKGROUND_MS = "900";

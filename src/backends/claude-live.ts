@@ -732,13 +732,22 @@ export class ClaudeConnection implements CliConnection {
         if ("fastMode" in s) flags.fastMode = Boolean(s.fastMode && model.supportsFastMode);
         if (Object.keys(flags).length && !ok(await this.control({ subtype: "apply_flag_settings", settings: flags }))) return "restart";
         if (s.mode && !ok(await this.control({ subtype: "set_permission_mode", mode: MODES[s.mode] }))) return "restart";
+        if (s.mode) this.cliMode = MODES[s.mode];
         return "applied";
     }
 
     /** Cavvy's mode changed: Claude Code takes it now, between turns too (its background sub-agents follow it). */
     setMode(mode: Parameters<SessionHost["setMode"]>[0]): void {
+        this.cliMode = MODES[mode];
         void this.control({ subtype: "set_permission_mode", mode: MODES[mode] });
     }
+
+    /**
+     * The mode Claude Code was last put in, once it has been since it started (till then, the one it was started
+     * in: its turn's). Cavvy's own can be ahead of it between turns, when a background sub-agent may still ask
+     * under the earlier one.
+     */
+    private cliMode?: string;
 
     async close(): Promise<void> {
         this.hookAbort.abort();
@@ -2020,6 +2029,7 @@ export class ClaudeConnection implements CliConnection {
             if (r.approved) {
                 const mode = r.mode ?? "default";
                 this.host.setMode(mode);
+                this.cliMode = MODES[mode];
                 return { behavior: "allow", updatedInput: raw, updatedPermissions: [{ type: "setMode", mode: MODES[mode], destination: "session" }] };
             }
             const fb = r.feedback?.trim();
@@ -2035,8 +2045,9 @@ export class ClaudeConnection implements CliConnection {
         const background = typeof req.agent_id === "string" && this.tasks.get(req.agent_id)?.status === "running";
         liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
         // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
-        const ownBypassAsk = MODES[this.host.mode()] === "bypassPermissions";
+        const ownBypassAsk = (this.cliMode ?? MODES[this.cfg.mode]) === "bypassPermissions";
         const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
+        if (a.allow && a.mode) this.cliMode = MODES[a.mode];
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
