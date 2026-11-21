@@ -694,6 +694,44 @@ describe("cleanup", () => {
         expect(existsSync(resumed)).toBe(true);
         expect(existsSync(kept)).toBe(true);
     });
+
+    test("a closed session's history is let go of once what it's saving is saved, unless it's in use again", async () => {
+        const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
+        const proj = project();
+        const a = join(proj, "a.txt");
+        const { session, run, history } = setup(proj, { one: [write(a, "1\n")] });
+        await run("one");
+        expect(FileHistory.existing(session)).toBe(history);
+        // Opened again meanwhile: kept, the one history it shares.
+        await FileHistory.release(session, () => false);
+        expect(FileHistory.existing(session)).toBe(history);
+        // A write under way is saved first.
+        history.begin();
+        const writing = history.write(a, Buffer.from("2\n"));
+        const released = FileHistory.release(session, () => true);
+        expect(FileHistory.existing(session)).toBe(history);
+        await released;
+        await writing;
+        expect(FileHistory.existing(session)).toBeUndefined();
+        expect(records(history).some((r) => r.t === "wrote" && r.hash === hashOf("2\n"))).toBe(true);
+        // Let go of, the session makes no recorder and doesn't open its history again.
+        session.release();
+        expect(TurnSnapshots.existing(session)).toBeUndefined();
+        expect(TurnSnapshots.for(session, proj)).toBeUndefined();
+        expect(FileHistory.existing(session)).toBeUndefined();
+        // Nor a late read of it (a badge's count): it finds nothing rather than reopening it, to be kept for good.
+        expect(FileHistory.for(session)).toBeUndefined();
+        expect(FileHistory.existing(session)).toBeUndefined();
+        // Opened again (a new owner of the session), it's read from disk.
+        const owner = Session.load(session.path);
+        try {
+            const again = FileHistory.for(owner)!;
+            expect(again).not.toBe(history);
+            expect(again.originals()).toEqual([{ path: a, hash: null }]);
+        } finally {
+            owner.release();
+        }
+    });
 });
 
 describe("/rewind command", () => {

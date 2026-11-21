@@ -5,10 +5,14 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "fs";
 
 const CHUNK = 1024 * 1024;
 /**
- * Up to this size, read whole and split: the strings that makes parse about a fifth faster (a 213 MB GUI log read
- * whole and parsed, 515-564 ms; a chunk at a time, 632-652). Past it, a chunk at a time.
+ * Up to this size, read whole and split; past it, a chunk at a time. Read whole, a file is held three times at once
+ * (its bytes, its text, its lines): a 132 MB, 100,000-item session read and parsed peaked at 427 MB whole and 51-61 MB
+ * a chunk at a time, in 310-404 ms against 261-293 ms (Linux, Bun 1.4). An earlier measurement found chunks about a
+ * fifth slower (a 213 MB GUI log parsed in 515-564 ms whole, 632-652 ms a chunk at a time); not yet measured again on
+ * a Mac. Even so, a few hundred MB less at once is worth about 100 ms on a log that size, and a log under this size
+ * is read as before.
  */
-const WHOLE_MAX = 256 * 1024 * 1024;
+const WHOLE_MAX = 8 * 1024 * 1024;
 
 /**
  * Calls `fn` with each line of `file` (without its newline), in order; a last line without a newline too. Says whether

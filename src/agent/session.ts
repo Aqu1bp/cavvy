@@ -19,6 +19,7 @@ import { eachLine, linesFromEnd } from "../util/lines";
 import { digestOf, digestWith, type MessagesDigest } from "./history-digest";
 import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
 import { validJob, type ScheduledJob } from "./schedule";
+import { ownCopy } from "../util/strings";
 
 export { redactedJson };
 
@@ -484,6 +485,11 @@ export class Session {
         if (!this.holding) return;
         this.holding = false;
         letGo(this.file);
+    }
+
+    /** release() was called: this copy writes nothing more. */
+    get isReleased(): boolean {
+        return this.released;
     }
 
     private claim() {
@@ -1775,6 +1781,18 @@ interface SessionHead {
 const heads = new Map<string, { ino: number; size: number; mtimeMs: number; scanned: number; tail: Buffer; head: SessionHead }>();
 const TAIL_BYTES = 64;
 /**
+ * A first prompt as a head keeps it: a title comes from its start, so a long one is kept as that much, here and on
+ * disk (a reminder block first, which a title leaves out, taken out before it's cut). A thousand pasted logs aren't
+ * each kept whole for as long as the server runs.
+ */
+const FIRST_CHARS = 2000;
+function shortFirst(t: string | undefined): string | undefined {
+    if (!t || t.length <= FIRST_CHARS) return t;
+    // Nothing but a reminder: its start, as before, not nothing (a head with no first prompt looks on for one).
+    // A copy: a slice would keep the whole prompt.
+    return ownCopy(t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trimStart().slice(0, FIRST_CHARS) || t.slice(0, FIRST_CHARS));
+}
+/**
  * The same, on disk (cache/session-heads.json): a list of a thousand sessions after a restart reads one file and stats
  * each session's, rather than reading every one. Read once; written when it changed, after a list (saveSessionHeads).
  */
@@ -1804,10 +1822,7 @@ export function saveSessionHeads() {
     headsDirty = false;
     try {
         const out: Record<string, unknown> = {};
-        // A title comes from a first prompt's start: a long one is kept as that much (a reminder block first, which a
-        // title leaves out, taken out before it's cut).
-        const short = (t: string | undefined) => (t && t.length > 2000 ? t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").slice(0, 2000) : t);
-        for (const [file, h] of heads) out[file] = { ...h, tail: h.tail.toString("base64"), head: { ...h.head, first: short(h.head.first) } };
+        for (const [file, h] of heads) out[file] = { ...h, tail: h.tail.toString("base64"), head: { ...h.head, first: shortFirst(h.head.first) } };
         const file = headsFile();
         ensureDir(join(paths.home(), "cache"));
         const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
@@ -1910,7 +1925,7 @@ function readHeadLine(raw: string, head: SessionHead) {
     else if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) head.workedAt = Math.max(head.workedAt ?? -Infinity, l.at);
     else if (l.t === "msg") {
         if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") {
-            head.first = l.m.meta?.display ?? textOf(l.m);
+            head.first = shortFirst(l.m.meta?.display ?? textOf(l.m));
             head.firstAt = head.count;
         }
         head.count++;

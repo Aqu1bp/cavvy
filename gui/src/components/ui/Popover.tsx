@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
@@ -87,6 +87,30 @@ export function Popover(p: PopoverProps) {
         requestAnimationFrame(place);
     });
 
+    // The page's pointer, keys and size, heard while it's open (a closed one, a menu for each sidebar row, listens to nothing).
+    createEffect(() => {
+        if (!open()) return;
+        const onDown = (e: PointerEvent) => {
+            const t = e.target as Node;
+            if (el?.contains(t) || p.anchor()?.contains(t)) return;
+            p.onClose();
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (!p.behavior && e.key === "Escape") {
+                e.stopPropagation();
+                p.onClose();
+            }
+        };
+        document.addEventListener("pointerdown", onDown, true);
+        document.addEventListener("keydown", onKey, true);
+        window.addEventListener("resize", place);
+        onCleanup(() => {
+            document.removeEventListener("pointerdown", onDown, true);
+            document.removeEventListener("keydown", onKey, true);
+            window.removeEventListener("resize", place);
+        });
+    });
+
     createEffect(() => {
         if (open() && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
     });
@@ -101,30 +125,6 @@ export function Popover(p: PopoverProps) {
     const pane = usePane();
     createEffect(() => {
         if (pane.parked() && open()) p.onClose();
-    });
-
-    onMount(() => {
-        const onDown = (e: PointerEvent) => {
-            if (!open()) return;
-            const t = e.target as Node;
-            if (el?.contains(t) || p.anchor()?.contains(t)) return;
-            p.onClose();
-        };
-        const onKey = (e: KeyboardEvent) => {
-            if (open() && !p.behavior && e.key === "Escape") {
-                e.stopPropagation();
-                p.onClose();
-            }
-        };
-        const onResize = () => open() && place();
-        document.addEventListener("pointerdown", onDown, true);
-        document.addEventListener("keydown", onKey, true);
-        window.addEventListener("resize", onResize);
-        onCleanup(() => {
-            document.removeEventListener("pointerdown", onDown, true);
-            document.removeEventListener("keydown", onKey, true);
-            window.removeEventListener("resize", onResize);
-        });
     });
 
     // Tracked while open, for fadeOut.

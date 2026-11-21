@@ -392,18 +392,24 @@ class StdioTransport extends MessageTransport {
 
     private onData(chunk: string) {
         this.buf += chunk;
+        // Lines taken by index, and what's after the last one kept once: not the rest copied again for every line.
+        let from = 0;
         let nl: number;
-        while ((nl = this.buf.indexOf("\n")) >= 0) {
-            const line = this.buf.slice(0, nl).trim();
-            this.buf = this.buf.slice(nl + 1);
-            if (!line) continue;
-            let msg: Json;
-            try {
-                msg = JSON.parse(line);
-            } catch {
-                continue; // non-protocol output; servers shouldn't do this
+        try {
+            while ((nl = this.buf.indexOf("\n", from)) >= 0) {
+                const line = this.buf.slice(from, nl).trim();
+                from = nl + 1;
+                if (!line) continue;
+                let msg: Json;
+                try {
+                    msg = JSON.parse(line);
+                } catch {
+                    continue; // non-protocol output; servers shouldn't do this
+                }
+                this.handle(msg);
             }
-            this.handle(msg);
+        } finally {
+            if (from) this.buf = this.buf.slice(from);
         }
     }
 

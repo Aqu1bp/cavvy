@@ -384,13 +384,28 @@ const stampAt = (path: string) => {
  * Git's index has as it is can be taken from it without asking again; let go of when its attributes files change.
  */
 const asIsByRoot = new Map<string, { attrs?: string; paths: Set<string> }>();
-function storedAsIsIn(root: string) {
-    let known = asIsByRoot.get(root);
-    if (!known) {
-        if (asIsByRoot.size >= 256) asIsByRoot.delete(asIsByRoot.keys().next().value!);
-        asIsByRoot.set(root, (known = { paths: new Set() }));
+/**
+ * Paths kept in asIsByRoot, every repository's together, at most (`maxPaths`, for tests), and repositories: past
+ * either, the repositories used longest ago are let go of (never the one asked for).
+ */
+const AS_IS_MAX_PATHS = 2_000_000;
+const AS_IS_MAX_ROOTS = 256;
+export function storedAsIsIn(root: string, maxPaths = AS_IS_MAX_PATHS) {
+    const known = asIsByRoot.get(root) ?? { paths: new Set<string>() };
+    asIsByRoot.delete(root);
+    asIsByRoot.set(root, known);
+    let total = 0;
+    for (const k of asIsByRoot.values()) total += k.paths.size;
+    for (const [r, k] of asIsByRoot) {
+        if (r === root || (total <= maxPaths && asIsByRoot.size <= AS_IS_MAX_ROOTS)) break;
+        total -= k.paths.size;
+        asIsByRoot.delete(r);
     }
     return known;
+}
+/** The repositories asIsByRoot keeps: for tests. */
+export function asIsRoots(): string[] {
+    return [...asIsByRoot.keys()];
 }
 
 /**
@@ -713,6 +728,9 @@ export class TurnSnapshots {
     }
 
     static for(session: Session, cwd: string): TurnSnapshots | undefined {
+        // One let go of makes no recorder, nor opens its history again: its history may have been let go of since
+        // (FileHistory.release) and its own stopped recorder isn't found under one opened anew.
+        if (session.isReleased) return TurnSnapshots.existing(session);
         const history = FileHistory.for(session);
         if (!history) return undefined;
         // A reopened Session is a new owner. A late read from the released
@@ -722,6 +740,12 @@ export class TurnSnapshots {
         let snapshots = sessions.get(session);
         if (!snapshots) sessions.set(session, (snapshots = new TurnSnapshots(history.dir, cwd)));
         return snapshots;
+    }
+
+    /** The session's recorder if it has one, without making one (to stop it). */
+    static existing(session: Session): TurnSnapshots | undefined {
+        const history = FileHistory.existing(session);
+        return history ? instances.get(history)?.get(session) : undefined;
     }
 
     private validTime(value: unknown): boolean {
@@ -885,6 +909,15 @@ export class TurnSnapshots {
         this.reader?.reader.close();
         if (this.watch) releaseWatch(this.watch);
         this.watch = undefined;
+        this.dropCaptureCaches();
+    }
+
+    /** What only a capture reads, which none starts once stopped. */
+    private dropCaptureCaches() {
+        this.index = undefined;
+        this.indexEntries = new Map();
+        this.folders = undefined;
+        this.scan = undefined;
     }
 
     /**
@@ -2272,7 +2305,10 @@ export class TurnSnapshots {
             this.indexedBase = undefined;
             const index = indexPath ? await this.readIndex(indexPath) : undefined;
             let tracked: string[], modeAt: (path: string) => string | undefined;
+            /** What names the tracked list (statFiles): the index's stamp, or what git listed. */
+            let listId: string;
             if (index) {
+                listId = this.index!.stamp;
                 tracked = index.paths;
                 modeAt = (path) => modeOf(index, path);
             } else {
@@ -2288,6 +2324,8 @@ export class TurnSnapshots {
                 }
                 tracked = [...modes.keys()];
                 modeAt = (path) => modes.get(path);
+                // The same listing (paths, modes, ids and stages), the same list.
+                listId = `ls:${listing.out.length}:${Bun.hash(listing.out).toString(36)}`;
             }
             const untracked = others.out.toString("utf-8").split("\0").filter((p) => p && modeAt(p) === undefined);
             let entries = new Map<string, Entry>();
@@ -2306,7 +2344,7 @@ export class TurnSnapshots {
             const root = this.root;
             const msExact = index ? msTimesExact(indexPath!) : false;
             const asIs = storedAsIsIn(root);
-            const trackedId = index ? `${root}\0${this.index!.stamp}` : `${root}\0${Date.now()}:${Math.random()}`;
+            const trackedId = `${root}\0${listId}`;
             const { kinds, stamps } = await statFiles(root, trackedId, tracked, untracked, deadline, inTime);
             inTime();
             const n = tracked.length + untracked.length;
@@ -2515,6 +2553,8 @@ export class TurnSnapshots {
                 if (genAtStart !== undefined) this.rememberFast(genAtStart, Date.now(), result);
                 else this.lastFast = undefined;
             }
+            // One that went on past stop (a whole capture: capture): what it kept is let go of too.
+            if (this.stopped) this.dropCaptureCaches();
         }
         return result;
     }

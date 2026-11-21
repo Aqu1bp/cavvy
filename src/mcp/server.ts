@@ -9,7 +9,7 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import type { Server } from "bun";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { ImagePart } from "../providers/types";
-import { redact, registerSecret } from "../util/redact";
+import { forgetFreshSecret, redact, registerFreshSecret } from "../util/redact";
 
 export interface ServerToolResult {
     text: string;
@@ -70,7 +70,7 @@ function ensureServer(): Server<undefined> {
 export function registerTools(tools: ServerTool[] | (() => ServerTool[]), instructions?: () => string | undefined): Registration {
     const srv = ensureServer();
     const token = randomBytes(32).toString("base64url");
-    registerSecret(token, `${APP_NAME} MCP token`);
+    registerFreshSecret(token, `${APP_NAME} MCP token`);
     const key = hash(token);
     const entry: Entry = { tools: typeof tools === "function" ? tools : () => tools, instructions, calls: new Map() };
     entries.set(key, entry);
@@ -79,6 +79,7 @@ export function registerTools(tools: ServerTool[] | (() => ServerTool[]), instru
         authorization: `Bearer ${token}`,
         close() {
             if (!entries.delete(key)) return;
+            forgetFreshSecret(token);
             for (const c of entry.calls.values()) c.abort();
             entry.calls.clear();
         },

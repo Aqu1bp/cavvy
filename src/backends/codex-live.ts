@@ -37,6 +37,7 @@ import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettin
 import type { BackgroundTaskInfo } from "./live/info";
 import { liveDebug, liveDebugOn } from "./live/debug";
 import type { BackendPermission, BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
+import { settledTurn } from "./types";
 import type { AgentCliStatus } from "./index";
 import {
     CODEX_CLIENT_NAME,
@@ -564,6 +565,11 @@ export class CodexLiveConnection extends CodexTurn {
     // ---------------------------------------------------------------------
     // Runs
 
+    /** Its turn ended, with no other run on here since: what's kept of it (CodexLive.settle). */
+    settle(t: BackendTurn, kept: BackendTurn) {
+        if (this.t === t && !this.liveRun) this.t = kept;
+    }
+
     /** A run starts on this connection: what a new CodexTurn starts with. */
     attach(run: LiveRun) {
         if (this.liveRun === run) return;
@@ -702,6 +708,7 @@ export class CodexLiveConnection extends CodexTurn {
         // kept here (claim, steerInto) go with it (#438): none of a queued message's (holdOver keeps those queued).
         if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ ...(m.id !== undefined ? { id: m.id } : {}), text: m.text, images: m.images, documents: [] })).filter((m) => m.text || m.images.length));
         this.liveRun = undefined;
+        if (this.accountReadFor === run) this.accountReadFor = undefined;
         this.aborted = false;
         this.failure = undefined;
         this.turnId = undefined;
@@ -1629,9 +1636,21 @@ export class CodexLive {
             liveDebug("codex", "wake from another account's app-server: not taken", { session: t.sessionKey, ref: t.adopt });
             return { reason: "error", text: "", actions: [], error: "Codex's turn ran on the account this session switched from, so it isn't taken over." };
         }
-        const { s, a } = await this.ready(t);
-        const run = new LiveRun(t);
-        return this.runOn(s, a, run);
+        try {
+            const { s, a } = await this.ready(t);
+            return await this.runOn(s, a, new LiveRun(t));
+        } finally {
+            this.settle(t);
+        }
+    }
+
+    /** The turn has ended: what's kept of it for between turns (wakes, a restart) is its settings, not what it sent. */
+    private settle(t: BackendTurn) {
+        const a = this.pool.get(t.sessionKey, this.providerDef.id)?.adapter as CodexLiveAdapter | undefined;
+        if (!a) return;
+        const kept = settledTurn(t);
+        if (a.t === t) a.t = kept;
+        a.conn?.settle(t, kept);
     }
 
     /** Codex's own compaction of the thread, on the live app-server. */

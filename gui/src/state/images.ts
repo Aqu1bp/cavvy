@@ -31,8 +31,11 @@ const toUrl = (i: { mediaType: string; data: string }) => `data:${i.mediaType};b
 /** A prompt's image: the whole of it (base64, for the viewer) and what the transcript shows (a thumbnail, or the image itself where none can be made). */
 export type PromptImage = { mediaType: string; data: string; thumb: string };
 
-/** Prompts' images: up to 20 MB each, so only the most recent few dozen are held. */
-const prompts = new ImageCache<PromptImage>(32);
+/** What a prompt's image holds: its base64 and its thumbnail (the whole image again where none could be made). */
+const imageChars = (i: PromptImage) => i.data.length + i.thumb.length;
+
+/** Prompts' images: up to 20 MB each, so only the most recent few dozen are held, and 64 MB of them. */
+const prompts = new ImageCache<PromptImage>(32, 64_000_000, imageChars);
 
 async function withThumb(i: { mediaType: string; data: string }): Promise<PromptImage> {
     return { mediaType: i.mediaType, data: i.data, thumb: (await thumbnail(i)) ?? toUrl(i) };
@@ -47,12 +50,12 @@ function objectUrl(i: { mediaType: string; data: string }): string {
 }
 
 /** Images calls' results brought (session.toolImage), by their key: what the model looked at. Whole, for the viewer. */
-const tools = new ImageCache<PromptImage>(48);
+const tools = new ImageCache<PromptImage>(48, 32_000_000, imageChars);
 /**
  * Their thumbnails, for the rows: a run of 200 screenshots shows 200 of these, and holds none of the images
  * themselves, which only the viewer asks for (again, past `tools`).
  */
-const toolThumbs = new ImageCache<string>(400);
+const toolThumbs = new ImageCache<string>(400, 16_000_000, (thumb) => thumb.length);
 
 /** A call's result image, with its thumbnail. Rejects when it's gone. */
 export function toolImage(sessionId: string, key: string): Promise<PromptImage> {

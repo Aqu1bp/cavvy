@@ -57,6 +57,8 @@ interface Running {
     pullFailures: number;
     /** Edits being checked now: it isn't idle while there are any. */
     checking: number;
+    /** What it published of files it doesn't have open (a whole project's): their seq, to let go of when it stops. */
+    said: Map<string, number>;
 }
 
 interface Published {
@@ -269,6 +271,15 @@ export class LspPool {
     /** A server that stopped: what it said about its files goes with it (the next one says it again, about the text as it is then). */
     private forget(r: Running) {
         for (const uri of r.client.docs.keys()) this.published.delete(uri);
+        // About other files, unless another server said something since.
+        for (const [uri, seq] of r.said) if (this.published.get(uri)?.seq === seq) this.published.delete(uri);
+        r.said.clear();
+    }
+
+    private publish(r: Running, uri: string, p: Omit<Published, "seq">) {
+        const seq = ++this.seq;
+        this.published.set(uri, { ...p, seq });
+        if (!r.client.docs.has(uri)) r.said.set(uri, seq);
     }
 
     /** Asking failed: wait for pushes from now on, starting with the ones that came meanwhile. */
@@ -279,7 +290,7 @@ export class LspPool {
         for (const [uri, p] of r.pushed) {
             const doc = r.client.docs.get(uri);
             const current = doc && (p.version !== undefined ? p.version >= doc.version : (p.at ?? 0) >= doc.sentAt);
-            if (current) this.published.set(uri, { ...p, seq: ++this.seq });
+            if (current) this.publish(r, uri, p);
         }
         r.pushed.clear();
         this.wake();
@@ -309,7 +320,7 @@ export class LspPool {
                 // It can't say after all (an answer it doesn't support): wait for pushes from now on.
                 if (!items) return this.pushOnly(r), false;
                 r.pullFailures = 0;
-                this.published.set(uri, { seq: ++this.seq, version, diagnostics: items, at: performance.now() });
+                this.publish(r, uri, { version, diagnostics: items, at: performance.now() });
                 this.wake();
                 return true;
             },
@@ -374,12 +385,14 @@ export class LspPool {
             executable: exe,
             root: this.root,
             onDiagnostics: (d) => {
+                // From a server that was let go of (one still shutting down): what it said went with it.
+                if (this.running.get(server.name) !== r) return;
                 const p = { seq: 0, version: typeof d.version === "number" ? d.version : undefined, diagnostics: d.diagnostics, at: performance.now() };
                 // About text that was replaced since: reporting it would have the agent fix what it already fixed.
                 if (this.outdated(r, d.uri, p.version)) return;
                 // Asked for, its pushes would only race the answers (an older state arriving after a newer one): kept aside in case asking stops working.
                 if (this.pulls(r)) return void r.pushed.set(d.uri, p);
-                this.published.set(d.uri, { ...p, seq: ++this.seq });
+                this.publish(r, d.uri, p);
                 this.wake();
             },
             onExit: (code, stderr) => this.crashed(r, code, stderr),
@@ -391,6 +404,7 @@ export class LspPool {
             pushed: new Map(),
             pullFailures: 0,
             checking: 0,
+            said: new Map(),
             ready: client.start().then(
                 () => {
                     r.up = true;

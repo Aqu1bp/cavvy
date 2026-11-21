@@ -74,9 +74,13 @@ const GRAMMARS: Record<string, Grammar> = {
 
 let core: Promise<HighlighterCore> | undefined;
 const loading = new Map<string, Promise<boolean>>();
-const cache = new Map<string, string>();
-const lineCache = new Map<string, string[]>();
+/** A cache of results by key, kept to MAX_CACHE entries and MAX_CACHE_CHARS characters (key and HTML), oldest first out. */
+type Cache<T> = { map: Map<string, { value: T; chars: number }>; chars: number };
+const cache: Cache<string> = { map: new Map(), chars: 0 };
+const lineCache: Cache<string[]> = { map: new Map(), chars: 0 };
 const MAX_CACHE = 400;
+/** For each cache. HTML runs about 12 times its code: a few long diffs, or many short blocks. */
+const MAX_CACHE_CHARS = 4_000_000;
 /** Bigger inputs stay plain: highlighting them would stall the page. */
 const MAX_CHARS = 200_000;
 
@@ -120,9 +124,29 @@ async function ensure(lang: string): Promise<string | undefined> {
     return (await p) ? want : undefined;
 }
 
-function remember<T>(map: Map<string, T>, key: string, value: T): T {
-    if (map.size >= MAX_CACHE) map.delete(map.keys().next().value!);
-    map.set(key, value);
+/** A hit is the newest again: what's let go of first is what's gone unused longest. */
+function used<T, E>(cache: { map: Map<string, E> }, key: string, hit: E): E {
+    cache.map.delete(key);
+    cache.map.set(key, hit);
+    return hit;
+}
+
+function remember<T>(cache: Cache<T>, key: string, value: T, chars: number): T {
+    const had = cache.map.get(key);
+    if (had) {
+        cache.map.delete(key);
+        cache.chars -= had.chars;
+    }
+    chars += key.length;
+    // Too big to keep at all: nothing's let go of for it.
+    if (chars > MAX_CACHE_CHARS) return value;
+    for (const [k, v] of cache.map) {
+        if (cache.map.size < MAX_CACHE && cache.chars + chars <= MAX_CACHE_CHARS) break;
+        cache.map.delete(k);
+        cache.chars -= v.chars;
+    }
+    cache.map.set(key, { value, chars });
+    cache.chars += chars;
     return value;
 }
 
@@ -130,8 +154,8 @@ function remember<T>(map: Map<string, T>, key: string, value: T): T {
 export async function highlight(code: string, lang: string | undefined): Promise<string | undefined> {
     if (!lang || code.length > MAX_CHARS) return undefined;
     const key = `${lang}\u0000${code}`;
-    const hit = cache.get(key);
-    if (hit !== undefined) return hit;
+    const hit = cache.map.get(key);
+    if (hit) return used(cache, key, hit).value;
     const id = await ensure(lang);
     if (!id) return undefined;
     const h = await highlighter();
@@ -146,7 +170,7 @@ export async function highlight(code: string, lang: string | undefined): Promise
             const cls = known && tokenClass(decl.color, (decl["font-style"] === "italic" ? 1 : 0) | (decl["font-weight"] ? 2 : 0));
             return cls === undefined || cls === false ? span : cls ? `<span class="${cls}">` : "<span>";
         });
-    return remember(cache, key, inner);
+    return remember(cache, key, inner, inner.length);
 }
 
 function escape(s: string): string {
@@ -207,9 +231,9 @@ const MAX_LINE = 4000;
 export async function highlightLineChunks(code: string, lang: string | undefined, emit: (from: number, lines: string[]) => void, stopped: () => boolean, first = FIRST_CHUNK): Promise<boolean> {
     if (!lang || code.length > MAX_CHARS) return false;
     const key = `${lang}\u0000${code}`;
-    const hit = lineCache.get(key);
+    const hit = lineCache.map.get(key);
     if (hit) {
-        emit(0, hit);
+        emit(0, used(lineCache, key, hit).value);
         return true;
     }
     const id = await ensure(lang);
@@ -232,7 +256,9 @@ export async function highlightLineChunks(code: string, lang: string | undefined
             if (stopped()) return false;
         }
     }
-    remember(lineCache, key, out);
+    let chars = 0;
+    for (const l of out) chars += l.length;
+    remember(lineCache, key, out, chars);
     return true;
 }
 

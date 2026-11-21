@@ -10,6 +10,7 @@
 //   FAKE_LSP_INIT_DELAY    ms before answering initialize (a slow start)
 //   FAKE_LSP_CROSS         a line "BREAKS: <file>" also publishes an error for that file (a sibling)
 //   FAKE_LSP_STDERR        write this much junk to stderr at start (bytes)
+//   FAKE_LSP_SHUTDOWN_SAYS on shutdown, publish an error for this file (relative to the root) before answering
 //   FAKE_LSP_PULL          answer textDocument/diagnostic (LSP 3.17 pull) and push nothing; "fail" refuses the requests,
 //                          "cancel-first" cancels the first one (ServerCancelled, as pyright does when a change overtakes it)
 //   FAKE_LSP_TSSERVER      answer typescript-language-server's tsserverRequest command, in tsserver's format
@@ -23,6 +24,8 @@ const delay = Number(env.FAKE_LSP_DELAY ?? 0);
 const lastCount = new Map<string, number>();
 const texts = new Map<string, string>();
 let cancelledOne = false;
+/** The workspace's folder, as initialize said (a file: URL). */
+let root: string | undefined;
 let buf = Buffer.alloc(0);
 
 if (env.FAKE_LSP_STDERR) process.stderr.write("x".repeat(Number(env.FAKE_LSP_STDERR)));
@@ -72,6 +75,7 @@ async function handle(msg: { id?: number; method?: string; params?: any }) {
     switch (msg.method) {
         case "initialize":
             if (env.FAKE_LSP_NO_INIT) return;
+            root = msg.params?.rootUri ?? msg.params?.workspaceFolders?.[0]?.uri;
             if (env.FAKE_LSP_INIT_DELAY) await Bun.sleep(Number(env.FAKE_LSP_INIT_DELAY));
             // Ask the client something, as real servers do.
             send({ jsonrpc: "2.0", id: 9001, method: "workspace/configuration", params: { items: [{ section: "fake" }] } });
@@ -120,6 +124,7 @@ async function handle(msg: { id?: number; method?: string; params?: any }) {
         case "textDocument/didChange":
             return publish(msg.params.textDocument.uri, msg.params.textDocument.version, msg.params.contentChanges[0].text);
         case "shutdown":
+            if (env.FAKE_LSP_SHUTDOWN_SAYS && root) send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: new URL(env.FAKE_LSP_SHUTDOWN_SAYS, root + "/").href, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "said while stopping" }] } });
             return send({ jsonrpc: "2.0", id: msg.id, result: null });
         case "exit":
             return process.exit(0);

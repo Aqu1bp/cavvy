@@ -179,7 +179,8 @@ export class AgyBackend implements AgentBackendClient {
             live = this.pool.session(key, this.def.id);
         }
         const adapter = live.adapter as AgyAdapter;
-        adapter.current = t;
+        // Only what its process reads between turns: not the prompt and its images, kept until the next turn.
+        adapter.current = { cwd: t.cwd, orchestrator: t.orchestrator, readOnly: t.readOnly };
         const rec = new TurnRecord(t.sink);
         // A message the user sends meanwhile joins the turn at its next model call (the gate's PreInvocation), recorded
         // after what was said before it; one taken that never went goes with the next turn.

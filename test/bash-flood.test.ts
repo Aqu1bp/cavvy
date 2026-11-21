@@ -105,8 +105,9 @@ describe("a background flood", () => {
         const last = (await BashOutputTool.run({ bash_id: id }, ctx)).content;
         expect(last).toContain("FINAL_MARKER");
         expect(last).toContain("exited with code 0");
-        // The ring holds the last BG_BUFFER characters, evicted at line boundaries.
-        expect(shell.output.length).toBeLessThanOrEqual(1_000_000);
+        // The ring holds the last BG_BUFFER characters, evicted at line boundaries; once it ended and was read, the last 64 KiB.
+        expect(shell.output.length).toBeLessThanOrEqual(64 * 1024);
+        expect(shell.output.length).toBeGreaterThan(60 * 1024);
         expect(shell.output.endsWith("FINAL_MARKER\n")).toBe(true);
         expect(shell.output.split("\n").slice(0, -2).every((l) => l === "GET /a 200" || l === "POST /b 500")).toBe(true);
     }, 60_000);
@@ -406,13 +407,23 @@ console.log(out.join(","));`);
 });
 
 describe("the output ring", () => {
+    test("trimmed to the end of a last line longer than what's kept, keeps that end rather than nothing", async () => {
+        const { OutputRing } = await import("../src/tools/bash");
+        const ring = new OutputRing();
+        ring.append("first line\n");
+        ring.append(`${"x".repeat(70_000)}y\n`);
+        ring.trim(64 * 1024);
+        expect(ring.text.length).toBe(64 * 1024);
+        expect(ring.text.endsWith("xy\n")).toBe(true);
+    });
+
     // What appendOutput did before #298: the same text and offsets, from one string copied on every append.
     function reference(shell: { output: string; readOffset: number }, text: string) {
         shell.output += text;
         if (shell.output.length > 1_000_000) {
             let drop = shell.output.length - 1_000_000;
             const nl = shell.output.indexOf("\n", drop);
-            if (nl !== -1 && nl - drop < 64 * 1024) drop = nl + 1;
+            if (nl !== -1 && nl - drop < 64 * 1024 && nl + 1 < shell.output.length) drop = nl + 1;
             shell.output = shell.output.slice(drop);
             shell.readOffset = Math.max(0, shell.readOffset - drop);
         }

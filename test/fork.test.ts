@@ -365,9 +365,11 @@ describe("the fork's file", () => {
         s.push(prompt("from the future", ahead));
         s.push(reply("a"));
         const f = forkSession(s, { cut: 2 });
+        // Its history, while it's held (one let go of opens none).
+        const history = FileHistory.for(f)!;
         f.release();
         expect(f.meta.forkOf!.at).toBe(ahead + 1);
-        const cp = FileHistory.for(f)!.begin();
+        const cp = history.begin();
         expect(cp).toBeGreaterThanOrEqual(ahead + 1);
         expect(beforeFork(f.meta, prompt("new", cp), 2)).toBe(false);
         expect(beforeFork(f.meta, f.messages[0], 0)).toBe(true);

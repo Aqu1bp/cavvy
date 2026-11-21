@@ -115,13 +115,20 @@ test("background buffer never exposes a secret split by front eviction", async (
     // Every line fits the streaming limit; their total exceeds the ring's 1,000,000-character bound.
     const command = script(dir, `await write('evicted-start\\n'); for (let i = 0; i < 144; i++) await write('f'.repeat(8191) + '\\n'); await write('kept: ' + token + '\\n');`);
     const id = await background(ctx, command);
-    const out = await finished(ctx, id);
     const sh = ctx.state.shells.get(id)!;
-    expect(sh.output.length).toBeGreaterThan(900_000);
-    expect(sh.output.length).toBeLessThanOrEqual(1_000_000);
-    expect(sh.output).not.toContain("evicted-start");
-    expect(sh.output).not.toContain("Output line omitted");
+    for (let i = 0; i < 500 && sh.exitCode === null; i++) await Bun.sleep(10);
+    sh.drain?.();
+    // The ring before it's read: once the shell has ended and been read, only its end is kept.
+    const ring = sh.output;
+    const out = await finished(ctx, id);
+    expect(ring.length).toBeGreaterThan(900_000);
+    expect(ring.length).toBeLessThanOrEqual(1_000_000);
+    expect(ring).not.toContain("evicted-start");
+    expect(ring).not.toContain("Output line omitted");
     // The ring must only hold redacted text BEFORE eviction can take a slice from it.
+    noFragments(ring);
+    expect(ring).toContain("kept: [REDACTED OUTPUT_TOKEN]");
+    expect(sh.output.length).toBeLessThanOrEqual(64 * 1024);
     noFragments(sh.output);
     expect(sh.output).toContain("kept: [REDACTED OUTPUT_TOKEN]");
     noFragments(JSON.stringify(out));

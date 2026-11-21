@@ -15,6 +15,7 @@ import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
+import { FileHistory } from "../agent/checkpoints";
 import { mergeLimits, type MergeHow } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
@@ -146,6 +147,8 @@ import { WorkingIndex } from "./working";
 export interface EngineOptions {
     /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
     shrinkIdleMs?: number;
+    /** How long after a session closes, with no turn running, before memory is handed back (default SHRINK_CLOSED_MS; tests). */
+    shrinkClosedMs?: number;
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
     allowBypass?: boolean;
     /** The folder the server was started in. */
@@ -210,6 +213,8 @@ const LIMIT_CHECKS_AT_ONCE = 2;
 const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long without a turn running before the server hands memory back (idleNow). */
 const SHRINK_IDLE_MS = 5 * 60_000;
+/** How long after a session closes, with no turn running, before the server hands memory back (closedNow). */
+const SHRINK_CLOSED_MS = 60_000;
 /** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
 const OPEN_MODEL_WAIT_MS = 2_000;
 
@@ -328,10 +333,12 @@ export class Workspace {
         private engine: Engine,
         readonly cwd: string,
         public trusted: boolean,
+        /** The folder's file names as Home's @-mentions listed them already (Engine.homeFiles), if it did. */
+        files?: FileIndex,
     ) {
         this.settings = loadSettings(cwd, { trusted });
         this.mcp = this.startMcp();
-        this.files = new FileIndex(cwd);
+        this.files = files ?? new FileIndex(cwd);
         this.commands = loadCustomCommands(cwd, trusted);
         this.skills = loadSkills(cwd, trusted);
     }
@@ -543,6 +550,8 @@ export class Engine {
     /** Sessions with a turn running now (turnRunning), for handing memory back once none has for a while. */
     private turnsRunning = new Set<string>();
     private shrinkTimer?: ReturnType<typeof setTimeout>;
+    /** The wait under way is closedNow's (a later close starts it again), not a turn's. */
+    private shrinkForClosed = false;
 
     /**
      * No turn has run for SHRINK_IDLE_MS: the runtime hands back what the work left it holding (compiled code not run
@@ -552,10 +561,26 @@ export class Engine {
     private idleNow(id: string) {
         this.turnsRunning.delete(id);
         if (this.turnsRunning.size || this.stopping || this.shrinkTimer) return;
+        this.shrinkLater(this.o.shrinkIdleMs ?? SHRINK_IDLE_MS, false);
+    }
+
+    /**
+     * A session closed with no turn running: what it held is handed back a minute after the last one closes (a window
+     * closing several closes them one after another). Opening and closing sessions, searching or reading usage start
+     * no turn, so without this nothing they left was handed back. A turn's wait under way already will.
+     */
+    private closedNow() {
+        if (this.turnsRunning.size || this.stopping || (this.shrinkTimer && !this.shrinkForClosed)) return;
+        this.shrinkLater(this.o.shrinkClosedMs ?? SHRINK_CLOSED_MS, true);
+    }
+
+    private shrinkLater(ms: number, forClosed: boolean) {
+        clearTimeout(this.shrinkTimer);
+        this.shrinkForClosed = forClosed;
         this.shrinkTimer = setTimeout(() => {
             this.shrinkTimer = undefined;
             if (!this.turnsRunning.size && !this.stopping) Bun.shrink();
-        }, this.o.shrinkIdleMs ?? SHRINK_IDLE_MS);
+        }, ms);
         this.shrinkTimer.unref?.();
     }
 
@@ -981,7 +1006,9 @@ export class Engine {
             trustForSession(p);
             trusted = true;
         }
-        const ws = new Workspace(this, p, trusted);
+        // Home's index of the folder becomes the workspace's (fs.mentions): not listed and kept twice.
+        const ws = new Workspace(this, p, trusted, this.homeFiles.get(p));
+        this.homeFiles.delete(p);
         this.workspaces.set(p, ws);
         return ws;
     }
@@ -1513,10 +1540,14 @@ export class Engine {
             .close()
             .catch(() => undefined)
             .finally(() => {
+                this.closedNow();
                 if (this.closing.get(id) === done) {
                     this.closing.delete(id);
                     this.closingIn.delete(id);
                 }
+                // Its files' history isn't kept for as long as the server runs, unless it's opened again meanwhile
+                // (the same history then) or its turn is still stopping (still saving to it).
+                if (!rt.closedMidTurn) void FileHistory.release(rt.session, () => !this.stopping && !this.runtimes.has(id) && !this.closing.has(id)).catch(() => undefined);
             });
         this.closing.set(id, done);
         this.closingIn.set(id, rt.folders);
@@ -1687,6 +1718,7 @@ export class Engine {
                     // One a server's session is lent tools through: the session there gets a new one for its next call.
                     if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
+                    this.closedNow();
                 }
                 trashSession(id, flags);
             } finally {

@@ -27,6 +27,29 @@ test("redaction versions change only when registered values or labels change", (
     }
 });
 
+test("an MCP registration's token is redacted while it lives, let go of at close, and leaves cached redactions alone", async () => {
+    const { registerTools } = await import("../src/mcp/server");
+    const { knownSecrets } = await import("../src/util/redact");
+    const before = redactionVersion();
+    const reg = registerTools([]);
+    const token = reg.authorization.replace(/^Bearer /, "");
+    try {
+        // Made just now: nothing redacted before can hold it, so nothing kept is read again.
+        expect(redactionVersion()).toBe(before);
+        expect(knownSecrets()).toContain(token);
+        const long = `config: ${token} ` + "x".repeat(2000);
+        expect(redact(long)).not.toContain(token);
+        reg.close();
+        expect(knownSecrets()).not.toContain(token);
+        expect(redactionVersion()).toBe(before);
+        // Revoked: text redacted while it was known may stay so (here, redact's cache), it only hides more.
+        expect(redact(long)).not.toContain(token);
+        expect(redact(`now ${token}`)).toBe(`now ${token}`);
+    } finally {
+        reg.close();
+    }
+});
+
 function noFragments(text: string, values: string[]) {
     for (const value of values) for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
 }

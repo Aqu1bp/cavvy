@@ -25,7 +25,10 @@ export function encodeMessage(msg: RpcMessage): Uint8Array {
 /** Splits a byte stream into messages. Bodies that aren't JSON are skipped, never fatal. */
 export class MessageReader {
     /** Unread bytes are buf[start, end); the buffer doubles as needed, so a large message isn't copied for every chunk. */
-    private buf = new Uint8Array(64 * 1024);
+    private static readonly INITIAL = 64 * 1024;
+    /** Larger than this, the buffer isn't kept once it's empty. */
+    private static readonly KEPT = 1024 * 1024;
+    private buf = new Uint8Array(MessageReader.INITIAL);
     private start = 0;
     private end = 0;
     /** A message this large (64 MB) means the stream is broken, not that a server has that much to say. */
@@ -35,6 +38,15 @@ export class MessageReader {
 
     push(chunk: Uint8Array) {
         this.append(chunk);
+        this.read();
+        // All read: a buffer grown for a large message goes back to its first size.
+        if (this.start === this.end && this.buf.length > MessageReader.KEPT) {
+            this.buf = new Uint8Array(MessageReader.INITIAL);
+            this.start = this.end = 0;
+        }
+    }
+
+    private read() {
         for (;;) {
             const view = this.buf.subarray(this.start, this.end);
             const head = headerEnd(view);
