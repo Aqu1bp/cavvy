@@ -17,3 +17,13 @@ Past a reached limit on credits (#434), built, not captured (no capture was at t
   (`isUsingOverage` is set when the status is rejected and `overageStatus` is allowed or allowed_warning).
 
 `resetsAt` is in epoch seconds in both CLIs.
+
+From Claude Code 2.1.322 (captured 2026-11-20, on a plan with a weekly limit and no 5-hour one):
+
+- `claude-2.1.322-opus.json` and `claude-2.1.322-fable.json` are `rate_limit_info` after an Opus turn and
+  after a Fable turn, verbatim. Each window has its own `status` now, and a report lists only the windows
+  the turn's model counts against: the Fable window is in the second only.
+- `claude-usage-2.1.322-ultra.json` is `claude -p "/usage" --output-format json` (written by
+  `scripts/probes/claude-usage.ts`, with `TZ=UTC`): answered without a model call (`local_command`,
+  no turns, no cost). Its result is text for people; only its first line and its window lines are kept,
+  never the tips about this machine's sessions that follow them.

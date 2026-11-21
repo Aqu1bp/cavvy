@@ -1,37 +1,16 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
-import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
-import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, toast } from "../state/app";
+import { planLimitKey, type AccountInfo } from "@shared/protocol";
+import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
-/**
- * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
- * "5-hour"), and when it resets. Below that Home shows nothing there: a new session has no context to put
- * in a ring. A window that has reset since the report says nothing now (as in the rail's footer), so it's skipped.
- */
-export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now()): { pct: number; window?: string; resets?: string } | undefined {
-    if (!m) return undefined;
-    const live = m.windows.filter((_, i) => (l?.windows[i]?.resetsAt ?? Infinity) > at);
-    const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
-    // A reached window is the one to name, whatever another's percentage.
-    const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
-    const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
-    // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
-    if (m.reached && !w?.reached) return { pct: 100, ...(m.resets ? { resets: m.resets } : {}) };
-    const pct = w ? used(w) : 0;
-    if (pct < 80 && !m.reached) return undefined;
-    // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
-    const resets = w?.resets ?? m.resets;
-    return { pct: Math.min(100, Math.round(pct)), window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()), ...(resets ? { resets } : {}) };
-}
-
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
@@ -50,12 +29,23 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // The plan limits of the session's machine's accounts: another machine's session opened here has that machine's.
     const limits = () => limitsFor(p.sessionId)[planLimitKey(provider() ?? "", accountId())];
     const meter = createMemo(() => meterOf(limits(), now()));
-    const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
+    // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
+    // model's limit says nothing here.
+    // The model by the one its CLI served (this session's, else last on this account), or listed it as for this
+    // account; else by its id.
+    const model = () => {
+        const m = state()?.model ?? p.model;
+        if (!m) return undefined;
+        const listed = { provider: provider() ?? "", resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor, id: m.id };
+        return { id: m.id, resolved: state()?.servedModel ?? resolvedOn(listed, accountId(), servedFor(p.sessionId)) };
+    };
+    const stop = createMemo(() => limitFor(meter(), model()));
+    const name = () => planTitle(providerInfo(), accountId(), "Plan").title;
     const alternatives = () => limitAlternatives(accounts(), accountId());
     // A limit can arrive before Settings has ever checked account status.
     const refreshKey = createMemo(() => {
         const others = providerInfo()?.agentCli?.accounts?.filter((a) => a.id !== accountId()).map((a) => a.id);
-        return p.sessionId && meter()?.reached && others?.length ? JSON.stringify([provider(), accountId(), limits()?.at, others]) : undefined;
+        return p.sessionId && stop() && others?.length ? JSON.stringify([provider(), accountId(), limits()?.at, others]) : undefined;
     });
     createEffect(on(refreshKey, (key) => {
         setAccounts([]);
@@ -76,7 +66,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
             close();
             // On credits the turn didn't stop: there's nothing to send again.
-            toast(meter()?.usingCredits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
+            toast(stop()?.credits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
         } catch (error) { reportError(error); }
         finally { setSwitching(false); }
     }
@@ -87,15 +77,19 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // A reached limit is the one plan state shown here, since it stops this session: red while it blocks,
     // amber past it on credits, where nothing is blocked but it costs (#426).
     const tone = (): "danger" | "warning" | "normal" => {
-        const ctx = view().pct ?? 0, credits = Boolean(meter()?.usingCredits);
-        if (ctx >= 0.85 || (meter()?.reached && !credits)) return "danger";
-        if (ctx >= 0.7 || (meter()?.reached && credits)) return "warning";
+        const ctx = view().pct ?? 0, credits = Boolean(stop()?.credits);
+        if (ctx >= 0.85 || (stop() && !credits)) return "danger";
+        if (ctx >= 0.7 || (stop() && credits)) return "warning";
         return "normal";
     };
-    const planLine = () => (meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined);
+    // The limit that stops this model, in words: "Fable limit reached, resets Mon 9:00 AM".
+    const stopWords = () => {
+        const st = stop();
+        return st && `${st.window ? `${limitName(st.window)} limit reached` : "Limit reached"}${st.credits ? ", using credits" : ""}${st.resets ? `, resets ${st.resets}` : ""}`;
+    };
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        meter()?.reached ? planLine() : undefined,
+        stopWords() && `${name()}: ${stopWords()}`,
     ].filter(Boolean).join(". ");
     const cli = () => Boolean(providerInfo()?.agentCli);
     const autoOff = () => !cli() && app.settings.autoCompact === false;
@@ -106,10 +100,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         if (cli()) return v.early ? `${providerInfo()?.name ?? "The CLI"} compacts at ${tokens(v.full!)}, your auto-compact setting.${whole}` : `${providerInfo()?.name ?? "The CLI"} decides when to compact.${whole}`;
         return `Compacts on its own at ${tokens(v.full!)}, leaving room for the answer.${whole}`;
     };
-    const reachedWindow = () => meter()?.windows.find((w) => w.reached);
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
-    const near = createMemo(() => (p.home ? nearLimit(meter(), limits(), now()) : undefined));
-    const width = () => (meter()?.reached ? 280 : 256);
+    const near = createMemo(() => (p.home ? nearLimit(meter(), model()) : undefined));
+    const width = () => (stop() ? 280 : 256);
     // Unavailable, not disabled: the tooltip still says why, to the pointer and the keyboard.
     const compactTitle = () => (!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : undefined);
     const compactItem = () => (
@@ -137,14 +130,29 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const shownPct = () => (view().pct === undefined ? undefined : Math.round(Math.min(1, urgency()) * 100));
     const ctxTone = () => ((view().pct ?? 0) >= 0.85 ? "danger" : (view().pct ?? 0) >= 0.7 ? "warning" : "");
     // Home has no session: no context to show, nothing to compact or switch. The pill says it all; when it resets is its tooltip.
+    // Home: the chosen model's limit reached ("Fable limit reached"), else its fullest window from 80% ("94% of weekly
+    // limit"); its words, tooltip and label all of that one.
     if (p.home)
         return (
-            <Show when={near()}>
-                {(n) => (
-                    <span class="ctx-limit" role="status" aria-label={planLine()} title={n().resets ? `Resets ${n().resets}` : undefined}>
+            <Show
+                when={stop()}
+                fallback={
+                    <Show when={near()}>
+                        {(n) => (
+                            <span class="ctx-limit" role="status" aria-label={`${name()}: ${n().pct}% of ${n().window ?? "plan"} limit${n().resets ? `, resets ${n().resets}` : ""}`} title={n().resets ? `Resets ${n().resets}` : undefined}>
+                                <Gauge size={14} stroke-width={2} aria-hidden="true" />
+                                <b class="num" aria-hidden="true">{n().pct}%</b>
+                                <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                            </span>
+                        )}
+                    </Show>
+                }
+            >
+                {(st) => (
+                    <span class="ctx-limit" role="status" aria-label={`${name()}: ${stopWords()}`} title={st().resets ? `Resets ${st().resets}` : undefined}>
                         <Gauge size={14} stroke-width={2} aria-hidden="true" />
-                        <b class="num" aria-hidden="true">{n().pct}%</b>
-                        <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                        <b aria-hidden="true">{st().window ? limitName(st().window!) : "Plan"}</b>
+                        <span class="lbl" aria-hidden="true">limit reached</span>
                     </span>
                 )}
             </Show>
@@ -174,12 +182,13 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                         if (to && !panel?.contains(to) && to !== btn) close();
                     }}>
                     {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
-                    <Show when={meter()?.reached}>
-                        <section class={`cx-limit ${meter()!.usingCredits ? "credits" : ""}`} aria-label="Plan limit">
+                    <Show when={stop()}>{(st) => (
+                        <section class={`cx-limit ${st().credits ? "credits" : ""}`} aria-label="Plan limit">
                             <Gauge size={15} aria-hidden="true" />
                             <div>
-                                <b>{meter()!.usingCredits ? "Limit reached, using credits" : "Limit reached"}</b>
-                                <span>{name()}{reachedWindow() ? `, ${reachedWindow()!.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase())} limit` : ""}.<Show when={meter()!.resets ?? reachedWindow()?.resets}>{(r) => <> Resets {r()}.</>}</Show></span>
+                                {/* Named by the limit that stops this session, the one that lifts last: "Fable limit reached", "Weekly limit reached". */}
+                                <b>{`${st().window ? `${limitName(st().window!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</b>
+                                <span>{name()}.<Show when={st().resets}>{(r) => <> Resets {r()}.</>}</Show></span>
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
@@ -188,7 +197,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                                 </Show>
                             </div>
                         </section>
-                    </Show>
+                    )}</Show>
                     {/* What the context holds, the bar under it, then the one thing to do. (What the session has used is
                         Settings → Usage's.) */}
                     <div class="cx-info">

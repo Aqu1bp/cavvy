@@ -108,6 +108,24 @@ test("whether turns go on using credits (#434) is saved as a flag, and nothing e
     expect(JSON.stringify(claude)).not.toContain("917");
 });
 
+test("a window kept from an earlier report is saved with when that was; an older file's have the plan's time", () => {
+    writeFileSync(paths.planLimits(), JSON.stringify({ version: 1, limits: [
+        { provider: "claude-code", at: 2000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 14 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 3, at: 1000 }, { id: "x", label: "X", at: "soon", scope: "fable" }] },
+        // Saved before scopes were: Claude Code's model windows get theirs by id. A stop's attribution from an earlier build is ignored.
+        { provider: "claude-code", accountId: "work", at: 2000, reached: true, stopScope: "fable", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100 }, { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 3 }] },
+        // Another CLI's windows have none, whatever the file says.
+        { provider: "codex", accountId: "default", at: 2000, reached: true, stopScope: "spark", windows: [{ id: "spark:primary", label: "Spark 5-hour", usedPercent: 100, scope: "spark" }] },
+    ] }));
+    const [l, old, codex] = loadPlanLimits();
+    expect(old!.windows.map((w) => w.scope)).toEqual(["fable", "opus"]);
+    expect("stopScope" in old!).toBe(false);
+    expect(codex!.windows[0]!.scope).toBeUndefined();
+    expect("stopScope" in codex!).toBe(false);
+    expect(l!.windows.map((w) => w.at)).toEqual([undefined, 1000, undefined]);
+    // And the models a window counts, when it's one of some models' (a word of their ids, nothing else).
+    expect(l!.windows.map((w) => w.scope)).toEqual([undefined, "fable", undefined]);
+});
+
 test("a broken or foreign file is ignored", async () => {
     writeFileSync(paths.planLimits(), "{ not json");
     expect(loadPlanLimits()).toEqual([]);
@@ -171,4 +189,29 @@ test("a CLI that isn't turned on isn't asked", async () => {
     expect(await engine.handle(client(), "limits.get", {})).toEqual([]);
     expect(existsSync(process.env.FAKE_LOG)).toBe(false);
     await engine.stop();
+});
+
+test("turning a CLI off stops its plan check: its answer isn't kept", async () => {
+    saveAgentConfig("claude-code", { path: claudeBin });
+    const log = join(root, "turned-off.log");
+    rmSync(log, { force: true });
+    process.env.FAKE_LOG = log;
+    process.env.FAKE_USAGE_TEXT = "Current week (all models): 30% used · resets " + new Date(Date.now() + 2 * 86_400_000).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) + ", 8pm (UTC)";
+    process.env.FAKE_USAGE_DELAY_MS = "3000";
+    const engine = engineOf();
+    const c = client();
+    try {
+        const check = engine.handle(c, "limits.refresh", { plans: [{ provider: "claude-code" }] });
+        await until(async () => (existsSync(log) && readFileSync(log, "utf8").includes('"usage"') ? true : undefined), 5000);
+        const t = Date.now();
+        await engine.handle(c, "providers.removeKey", { provider: "claude-code" });
+        await check;
+        // Stopped, not waited out.
+        expect(Date.now() - t).toBeLessThan(2500);
+        expect(await engine.handle(c, "limits.get", {})).toEqual([]);
+    } finally {
+        delete process.env.FAKE_USAGE_TEXT;
+        delete process.env.FAKE_USAGE_DELAY_MS;
+        await engine.stop();
+    }
 });

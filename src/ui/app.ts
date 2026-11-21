@@ -222,6 +222,8 @@ export class App {
     private turnTokens = 0;
     /** The agent CLIs' plan limits as last reported, by provider and account (/cost shows them). */
     planLimits = new Map<string, PlanLimits>();
+    /** Each account's plan as its CLI said when this terminal checked it ("max"), by planLimitKey: for /cost's headings. */
+    accountPlans = new Map<string, string>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;
@@ -1608,7 +1610,7 @@ export class App {
                 {
                     const key = planLimitKey(e.limits.provider, e.limits.accountId);
                     const prev = this.planLimits.get(key);
-                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial));
+                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial, e.full));
                 }
                 break;
             case "usage":

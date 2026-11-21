@@ -73,7 +73,9 @@ import { agentCli } from "../backends/defs";
 import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
-import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { clockTime, limitLines, limitPlanTitle } from "../backends/limits";
+import { reportedOf } from "../server/plan-meter";
+import { planLimitKey } from "../server/protocol";
 import { describeJob, shortTime } from "../agent/schedule";
 import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
@@ -460,6 +462,7 @@ async function agentLogin(app: App, providerId: string) {
         return;
     }
     if (!st) return;
+    if (st.plan) app.accountPlans.set(planLimitKey(providerId, "default"), st.plan);
     if (!st.installed) {
         app.notice(`${def.name} isn't installed (no \`${cli.command}\` on your PATH). ${st.installHint}, sign in with \`${st.signIn}\`, then /login ${providerId} again.`, "warn");
         return;
@@ -542,6 +545,7 @@ async function signInCliAccount(app: App, provider: string, id: string) {
         release();
     }
     const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
+    if (status?.plan) app.accountPlans.set(planLimitKey(provider, selected.id), status.plan);
     if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : (status.problem ?? "not signed in")}`);
     await app.refreshListings();
 }
@@ -1100,10 +1104,11 @@ function costCommand(app: App) {
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     for (const l of app.planLimits.values()) {
-        const name = limitAccountLabel(l.provider, l.accountId);
+        // With its plan as the GUI names it ("Claude Code Max"), once this terminal has checked the account.
+        const name = limitPlanTitle(l.provider, l.accountId, app.accountPlans.get(planLimitKey(l.provider, l.accountId)));
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
-        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
+        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(reportedOf(l, Date.now()))}.`));
     }
     app.print(lines);
 }

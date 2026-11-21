@@ -6,7 +6,7 @@ import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
 
 const iso = isolate();
 const { usageSummary, usageBounds, clearUsageCache } = await import("../src/server/usage");
-const { costText } = await import("../gui/src/lib/limits");
+const { costText } = await import("../gui/src/lib/usage-limits");
 const { Session } = await import("../src/agent/session");
 const { Agent } = await import("../src/agent/agent");
 const { clientFor, forgetClient } = await import("../src/providers/models");

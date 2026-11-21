@@ -658,6 +658,9 @@ export interface ModelSummary {
     providerName?: string;
     id: string;
     name: string;
+    /** For an alias ("default"): the model the CLI listed it as, on account `resolvedFor` (ModelInfo). */
+    resolvedModel?: string;
+    resolvedFor?: string;
     contextWindow?: number;
     maxOutput?: number;
     pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -819,6 +822,8 @@ export interface SessionState {
     /** The other worktree of the session's repository the agent works in now; unset while it works in the session's own folder. */
     workingIn?: WorkingIn;
     model?: ModelSummary;
+    /** The model id the CLI said it served for the model (an alias's resolution, on the session's account); unset until its first usage. */
+    servedModel?: string;
     mode: PermissionModeId;
     bypassAllowed: boolean;
     effort?: EffortLevel;
@@ -1349,13 +1354,31 @@ export interface LimitWindow {
     usedPercent?: number;
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
+    /** At its limit (true), said not to be (false), or not said (then a full window is taken to be). */
     reached?: boolean;
+    /** When this window was last reported (ms), when it's older than the plan's report (`at`): kept from an earlier one. */
+    at?: number;
     /**
-     * Only on a window of another metered limit than the plan's own (a Codex model's): whether
-     * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
-     * stops there, whatever the plan's credits.
+     * Only for one of Claude Code's windows that count some models (Weekly Fable, Opus, Sonnet): the family it covers,
+     * a word of their model ids ("fable"). Reached, it stops those models, not the plan (plan-meter.ts covers).
+     */
+    scope?: string;
+    /**
+     * Whether this window's limit is carried past by credits, as the report that named it said:
+     * a Codex model's metered limit, a Claude Code rejection's window (PlanLimits.credits is the
+     * plan's latest verdict). False stops there, whatever the plan's credits.
      */
     credits?: boolean;
+}
+
+/** The model an agent CLI last served an alias as ("default" → "claude-opus-5-5"), on an account. */
+export interface ServedModel {
+    provider: string;
+    accountId: string;
+    /** The model id asked for (an alias). */
+    model: string;
+    /** The model id the CLI said it served. */
+    served: string;
 }
 
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
@@ -1384,7 +1407,8 @@ export interface PlanLimits {
  * view of which still are) is another limit's that has none.
  */
 export function usingCredits(l: PlanLimits, reached: boolean, reachedNow: (i: number) => boolean = (i) => Boolean(l.windows[i]?.reached)): boolean {
-    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && reachedNow(i));
+    // A window of some models (Fable's: scope) says only for those models (plan-meter.ts).
+    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && !w.scope && reachedNow(i));
 }
 
 /** The ranges the Usage view offers, in days. */
@@ -2018,6 +2042,8 @@ export type ServerEvent =
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits }
+    /** A CLI served an alias as this model on this account (the model limits that cover it): ServedModel. */
+    | { type: "served"; served: ServedModel }
     /** The keybindings file was saved, created or deleted. */
     | { type: "keybindings.changed"; keybindings: KeybindingsFile }
     /** A theme file in ~/.cavvy/themes was saved, added or deleted: the whole list, checked. */
@@ -2167,6 +2193,8 @@ export interface Methods {
     "peers.list": { params: { query?: string; limit: number }; result: unknown[] };
     "peers.read": { params: { id: string; turns?: number }; result: unknown };
     "peers.send": { params: { id: string; message: string; from: { id: string; title: string; mode: string } }; result: unknown };
+    /** A new session on this server in `cwd`, started by a session on another machine (`from`), with `prompt` as its first message. */
+    "peers.start": { params: { cwd: string; prompt: string; title?: string; model?: string; effort?: string; from: { id: string; title: string; mode: string } }; result: unknown };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
@@ -2485,6 +2513,10 @@ export interface Methods {
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Asks the CLIs where these plans stand now (all turned on, without `plans`); what's new comes as `limits` events. */
+    /** The model each alias was last served as, by CLI and account (ServedModel). */
+    "served.get": { params: Record<string, never>; result: ServedModel[] };
+    "limits.refresh": { params: { plans?: { provider: string; accountId?: string }[] }; result: null };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */
     "usage.summary": { params: { days: UsageDays; brief?: boolean; /** This computer's own at once if its servers are slow (UsageSummary.waiting), for a window that then asks for the rest. */ first?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for. */ rest?: boolean }; result: UsageSummary };

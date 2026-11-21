@@ -203,8 +203,9 @@ export interface AgyTool {
     reason?: string;
     /** Refused with this, without asking. */
     refuse?: string;
-    /** It runs somewhere else than the session's folder: always asked about. */
+    /** It runs somewhere else than the session's folder (`dir`, as the volume has it): always asked about. */
     elsewhere?: boolean;
+    dir?: string;
     /** One of agy's own that only reads or keeps its own state: let go (deny rules still apply). */
     free?: boolean;
     /** One of agy's own tools, checked by its own name (OWN_TOOL + its name): a yes for the session covers that tool only. */
@@ -274,7 +275,7 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         if (!command) return undefined;
         const dir = str(args.Cwd);
         const elsewhere = Boolean(dir && canonical(at(dir)) !== canonical(cwd));
-        return { toolName: "Bash", input: { command, ...(str(args.toolSummary) ? { description: args.toolSummary } : {}) }, ...(elsewhere ? { elsewhere, reason: `It runs in ${dir}.` } : {}) };
+        return { toolName: "Bash", input: { command, ...(str(args.toolSummary) ? { description: args.toolSummary } : {}) }, ...(elsewhere ? { elsewhere, dir: canonical(at(dir!)), reason: `It runs in ${dir}.` } : {}) };
     }
     if (name === "send_command_input") return ownTool(name, args);
     if (/^(write_file|write_to_file)$/.test(name)) {

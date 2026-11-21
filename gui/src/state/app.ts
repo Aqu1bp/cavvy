@@ -7,6 +7,7 @@ import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
+import { servedKey } from "../lib/limits";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { canReveal, credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
@@ -229,6 +230,10 @@ function machineProvidersAgain(on: string, link: Rpc) {
 }
 /** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
+/** The aliases' served models of `sessionId`'s machine's accounts: this computer's only (another machine's aren't known here). */
+export function servedFor(sessionId: string | undefined): Record<string, string> {
+    return awayMachine(sessionId) === undefined ? app.served : {};
+}
 /** The plan limits of `sessionId`'s machine's accounts. */
 export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
     const on = awayMachine(sessionId);
@@ -541,6 +546,8 @@ export interface AppState {
     seen: Record<string, number>;
     /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
+    /** The model each alias was last served as, by servedKey (provider, account, alias): which model limits cover it. */
+    served: Record<string, string>;
     /** The desktop app's updates from main (Settings → About, and the rail's Update button while there's one). */
     update?: AppUpdateInfo;
 }
@@ -594,6 +601,7 @@ export const [app, setApp] = createStore<AppState>({
     settings: {},
     seen: loadSeen(),
     limits: {},
+    served: {},
     ...loadNavigation(),
 });
 
@@ -1524,9 +1532,21 @@ export async function refreshProjects() {
 
 let watchingEditor = false;
 
+/**
+ * Asks where plans stand now (limits.refresh), for `sessionId`'s machine: when their usage is opened (the rail's
+ * card, Settings → Usage). The answers come as `limits` events; a check that fails leaves what's shown. The server
+ * skips an account reported or checked a moment ago.
+ */
+export function checkLimits(sessionId?: string, plans?: { provider: string; accountId?: string }[]): Promise<void> {
+    return rpcFor(sessionId).call("limits.refresh", plans ? { plans } : {}).then(() => undefined, () => undefined);
+}
+
 export async function refreshLimits() {
     const limits = await rpc.call("limits.get", {});
     setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), fromWireLimits(l)]))));
+    // A server from before served.get has none to say: aliases are then told by their listing alone.
+    const served = await rpc.call("served.get", {}).catch(() => []);
+    setApp("served", reconcile(Object.fromEntries(served.map((s) => [servedKey(s.provider, s.accountId, s.model), s.served]))));
 }
 
 export async function refreshUpdate() {
@@ -1750,6 +1770,9 @@ function onEvent(ev: ServerEvent) {
             return;
         case "limits":
             setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(fromWireLimits(ev.limits)));
+            return;
+        case "served":
+            setApp("served", servedKey(ev.served.provider, ev.served.accountId, ev.served.model), ev.served.served);
             return;
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);

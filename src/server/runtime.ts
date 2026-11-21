@@ -471,6 +471,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         providerName: p?.name,
         id: m.id,
         name: m.name ?? m.id,
+        ...(m.resolvedModel ? { resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor } : {}),
         contextWindow: m.contextWindow,
         maxOutput: m.maxOutput,
         pricing: m.pricing,
@@ -2131,9 +2132,11 @@ export class Runtime {
         this.schedules.cancelLimitResume("account");
         // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
-        // Another account may serve the alias as another model: known again from its first usage.
-        this.servedModel = undefined;
-        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
+        // Another account may serve the alias as another model: known again from its first usage. Only for the
+        // session's own CLI: another's account doesn't serve its model.
+        const served = provider === this.model?.provider ? undefined : this.servedModel;
+        this.servedModel = served;
+        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") }, servedModel: served });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
@@ -2265,6 +2268,7 @@ export class Runtime {
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.servedModel = undefined;
+        if (this.view.state.servedModel !== undefined) this.setState({ servedModel: undefined });
         this.client = client;
         this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
@@ -3012,6 +3016,12 @@ export class Runtime {
             }
             case "usage": {
                 if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
+                // Which model the CLI served the alias as, on this account: a model's limit (Fable's) covers it or not. Kept
+                // for the account too, for Home and other sessions on it.
+                if (this.servedModel !== this.view.state.servedModel) {
+                    this.setState({ servedModel: this.servedModel });
+                    if (this.servedModel && this.model?.provider) this.engine.modelServed(this.model.provider, this.session.accountId(this.model.provider), this.model.id, this.servedModel);
+                }
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
@@ -3024,11 +3034,11 @@ export class Runtime {
                 this.compacted(e.summary, e.idle, e.kept);
                 break;
             case "limits":
-                this.engine.limitsReported(e.limits, e.partial);
+                this.engine.limitsReported(e.limits, e.partial, e.full);
                 break;
             case "subagent":
                 // A sub-agent on an agent CLI reports the same account's limits.
-                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial, e.event.full);
                 else this.subagentEvent(e.parentId, e.label, e.event);
                 break;
             case "goal":

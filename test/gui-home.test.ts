@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
 import { componentCode, elements, type Element } from "./gui-component-harness";
 import { ago } from "../gui/src/lib/format";
-import { limitAlternatives, meterOf, windowLine } from "../gui/src/lib/limits";
+import { limitAlternatives, limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, refModel, resolvedOn, servedKey, windowLine } from "../gui/src/lib/limits";
 
 const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
 // Keyed, its child gets the value; otherwise an accessor, as Solid's does.
@@ -386,27 +386,50 @@ test("the worktree picker never offers another project's worktrees while this on
 
 // ---- The limit pill ---------------------------------------------------------------------------------
 
-const nearLimit = componentCode("nearLimit", {}, undefined, "ComposerMeter") as (m: ReturnType<typeof meterOf>, l?: PlanLimits, at?: number) => { pct: number; window?: string } | undefined;
 const limits = (windows: PlanLimits["windows"], o: Partial<PlanLimits> = {}): PlanLimits => ({ at: Date.now(), windows, ...o }) as PlanLimits;
 
-test("Home's limit pill shows from 80%, naming the fullest window (or the reached one)", () => {
+test("the limit for Home's pill and the account's badge: the fullest window from 80%, or the reached one that lifts last", () => {
     const at = (l: PlanLimits) => nearLimit(meterOf(l, Date.now()));
     expect(nearLimit(undefined)).toBeUndefined();
     expect(at(limits([{ label: "5-hour", usedPercent: 79 }, { label: "Weekly", usedPercent: 40 }]))).toBeUndefined();
-    expect(at(limits([{ label: "5-hour", usedPercent: 80 }]))).toEqual({ pct: 80, window: "5-hour" });
-    expect(at(limits([{ label: "5-hour", usedPercent: 62 }, { label: "Weekly", usedPercent: 94 }]))).toEqual({ pct: 94, window: "weekly" });
-    expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, window: "GPT-5 5-hour" });
-    expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, window: "weekly Opus" });
-    expect(at(limits([], { reached: true }))).toEqual({ pct: 100, window: undefined });
+    expect(at(limits([{ label: "5-hour", usedPercent: 80 }]))).toEqual({ pct: 80, reached: false, window: "5-hour" });
+    expect(at(limits([{ label: "5-hour", usedPercent: 62 }, { label: "Weekly", usedPercent: 94 }]))).toEqual({ pct: 94, reached: false, window: "weekly" });
+    expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, reached: false, window: "GPT-5 5-hour" });
+    expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, reached: true, window: "weekly Opus" });
+    // At its limit at 97% (Claude Code said rejected): full, as the rail's card says, not 97%.
+    expect(at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))).toEqual({ pct: 100, reached: true, window: "5-hour" });
+    // Said to be allowed at 100% (allowed_warning): its share, not a reached limit, in the pill and the picker's badge.
+    const allowed = at(limits([{ label: "5-hour", usedPercent: 100, reached: false }]))!;
+    expect(allowed).toEqual({ pct: 100, reached: false, window: "5-hour" });
+    expect([limitBadge(allowed, false), limitBadge(allowed, true)]).toEqual(["100%", "100% used"]);
+    const rejected = at(limits([{ label: "5-hour", usedPercent: 97, reached: true }]))!;
+    expect([limitBadge(rejected, false), limitBadge(rejected, true)]).toEqual(["limit", "Limit reached"]);
+    expect(at(limits([], { reached: true }))).toEqual({ pct: 100, reached: true, window: undefined });
     // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
-    expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100 });
-    expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100 });
+    expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
+    expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100, reached: true });
+    // A model's limit (Fable's) counts on Home only for a model it covers, reached or not; never for the account's badge.
+    const fable = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable" } as any], { reached: false });
+    // Reached for a Fable model: its limit, though not the plan's.
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "fable" })).toMatchObject({ pct: 100, reached: true, window: "weekly Fable", scope: "fable" });
+    expect(nearLimit(meterOf(fable, Date.now()), { id: "opus" })).toBeUndefined();
+    expect(nearLimit(meterOf(fable, Date.now()))).toBeUndefined();
+    const near = limits([{ label: "Weekly", usedPercent: 40 }, { label: "Weekly Fable", usedPercent: 86, scope: "fable" } as any]);
+    expect(nearLimit(meterOf(near, Date.now()), { id: "opus" })).toBeUndefined();
+    expect(nearLimit(meterOf(near, Date.now()))).toBeUndefined();
+    expect(nearLimit(meterOf(near, Date.now()), { id: "fable" })).toMatchObject({ pct: 86, window: "weekly Fable" });
+    // The plan's limit reached comes first, with its own lift time, over Fable's earlier reset.
+    const both = limits([{ label: "Weekly", usedPercent: 100, reached: true, resetsAt: Date.now() + 3 * 86_400_000 }, { label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: Date.now() + 86_400_000 } as any], { reached: true, resetsAt: Date.now() + 3 * 86_400_000 });
+    const m = meterOf(both, Date.now())!;
+    expect(nearLimit(m, { id: "fable" })).toMatchObject({ pct: 100, reached: true, window: "weekly", resets: m.resets });
+    // An alias the CLI hasn't served yet may be Fable: counted.
+    expect(nearLimit(meterOf(near, Date.now()), { id: "default" })).toMatchObject({ pct: 86 });
     // A window that has reset since the report doesn't count, however full it was.
     const lapsed = limits([{ label: "5-hour", usedPercent: 95, resetsAt: Date.now() - 60_000 }, { label: "Weekly", usedPercent: 40 }]);
-    expect(nearLimit(meterOf(lapsed, Date.now()), lapsed, Date.now())).toBeUndefined();
+    expect(nearLimit(meterOf(lapsed, Date.now()))).toBeUndefined();
 });
 
-function meter(home: boolean, used?: number, sessionId?: string) {
+function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: PlanLimits["windows"]; model?: { id: string; resolvedModel?: string; resolvedFor?: string }; served?: Record<string, string> } = {}) {
     const provider = "claude-code";
     // Noon today: a reset 106 minutes on is the same day whenever the test runs (late in the evening it wouldn't be).
     const noon = new Date().setHours(12, 0, 0, 0);
@@ -415,17 +438,17 @@ function meter(home: boolean, used?: number, sessionId?: string) {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createEffect: stub, createMemo: (f: () => unknown) => f, createUniqueId: () => "u", on: stub, onCleanup: stub,
         planLimitKey,
-        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }, settings: {} },
+        app: { providers: [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limits: {}, settings: {} },
         handleFor: () => (sessionId ? { view: { state: { model: { provider }, cost: 0, tokensIn: 0, tokensOut: 0 } } } : undefined),
         awayMachine: () => undefined, reportError: stub, rpc: {}, rpcFor: () => ({}), toast: stub,
-        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
+        providersFor: () => [{ id: provider, name: "Claude Code", agentCli: { plan: "Claude subscription" } }], limitsFor: () => (o.windows ? { [planLimitKey(provider)]: limits(o.windows) } : used === undefined ? {} : { [planLimitKey(provider)]: limits([{ label: "5-hour", usedPercent: used, resetsAt: noon + 106 * 60_000 }]) }),
         contextCardOpen: () => false, setContextCardOpen: stub, setSettingsTab: stub, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
-        now: () => noon, limitAlternatives, meterOf, windowLine,
+        now: () => noon, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, windowLine, resolvedOn, servedFor: () => o.served ?? {},
         contextView: () => ({ pct: 0.3, line: "30k of 100k" }),
         cost: () => "$0", tokens: () => "0",
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
-    }) as (p: { provider?: string; sessionId?: string; home?: boolean }) => unknown;
-    const tree = ComposerMeter({ provider, sessionId, home });
+    }) as (p: { provider?: string; sessionId?: string; home?: boolean; model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) => unknown;
+    const tree = ComposerMeter({ provider, sessionId, home, model: o.model });
     return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("ctx-limit")) : elements(tree, "button")[0] };
 }
 
@@ -438,11 +461,15 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     expect(elements(pill.trigger, "Gauge")).toHaveLength(1);
     expect(text(pill.trigger)).toBe("94%of 5-hour limit");
     expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
-    expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude subscription · Default usage: 5-hour 94% · resets /);
+    // Its label says what the pill shows, no more.
+    expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude Code: 94% of 5-hour limit, resets /);
     // Home has no session: nothing to compact or switch, so no card to open; when it resets is the tooltip.
     expect(pill.trigger!.props.role).toBe("status");
     expect(pill.trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M$/);
     expect(meter(true, 100).trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M, in 1h 4[56]m$/);
+    // At the limit, it names the limit that stops the chosen model.
+    expect(text(meter(true, 100).trigger)).toBe("5-hourlimit reached");
+    expect(meter(true, 100).trigger!.props["aria-label"]).toMatch(/^Claude Code: 5-hour limit reached, resets /);
     expect(elements(pill.tree, "button")).toHaveLength(0);
     expect(elements(pill.tree, "Popover")).toHaveLength(0);
     // A session's composer: the context in words, at any plan usage (no ring, no pill).
@@ -451,4 +478,45 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     expect(elements(words.trigger, "Gauge")).toHaveLength(0);
     expect(text(words.trigger)).toMatch(/context$|^Context$/);
     expect(text(meter(false, 10, "s1").trigger)).toMatch(/context$|^Context$/);
+});
+
+test("Home's pill for the chosen model: a model's limit reached only for a model it covers, said as that limit", () => {
+    const later = Date.now() + 2 * 86_400_000;
+    const windows = [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: later }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable", resetsAt: later }] as PlanLimits["windows"];
+    const fable = meter(true, undefined, undefined, { windows, model: { id: "fable" } });
+    expect(text(fable.trigger)).toBe("Fablelimit reached");
+    expect(fable.trigger!.props["aria-label"]).toMatch(/^Claude Code: Fable limit reached, resets /);
+    // Opus: Fable's says nothing; the week at 40% neither.
+    expect(meter(true, undefined, undefined, { windows, model: { id: "opus" } }).trigger).toBeUndefined();
+    // Said to be allowed at 100% (allowed_warning): a share, not a limit reached.
+    const allowed = meter(true, undefined, undefined, { windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: false, scope: "fable", resetsAt: later }] as PlanLimits["windows"], model: { id: "fable" } });
+    expect(text(allowed.trigger)).toBe("100%of weekly Fable limit");
+});
+
+test("a configured model not in the list yet still counts for its model limits", () => {
+    expect(refModel("claude-code:claude-fable-2")).toEqual({ id: "claude-fable-2" });
+    expect(refModel("mock:a:b")).toEqual({ id: "a:b" });
+    expect(refModel("nocolon")).toBeUndefined();
+    expect(refModel(undefined)).toBeUndefined();
+});
+
+test("Home's pill for an alias: by what it's known to stand for on the account, never guessed", () => {
+    const later = Date.now() + 2 * 86_400_000;
+    const windows = [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: later }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: later }] as PlanLimits["windows"];
+    // Default, listed by Claude Code as Opus for this account: Fable's limit isn't its.
+    expect(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "default" } }).trigger).toBeUndefined();
+    // Or last served as Opus on this account.
+    expect(meter(true, undefined, undefined, { windows, model: { id: "default" }, served: { [servedKey("claude-code", "default", "default")]: "claude-opus-5-5" } }).trigger).toBeUndefined();
+    // Listed for another account only: not known for this one, so it may be Fable's: it warns.
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fablelimit reached");
+    // Fable chosen: its limit.
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fablelimit reached");
+});
+
+test("what an alias stands for: last served on the account first, else as listed for that account", () => {
+    const m = { provider: "claude-code", id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "default" };
+    expect(resolvedOn(m, "default", {})).toBe("claude-opus-5-5");
+    expect(resolvedOn(m, "work", {})).toBeUndefined();
+    expect(resolvedOn(m, "default", { [servedKey("claude-code", "default", "default")]: "claude-fable-1" })).toBe("claude-fable-1");
 });

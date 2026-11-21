@@ -145,7 +145,7 @@ export type AgentEvent =
     | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
-    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    | { type: "limits"; limits: PlanLimits; partial: boolean; full?: boolean }
     /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
     | { type: "cli_commands"; provider: string; names: string[] }
     /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
@@ -317,6 +317,8 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
+    /** A read-only agent on a CLI (Claude Code, Codex, OpenCode and the like): the mode of the session it works for (its own is one where the CLI asks about everything). */
+    sessionMode?: () => PermissionMode;
     /** Sub-agents: the folder its memory is kept in, which isn't Cavvy configuration for it. */
     memoryDir?: string;
     maxTurns?: number;
@@ -2465,7 +2467,7 @@ export class Agent {
             context: (tokens, window) => this.recordBackendContext(tokens, window),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messageCount, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
-            limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emitFromBackend({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
             // that took its place (the TUI's /new keeps the same host).
@@ -2888,7 +2890,7 @@ export class Agent {
             // prompt, once and whole. Not into the compaction: Codex's (thread/compact/start) takes no input, and
             // Claude Code's /compact only instructions for its summary, which would keep a summary of them at best.
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.backends.get(provider)?.synced ?? resume.synced, place),
-            limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emit({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
         };
         const sink: TurnSink = {
@@ -3059,14 +3061,15 @@ export class Agent {
     private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>, lent = false): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
-        // Like the command check below, explicit asks still apply in bypass mode.
+        // Checked as in the default mode, for its deny rules and the ask rules that name it.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         // A denied call is refused as denied, whatever its input; one that can't run isn't asked about.
         const invalid = await refusal?.();
         if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
-        if (lent || decision.behavior !== "ask" || !decision.rule) return undefined;
+        // Nor is one asked about in Bypass.
+        if (lent || decision.behavior !== "ask" || !decision.rule || this.inBypass()) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
         const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
         if (signal.aborted) return refuse("Interrupted by user");
@@ -3216,8 +3219,8 @@ export class Agent {
     /**
      * run_with_secrets (Claude Code, Codex): one command with Cavvy's Bash and those secrets. The CLI approves
      * Cavvy's tools without asking, so the check is here, at least as strict as backendPermission's for a
-     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
-     * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
+     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule or Bypass runs it without
+     * asking (no other mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
      */
     private async runWithSecrets(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
@@ -3232,7 +3235,7 @@ export class Agent {
         const decision = this.o.checker.check(BashTool, input, "default", cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         const names = o.names.join(", ");
-        if (!(decision.behavior === "allow" && decision.rule)) {
+        if (!(decision.behavior === "allow" && decision.rule) && mode !== "bypassPermissions") {
             if (!this.o.host.askPermission) return refuse("Permission to run a command with secrets was not granted (non-interactive session).");
             const ask = {
                 ...decision,
@@ -3292,11 +3295,15 @@ export class Agent {
 
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
-        const input = req.input;
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
-        const mode = childMode(this.o.mode.get(), own?.permissionMode);
-        const cwd = this.runningIn ?? this.state.cwd;
+        // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own
+        // calls are, in another folder or over the network too (the session itself runs anything there unasked).
+        const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
+        const input = req.input;
+        const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
+        // In Bypass, where a command the backend runs in another folder isn't asked about, it's checked as run from that folder.
+        const cwd = mode === "bypassPermissions" && req.elsewhere ? req.elsewhere : (this.runningIn ?? this.state.cwd);
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
         if (req.exempt) {
             const d = this.o.checker.check(tool, input, "bypassPermissions", cwd, { memoryDir: this.o.memoryDir });
@@ -3322,6 +3329,10 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        // In Bypass nothing is asked about, whatever the backend wanted confirmed: past the deny rules (and, for a read-only
+        // agent, the read-only check above), it runs.
+        // Not what Claude Code asks about from its own bypass mode: that's a hook of the user's own saying ask.
+        if (mode === "bypassPermissions" && decision.behavior === "allow" && !req.ownBypassAsk) ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
@@ -3343,7 +3354,8 @@ export class Agent {
                     if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds Cavvy's credential store.`, stop: false };
                 }
             }
-            ruled = false;
+            // Asked about, but in Bypass (Codex can keep an earlier mode's policy until its turn ends).
+            ruled = mode === "bypassPermissions" && decision.behavior === "allow";
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
         let title = req.title ?? tool.name;
@@ -3354,8 +3366,9 @@ export class Agent {
         }
         // Codex was told to ask only so PreToolUse hooks would see the call (bypass mode): the mode decides, as it would have.
         if (req.hooksOnly && decision.behavior === "allow") ruled = true;
-        // A PreToolUse hook that asks wants the user, whatever the rules say.
-        if (req.hookDecision === "ask") ruled = false;
+        // A PreToolUse hook that asks wants the user, whatever the rules say. So does a command in another folder
+        // (Grok, Antigravity), but for a read-only agent in a session in Bypass.
+        if (req.hookDecision === "ask" || (req.elsewhere && mode !== "bypassPermissions")) ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
@@ -3408,6 +3421,11 @@ export class Agent {
 
     // -----------------------------------------------------------------------
     // Tools
+
+    /** The session is in Bypass (a read-only agent's own mode is another: `sessionMode`): nothing is asked about. */
+    private inBypass(): boolean {
+        return (this.o.sessionMode?.() ?? this.o.mode.get()) === "bypassPermissions";
+    }
 
     private findTool(name: string): Tool<any> | undefined {
         return this.tools.find((t) => t.name === name);
@@ -4004,6 +4022,7 @@ export class Agent {
             parentFastMode: () => this.fastMode(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
+            sessionMode: backend && def.readOnly ? (this.o.sessionMode ?? (() => parentMode.get())) : undefined,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and Cavvy refuses).
             // In auto, Codex's is its read-only auto mode: reads run in its read-only sandbox without asking. Claude Code's
             // stays in default, where every command comes to Cavvy, which runs read-only ones without asking.

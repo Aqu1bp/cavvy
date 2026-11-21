@@ -65,6 +65,16 @@ export interface BackendPermission {
     callId?: string;
     /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
     hookDecision?: "allow" | "ask";
+    /**
+     * A command the backend runs in this folder, outside the session's (Grok, Antigravity; Codex's come as `cd <folder> && …`):
+     * asked about, whatever the rules say, but in Bypass, where it's checked as run there.
+     */
+    elsewhere?: string;
+    /**
+     * The CLI asked while running in its own bypass mode (Claude Code): it asks nothing there but what a hook of the
+     * user's says to ask about, so this one is the user's to answer, in Bypass too.
+     */
+    ownBypassAsk?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**
@@ -191,8 +201,8 @@ export interface SessionHost {
     context?(contextTokens: number, window?: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
-    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
-    limits?(limits: PlanLimits, partial: boolean): void;
+    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows; `full`: all of the account's, replacing what was known). */
+    limits?(limits: PlanLimits, partial: boolean, full?: boolean): void;
     /** Run Cavvy's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */

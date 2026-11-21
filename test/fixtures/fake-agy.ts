@@ -2,7 +2,7 @@
 // (test/fixtures/protocol/agy-1.4.9-*.jsonl), with the hooks of each --add-dir folder's .agents/hooks.json run as it
 // runs them (a shell command, the hook's input on stdin, its JSON answer on stdout). The message says what to do:
 //   [[write:<file>]]   write_file of "x" to <file> (against the cwd), through the gate
-//   [[run:<command>]]  run_command, through the gate
+//   [[run:<command>]]  run_command, through the gate (FAKE_AGY_CWD: in that folder)
 //   [[tool:<name>]]    a tool of its own with no arguments, through the gate
 //   [[unasked]]        a run_command of `touch unasked.txt` that runs without the gate
 //   [[hang]]           waits until SIGINT
@@ -180,7 +180,7 @@ for (;;) {
         if (write) {
             const path = isAbsolute(write[1]!) ? write[1]! : resolve(cwd, write[1]!);
             said = await tool("write_file", { Path: path, Content: "x" }, () => (writeFileSync(path, "x"), "Created file"));
-        } else if (run) said = await tool("run_command", { CommandLine: run[1], WaitMsBeforeAsync: 5000 }, () => "Command exited with code 0.");
+        } else if (run) said = await tool("run_command", { CommandLine: run[1], WaitMsBeforeAsync: 5000, ...(process.env.FAKE_AGY_CWD ? { Cwd: process.env.FAKE_AGY_CWD } : {}) }, () => "Command exited with code 0.");
         else if (own) said = await tool(own[1]!, {}, () => "ok");
         else if (mcp) {
             const servers = gates.flatMap((d) => {
