@@ -145,7 +145,7 @@ export type AgentEvent =
     | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
-    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    | { type: "limits"; limits: PlanLimits; partial: boolean; full?: boolean }
     /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
     | { type: "cli_commands"; provider: string; names: string[] }
     /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
@@ -2467,7 +2467,7 @@ export class Agent {
             context: (tokens, window) => this.recordBackendContext(tokens, window),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messageCount, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
-            limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emitFromBackend({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
             // that took its place (the TUI's /new keeps the same host).
@@ -2890,7 +2890,7 @@ export class Agent {
             // prompt, once and whole. Not into the compaction: Codex's (thread/compact/start) takes no input, and
             // Claude Code's /compact only instructions for its summary, which would keep a summary of them at best.
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.backends.get(provider)?.synced ?? resume.synced, place),
-            limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emit({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
         };
         const sink: TurnSink = {

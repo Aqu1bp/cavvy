@@ -994,8 +994,27 @@
     background: linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
 }
 
+/* One grid per plan, its rows on it (subgrid): the names' column is as wide as its longest ("Weekly Fable"), so none
+   is cut, and the bars of a plan still line up. */
 .pu-plan {
+    display: grid;
+    grid-template-columns: minmax(calc(46 * var(--sp)), max-content) minmax(0, 1fr) minmax(calc(32 * var(--sp)), auto);
     padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
+}
+
+.pu-plan > .pu-h,
+.pu-plan > .pu-w.none,
+.pu-plan > .pu-note {
+    grid-column: 1 / -1;
+}
+
+/* Only a model's limit reached (Fable's): said under the plan's name, amber like its row. */
+.pu-note {
+    margin: calc(-2 * var(--sp)) 0 calc(4 * var(--sp));
+    padding-left: calc(21 * var(--sp));
+    font-size: 0.75rem;
+    line-height: calc(16 * var(--sp));
+    color: var(--warn);
 }
 
 .pu-plan + .pu-plan {
@@ -1027,7 +1046,8 @@
 
 .pu-w {
     display: grid;
-    grid-template-columns: calc(46 * var(--sp)) minmax(0, 1fr) minmax(calc(32 * var(--sp)), auto);
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
     align-items: center;
     column-gap: calc(8 * var(--sp));
     padding-left: calc(21 * var(--sp));

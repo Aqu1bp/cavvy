@@ -1253,16 +1253,17 @@ export class CodexTurn {
             const parsed = parseCodexRateLimits(report, { at, accountId: this.t.accountId ?? "default" });
             if (parsed) {
                 this.limitUpdates.acceptedRead = read;
-                this.noteLimits(parsed.limits, parsed.partial);
+                // A read is all of the account's limits.
+                this.noteLimits(parsed.limits, parsed.partial, !parsed.partial);
             }
         } catch {
             // Older CLIs may only push updates, or have no limits to report.
         }
     }
 
-    protected noteLimits(limits: PlanLimits, partial: boolean) {
-        this.limits = mergeLimits(this.limits, limits, partial);
-        this.cliSession.limits?.(limits, partial);
+    protected noteLimits(limits: PlanLimits, partial: boolean, full = false) {
+        this.limits = mergeLimits(this.limits, limits, partial, full);
+        this.cliSession.limits?.(limits, partial, full);
     }
 
     protected fail(error: any, fallback: string) {

@@ -15,10 +15,12 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
-const { parseClaudeRateLimit, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews } = await import("../src/backends/limits");
+const { parseClaudeRateLimit, parseClaudeUsage, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews, usageResetTime, limitStopReport, limitStopOf, limitPlanTitle, creditsNote } = await import("../src/backends/limits");
 const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("../src/server/usage");
 const { slashCommand } = await import("../src/commands/custom");
-const { meterOf, costText, windowLine, resetLabel, emptyText } = await import("../gui/src/lib/limits");
+const { meterOf, windowLine, windowShort, resetLabel, limitFor, limitName } = await import("../gui/src/lib/limits");
+const { costText, windowCaption, emptyText } = await import("../gui/src/lib/usage-limits");
+const { planNow, reportedOf, covers } = await import("../src/server/plan-meter");
 const { clientAction, slashName } = await import("../gui/src/lib/commands");
 const { contextView } = await import("../gui/src/lib/context");
 const { cliCommandNames } = await import("../src/commands/custom");
@@ -65,7 +67,8 @@ describe("Claude Code's rate_limit_event", () => {
             provider: "claude-code",
             accountId: "default",
             windows: [
-                { id: "five_hour", label: "5-hour", usedPercent: 47, resetsAt: 1792156200_000, reached: undefined },
+                // The window the report is about (rateLimitType) is said to be allowed; the other isn't said.
+                { id: "five_hour", label: "5-hour", usedPercent: 47, resetsAt: 1792156200_000, reached: false },
                 { id: "seven_day", label: "Weekly", usedPercent: 54, resetsAt: 1792526400_000, reached: undefined },
             ],
             reached: false,
@@ -156,7 +159,7 @@ describe("Claude Code's rate_limit_event", () => {
 
     test("99.6% used is 99%, not a reached limit", () => {
         const r = parseClaudeRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.996, resetsAt: 1792156200 } } }, at)!;
-        expect(r.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
+        expect(r.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: false });
         expect(meterOf(r.limits, at)!.reached).toBe(false);
         expect(parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 99.7 } } }, { at })!.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
     });
@@ -263,7 +266,8 @@ describe("Codex's account/rateLimits", () => {
         expect(empty.limits.windows).toEqual([]);
         const read = parseCodexRateLimits(fixture("codex-read.json"), { at })!.limits;
         const merged = mergeLimits(read, empty.limits, empty.partial);
-        expect(merged.windows).toEqual(read.windows);
+        // Each with when it was reported.
+        expect(merged.windows).toEqual(read.windows.map((w) => ({ ...w, at: read.at })));
         expect(merged.reached).toBe(false);
         expect(merged.at).toBe(at + 1);
         expect(parseCodexRateLimits({}, { at })).toBeUndefined();
@@ -273,7 +277,7 @@ describe("Codex's account/rateLimits", () => {
     test("a full report replaces what was known; a reached limit lifts when a read says so", () => {
         const reached = parseCodexRateLimits(fixture("codex-update-reached.json"), { update: true, at })!;
         const read = parseCodexRateLimits(fixture("codex-read.json"), { at: at + 1 })!;
-        expect(mergeLimits(reached.limits, read.limits, read.partial)).toEqual(read.limits);
+        expect(mergeLimits(reached.limits, read.limits, read.partial, true)).toEqual(read.limits);
     });
 
     test("a sparse update after the reset: no longer reached, though Codex's reached type is null", () => {
@@ -376,6 +380,322 @@ describe("Codex's account/rateLimits", () => {
     }
 });
 
+describe("Claude Code 2.1.322: windows by model, and /usage", () => {
+    const at = 1795100000_000;
+    const opus = () => parseClaudeRateLimit(fixture("claude-2.1.322-opus.json"), at)!;
+    const fable = () => parseClaudeRateLimit(fixture("claude-2.1.322-fable.json"), at + 60_000)!;
+
+    test("each window's own status: allowed isn't reached, rejected is, whatever its share", () => {
+        expect(fable().limits.windows.map((w) => [w.id, w.label, w.usedPercent, w.reached])).toEqual([["seven_day", "Weekly", 14, false], ["seven_day_overage_included", "Weekly Fable", 3, false]]);
+        const info = fixture("claude-2.1.322-fable.json");
+        info.unifiedWindows.seven_day_overage_included = { utilization: 0.97, resetsAt: 1795550400, status: "rejected" };
+        info.unifiedWindows.seven_day = { utilization: 1, resetsAt: 1795550400, status: "allowed_warning" };
+        const w = parseClaudeRateLimit(info, at)!.limits.windows;
+        expect(w.find((x) => x.id === "seven_day_overage_included")!.reached).toBe(true);
+        expect(w.find((x) => x.id === "seven_day")!.reached).toBe(false);
+    });
+
+    test("the Fable window stays after an Opus turn's report leaves it out, until its own reset", () => {
+        const afterFable = mergeLimits(undefined, fable().limits, fable().partial);
+        const next = parseClaudeRateLimit(fixture("claude-2.1.322-opus.json"), at + 120_000)!;
+        expect(next.partial).toBe(false);
+        const merged = mergeLimits(afterFable, next.limits, next.partial);
+        expect(merged.windows.map((w) => w.label)).toEqual(["Weekly", "Weekly Fable"]);
+        expect(merged.windows[1]!.usedPercent).toBe(3);
+        expect(merged.reached).toBe(false);
+        // Once its reset has passed, a report that leaves it out drops it.
+        const later = parseClaudeRateLimit({ ...fixture("claude-2.1.322-opus.json"), resetsAt: 1796155200, unifiedWindows: { seven_day: { utilization: 0.01, resetsAt: 1796155200, status: "allowed" } } }, 1795550400_000 + 1)!;
+        expect(mergeLimits(merged, later.limits, later.partial).windows.map((w) => w.label)).toEqual(["Weekly"]);
+    });
+
+    test("a Max plan's 5-hour window stays while a report about the week leaves it out", () => {
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40, resetsAt: at + 3_600_000 }, { id: "seven_day", label: "Weekly", usedPercent: 10, resetsAt: at + 4 * 86_400_000 }], reached: false, at };
+        const next = parseClaudeRateLimit(fixture("claude-2.1.322-opus.json"), at + 1)!;
+        expect(mergeLimits(prev, next.limits, next.partial).windows.map((w) => [w.id, w.usedPercent])).toEqual([["five_hour", 40], ["seven_day", 14]]);
+        // One with no reset known can't be kept "until it resets": it goes.
+        const unknown = { ...prev, windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40 }] };
+        expect(mergeLimits(unknown, next.limits, next.partial).windows.map((w) => w.id)).toEqual(["seven_day"]);
+        // A whole check of the account replaces what was known.
+        expect(mergeLimits(prev, next.limits, false, true).windows.map((w) => w.id)).toEqual(["seven_day"]);
+    });
+
+    test("a window left out that's still reached keeps the plan reached until it resets", () => {
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: at + 3_600_000, reached: true }], reached: true, resetsAt: at + 3_600_000, at };
+        const next = parseClaudeRateLimit(fixture("claude-2.1.322-opus.json"), at + 1)!;
+        const m = mergeLimits(prev, next.limits, next.partial);
+        expect(m.reached).toBe(true);
+        expect(m.resetsAt).toBe(at + 3_600_000);
+    });
+
+    test("/usage: the window lines, read; nothing else", () => {
+        const f = fixture("claude-usage-2.1.322-ultra.json");
+        const l = parseClaudeUsage(f.result, f.at)!;
+        expect(l.provider).toBe("claude-code");
+        expect(l.reached).toBeUndefined();
+        expect(l.windows).toEqual([
+            { id: "seven_day", label: "Weekly", usedPercent: 15, resetsAt: Date.UTC(2026, 10, 24, 19, 59) },
+            { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 4, resetsAt: Date.UTC(2026, 10, 24, 19, 59), scope: "fable" },
+        ]);
+        // Its ids are the rate_limit_event's, so a later turn's report updates the same windows.
+        expect(mergeLimits(l, fable().limits, fable().partial).windows.map((w) => w.id)).toEqual(["seven_day", "seven_day_overage_included"]);
+    });
+
+    test("/usage: a session window, a full one, other zones and times without a date", () => {
+        const now = Date.UTC(2026, 10, 20, 9, 0);
+        const text = "Current session: 100% used · resets 1:59pm (UTC)\nCurrent week (all models): 56% used · resets Nov 24, 8pm (Europe/London)\nCurrent week (Opus): 2.5% used · resets Nov 24, 8pm (UTC)\nCurrent month (all models): 3% used · resets Dec 1, 12am (UTC)\n\nWhat's contributing to your usage?\n  100%  some tip: 5% used";
+        const l = parseClaudeUsage(text, now)!;
+        // Whether a window is at its limit isn't said: left unsaid (a full one is taken to be, planNow).
+        expect(l.windows).toEqual([
+            { id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: Date.UTC(2026, 10, 20, 13, 59) },
+            { id: "seven_day", label: "Weekly", usedPercent: 56, resetsAt: Date.UTC(2026, 10, 24, 20, 0) },
+            { id: "seven_day_opus", label: "Weekly Opus", usedPercent: 3, resetsAt: Date.UTC(2026, 10, 24, 20, 0), scope: "opus" },
+        ]);
+        expect(meterOf(l, now)!.windows[0]!.reached).toBe(true);
+        // Nor whether the plan is at its limit: that follows from its windows.
+        expect(l.reached).toBeUndefined();
+        expect(meterOf(l, now)!.reached).toBe(true);
+        // A time alone that has passed today is tomorrow's; a date near the new year is the nearest one.
+        expect(usageResetTime("8:30am (UTC)", now)).toBe(Date.UTC(2026, 10, 21, 8, 30));
+        expect(usageResetTime("Jan 2, 9am (UTC)", Date.UTC(2026, 11, 30))).toBe(Date.UTC(2027, 0, 2, 9));
+        expect(usageResetTime("Nov 24, 1:30am (Asia/Kolkata)", now)).toBe(Date.UTC(2026, 10, 23, 20, 0));
+        expect(usageResetTime("Nov 24, 8pm (Not/AZone)", now)).toBeUndefined();
+        expect(usageResetTime("next Tuesday", now)).toBeUndefined();
+    });
+
+    test("/usage: a line whose reset can't be placed within its window's length is left out", () => {
+        const now = Date.UTC(2026, 10, 20, 9, 0);
+        // No reset, or one it can't read: it would stand with no end.
+        expect(parseClaudeUsage("Current week (all models): 15% used", now)).toBeUndefined();
+        expect(parseClaudeUsage("Current week (all models): 15% used · resets soon-ish", now)).toBeUndefined();
+        // A session's time alone more than five hours off (tomorrow's 8:30 at 9:00) isn't its reset.
+        expect(parseClaudeUsage("Current session: 5% used · resets 8:30am (UTC)", now)).toBeUndefined();
+        expect(parseClaudeUsage("Current session: 5% used · resets 1:30pm (UTC)", now)!.windows[0]!.resetsAt).toBe(Date.UTC(2026, 10, 20, 13, 30));
+        // A week's date more than a week off, or past, isn't either.
+        expect(parseClaudeUsage("Current week (all models): 15% used · resets Dec 10, 8pm (UTC)", now)).toBeUndefined();
+        expect(parseClaudeUsage("Current week (all models): 15% used · resets Nov 18, 8pm (UTC)", now)).toBeUndefined();
+        // The others on the page still count.
+        expect(parseClaudeUsage("Current session: 5% used · resets 8:30am (UTC)\nCurrent week (all models): 15% used · resets Nov 24, 8pm (UTC)", now)!.windows.map((w) => w.id)).toEqual(["seven_day"]);
+    });
+
+    test("a window's own status: allowed isn't reached even at 100%; rejected is at 97%, on every surface", () => {
+        const info = fixture("claude-2.1.322-opus.json");
+        info.unifiedWindows.seven_day = { utilization: 1, resetsAt: 1795550400, status: "allowed" };
+        const allowed = parseClaudeRateLimit(info, at)!.limits;
+        expect(allowed.windows[0]!.reached).toBe(false);
+        expect(meterOf(allowed, at)!.reached).toBe(false);
+        // Not said (2.1.301 has no per-window status): a full window is reached.
+        const unsaid = parseClaudeRateLimit({ unifiedWindows: { seven_day: { utilization: 1, resetsAt: 1795550400 } } }, at)!.limits;
+        expect(unsaid.windows[0]!.reached).toBe(true);
+        const rejected = parseClaudeRateLimit({ ...info, status: "rejected", unifiedWindows: { seven_day: { utilization: 0.97, resetsAt: 1795550400, status: "rejected" } } }, at)!.limits;
+        const m = meterOf(rejected, at)!;
+        expect(m.reached).toBe(true);
+        expect(m.windows[0]).toMatchObject({ pct: 97, reached: true });
+    });
+
+    test("/usage, which doesn't say a window is reached, keeps an earlier rejection for the same period", () => {
+        const rejectedAt = Date.UTC(2026, 10, 24, 20, 0);
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: rejectedAt, reached: true }], reached: true, resetsAt: rejectedAt, at };
+        // /usage rounds to the minute: 7:59pm is the same period's reset.
+        const same = parseClaudeUsage("Current week (all models): 97% used · resets Nov 24, 7:59pm (UTC)", at + 60_000)!;
+        const m = mergeLimits(prev, same, false, { statusUnsaid: true });
+        expect(m.windows[0]!.reached).toBe(true);
+        expect(m.reached).toBe(true);
+        // And the event's exact reset, not /usage's minute: the rail's watch on it doesn't fire a minute early.
+        expect(m.windows[0]!.resetsAt).toBe(rejectedAt);
+        // A later period's: no longer.
+        const next = parseClaudeUsage("Current week (all models): 3% used · resets Dec 1, 8pm (UTC)", rejectedAt + 60_000)!;
+        expect(mergeLimits(prev, next, false, { statusUnsaid: true }).windows[0]!.reached).toBeUndefined();
+        // Said to be allowed at 100% (allowed_warning), then /usage at 100% for the same period: still allowed.
+        const allowedFull: PlanLimits = { ...prev, windows: [{ ...prev.windows[0]!, usedPercent: 100, reached: false }], reached: false, resetsAt: undefined };
+        const full = mergeLimits(allowedFull, parseClaudeUsage("Current week (all models): 100% used · resets Nov 24, 7:59pm (UTC)", at + 60_000)!, false, { statusUnsaid: true });
+        expect(full.windows[0]!.reached).toBe(false);
+        expect(meterOf(full, at + 120_000)!.reached).toBe(false);
+        // A report that says it's allowed: not reached.
+        const allowed = parseClaudeRateLimit({ ...fixture("claude-2.1.322-opus.json"), unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: rejectedAt / 1000, status: "allowed" } } }, at + 60_000)!;
+        expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.reached).toBe(false);
+    });
+
+    test("a stop with its own reset and no window, then /usage: still reached, and still lifting then", () => {
+        const lifts = at + 3 * 3_600_000;
+        const stop = parseClaudeRateLimit({ status: "rejected", resetsAt: lifts / 1000 }, at)!;
+        const prev = mergeLimits(undefined, stop.limits, stop.partial);
+        const usage = parseClaudeUsage("Current week (all models): 30% used · resets Nov 24, 8pm (UTC)", at + 60_000)!;
+        const m = mergeLimits(prev, usage, false, { statusUnsaid: true });
+        expect(m.reached).toBe(true);
+        expect(m.resetsAt).toBe(lifts);
+        expect(meterOf(m, lifts + 1)!.reached).toBe(false);
+    });
+
+    test("a model's limit (Fable's) reached: the turn's stop keeps its reset; the meter shows the window, not the plan", () => {
+        const fableReset = 1795550400_000;
+        const info = { status: "rejected", resetsAt: fableReset / 1000, rateLimitType: "seven_day_overage_included", overageStatus: "rejected", isUsingOverage: false, unifiedWindows: { seven_day: { utilization: 0.4, resetsAt: fableReset / 1000, status: "allowed" }, seven_day_overage_included: { utilization: 1, resetsAt: fableReset / 1000, status: "rejected" } } };
+        const r = parseClaudeRateLimit(info, at)!.limits;
+        // As on main: the turn was stopped, so the report says so, with when it lifts (the error, the resume).
+        expect(r).toMatchObject({ reached: true, resetsAt: fableReset, credits: false });
+        expect(limitStopOf(r, r.resetsAt)).toEqual({ resetsAt: fableReset, window: "Weekly Fable" });
+        expect(r.windows.find((w) => w.id === "seven_day_overage_included")).toMatchObject({ scope: "fable", reached: true });
+        // The meter: that stop is the Fable window's (the same period), so the plan isn't at its limit.
+        const m = meterOf(r, at)!;
+        expect(m.reached).toBe(false);
+        expect(m.partly.map((w) => [w.label, w.credits])).toEqual([["Weekly Fable", false]]);
+        expect(m.top?.label).toBe("Weekly");
+        // A session on Fable runs into it (by the model the CLI served); one served Opus doesn't; an alias not yet
+        // served may.
+        expect(limitFor(m, { id: "fable", resolved: "claude-fable-1" })).toMatchObject({ window: { scope: "fable" }, credits: false });
+        expect(limitFor(m, { id: "default", resolved: "claude-opus-5-5" })).toBeUndefined();
+        expect(limitFor(m, { id: "default" })).toMatchObject({ window: { scope: "fable" } });
+        expect(covers("fable", { id: "opus" })).toBe(false);
+        // The terminal: no plan stop line; the window says it.
+        const lines = limitLines(r, at);
+        expect(lines.some((l) => l.startsWith("Limit reached"))).toBe(false);
+        expect(lines.find((l) => l.startsWith("Weekly Fable"))).toMatch(/^Weekly Fable 100% reached · resets /);
+        // A plan-wide rejection after it: the plan is reached.
+        const week = parseClaudeRateLimit({ ...info, rateLimitType: "seven_day", unifiedWindows: { seven_day: { utilization: 1, resetsAt: fableReset / 1000, status: "rejected" } } }, at + 1)!;
+        expect(meterOf(mergeLimits(r, week.limits, week.partial), at + 2)!.reached).toBe(true);
+    });
+
+    test("the windows decide, per model: a model's window for the models it covers, the plan's for all", () => {
+        const week = at + 3 * 86_400_000;
+        const day = new Date(week).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+        const fable = { id: "fable", resolved: "claude-fable-1" }, opus = { id: "opus", resolved: "claude-opus-5" };
+        const reject = (type: string, windows: object) => parseClaudeRateLimit({ status: "rejected", rateLimitType: type, resetsAt: week / 1000, unifiedWindows: windows }, at)!;
+        // Fable full, the week at 40%: Fable's turns stop ("Fable limit"), Opus's don't; the plan isn't at its limit.
+        const f = reject("seven_day_overage_included", { seven_day: { utilization: 0.4, resetsAt: week / 1000, status: "allowed" }, seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } }).limits;
+        let m = meterOf(f, at)!;
+        expect(m.reached).toBe(false);
+        expect(limitName(limitFor(m, fable)!.window!)).toBe("Fable");
+        expect(limitFor(m, opus)).toBeUndefined();
+        // The week full: every model's ("Weekly limit"); the plan is.
+        const w = reject("seven_day", { seven_day: { utilization: 1, resetsAt: week / 1000, status: "rejected" } }).limits;
+        m = meterOf(w, at)!;
+        expect(m.reached).toBe(true);
+        expect([limitName(limitFor(m, fable)!.window!), limitName(limitFor(m, opus)!.window!)]).toEqual(["Weekly", "Weekly"]);
+        // A bare rejection, no window reached: every model's, lifting at its own reset.
+        const bare = mergeLimits(undefined, parseClaudeRateLimit({ status: "rejected", resetsAt: week / 1000 }, at)!.limits, true);
+        m = meterOf(bare, at)!;
+        expect(m.reached).toBe(true);
+        expect(limitFor(m, opus)).toMatchObject({ resets: resetLabel(week, at, true) });
+        expect(limitFor(m, fable)).toBeDefined();
+        // A bare stop (a turn's own, no event) while Fable is full: the windows decide: Fable blocked, Opus not (an
+        // Opus session's own turn error still shows its stop).
+        const usage = parseClaudeUsage(`Current week (all models): 40% used · resets ${day}, 8pm (UTC)\nCurrent week (Fable): 100% used · resets ${day}, 8pm (UTC)`, at)!;
+        const stopped = mergeLimits(usage, { ...limitStopReport("claude-code", "default"), at: at + 1 }, true);
+        m = meterOf(stopped, at + 2)!;
+        expect(m.reached).toBe(false);
+        expect(limitFor(m, fable)).toBeDefined();
+        expect(limitFor(m, opus)).toBeUndefined();
+        // The terminal: a windowless stop has its own line.
+        expect(limitLines(bare, at)[0]).toMatch(/^Limit reached · resets /);
+    });
+
+    test("credits by the window that says: a Fable rejection without extra usage stays a hard stop for Fable", () => {
+        const week = at + 3 * 86_400_000;
+        const fableNo = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: week / 1000, overageStatus: "rejected", isUsingOverage: false, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at)!;
+        expect(fableNo.limits.windows[0]).toMatchObject({ scope: "fable", credits: false });
+        // Then the week reached on Opus, carried by extra usage.
+        const opusOn = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: { seven_day: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at + 1)!;
+        const m = meterOf(mergeLimits(fableNo.limits, opusOn.limits, opusOn.partial), at + 2)!;
+        expect(limitFor(m, { id: "opus" })).toMatchObject({ credits: true });
+        // Fable's own hard stop wins over the plan's credits.
+        expect(limitFor(m, { id: "fable" })).toMatchObject({ credits: false });
+    });
+
+    test("an alias served by mode (opusplan) may be under Opus's or Sonnet's limit, served as either; not Fable's", () => {
+        expect(covers("opus", { id: "opusplan" })).toBeUndefined();
+        expect(covers("sonnet", { id: "opusplan" })).toBeUndefined();
+        expect(covers("fable", { id: "opusplan" })).toBe(false);
+        // Whatever it was served as last: the next turn may be in the other mode.
+        expect(covers("opus", { id: "opusplan", resolved: "claude-sonnet-5" })).toBeUndefined();
+    });
+
+    test("/usage doesn't undo a window said to be at its limit with no reset known", () => {
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable" }], reached: true, at };
+        const usage = parseClaudeUsage("Current week (Fable): 97% used · resets Nov 24, 8pm (UTC)", at + 60_000)!;
+        expect(mergeLimits(prev, usage, false, { statusUnsaid: true }).windows[0]!.reached).toBe(true);
+        // A report that says it's allowed does.
+        const allowed = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 0.97, status: "allowed" } } }, at + 120_000)!;
+        expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.reached).toBe(false);
+    });
+
+    test("a window said to be at its limit with no reset known stays while reports leave it out", () => {
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: at + 86_400_000 }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable" }], reached: true, at };
+        const opus = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day", unifiedWindows: { seven_day: { utilization: 0.41, resetsAt: (at + 86_400_000) / 1000, status: "allowed" } } }, at + 1)!;
+        expect(mergeLimits(prev, opus.limits, opus.partial).windows.find((w) => w.scope === "fable")?.reached).toBe(true);
+        const usage = parseClaudeUsage(`Current week (all models): 41% used · resets ${new Date(at + 86_400_000).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)`, at + 2)!;
+        expect(mergeLimits(prev, usage, false, { statusUnsaid: true }).windows.find((w) => w.scope === "fable")?.reached).toBe(true);
+    });
+
+    test("/usage keeps a bare stop's own reset, not a model window's earlier one", () => {
+        const mon = at + 86_400_000, tue = at + 2 * 86_400_000;
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: mon }], reached: true, resetsAt: tue, at };
+        const usage: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, scope: "fable", resetsAt: mon }], at: at + 1 };
+        expect(mergeLimits(prev, usage, false, { statusUnsaid: true }).resetsAt).toBe(tue);
+    });
+
+    test("a Fable rejection's credits stay on Fable's window: the week on extra usage stays on credits", () => {
+        const week = at + 3 * 86_400_000;
+        const weekly = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: { seven_day: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at)!;
+        const fable = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: false, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at + 1)!;
+        const l = mergeLimits(weekly.limits, fable.limits, fable.partial);
+        const m = meterOf(l, at + 2)!;
+        expect(m.usingCredits).toBe(true);
+        expect(limitFor(m, { id: "opus" })).toMatchObject({ credits: true });
+        expect(limitFor(m, { id: "fable" })).toMatchObject({ credits: false });
+        // The turn's notice says the latest rejection's own verdict (Fable's: not on extra usage).
+        expect(creditsNote(l)).toBe("");
+        // /cost: on credits said on the window it's on.
+        const credited = mergeLimits(weekly.limits, parseClaudeRateLimit({ ...fable.limits, status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: week / 1000, overageStatus: "allowed", isUsingOverage: true, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: week / 1000, status: "rejected" } } }, at + 1)!.limits, false);
+        expect(limitLines(credited, at + 2).find((x) => x.startsWith("Weekly Fable"))).toMatch(/reached · using credits · resets /);
+    });
+
+    test("a window's credits don't carry into its next period, nor past its being allowed", () => {
+        const mon = at + 86_400_000;
+        const prev: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: mon, credits: false }], reached: true, resetsAt: mon, at };
+        const nextPeriod = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", resetsAt: (mon + 7 * 86_400_000) / 1000, unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: (mon + 7 * 86_400_000) / 1000, status: "rejected" } } }, mon + 1)!;
+        expect(mergeLimits(prev, nextPeriod.limits, nextPeriod.partial).windows[0]!.credits).toBeUndefined();
+        const allowed = parseClaudeRateLimit({ status: "allowed", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 0.99, resetsAt: mon / 1000, status: "allowed" } } }, at + 1)!;
+        expect(mergeLimits(prev, allowed.limits, allowed.partial).windows[0]!.credits).toBeUndefined();
+        // The same period, silent on credits: kept.
+        const same = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day_overage_included", unifiedWindows: { seven_day_overage_included: { utilization: 1, resetsAt: mon / 1000, status: "rejected" } } }, at + 1)!;
+        expect(mergeLimits(prev, same.limits, same.partial).windows[0]!.credits).toBe(false);
+    });
+
+    test("credits: a model's own say, else the plan's", () => {
+        const base: PlanLimits = { provider: "claude-code", windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: true, scope: "fable", resetsAt: at + 3_600_000 }], reached: true, resetsAt: at + 3_600_000, credits: true, at };
+        expect(limitFor(meterOf(base, at), { id: "fable" })?.credits).toBe(true);
+        expect(limitFor(meterOf({ ...base, windows: [{ ...base.windows[0]!, credits: false }] }, at), { id: "fable" })?.credits).toBe(false);
+    });
+
+    test("Codex: a window below its limit isn't kept reached by an earlier report for the same period", () => {
+        const resetsAt = Date.UTC(2026, 10, 20, 14, 0);
+        const prev: PlanLimits = { provider: "codex", windows: [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt, reached: true }], reached: true, resetsAt, at };
+        const update = parseCodexRateLimits({ rateLimits: { limitId: "codex", primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: resetsAt / 1000 }, rateLimitReachedType: null } }, { update: true, at: at + 60_000 })!;
+        const m = mergeLimits(prev, update.limits, update.partial);
+        expect(m.windows[0]!.reached).toBeUndefined();
+        expect(m.reached).toBe(false);
+        expect(meterOf(m, at + 120_000)!.reached).toBe(false);
+    });
+
+    test("a window kept from an earlier report keeps that report's time: it can make the plan's figures stale", () => {
+        const afterFable = mergeLimits(undefined, fable().limits, fable().partial);
+        const later = parseClaudeRateLimit(fixture("claude-2.1.322-opus.json"), fable().limits.at + 20 * 60_000)!;
+        const merged = mergeLimits(afterFable, later.limits, later.partial);
+        expect(merged.windows.map((w) => w.at)).toEqual([undefined, fable().limits.at]);
+        const now = later.limits.at + 60_000;
+        expect(reportedOf(merged, now)).toBe(fable().limits.at);
+        const m = meterOf(merged, now)!;
+        expect(m.asOf).toBeDefined();
+        expect(m.reportedAt).toBe(fable().limits.at);
+        // Reported again: fresh.
+        const again = mergeLimits(merged, fable().limits && { ...fable().limits, at: now }, false);
+        expect(meterOf(again, now + 1)!.asOf).toBeUndefined();
+    });
+
+    test("/usage it can't read leaves the last report: undefined", () => {
+        for (const text of [undefined, "", "You are currently using API usage", "Current week (all models): lots used", "x".repeat(30_000)]) expect(parseClaudeUsage(text, Date.now())).toBeUndefined();
+    });
+});
+
 describe("reset times in words", () => {
     const now = new Date(2026, 9, 16, 14, 0).getTime();
 
@@ -403,6 +723,11 @@ describe("reset times in words", () => {
         expect(limitLines({ provider: "claude-code", windows: [], reached: true, credits: true, at: now }, now)).toEqual(["Limit reached · using credits"]);
         // Credits that aren't needed yet aren't mentioned.
         expect(limitLines({ ...credits, reached: false, windows: [] }, now)).toEqual([]);
+        // A window whose reset has passed since the report: reset, with no figure, never "resets".
+        const passed = limitLines({ provider: "claude-code", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: now - 30 * 60_000, reached: true }, { id: "seven_day", label: "Weekly", usedPercent: 56, resetsAt: now + 3 * 86_400_000 }], reached: true, resetsAt: now - 30 * 60_000, at: now - 3 * 3_600_000 }, now);
+        expect(passed[0]).toMatch(/^5-hour · reset at \S/);
+        expect(passed[1]).toMatch(/^Weekly 56% · resets on .* \(in 3d\)$/);
+        expect(passed.join("\n")).not.toContain("Limit reached");
     });
 
     test("no time: says so", () => {
@@ -872,7 +1197,7 @@ describe("the plan meter", () => {
         const m = meterOf(limits(), now)!;
         expect(m.reached).toBe(false);
         expect(m.asOf).toBeUndefined();
-        expect(m.top).toBe(62);
+        expect(m.top?.pct).toBe(62);
         expect(windowLine(m.windows[0]!)).toBe(`5-hour 62% · resets ${resetLabel(now + 160 * 60_000, now)}`);
         expect(m.windows[1]!.resets).toBe(new Date(now + 4 * 86_400_000).toLocaleDateString(undefined, { weekday: "short" }));
     });
@@ -905,10 +1230,55 @@ describe("the plan meter", () => {
             const m = meterOf(l, when)!;
             expect(m.reached).toBe(true);
             expect(m.resets).toBeUndefined();
-            expect(m.windows[0]!.resets).toBeDefined();
+            // Before its reset, when it resets; after, when it did.
+            expect(when === now ? m.windows[0]!.resets : m.windows[0]!.reset).toBeDefined();
             expect(m.windows[1]!.resets).toBeUndefined();
             expect(m.windows[1]!.reached).toBe(true);
         }
+    });
+
+    test("a window whose reset has passed since the report reads as reset: no figure, and when it reset", () => {
+        const fiveReset = now - 30 * 60_000;
+        const l = limits({ at: now - 3 * 3_600_000, windows: [
+            { id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: fiveReset, reached: true },
+            { id: "seven_day", label: "Weekly", usedPercent: 56, resetsAt: now + 2 * 86_400_000 },
+        ] });
+        const m = meterOf(l, now)!;
+        expect(m.reached).toBe(false);
+        expect(m.windows[0]).toEqual({ label: "5-hour", pct: undefined, reached: false, reset: resetLabel(fiveReset, now), resetsAt: fiveReset });
+        expect(windowLine(m.windows[0]!)).toBe(`5-hour · reset ${resetLabel(fiveReset, now)}`);
+        expect(windowCaption(m.windows[0]!)).toBe(`Reset ${resetLabel(fiveReset, now)}`);
+        expect(windowShort(m.windows[0]!)).toBe(`5-hour reset ${resetLabel(fiveReset, now)}`);
+        // The fullest window is one that hasn't reset.
+        expect(m.top?.label).toBe("Weekly");
+        // Every window reset: nothing current to name.
+        const all = meterOf(limits({ at: now - 8 * 86_400_000, windows: [{ id: "seven_day", label: "Weekly", usedPercent: 100, resetsAt: now - 86_400_000, reached: true }], reached: true, resetsAt: now - 86_400_000 }), now)!;
+        expect(all.reached).toBe(false);
+        expect(all.top).toBeUndefined();
+        expect(all.windows[0]!.pct).toBeUndefined();
+    });
+
+    test("a past time is never phrased like a future one", () => {
+        const day = 86_400_000;
+        // Within a week either way, by weekday (the verb beside it says which way); further back, by date.
+        expect(resetLabel(now - 2 * day, now)).toBe(new Date(now - 2 * day).toLocaleDateString(undefined, { weekday: "short" }));
+        expect(resetLabel(now - 10 * day, now)).toBe(new Date(now - 10 * day).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+        expect(resetLabel(now + 10 * day, now)).toBe(new Date(now + 10 * day).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+        // No "in ..." for a time that has passed.
+        expect(resetLabel(now - 2 * day, now, true)).not.toContain(", in ");
+        const m = meterOf(limits({ at: now - 5 * day, windows: [{ id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: now - 4 * day, reached: true }] }), now)!;
+        expect(m.windows[0]!.resets).toBeUndefined();
+        expect(windowLine(m.windows[0]!)).toMatch(/· reset /);
+        expect(windowLine(m.windows[0]!)).not.toMatch(/resets/);
+    });
+
+    test("a plan-level stop with its own reset still ahead stands, though every window has reset", () => {
+        const l = limits({ reached: true, resetsAt: now + 3_600_000, windows: [{ id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: now - 60_000, reached: true }] });
+        expect(planNow(l, now)!.reached).toBe(true);
+        expect(planNow(l, now)!.liftsAt).toBe(now + 3_600_000);
+        // With no reset of its own, it lifts once every window has reset.
+        expect(planNow({ ...l, resetsAt: undefined }, now)!.reached).toBe(false);
+        expect(planNow({ ...l, resetsAt: undefined }, now - 120_000)!.reached).toBe(true);
     });
 
     test("reached: red, with the reset time and how long", () => {
