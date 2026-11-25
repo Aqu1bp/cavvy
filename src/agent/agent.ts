@@ -3266,15 +3266,48 @@ export class Agent {
     }
 
     /**
-     * A permission prompt from the backend. Its own permission system decided
-     * to ask; Cavvy's rules then apply: deny rules (and Cavvy's
-     * protected files) refuse it, an explicit allow rule approves it, and
-     * anything else goes to the user. Cavvy's mode defaults never
-     * approve on the user's behalf what the backend wanted confirmed, except
-     * where the ask says nothing of its own: Codex asking about every command,
-     * or a read-only agent asking because of Cavvy's own rule. There a
-     * read-only command Cavvy would run for its own models runs.
+     * A CLI's own ask (BackendPermission.native: Antigravity's): the user answers it, with Allow and Deny, and Cavvy's
+     * rules, mode and hooks decide none of it. Only a read-only agent of Cavvy's stays read-only, as it was asked to.
      */
+    private async nativePermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
+        const input = req.input;
+        if (this.o.readOnly) {
+            const reads = tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? "")));
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? "")), stop: false };
+        }
+        if (!this.o.host.askPermission) return { allow: false, message: `Permission to use ${tool.name} was not granted (non-interactive session).`, stop: false };
+        let title = req.title ?? tool.name;
+        try {
+            title = tool.title(input as any) || title;
+        } catch {
+            // keep the backend's title
+        }
+        let preview = req.preview;
+        if (!preview) {
+            try {
+                preview = await tool.preview?.(input, this.toolContext("", signal));
+            } catch {
+                // preview is optional
+            }
+        }
+        const answer = await this.o.host.askPermission({
+            tool,
+            input,
+            title,
+            decision: { behavior: "ask", ...(req.reason ? { reason: req.reason } : {}) },
+            preview: oneLineSummary(preview),
+            ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}),
+            ...(req.callId ? { callId: req.callId } : {}),
+            ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}),
+        });
+        if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
+        if (answer.allow) return { allow: true };
+        const fb = answer.feedback?.trim();
+        if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };
+        return { allow: false, message: "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it.", stop: true };
+    }
+
     /**
      * A PermissionRequest hook approved other input than the backend asked about: it goes back to the
      * backend to run (Claude Code takes it; Codex refuses it), once it passes what the original had to.
@@ -3293,7 +3326,19 @@ export class Agent {
         return { allow: true, updatedInput: input };
     }
 
+    /**
+     * A permission prompt from the backend. Its own permission system decided
+     * to ask; Cavvy's rules then apply: deny rules (and Cavvy's
+     * protected files) refuse it, an explicit allow rule approves it, and
+     * anything else goes to the user. Cavvy's mode defaults never
+     * approve on the user's behalf what the backend wanted confirmed, except
+     * where the ask says nothing of its own: Codex asking about every command,
+     * or a read-only agent asking because of Cavvy's own rule. There a
+     * read-only command Cavvy would run for its own models runs. A CLI's own
+     * ask (native) goes to the user as it is (nativePermission).
+     */
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
+        if (req.native) return this.nativePermission(req, signal);
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;

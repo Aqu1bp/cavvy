@@ -91,6 +91,11 @@ export interface BackendPermission {
     /** The backend's sub-agent asking, by its type (a Cavvy agent Claude Code runs natively): its own mode applies. */
     agentType?: string;
     /**
+     * The CLI's own ask, from a CLI that runs as it does on its own (Antigravity): the user's to answer, with Allow and
+     * Deny. Cavvy's rules, mode and hooks decide none of it; the rest of this is only how it's shown.
+     */
+    native?: boolean;
+    /**
      * Its input isn't all of the call (the backend cut some of it, as Grok's gate does a long one): a yes covers this
      * call only, never remembered, and "don't ask again" isn't offered.
      */

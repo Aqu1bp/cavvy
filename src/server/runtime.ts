@@ -45,7 +45,7 @@ import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { partialInput, PARTIAL_SCAN } from "../tools/partial-input";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
-import { cliRunsSkills } from "../backends/native-skills";
+import { cliRunsSkill, cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import { stoppedMonitorNote } from "../tools/monitor";
@@ -73,7 +73,7 @@ import { gitBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
-import { agentNeedsTrust, trustedByUser } from "../config/trust";
+import { trustedByUser } from "../config/trust";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
@@ -3695,7 +3695,8 @@ export class Runtime {
             const words = m ? m[2]!.replace(/[_-]+/g, " ").trim() : tool.name;
             it.heading = words.charAt(0).toUpperCase() + words.slice(1);
             if (m) it.where = `From ${m[1]}`;
-            it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
+            // Its arguments, when it has any (a CLI may not say them: Antigravity's asks don't).
+            if (Object.keys(input).length) it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         }
         it.options.push({ id: "no", label: "Deny" });
@@ -4200,7 +4201,6 @@ export class Runtime {
             await this.goalCommand(goal[1] ?? "", attachments);
             return { queued: false };
         }
-        if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
         if (this.busy) {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
@@ -4218,25 +4218,6 @@ export class Runtime {
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
-    }
-
-    /**
-     * An agent CLI that would run a folder's own hooks the user hasn't trusted (Antigravity's .agents/hooks.json) runs
-     * nothing: the message is refused before it's sent, so it stays in the box and the GUI offers to trust the folder.
-     */
-    private checkAgentTrust() {
-        const provider = this.model?.provider;
-        if (!provider) return;
-        const cwd = this.agent?.cliCwd ?? this.ws.cwd;
-        let trusted = false;
-        try {
-            // Not cliProject's: the user may have trusted it a moment ago.
-            trusted = this.agent ? this.agent.cliProjectTrusted() : trustedByUser(cwd);
-        } catch {
-            trusted = false;
-        }
-        const t = agentNeedsTrust(provider, cwd, trusted, this.settings().permissions?.additionalDirectories);
-        if (t) throw new RpcError(t.message, "needs_trust", t.folder);
     }
 
     /** A PDF the session's model can't read is refused before it's sent. */
@@ -4296,8 +4277,9 @@ export class Runtime {
             if (custom?.source === "plugin" && runsPluginCommand(provider, custom.name, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(`/${custom.name}${args.trim() ? ` ${args.trim()}` : ""}`, { display: trimmed, attachments });
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const about = skill && `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}`;
-            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (skill && cliRunsSkills(provider)) return this.startTurn(trimmed, { attachments, about });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the
+            // /name, as a CLI with skills of its own is one it has of that name.
+            if (skill && cliRunsSkill(provider, cmd, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(trimmed, { attachments, about });
             if (skill) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
