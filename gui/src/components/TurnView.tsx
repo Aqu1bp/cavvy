@@ -631,6 +631,8 @@ type TurnViewProps = {
     onElement?: (el: HTMLElement, turnId: string) => void;
     /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
     onFold?: (el: HTMLElement, fold: () => void) => void;
+    /** Far from the view a while: only its box is kept, at the size it was drawn at (Transcript), nothing in it. */
+    gone?: () => boolean;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -790,6 +792,7 @@ function TurnViewContent(p: TurnViewProps) {
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""} ${empty() ? "empty" : ""} ${attached() ? "attached" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
+            <Show when={!p.gone?.()}>
             <Show when={p.turn.prompt && !quiet}>
                 <h2 class="sr-only" data-find-skip>{said}</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
@@ -836,6 +839,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <LiveLine state={line()} />
                     </Show>
                 </div>
+            </Show>
             </Show>
         </article>
     );
