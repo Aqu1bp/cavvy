@@ -901,15 +901,40 @@ function flush(h: SessionHandle) {
 }
 
 /**
- * A session open but out of sight keeps only the turns it shows when it's back (restoredShown: its last page, or the
- * pages down from where it was being read); those before go, and come back as "Show earlier" or scrolling up brings
- * them, as for one opened anew. Only the one on screen let go of them (back at its end, nothing running): one working
- * out of sight kept every turn it did, with each step's input and output, about 190 KB a turn of sub-agent work (a
- * real run, 8 sessions, 30 minutes: 48 MB of window heap and climbing).
+ * A session open but out of sight keeps only the turns it shows when it's back; those before go, and come back as "Show
+ * earlier" or scrolling up brings them, as for one opened anew. Left at its end (or never shown): what opening it anew
+ * takes (openedKeeps), one turn at least. Left being read higher up: the pages down from there (restoredShown). Only the
+ * one on screen let go of them (back at its end, nothing running): one working out of sight kept every turn it did, with
+ * each step's input and output, about 190 KB a turn of sub-agent work (a real run, 8 sessions, 30 minutes: 48 MB of
+ * window heap and climbing). Keeping its last page of 40 instead still came to the same 48 MB at 36 minutes (measured,
+ * 6 sessions of heavy prompts on a Mac): 40 such turns are several MB a session.
+ * Measured only when the session has another turn (or it's just been left): a step streaming in changes none before it.
  */
-function letGoOutOfSight(h: SessionHandle) {
+function letGoOutOfSight(h: SessionHandle, left = false) {
     if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
-    forgetEarlier(h, restoredShown(h.view.turns.map((t) => t.id), transcriptPositions.get(h.id)));
+    const turns = h.view.turns;
+    if (!left && trimmedAt.get(h) === turns.length) return;
+    const saved = transcriptPositions.get(h.id);
+    const reading = saved && !saved.bottom && saved.anchor;
+    forgetEarlier(h, reading ? restoredShown(turns.map((t) => t.id), saved) : openedKeeps(turns));
+    trimmedAt.set(h, h.view.turns.length);
+}
+
+/** Each session's count of turns when letGoOutOfSight last looked. */
+const trimmedAt = new WeakMap<SessionHandle, number>();
+
+/**
+ * How many of the latest turns a session opened anew is sent: as many as fit OPEN_BYTES back from the latest, one at
+ * least, measured as the server measures them (Runtime.snapshot: each as JSON). What's here can be more than what's sent
+ * (a step's whole output, not folded), so this keeps no more than an open would.
+ */
+export function openedKeeps(turns: readonly unknown[]): number {
+    let size = 0;
+    for (let i = turns.length - 1; i > 0; i--) {
+        size += JSON.stringify(unwrap(turns[i])).length;
+        if (size >= OPEN_BYTES) return turns.length - i;
+    }
+    return turns.length;
 }
 
 function schedule(h: SessionHandle) {
@@ -1368,7 +1393,7 @@ export async function activate(id: string | undefined, cwd?: string) {
     const cached = id ? handles.get(id) : undefined;
     // The one left: out of sight once its view has kept where it was read (Transcript, as it goes).
     const left = app.activeId !== id ? handles.get(app.activeId ?? "") : undefined;
-    if (left) setTimeout(() => letGoOutOfSight(left), 0);
+    if (left) setTimeout(() => letGoOutOfSight(left, true), 0);
     if (cached) {
         // Preserve the mounted view (pagination, scroll, drafts) when picking it again.
         // Cached navigation never needs a loading screen, even for another session.

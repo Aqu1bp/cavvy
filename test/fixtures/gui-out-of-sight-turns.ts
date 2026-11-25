@@ -1,5 +1,5 @@
-// A session open but out of sight keeps only the turns it shows when it's back, as the one on screen does once it's
-// back at its end: one working all day out of sight kept every turn it did (a real run: about 190 KB a turn of
+// A session open but out of sight keeps only what opening it anew takes (or, left being read higher up, the pages down
+// from there), as the one on screen lets go of its earlier turns once it's back at its end: one working all day out of sight kept every turn it did (a real run: about 190 KB a turn of
 // sub-agent work, the window's heap climbing with it). The one on screen keeps what it has meanwhile.
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
@@ -29,8 +29,11 @@ globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 const later = () => new Promise<void>((r) => setTimeout(r, 20));
 
-const { start, rpc, openSession, activate, app, handleFor } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, activate, app, handleFor, OPEN_BYTES } = await import("../../gui/src/state/app");
 const { transcriptPositions, TURN_PAGE } = await import("../../gui/src/lib/transcript-scroll");
+/** What a session opened anew is sent of these turns (all the same size): as many as fit OPEN_BYTES, one at least. */
+const KEEP = Math.ceil(OPEN_BYTES / JSON.stringify(turn("x", 99)).length);
+assert.ok(KEEP > 1 && KEEP < TURN_PAGE, `${KEEP} turns`);
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 const seqs = new Map<string, number>();
 /** `n` more turns done in session `sid`, one update each, as a session working through prompts sends them. */
@@ -59,10 +62,11 @@ try {
     await settle();
     assert.equal(app.activeId, "shown");
 
-    // Out of sight, working on: its last page kept, the rest earlier turns (brought back as it's scrolled up).
+    // Out of sight, working on, left at its end: what opening it anew takes kept, the rest earlier turns (brought back as
+    // it's scrolled up), not its whole last page.
     await work("away", 10, 90);
-    assert.equal(away.view.turns.length, TURN_PAGE);
-    assert.equal(away.view.earlier, 100 - TURN_PAGE);
+    assert.equal(away.view.turns.length, KEEP);
+    assert.equal(away.view.earlier, 100 - KEEP);
     assert.equal(away.view.turns.at(-1)!.id, "away-99");
 
     // Left reading far up: the turns from the place read down stay.
@@ -80,11 +84,11 @@ try {
     await activate("away");
     await settle();
     await later();
-    assert.equal(shown.view.turns.length, TURN_PAGE);
-    assert.equal(shown.view.earlier, 100 - TURN_PAGE);
+    assert.equal(shown.view.turns.length, KEEP);
+    assert.equal(shown.view.earlier, 100 - KEEP);
     // The one switched to keeps what it has, and grows on screen.
     await work("away", 100, 5);
-    assert.equal(away.view.turns.length, TURN_PAGE + 5);
+    assert.equal(away.view.turns.length, KEEP + 5);
 } finally {
     rpc.close();
 }
