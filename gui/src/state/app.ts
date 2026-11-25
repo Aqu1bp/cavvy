@@ -29,6 +29,7 @@ import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
+import { restoredShown, transcriptPositions } from "../lib/transcript-scroll";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
@@ -896,6 +897,19 @@ function flush(h: SessionHandle) {
         ),
     );
     if (ops.some((op) => op.op === "reset")) for (const fn of resetting.get(h.id) ?? []) fn();
+    if (ops.some((op) => op.op === "turn")) letGoOutOfSight(h);
+}
+
+/**
+ * A session open but out of sight keeps only the turns it shows when it's back (restoredShown: its last page, or the
+ * pages down from where it was being read); those before go, and come back as "Show earlier" or scrolling up brings
+ * them, as for one opened anew. Only the one on screen let go of them (back at its end, nothing running): one working
+ * out of sight kept every turn it did, with each step's input and output, about 190 KB a turn of sub-agent work (a
+ * real run, 8 sessions, 30 minutes: 48 MB of window heap and climbing).
+ */
+function letGoOutOfSight(h: SessionHandle) {
+    if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
+    forgetEarlier(h, restoredShown(h.view.turns.map((t) => t.id), transcriptPositions.get(h.id)));
 }
 
 function schedule(h: SessionHandle) {
@@ -1352,6 +1366,9 @@ export async function activate(id: string | undefined, cwd?: string) {
     pending.cancel();
     const version = ++openingVersion;
     const cached = id ? handles.get(id) : undefined;
+    // The one left: out of sight once its view has kept where it was read (Transcript, as it goes).
+    const left = app.activeId !== id ? handles.get(app.activeId ?? "") : undefined;
+    if (left) setTimeout(() => letGoOutOfSight(left), 0);
     if (cached) {
         // Preserve the mounted view (pagination, scroll, drafts) when picking it again.
         // Cached navigation never needs a loading screen, even for another session.
