@@ -28,15 +28,25 @@ export function transient(e: unknown): boolean {
 
 const toUrl = (i: { mediaType: string; data: string }) => `data:${i.mediaType};base64,${i.data}`;
 
-/** A prompt's image: the whole of it (base64, for the viewer) and what the transcript shows (a thumbnail, or the image itself where none can be made). */
-export type PromptImage = { mediaType: string; data: string; thumb: string };
+/** An image whole, as the session has it (base64): for the viewer. */
+export type WholeImage = { mediaType: string; data: string };
 
-/** Prompts' images: up to 20 MB each, so only the most recent few dozen are held. */
+/** A prompt's image as the transcript shows it: a thumbnail, or the image itself where none can be made. */
+export type PromptImage = { mediaType: string; thumb: string };
+
+/**
+ * Prompts' images as the transcript shows them. Their thumbnails only: a screenshot is a few MB of base64, and
+ * the most recent few dozen prompts' held whole came to 34 MB of the window's 60 MB of script memory after
+ * reading back through three real sessions (measured). The viewer asks for them whole (wholePromptImages).
+ */
 const prompts = new ImageCache<PromptImage>(32);
+/** Prompts' images whole: those of the last few opened in the viewer or sent, to open again at once. */
+const promptWholes = new ImageCache<WholeImage>(4);
 
-async function withThumb(i: { mediaType: string; data: string }): Promise<PromptImage> {
+async function withThumb(i: WholeImage): Promise<PromptImage & WholeImage> {
     return { mediaType: i.mediaType, data: i.data, thumb: (await thumbnail(i)) ?? toUrl(i) };
 }
+const thumbOnly = (i: PromptImage): PromptImage => ({ mediaType: i.mediaType, thumb: i.thumb });
 
 /** Replies' image URLs: the image viewer holds those it shows, past the reply going. */
 export const replyUrls = new UrlLeases();
@@ -46,8 +56,8 @@ function objectUrl(i: { mediaType: string; data: string }): string {
     return URL.createObjectURL(new Blob([fromBase64(i.data) as BlobPart], { type: i.mediaType }));
 }
 
-/** Images calls' results brought (session.toolImage), by their key: what the model looked at. Whole, for the viewer. */
-const tools = new ImageCache<PromptImage>(48);
+/** Images calls' results brought (session.toolImage), by their key: what the model looked at. Whole, for the viewer: the last few it opened. */
+const tools = new ImageCache<PromptImage & WholeImage>(4);
 /**
  * Their thumbnails, for the rows: a run of 200 screenshots shows 200 of these, and holds none of the images
  * themselves, which only the viewer asks for (again, past `tools`).
@@ -55,7 +65,7 @@ const tools = new ImageCache<PromptImage>(48);
 const toolThumbs = new ImageCache<string>(400);
 
 /** A call's result image, with its thumbnail. Rejects when it's gone. */
-export function toolImage(sessionId: string, key: string): Promise<PromptImage> {
+export function toolImage(sessionId: string, key: string): Promise<PromptImage & WholeImage> {
     const k = `${sessionId}\0${key}`;
     return tools
         .get(k, () =>
@@ -74,9 +84,16 @@ export function toolThumb(sessionId: string, key: string): Promise<string> {
     return toolThumbs.get(k, () => (whole ?? rpc.call("session.toolImage", { id: sessionId, key }).then(async (i) => [await withThumb(i)])).then((a) => [a[0]!.thumb])).then((a) => a[0]!);
 }
 
-/** A prompt's images, fetched by where it is and kept by what they are. Rejects when they're gone. */
+/** A prompt's images as thumbnails, fetched by where it is and kept by what they are. Rejects when they're gone. */
 export function promptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, imagesKey: string): Promise<PromptImage[]> {
-    return prompts.get(promptKey(sessionId, imagesKey), () => rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then((r) => Promise.all(r.images.map(withThumb))));
+    return prompts.get(promptKey(sessionId, imagesKey), () =>
+        rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then(async (r) => (await Promise.all(r.images.map(withThumb))).map(thumbOnly)),
+    );
+}
+
+/** A prompt's images whole, for the viewer: asked for again (a few ms a MB), unless it was one of the last few. Rejects when they're gone. */
+export function wholePromptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, imagesKey: string): Promise<WholeImage[]> {
+    return promptWholes.get(promptKey(sessionId, imagesKey), () => rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then((r) => r.images));
 }
 
 /**
@@ -87,7 +104,9 @@ export function promptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, i
  */
 export async function keepSentImages(sessionId: string, images: readonly ImageAttachment[]): Promise<void> {
     const key = await imagesKeyOf(images);
-    if (key) void prompts.get(promptKey(sessionId, key), () => Promise.all(images.map(async (i) => ({ mediaType: i.mediaType, data: i.data, thumb: await previewOf(i) }))));
+    if (!key) return;
+    void prompts.get(promptKey(sessionId, key), () => Promise.all(images.map(async (i) => ({ mediaType: i.mediaType, thumb: await previewOf(i) }))));
+    void promptWholes.get(promptKey(sessionId, key), () => Promise.resolve(images.map((i) => ({ mediaType: i.mediaType, data: i.data }))));
 }
 
 /** A reply's image kept past the reply (replyImages): its URL, and how many replies shown hold it. */
