@@ -744,17 +744,43 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         const sel = typeof getSelection === "function" ? getSelection() : null;
         return !(sel && sel.rangeCount && !sel.isCollapsed && sel.containsNode(el, true));
     };
+    /**
+     * Those due to go, let go of a few at a time while the window has nothing else to do: a long turn's elements take
+     * milliseconds to dispose of, and all of a session's at once, in the click that left it, held up the next one's
+     * first frame (a long session opened: 42-45 ms, 53 with them let go of in that click).
+     */
+    const due: string[] = [];
+    let dueParking = false;
+    let letting: number | undefined;
+    const whenIdle = (fn: (left: () => number) => void): number =>
+        typeof requestIdleCallback === "function"
+            ? requestIdleCallback((d) => fn(() => d.timeRemaining()), { timeout: 1000 })
+            : (setTimeout(() => fn(() => Infinity), 0) as unknown as number);
+    const releaseDue = () => {
+        if (letting !== undefined || !due.length) return;
+        letting = whenIdle((left) => {
+            letting = undefined;
+            while (due.length && left() > 4) {
+                const turnId = due.shift()!;
+                if (!goneNow.has(turnId) && outOfReach.has(turnId) && mayGo(turnId, dueParking)) setGone(turnId, true);
+            }
+            if (due.length) releaseDue();
+            else dueParking = false;
+        });
+    };
     /** `parking`: it's just been left (parked, Panes), shown again only as it was: those out of reach go now. */
     const sweep = (parking = false) => {
         sweepTimer = undefined;
         if (pane.parked() && !parking) return;
+        dueParking ||= parking;
         const now = performance.now();
         let next = Infinity;
         for (const [turnId, since] of outOfReach) {
-            const due = since + GONE_MS;
-            if (due > now && !parking) next = Math.min(next, due);
-            else if (!goneNow.has(turnId) && mayGo(turnId, parking)) setGone(turnId, true);
+            const at = since + GONE_MS;
+            if (at > now && !parking) next = Math.min(next, at);
+            else if (!goneNow.has(turnId) && !due.includes(turnId)) due.push(turnId);
         }
+        releaseDue();
         if (next !== Infinity) sweepTimer = setTimeout(sweep, next - now);
     };
     const sweepLater = () => {
@@ -781,9 +807,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         clearTimeout(sweepTimer);
         sweepTimer = undefined;
         if (parked) sweep(true);
-        else sweepLater();
+        else {
+            dueParking = false;
+            sweepLater();
+        }
     }, { defer: true }));
-    onCleanup(() => clearTimeout(sweepTimer));
+    onCleanup(() => {
+        clearTimeout(sweepTimer);
+        if (letting !== undefined) typeof cancelIdleCallback === "function" ? cancelIdleCallback(letting) : clearTimeout(letting);
+    });
     const heights = (() => {
         const was = turnHeights.get(id) ?? new Map<string, number>();
         turnHeights.delete(id);
