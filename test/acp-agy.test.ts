@@ -41,11 +41,17 @@ class SlowReplay extends Replay {
     }
 }
 
+/** A recording that stays open once played to its end, as a live agent does: what's sent after it is answered ({}). */
+class OpenReplay extends Replay {
+    override end() {}
+}
+
 interface ReplayOptions {
     slow?: boolean;
+    open?: boolean;
     mode?: PermissionMode;
     answer?: (r: BackendPermission) => PermissionAnswer | Promise<PermissionAnswer>;
-    orchestrator?: { name: string; url: string; authorization: string; tools: string[]; checksItself?: string[] };
+    orchestrator?: { name: string; url: string; authorization: string; tools: string[]; checksItself?: string[]; inputKeys?: Record<string, string[]> };
     files?: AttachedFiles;
     readOnly?: boolean;
     model?: string;
@@ -53,7 +59,7 @@ interface ReplayOptions {
 
 /** A connection to a recorded agy session, opened in a mode with Gemini 4 Neon at medium effort (what the probes set). */
 async function replay(name: string, o: ReplayOptions = {}) {
-    const rec = new (o.slow ? SlowReplay : Replay)(`agy-1.5.17-acp-${name}`);
+    const rec = new (o.slow ? SlowReplay : o.open ? OpenReplay : Replay)(`agy-1.5.17-acp-${name}`);
     const events: CliEvent[] = [];
     const asked: BackendPermission[] = [];
     let mode: PermissionMode = o.mode ?? "default";
@@ -193,6 +199,28 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         expect(prompts.at(-1)).toBe("The user declined this tool call and said:\nuse printf");
     });
 
+    test("a no with words, when it ends its prompt at once (as recorded, 5 ms after the Deny): the turn waits, and the words go as a prompt of its own", async () => {
+        const r = await replay("mode-default", {
+            open: true,
+            answer: (q) => (q.toolName === "Bash" ? { allow: false, message: "The user declined this tool call and said:\nuse printf", stop: false, fromUser: true } : { allow: true }),
+        });
+        const end = await r.turn("Do these three steps");
+        expect(end.reason).toBe("done");
+        expect(notices(r.agentEvents())).toEqual([]);
+        // Sent after its prompt answered, and answered before the turn ended.
+        expect(r.rec.extra.map((m) => [m.method, m.params?.prompt?.[0]?.text])).toEqual([["session/prompt", "The user declined this tool call and said:\nuse printf"]]);
+    });
+
+    test("a question still waiting when the turn stops is withdrawn", async () => {
+        const r = await replay("cancel", { answer: () => new Promise<PermissionAnswer>(() => {}) });
+        const { ref } = await r.conn.prompt({ text: "sleep 20", images: [] });
+        while (!r.asked.length) await Bun.sleep(5);
+        expect(r.asked[0]!.signal?.aborted).toBe(false);
+        await r.conn.interrupt(ref);
+        for (let i = 0; i < 500 && !r.events.some((e) => e.t === "turn_ended"); i++) await Bun.sleep(5);
+        expect(r.asked[0]!.signal?.aborted).toBe(true);
+    });
+
     test("a no without words stops the turn: session/cancel after the Deny", async () => {
         const r = await replay("mode-default", { slow: true, answer: (q) => (q.toolName === "Bash" ? { allow: false, message: "no", stop: true } : { allow: true }) });
         const end = await r.turn("Do these three steps");
@@ -202,17 +230,21 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
     });
 
     test("Cavvy's MCP server over HTTP with its header; asks about a tool of it that checks its calls itself are let go", async () => {
-        const o = { name: "probe", url: "http://127.0.0.1:1/mcp", authorization: "Bearer probe-token", tools: ["probe_ping"], checksItself: ["probe_ping"] };
+        const o = { name: "probe", url: "http://127.0.0.1:1/mcp", authorization: "Bearer probe-token", tools: ["probe_echo"], checksItself: ["probe_echo"], inputKeys: { probe_echo: ["word"] } };
         const r = await replay("mcp-http", { orchestrator: o });
         expect(r.rec.sent.find((m) => m.method === "session/new")?.params.mcpServers).toEqual([{ type: "http", name: "probe", url: o.url, headers: [{ name: "Authorization", value: o.authorization }] }]);
-        await r.turn("Call the probe_ping tool");
+        await r.turn("Call the probe_echo tool");
         expect(r.asked).toEqual([]);
         expect(r.replies()).toEqual(["allow"]);
-        expect(texts(r.agentEvents())).toBe("pong-from-mcp");
-        // One that doesn't (delegate, schedules): its ask is the user's, named as Cavvy's tool.
+        expect(texts(r.agentEvents())).toBe("echo-kiwi");
+        // Its row is the tool's, with the arguments the server got ({"word":"kiwi"}, as recorded), not agy's toolSummary:
+        // so a session tool's call is known to be the main agent's (servedSessionCaller).
+        const starts = r.agentEvents().filter((e): e is Extract<AgentEvent, { type: "tool_start" }> => e.type === "tool_start");
+        expect(starts.map((e) => [e.call.name, e.call.input])).toEqual([["mcp__probe__probe_echo", { word: "kiwi" }]]);
+        // One that doesn't (delegate, schedules): its ask is the user's, named as Cavvy's tool, with its arguments.
         const asks = await replay("mcp-http", { orchestrator: { ...o, checksItself: [] } });
-        await asks.turn("Call the probe_ping tool");
-        expect(asks.asked).toEqual([expect.objectContaining({ native: true, toolName: "mcp__probe__probe_ping", input: {} })]);
+        await asks.turn("Call the probe_echo tool");
+        expect(asks.asked).toEqual([expect.objectContaining({ native: true, toolName: "mcp__probe__probe_echo", input: { word: "kiwi" } })]);
         expect(asks.asked[0]!.title).toBeUndefined();
         // Another server's tool is the user's to answer.
         const other = acpAgent("antigravity").mcpTool!;
@@ -243,6 +275,15 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         expect(existsSync(path)).toBe(false);
     });
 
+    test("a PDF it can't write: the prompt is refused with why, and the next one runs", async () => {
+        const files: AttachedFiles = { dir: "/dev/null/agy-files", paths: new Set(), count: 0 };
+        const r = await replay("pong", { files });
+        const pdf = { type: "pdf", name: "a.pdf", data: Buffer.from("%PDF-1.4").toString("base64") };
+        await expect(r.conn.prompt({ text: "Read it", images: [], documents: [pdf] } as any)).rejects.toThrow(/^Couldn't attach the files: /);
+        expect(r.rec.sent.some((m) => m.method === "session/prompt")).toBe(false);
+        expect((await r.turn("Reply with the single word: pong")).reason).toBe("done");
+    });
+
     test("steering: a second session/prompt; the first answers while its ask waits, and the turn goes on to the end", async () => {
         const r = await replay("steer");
         const { ref } = await r.conn.prompt({ text: "Run these three shell commands", images: [] });
@@ -252,6 +293,19 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ ref, reason: "done" });
         expect(r.replies()).toEqual(["allow", "allow", "allow"]);
         expect(texts(r.agentEvents())).toContain("banana");
+    });
+
+    test("steering again: the first prompt's answer (it ended at the steer) doesn't end the turn's steering", async () => {
+        const r = await replay("steer", { slow: true });
+        const { ref } = await r.conn.prompt({ text: "Run these three shell commands", images: [] });
+        while (!r.agentEvents().some((e) => e.type === "tool_start")) await Bun.sleep(1);
+        expect(await r.conn.steer(ref, { text: "Also, end your final reply with the word banana.", images: [] })).toBe(true);
+        // The recording answers the first prompt 3 ms after the steer, as its next ask comes.
+        while (!(r.conn as any).turn?.answers.length) await Bun.sleep(1);
+        expect(await r.conn.steer(ref, { text: "And say kiwi.", images: [] })).toBe(true);
+        for (let i = 0; i < 500 && !r.events.some((e) => e.t === "turn_ended"); i++) await Bun.sleep(5);
+        expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ ref, reason: "done" });
+        expect(r.rec.extra.map((m) => m.params?.prompt?.[0]?.text)).toEqual(["And say kiwi."]);
     });
 
     test("Esc: session/cancel ends the turn at once; the next one runs", async () => {
@@ -280,6 +334,22 @@ describe("Antigravity's hooks", () => {
         // Only its Gemini models read a PDF (with Claude Sonnet 5.5 its read_file refused one, by hand in the app).
         const reads = acpAgent("antigravity").readsPdf!;
         expect(["gemini-4-neon-medium", "gemini-3.8-flash-low", "claude-sonnet-5-5-low", "gpt-oss-120b-medium"].map(reads)).toEqual([true, true, false, false]);
+    });
+
+    test("whether a model reads PDFs, listed or not; a cached listing from before that is listed again", async () => {
+        const { resolveModelInfo } = await import("../src/providers/models");
+        const { paths } = await import("../src/config/paths");
+        const { mkdirSync } = await import("fs");
+        const { dirname } = await import("path");
+        expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, supportsReasoning: false });
+        expect(resolveModelInfo("antigravity:gemini-4-neon-medium")).toMatchObject({ supportsPdf: true });
+        mkdirSync(dirname(paths.modelCache()), { recursive: true });
+        const cached = (extra: object) => ({ version: 3, providers: { antigravity: { fetchedAt: Date.now(), fp: "x", models: [{ provider: "antigravity", id: "claude-sonnet-5-5-low", name: "Cached", ...extra }] } } });
+        writeFileSync(paths.modelCache(), JSON.stringify(cached({})));
+        expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, name: undefined });
+        writeFileSync(paths.modelCache(), JSON.stringify(cached({ supportsPdf: false })));
+        expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, name: "Cached" });
+        rmSync(paths.modelCache(), { force: true });
     });
 
     test("`agy models`: its ids and names; signed out, none", async () => {

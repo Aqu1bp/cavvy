@@ -64,6 +64,8 @@ export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
         .replace(/("tier"\s*:\s*\{\s*"name"\s*:\s*)"[^"]*"(\s*,\s*"id"\s*:\s*)"[^"]*"/g, '$1"<tier>"$2"<tier>"')
         // Grok's addresses for a subagent's run (subagent_spawned and its progress).
         .replace(/("(?:agentAddress|attempt_id|attemptId)"\s*:\s*)"[^"]*"/g, '$1"<id>"')
+        // An MCP call's progress token (Antigravity's names the request), also inside a note's quoted frame.
+        .replace(/(progressToken\\*"\s*:\s*\\*")[^"\\]+/g, "$1<token>")
         // Opaque, server-issued blobs (Grok's encrypted reasoning signatures).
         .replace(/("signature"\s*:\s*)"[^"]{40,}"/g, '$1"<signature>"');
     // A CLI's session id (its transcript's name, under the account's history): numbered in the order they come, and

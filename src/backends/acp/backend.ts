@@ -25,7 +25,7 @@ import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveTurnResu
 import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec, TurnInput } from "../live/types";
 import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
-import { acpAgent, type AcpAgent } from "./agents";
+import { acpAgent, acpModelTraits, type AcpAgent } from "./agents";
 import { AcpConnection, RESUME_FAILED, type AttachedFiles, type SteerSource } from "./connection";
 import { AcpGone, AcpRpc } from "./rpc";
 
@@ -167,7 +167,7 @@ export async function acpModels(providerId: string, signal?: AbortSignal): Promi
     const listed = await agent.listModels(bin, signal);
     // Where each id names its effort (gemini-4-neon-medium), Cavvy's effort setting has nothing to set.
     return listed.map((m) =>
-        backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...(agent.effortInModel ? { supportsReasoning: false } : {}), ...(agent.readsPdf ? { supportsPdf: agent.readsPdf(m.id) } : {}) }),
+        backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...acpModelTraits(providerId, m.id) }),
     );
 }
 

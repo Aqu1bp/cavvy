@@ -181,15 +181,15 @@ const cases: Record<string, () => Promise<void>> = {
                 const auth = req.headers.get("authorization") === "Bearer probe-token" ? "auth ok" : "auth missing";
                 if (req.method !== "POST") return new Response(null, { status: 405 });
                 const m = (await req.json()) as any;
-                seen.push(`${m.method ?? "response"} (${auth})`);
+                seen.push(`${m.method ?? "response"} (${auth})${m.method === "tools/call" ? ` ${JSON.stringify(m.params)}` : ""}`);
                 if (m.id === undefined) return new Response(null, { status: 202 });
                 const result =
                     m.method === "initialize"
                         ? { protocolVersion: m.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "probe", version: "0.0.0" } }
                         : m.method === "tools/list"
-                          ? { tools: [{ name: "probe_ping", description: "Answers pong. Call it when asked to ping the probe.", inputSchema: { type: "object", properties: {} } }] }
+                          ? { tools: [{ name: "probe_echo", description: "Answers with the word it's given. Call it when asked to echo a word.", inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"] } }] }
                           : m.method === "tools/call"
-                            ? { content: [{ type: "text", text: "pong-from-mcp" }] }
+                            ? { content: [{ type: "text", text: `echo-${m.params?.arguments?.word ?? ""}` }] }
                             : {};
                 return Response.json({ jsonrpc: "2.0", id: m.id, result });
             },
@@ -203,7 +203,7 @@ const cases: Record<string, () => Promise<void>> = {
         if (sessionId) {
             await profile.prep(acp, sessionId);
             acp.rules = [{ label: "mcp tool", match: (q) => q.command === undefined && !q.paths.length, answer: "allow_once", once: false }];
-            await turn(c, acp, sessionId, "Call the probe_ping tool from the probe MCP server, then reply with exactly what it returned.", "call the MCP tool");
+            await turn(c, acp, sessionId, "Call the probe_echo tool from the probe MCP server with the word kiwi, then reply with exactly what it returned.", "call the MCP tool");
             c.log.note(`server saw: ${JSON.stringify(seen)}`, { perms: acp.permissionLog.map((p) => ({ answer: p.answer, title: p.req.params?.toolCall?.title, kind: p.req.params?.toolCall?.kind, raw: p.req.params?.toolCall?.rawInput, options: p.req.params?.options })) });
         }
         await acp.stop();

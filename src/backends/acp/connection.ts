@@ -130,6 +130,10 @@ interface Turn {
     deciding?: boolean;
     /** Those requests not answered yet: the turn doesn't end before they are. */
     acking: number;
+    /** What the user said with a no, on its way to the agent as a message (ownAsk): the turn doesn't end before it's sent. */
+    replies: number;
+    /** Its session/prompt calls sent so far: the last is its own, where a new one ends the one running (AcpAgent.steerReplaces). */
+    sent: number;
     /** Prompts the agent runs of its own for one of those (it came as the turn was ending): the turn waits for them. */
     own: Set<string>;
     /** Until then it waits for one to start, after its own prompt answered. */
@@ -342,7 +346,7 @@ export class AcpConnection implements CliConnection {
     async prompt(input: TurnInput): Promise<{ ref: string }> {
         if (!this.sessionId) throw new PromptRefused(`${this.def.name} has no session open`);
         if (this.turn && !this.turn.ended) throw new PromptRefused(`${this.def.name} is still finishing its last turn. Try again in a moment.`);
-        const turn: Turn = { ref: randomUUID(), tools: new Map(), asked: new Set(), gated: new Map(), waiting: new Set(), text: "", open: 0, answers: [], group: 0, interjected: [], untaken: [], acking: 0, own: new Set() };
+        const turn: Turn = { ref: randomUUID(), tools: new Map(), asked: new Set(), gated: new Map(), waiting: new Set(), text: "", open: 0, answers: [], group: 0, interjected: [], untaken: [], acking: 0, replies: 0, sent: 0, own: new Set() };
         this.turn = turn;
         try {
             turn.since = this.agent.interject?.record?.size(this.sessionId);
@@ -353,10 +357,18 @@ export class AcpConnection implements CliConnection {
         if (this.noticeNext) this.emit({ type: "notice", level: "warn", message: this.noticeNext });
         this.noticeNext = undefined;
         this.reportCommands();
-        if (!(await this.send(turn, input, true))) {
+        let sent: boolean;
+        try {
+            sent = await this.send(turn, input, true);
+        } catch (e) {
+            // An attachment it couldn't write (AcpAgent.pdfAsLink): nothing went.
+            sent = false;
+            turn.failed = e;
+        }
+        if (!sent) {
             turn.ended = true;
             if (this.turn === turn) this.turn = undefined;
-            throw new PromptRefused(`${this.def.name} had stopped before the prompt reached it`);
+            throw new PromptRefused(turn.failed !== undefined ? `Couldn't attach the files: ${errorText(turn.failed)}` : `${this.def.name} had stopped before the prompt reached it`);
         }
         liveDebug("acp", "prompt", { ref: turn.ref, images: input.images.length });
         // One queued to steer with before the turn was under way goes now.
@@ -376,9 +388,12 @@ export class AcpConnection implements CliConnection {
         const group = this.agent.interject ? undefined : turn.open > 0 && turn.closed !== turn.group ? turn.group : ++turn.group;
         const { sent, result } = this.rpc.call("session/prompt", { sessionId: this.sessionId, prompt: blocks });
         turn.open++;
+        const n = ++turn.sent;
+        // Its own: the turn's first, or the last sent, where one sent ends the one running.
+        const mine = () => (this.agent.steerReplaces ? n === turn.sent : own);
         result.then(
-            (r) => this.answer(turn, r, own, group),
-            (e) => this.answerFailed(turn, e, own),
+            (r) => this.answer(turn, r, mine(), group),
+            (e) => this.answerFailed(turn, e, mine()),
         );
         return sent;
     }
@@ -739,7 +754,7 @@ export class AcpConnection implements CliConnection {
     private startTool(turn: Turn, t: ToolState, as?: { name: string; input: Record<string, unknown> }) {
         if (t.call) return;
         this.flushText(turn);
-        const { name, input } = as ?? cavvyTool(t, this.cwd, this.orchestrator());
+        const { name, input } = as ?? cavvyTool(t, this.cwd, this.orchestrator(), this.agent);
         t.call = { name, input, title: name === t.title || !CAVVY_TOOLS.has(name) ? (t.title ?? name) : titleFor(name, input), started: Date.now() };
         this.emit({ type: "tool_start", call: { type: "tool_call", id: t.id, name, input }, title: t.call.title });
     }
@@ -808,7 +823,7 @@ export class AcpConnection implements CliConnection {
 
     /** The turn ends once its own prompt and every one steering it have answered, and nothing is still being sent. */
     private settleTurn(turn: Turn) {
-        if (turn.ended || this.turn !== turn || turn.open > 0 || turn.draining || turn.acking > 0 || turn.own.size || turn.deciding) return;
+        if (turn.ended || this.turn !== turn || turn.open > 0 || turn.draining || turn.acking > 0 || turn.replies > 0 || turn.own.size || turn.deciding) return;
         if (!turn.answered && turn.failed === undefined) return;
         if (!turn.cancelling && turn.watchUntil && Date.now() < turn.watchUntil) return;
         if (turn.failed !== undefined) return this.finish(turn, "error", turn.tripped ?? this.failure(turn.failed));
@@ -1034,14 +1049,14 @@ export class AcpConnection implements CliConnection {
         const yes = () => pick("allow_once", "allow_always");
         const no = () => pick("reject_once", "reject_always");
         if (this.host.mode() === "bypassPermissions") return yes();
+        const known = id ? turn.tools.get(id) : undefined;
         const o = this.orchestrator();
-        const mine = o && this.agent.mcpTool?.(toolCall, o.name);
+        const mine = servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput }, o, this.agent);
         // One of Cavvy's tools that checks the call itself, as it runs (asking the user if it must): asked about once.
-        if (mine && o.checksItself?.includes(mine)) {
+        if (mine && o?.checksItself?.includes(mine.tool)) {
             liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
             return yes();
         }
-        const known = id ? turn.tools.get(id) : undefined;
         const files = this.files();
         const read = str(toolCall?.kind) ?? known?.kind;
         const paths = pathsOf(toolCall?.rawInput ?? known?.rawInput, toolCall?.locations ?? known?.locations, this.cwd);
@@ -1055,27 +1070,36 @@ export class AcpConnection implements CliConnection {
         }
         // How the prompt shows it: a command, a change with its diff, a read, an address, or the agent's own words for it.
         const title = str(toolCall?.title);
-        // One of Cavvy's tools by its name alone: what the agent says of the call is its own bookkeeping, not the call's input.
-        const shown = (mine ? { toolName: `mcp__${o.name}__${mine}`, input: {} } : undefined) ??
+        const shown = (mine ? { toolName: mine.name, input: mine.input } : undefined) ??
             (read === "read" && paths[0] ? { toolName: "Read", input: { file_path: paths[0] }, title } : undefined) ??
             permissionFor(this.def, toolCall, known, this.cwd) ?? { toolName: this.def.name, input: toolCall?.rawInput ?? {}, title: title ?? `${this.def.name} asks to use a tool` };
         let settle!: (outcome: Record<string, unknown>) => void;
         const stopped = new Promise<Record<string, unknown>>((r) => (settle = r));
         turn.waiting.add(settle);
+        // The question goes once nothing waits for its answer (the turn stopped, or a stricter mode restarted it).
+        const withdraw = new AbortController();
         try {
-            const a = await Promise.race([this.host.permission({ ...shown, native: true, ...(id ? { callId: id } : {}) }), stopped]);
-            if (!("allow" in a)) return a;
+            const a = await Promise.race([this.host.permission({ ...shown, native: true, signal: withdraw.signal, ...(id ? { callId: id } : {}) }), stopped]);
+            if (!("allow" in a)) {
+                withdraw.abort();
+                return a;
+            }
             const answer = a as PermissionAnswer;
             if (turn.ended || turn.cancelling) return CANCELLED;
             if (answer.allow) return yes();
             turn.refused = true;
             if (answer.stop) this.stopAtNo(turn, settle);
-            // What to do instead reaches it as a message steering the turn, once its no has gone; the user is told if it can't.
-            else if (answer.fromUser)
+            // What to do instead reaches it as a message steering the turn, once its no has gone (the turn waits for it, as
+            // it ends its prompt at a no); the user is told if it can't.
+            else if (answer.fromUser) {
+                turn.replies++;
                 setTimeout(async () => {
                     const sent = await this.deliver(turn, { text: answer.message, images: [], documents: [] }).catch(() => false);
+                    turn.replies--;
                     if (!sent) this.emit({ type: "notice", level: "warn", message: `${this.def.name} didn't get your reply. Send it again.` });
+                    this.settleTurn(turn);
                 }, 0);
+            }
             return no();
         } catch {
             return no();
@@ -1266,11 +1290,17 @@ function pathsOf(raw: Record<string, any> | undefined, locations: { path: string
 
 /**
  * A call of Cavvy's own MCP tools (the ones its server offers this turn), by its MCP name: Grok's goes through its
- * use_tool (the tool's name and arguments in its input), OpenCode's is named for the tool. Cavvy checks it as it runs,
- * as its own call.
+ * use_tool (the tool's name and arguments in its input), OpenCode's is named for the tool, Antigravity's its own way
+ * (AcpAgent.mcpTool). Cavvy checks it as it runs, as its own call.
  */
-function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">, o: OrchestratorServer | undefined): { tool: string; name: string; input: Record<string, unknown> } | undefined {
+function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">, o: OrchestratorServer | undefined, agent?: Pick<AcpAgent, "mcpTool">): { tool: string; name: string; input: Record<string, unknown> } | undefined {
     const raw = t.rawInput ?? {};
+    // Its arguments as the server gets them: what else its input has is the agent's own (Antigravity's toolSummary).
+    const own = o && agent?.mcpTool?.(t, o.name);
+    if (own && o.tools.includes(own)) {
+        const keys = o.inputKeys?.[own] ?? [];
+        return { tool: own, name: `mcp__${o.name}__${own}`, input: Object.fromEntries(Object.entries(raw).filter(([k]) => keys.includes(k))) };
+    }
     const viaUse = servedToolName(raw.tool_name, o);
     if (viaUse) {
         const input = raw.tool_input && typeof raw.tool_input === "object" && !Array.isArray(raw.tool_input) ? raw.tool_input : {};
@@ -1295,9 +1325,9 @@ function wholeContent(raw: Record<string, any>): string | undefined {
 }
 
 /** A call as one of Cavvy's tools, by its kind; another kind as its own name. */
-function cavvyTool(t: ToolState, cwd: string, o: OrchestratorServer | undefined): { name: string; input: Record<string, unknown> } {
+function cavvyTool(t: ToolState, cwd: string, o: OrchestratorServer | undefined, agent?: Pick<AcpAgent, "mcpTool">): { name: string; input: Record<string, unknown> } {
     const raw = t.rawInput ?? {};
-    const served = servedCall(t, o);
+    const served = servedCall(t, o, agent);
     if (served) return served;
     const path = pathsOf(raw, t.locations, cwd)[0];
     switch (t.kind) {

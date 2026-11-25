@@ -385,6 +385,21 @@ describe("in the TUI", () => {
         expect(turns[1]!.text).toContain("Cavvy body");
     });
 
+    test("on Antigravity, a skill of a name it lists goes to it as typed; Cavvy's others are pasted, as it has no plugin for them", async () => {
+        skill(userSkills, "shared", "description: Both have it", "Cavvy body");
+        skill(userSkills, "cavvy-only", "description: Only here", "Cavvy only");
+        const { app, turns } = testApp();
+        app.model = { id: "gemini-4-neon-medium", provider: "antigravity" } as any;
+        app.cliCommands = { provider: "antigravity", names: new Set(["shared", "antigravity-guide"]) };
+        await runCommand(app, "/shared x");
+        await runCommand(app, "/cavvy-only y");
+        expect(turns[0]).toMatchObject({ text: "/shared x" });
+        expect(turns[1]).toMatchObject({ display: "/cavvy-only y", kind: "command" });
+        expect(turns[1]!.text).toContain("Cavvy only");
+        // One of its own Cavvy doesn't have goes as typed.
+        expect(await runCommand(app, "/antigravity-guide")).toBe(false);
+    });
+
     test("/skills lists them with where they come from, and says how to add one when there are none", async () => {
         const empty = testApp();
         await runCommand(empty.app, "/skills");

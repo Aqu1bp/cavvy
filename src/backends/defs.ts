@@ -350,7 +350,7 @@ const ANTIGRAVITY: AgentCliDef = {
         skills: "own",
         pdfs: true,
         autoReviewer: true,
-        resolvesUnknownCommands: true,
+        resolvesUnknownCommands: false,
     },
 };
 

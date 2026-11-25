@@ -64,7 +64,7 @@ import { expandCommand, pluginCommandFor, type CustomCommand } from "./custom";
 import { pluginCommand } from "./plugins";
 import { runsPluginCommand } from "../plugins/native";
 import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
-import { cliRunsSkills } from "../backends/native-skills";
+import { cliRunsSkill } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
@@ -2223,8 +2223,10 @@ function skillToCommand(s: Skill): Command {
         images: true,
         run: (app, args, draft) => {
             const display = `/${s.name}${args ? " " + args : ""}`;
-            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (cliRunsSkills(app.model?.provider)) return app.startTurn(display, { draft });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the
+            // /name. So is a CLI with skills of its own, one it lists (Antigravity).
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (cliRunsSkill(app.model?.provider, s.name, listed)) return app.startTurn(display, { draft });
             const text = formatSkill(s, args);
             if (text === undefined) {
                 app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");

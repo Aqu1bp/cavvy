@@ -8,7 +8,7 @@ import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { isReadOnlyCommand } from "../../permissions/bash-safety";
 import type { PermissionMode } from "../../permissions/modes";
-import type { Usage } from "../../providers/types";
+import type { ModelInfo, Usage } from "../../providers/types";
 import { canonical, expandPath } from "../../util/files";
 import { cliMessage, runCli } from "../cli";
 import type { SpawnConfig } from "../live/types";
@@ -50,6 +50,11 @@ export interface AcpAgent {
      */
     interject?: Interject;
     /**
+     * A second session/prompt ends the running one, and the work goes on under the new one (Antigravity 1.5.17:
+     * agy-1.5.17-acp-steer.jsonl): the turn's own prompt is the last one sent, so it can be steered again.
+     */
+    steerReplaces?: boolean;
+    /**
      * A gate it runs before every tool call, which Cavvy registers when it opens a session and answers by its own
      * rules and mode (Grok's client PreToolUse hook). Left out: what it asks about (session/request_permission) is all.
      */
@@ -74,7 +79,10 @@ export interface AcpAgent {
     modeArgs?(mode: PermissionMode): string[];
     /** It takes Cavvy's MCP server over HTTP, though its initialize doesn't say so (Antigravity 1.5.17). */
     mcpHttp?: boolean;
-    /** The tool of MCP server `server` an ask (its toolCall) is about, if it's one of that server's. */
+    /**
+     * The tool of MCP server `server` a call (its toolCall) is of, if it's one of that server's, named its own way
+     * (Antigravity's "Run mcp_cavvy_models"). Its arguments are the call's rawInput, less what isn't the tool's.
+     */
     mcpTool?(toolCall: any, server: string): string | undefined;
     /** Its model ids name their effort (gemini-4-neon-medium): Cavvy's effort isn't sent. */
     effortInModel?: boolean;
@@ -606,11 +614,19 @@ const ANTIGRAVITY: AcpAgent = {
     effortInModel: true,
     listsCommands: true,
     pdfAsLink: true,
+    steerReplaces: true,
     // Its read_file shows a PDF to its Gemini models only: another refuses it ("not supported by the current model").
     readsPdf: (id) => id.startsWith("gemini-"),
 };
 
 const AGENTS: Record<string, AcpAgent> = { opencode: OPENCODE, grok: GROK, antigravity: ANTIGRAVITY };
+
+/** What its model `modelId` is like, listed or not: effort named in its id, whether it reads a PDF. */
+export function acpModelTraits(id: string, modelId: string): Partial<ModelInfo> {
+    const agent = AGENTS[id];
+    if (!agent) return {};
+    return { ...(agent.effortInModel ? { supportsReasoning: false } : {}), ...(agent.readsPdf ? { supportsPdf: agent.readsPdf(modelId) } : {}) };
+}
 
 export function acpAgent(id: string): AcpAgent {
     const a = AGENTS[id];
