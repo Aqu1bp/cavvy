@@ -15,15 +15,20 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSy
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { cavvyHome } from "../config/paths";
+import { agentCli } from "./defs";
 import { formatSkill, mentionNames, skillMentions, withSkills, type Skill } from "../agent/skills";
 
 /** Claude Code names a plugin's skills <plugin>:<name>. */
 export const CLAUDE_PLUGIN = "cavvy";
 export const CLAUDE_PREFIX = `${CLAUDE_PLUGIN}:`;
 
-/** Claude Code and Codex run skills themselves; Cavvy's API models get them pasted in. */
+/**
+ * The CLI runs skills itself, so `/name` and `$name` go to it as typed: Claude Code and Codex Cavvy's too (handed over
+ * as a plugin or a skills root), Antigravity its own. Cavvy's API models, and a CLI given them pasted, get them pasted in.
+ */
 export function cliRunsSkills(provider: string | undefined): boolean {
-    return provider === "claude-code" || provider === "codex";
+    const skills = provider ? agentCli(provider)?.caps.skills : undefined;
+    return skills !== undefined && skills !== "paste";
 }
 
 /** HARNESS_SKILL_DIR: Cavvy's old name for it (legacy.ts). */

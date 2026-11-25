@@ -73,7 +73,7 @@ import { gitBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
-import { agentNeedsTrust, trustedByUser } from "../config/trust";
+import { trustedByUser } from "../config/trust";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
@@ -4198,7 +4198,6 @@ export class Runtime {
             await this.goalCommand(goal[1] ?? "", attachments);
             return { queued: false };
         }
-        if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
         if (this.busy) {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
@@ -4216,25 +4215,6 @@ export class Runtime {
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
-    }
-
-    /**
-     * An agent CLI that would run a folder's own hooks the user hasn't trusted (Antigravity's .agents/hooks.json) runs
-     * nothing: the message is refused before it's sent, so it stays in the box and the GUI offers to trust the folder.
-     */
-    private checkAgentTrust() {
-        const provider = this.model?.provider;
-        if (!provider) return;
-        const cwd = this.agent?.cliCwd ?? this.ws.cwd;
-        let trusted = false;
-        try {
-            // Not cliProject's: the user may have trusted it a moment ago.
-            trusted = this.agent ? this.agent.cliProjectTrusted() : trustedByUser(cwd);
-        } catch {
-            trusted = false;
-        }
-        const t = agentNeedsTrust(provider, cwd, trusted, this.settings().permissions?.additionalDirectories);
-        if (t) throw new RpcError(t.message, "needs_trust", t.folder);
     }
 
     /** A PDF the session's model can't read is refused before it's sent. */

@@ -665,8 +665,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
     const model = () => st()?.model ?? modelsFor(p.sessionId).flatMap((g) => g.models).find((m) => m.ref === settings().model);
-    /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */
-    const autoAsks = () => Boolean(app.providers.find((pr) => pr.id === model()?.provider)?.agentCli?.autoAsks);
     // Run members are validated separately by the server; the default model is irrelevant.
     const readsPdf = () => Boolean(runPicks()) || model()?.supportsPdf !== false;
     // Unknown isn't text-only: only a model known to take no images is refused them.
@@ -760,7 +758,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 sessionId={p.sessionId} current={st()?.model} currentRef={settings().model} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : settings().effort} fast={st() ? st()!.fastMode : settings().fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     // The model a turn would use: listed, else the configured reference's id (a model not in the list yet).

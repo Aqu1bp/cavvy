@@ -10,19 +10,24 @@
 // way. A change it makes without having asked, or without the gate (its own
 // settings overrode the spawn's), stops the turn: the tripwire.
 //
+// An agent that runs as it does on its own (AcpAgent.ownAsks: Antigravity) is
+// set to its own mode for Cavvy's, and what it asks about goes to the user with
+// its own choices, Cavvy's rules deciding none of it (ownAsk).
+//
 // A prompt is a turn: it ends when session/prompt answers. One at a time. A
 // message the user sends meanwhile to steer it joins it at its next step
 // (steer): each agent's way (AcpAgent.interject), and the turn ends once every
 // prompt it sent has answered.
 
 import { randomUUID } from "crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "fs";
-import { isAbsolute, resolve } from "path";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "fs";
+import { isAbsolute, join, resolve } from "path";
+import { pathToFileURL } from "url";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../../config/paths";
 import { stableStringify } from "../../permissions/classifier";
-import type { PermissionMode } from "../../permissions/modes";
-import type { Usage } from "../../providers/types";
+import { MODE_INFO, type PermissionMode } from "../../permissions/modes";
+import type { PdfPart, Usage } from "../../providers/types";
 import type { ToolDisplay } from "../../tools/types";
 import { titleFor } from "../claude-code";
 import type { JsonLinesProcess } from "../cli";
@@ -131,6 +136,18 @@ interface Turn {
     watchUntil?: number;
 }
 
+/**
+ * A session's attachments as files of Cavvy's (AcpAgent.pdfAsLink), each linked in the prompt for the agent to read:
+ * kept while the session is, so a conversation resumed in a new process can still read them.
+ */
+export interface AttachedFiles {
+    /** Only the user's, made when the first is written. */
+    dir: string;
+    /** Each one written: the agent's read of one is the user's own attachment, so it's let go. */
+    paths: Set<string>;
+    count: number;
+}
+
 /** Where the turn running takes the messages to steer it with (the backend's turn sink, TurnSink.drainQueued). */
 export interface SteerSource {
     /**
@@ -183,6 +200,15 @@ export class AcpConnection implements CliConnection {
     private context?: { used?: number; size?: number };
     /** Its subagents' sessions (AcpGate.subagent): what their gated calls are labelled. */
     private children = new Map<string, string>();
+    /** The session modes it lists (AcpAgent.sessionModes); unknown until a session is open. */
+    private modesListed?: string[];
+    /** What to tell the user with the next turn (a mode its session doesn't have), once. */
+    private noticeNext?: string;
+    /** Its own commands and skills (AcpAgent.listsCommands), as it last listed them, and as last reported. */
+    private commands?: string[];
+    private commandsReported?: string;
+    /** The model Cavvy last set, as Cavvy names it: the session may say it otherwise (Antigravity's base id). */
+    private modelSet?: string;
     /** Its process went. */
     private gone = false;
 
@@ -197,6 +223,10 @@ export class AcpConnection implements CliConnection {
         private steering: () => SteerSource | undefined = () => undefined,
         /** Cavvy's MCP server for the session's turns (its worktree tools), if it has one. */
         private orchestrator: () => OrchestratorServer | undefined = () => undefined,
+        /** The turn running is a read-only agent's: it runs in the agent's plan mode (AcpAgent.sessionModes). */
+        private readOnly: () => boolean = () => false,
+        /** The session's attachments as files (AcpAgent.pdfAsLink): the backend's, kept with the session. */
+        private files: () => AttachedFiles | undefined = () => undefined,
     ) {
         this.caps = { ...def.caps };
         this.rpc = new AcpRpc(proc, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
@@ -253,6 +283,34 @@ export class AcpConnection implements CliConnection {
         return { sessionId: this.sessionId! };
     }
 
+    /** A PDF as a file of Cavvy's, linked (AcpAgent.pdfAsLink): the agent reads it with its own tool. */
+    private linkFile(d: PdfPart): Record<string, unknown> | undefined {
+        const files = this.files();
+        if (!files) return undefined;
+        mkdirSync(files.dir, { recursive: true, mode: 0o700 });
+        const name = (d.name.split(/[\\/]/).pop() ?? "").replace(/[^\w.-]+/g, "_").replace(/^\.+/, "").slice(-80) || "document.pdf";
+        const path = join(files.dir, `${++files.count}-${name.endsWith(".pdf") ? name : `${name}.pdf`}`);
+        writeFileSync(path, Buffer.from(d.data, "base64"), { mode: 0o600 });
+        files.paths.add(path);
+        return { type: "resource_link", uri: pathToFileURL(path).href, name: d.name, mimeType: "application/pdf" };
+    }
+
+    /** Its own commands and skills as it lists them (AcpAgent.listsCommands). */
+    private noteCommands(list: unknown) {
+        if (!this.agent.listsCommands || !Array.isArray(list)) return;
+        this.commands = [...new Set(list.map((c: any) => c?.name).filter((n: unknown): n is string => typeof n === "string" && /^[\w:.-]+$/.test(n)))].sort();
+        if (this.turn && !this.turn.ended) this.reportCommands();
+    }
+
+    /** Its own commands and skills, to Cavvy's menus (AcpAgent.listsCommands): when they changed since last said. */
+    private reportCommands() {
+        if (!this.agent.listsCommands || !this.commands || !this.turn) return;
+        const said = JSON.stringify(this.commands);
+        if (said === this.commandsReported) return;
+        this.commandsReported = said;
+        this.emit({ type: "cli_commands", provider: this.def.id, names: this.commands });
+    }
+
     /** Whether session/list has the session in this folder: yes too when it can't say (it fails, or lists too many). */
     private async listed(sessionId: string): Promise<boolean> {
         let cursor: string | undefined;
@@ -266,10 +324,10 @@ export class AcpConnection implements CliConnection {
         return true;
     }
 
-    /** Cavvy's MCP server, to an agent that takes one over HTTP (ACP's mcpCapabilities). */
+    /** Cavvy's MCP server, to an agent that takes one over HTTP (ACP's mcpCapabilities, or AcpAgent.mcpHttp). */
     private mcpServers(): unknown[] {
         const o = this.orchestrator();
-        if (!o || !this.init.agentCapabilities?.mcpCapabilities?.http) return [];
+        if (!o || !(this.init.agentCapabilities?.mcpCapabilities?.http || this.agent.mcpHttp)) return [];
         return [{ type: "http", name: o.name, url: o.url, headers: [{ name: "Authorization", value: o.authorization }] }];
     }
 
@@ -277,6 +335,8 @@ export class AcpConnection implements CliConnection {
         if (Array.isArray(r?.configOptions)) this.config = r.configOptions;
         if (r?.models && typeof r.models === "object") this.models = r.models;
         this.modeId = typeof r?.modes?.currentModeId === "string" ? r.modes.currentModeId : undefined;
+        const listed = Array.isArray(r?.modes?.availableModes) ? r.modes.availableModes.map((m: any) => m?.id).filter((id: unknown): id is string => typeof id === "string") : undefined;
+        this.modesListed = listed?.length ? listed : undefined;
     }
 
     async prompt(input: TurnInput): Promise<{ ref: string }> {
@@ -290,6 +350,9 @@ export class AcpConnection implements CliConnection {
             liveDebug("acp", "steer record unread", { error: errorText(e) });
         }
         if (input.images.length && !this.caps.images) this.emit({ type: "notice", level: "warn", message: `${this.def.name} doesn't take images, so ${input.images.length === 1 ? "the image wasn't" : "the images weren't"} sent.` });
+        if (this.noticeNext) this.emit({ type: "notice", level: "warn", message: this.noticeNext });
+        this.noticeNext = undefined;
+        this.reportCommands();
         if (!(await this.send(turn, input, true))) {
             turn.ended = true;
             if (this.turn === turn) this.turn = undefined;
@@ -302,9 +365,13 @@ export class AcpConnection implements CliConnection {
     }
 
     /** A session/prompt of the turn's: its own, or one steering it. Whether it reached the agent. */
-    private async send(turn: Turn, input: Pick<TurnInput, "text" | "images">, own: boolean): Promise<boolean> {
+    private async send(turn: Turn, input: Pick<TurnInput, "text" | "images" | "documents">, own: boolean): Promise<boolean> {
         const blocks: Record<string, unknown>[] = [{ type: "text", text: input.text }];
         if (input.images.length && this.caps.images) for (const i of input.images) blocks.push({ type: "image", mimeType: i.mediaType, data: i.data });
+        for (const d of input.documents ?? []) {
+            const link = this.agent.pdfAsLink ? this.linkFile(d) : undefined;
+            if (link) blocks.push(link);
+        }
         // Sent while another of the turn's runs, it's folded into that one (an agent that steers by Interject queues it).
         const group = this.agent.interject ? undefined : turn.open > 0 && turn.closed !== turn.group ? turn.group : ++turn.group;
         const { sent, result } = this.rpc.call("session/prompt", { sessionId: this.sessionId, prompt: blocks });
@@ -498,7 +565,8 @@ export class AcpConnection implements CliConnection {
         if (s.mode !== undefined && this.agent.sessionMeta && JSON.stringify(this.agent.sessionMeta(s.mode) ?? null) !== this.opened) return "restart";
         const model = s.model?.id;
         if (model && model !== "default" && model !== this.currentModel()) await this.setModel(model);
-        if (s.effort !== undefined || model) await this.setEffort(s.effort);
+        if (!this.agent.effortInModel && (s.effort !== undefined || model)) await this.setEffort(s.effort);
+        if (s.mode !== undefined && this.agent.sessionModes) await this.setOwnMode(s.mode);
         const plan = this.agent.planMode;
         if (s.mode !== undefined && plan) {
             const want = s.mode === "plan" ? plan.plan : plan.normal;
@@ -513,7 +581,25 @@ export class AcpConnection implements CliConnection {
         return "applied";
     }
 
+    /**
+     * Its own mode for Cavvy's (AcpAgent.sessionModes), from its next prompt: a read-only agent's its plan mode. One its
+     * session doesn't list runs as Manual's, and the user is told with the next turn.
+     */
+    private async setOwnMode(mode: PermissionMode) {
+        const own = this.agent.sessionModes!;
+        const as: PermissionMode = this.readOnly() ? "plan" : mode;
+        let want = own[as];
+        if (this.modesListed && !this.modesListed.includes(want)) {
+            this.noticeNext = `${this.def.name} has no ${MODE_INFO[as].label} here. Using ${MODE_INFO.default.label}.`;
+            want = own.default;
+        }
+        if (this.modeId === want) return;
+        await this.rpc.request("session/set_mode", { sessionId: this.sessionId, modeId: want }).catch(said);
+        this.modeId = want;
+    }
+
     private currentModel(): string | undefined {
+        if (this.modelSet) return this.modelSet;
         const opt = this.config.find((c) => c.category === "model");
         return typeof opt?.currentValue === "string" ? opt.currentValue : this.models?.currentModelId;
     }
@@ -526,6 +612,7 @@ export class AcpConnection implements CliConnection {
             await this.rpc.request("session/set_model", { sessionId: this.sessionId, modelId: id }).catch(said);
             this.models = { ...this.models, currentModelId: id };
         } else throw new Error(`${this.def.name} can't switch models`);
+        this.modelSet = id;
     }
 
     /** Through the model's effort option (category thought_level), when it has one with this level; otherwise left as it is. */
@@ -554,6 +641,8 @@ export class AcpConnection implements CliConnection {
         // A subagent starting, said in whichever session started it (a subagent's own, for one it starts).
         const sub = this.replaying ? undefined : this.agent.gate?.subagent?.(method, p);
         if (sub) this.children.set(sub.sessionId, sub.label);
+        // Its own commands and skills: said just after session/new's answer, maybe before its id is noted here.
+        if (method === "session/update" && p?.update?.sessionUpdate === "available_commands_update" && (this.sessionId === undefined || p.sessionId === this.sessionId)) return this.noteCommands(p.update.availableCommands);
         if (this.replaying || !p || p.sessionId !== this.sessionId) return;
         if (method !== "session/update") {
             if (this.turn && !this.turn.ended && this.agent.interject) this.ownPrompt(this.turn, method, p);
@@ -860,6 +949,7 @@ export class AcpConnection implements CliConnection {
         if (!turn || turn.ended || turn.cancelling) return CANCELLED;
         const id = typeof toolCall?.toolCallId === "string" ? toolCall.toolCallId : "";
         if (id) turn.asked.add(id);
+        if (this.agent.ownAsks) return this.ownAsk(turn, toolCall, options, id);
         // The gate let it go by Cavvy's decision just now (Grok asks right after, in its default mode): yes, once, for
         // that call as it was checked, in the mode it was checked in. Otherwise (the mode changed since) it's checked again.
         const sessions = [p?.sessionId, toolCall?._meta?.["x.ai/requestingSessionId"]].filter((s): s is string => typeof s === "string");
@@ -921,6 +1011,73 @@ export class AcpConnection implements CliConnection {
             return reject();
         } catch {
             return reject();
+        } finally {
+            turn.waiting.delete(settle);
+        }
+    }
+
+    /**
+     * An ask of an agent that runs as it does on its own (AcpAgent.ownAsks): the user answers it, with its own choices
+     * (Antigravity's Allow and Deny), and Cavvy's rules decide none of it. But for what is asked already: Bypass,
+     * where nothing is asked about (it asks until its process restarts with its own flag), a call of one of Cavvy's
+     * MCP tools that checks its calls itself, and a read of a file the user attached. A no with words goes on with them, as a message steering
+     * the turn; a no without stops the turn.
+     */
+    private async ownAsk(turn: Turn, toolCall: any, options: any[], id: string): Promise<unknown> {
+        const pick = (...kinds: string[]) => {
+            for (const k of kinds) {
+                const o = options.find((x) => x?.kind === k && typeof x.optionId === "string");
+                if (o) return { outcome: { outcome: "selected", optionId: o.optionId as string } };
+            }
+            return CANCELLED;
+        };
+        const yes = () => pick("allow_once", "allow_always");
+        const no = () => pick("reject_once", "reject_always");
+        if (this.host.mode() === "bypassPermissions") return yes();
+        const o = this.orchestrator();
+        const mine = o && this.agent.mcpTool?.(toolCall, o.name);
+        // One of Cavvy's tools that checks the call itself, as it runs (asking the user if it must): asked about once.
+        if (mine && o.checksItself?.includes(mine)) {
+            liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
+            return yes();
+        }
+        const known = id ? turn.tools.get(id) : undefined;
+        const files = this.files();
+        const read = str(toolCall?.kind) ?? known?.kind;
+        const paths = pathsOf(toolCall?.rawInput ?? known?.rawInput, toolCall?.locations ?? known?.locations, this.cwd);
+        if (read === "read" && files && paths.length && paths.every((p) => files.paths.has(p))) return yes();
+        if (id && !known?.call) {
+            // Asked about before any update said what it is: its row starts from the ask.
+            const t = known ?? { id };
+            merge(t, toolCall);
+            turn.tools.set(id, t);
+            this.startTool(turn, t);
+        }
+        // How the prompt shows it: a command, a change with its diff, a read, an address, or the agent's own words for it.
+        const title = str(toolCall?.title);
+        const shown = (mine ? { toolName: `mcp__${o.name}__${mine}`, input: toolCall?.rawInput ?? {}, title } : undefined) ??
+            (read === "read" && paths[0] ? { toolName: "Read", input: { file_path: paths[0] }, title } : undefined) ??
+            permissionFor(this.def, toolCall, known, this.cwd) ?? { toolName: this.def.name, input: toolCall?.rawInput ?? {}, title: title ?? `${this.def.name} asks to use a tool` };
+        let settle!: (outcome: Record<string, unknown>) => void;
+        const stopped = new Promise<Record<string, unknown>>((r) => (settle = r));
+        turn.waiting.add(settle);
+        try {
+            const a = await Promise.race([this.host.permission({ ...shown, native: true, ...(id ? { callId: id } : {}) }), stopped]);
+            if (!("allow" in a)) return a;
+            const answer = a as PermissionAnswer;
+            if (turn.ended || turn.cancelling) return CANCELLED;
+            if (answer.allow) return yes();
+            turn.refused = true;
+            if (answer.stop) this.stopAtNo(turn, settle);
+            // What to do instead reaches it as a message steering the turn, once its no has gone; the user is told if it can't.
+            else if (answer.fromUser)
+                setTimeout(async () => {
+                    const sent = await this.deliver(turn, { text: answer.message, images: [], documents: [] }).catch(() => false);
+                    if (!sent) this.emit({ type: "notice", level: "warn", message: `${this.def.name} didn't get your reply. Send it again.` });
+                }, 0);
+            return no();
+        } catch {
+            return no();
         } finally {
             turn.waiting.delete(settle);
         }
@@ -1100,7 +1257,8 @@ const abs = (p: string, cwd: string) => (isAbsolute(p) ? p : resolve(cwd, p));
 /** The paths a call names: its input's, then its locations'. */
 function pathsOf(raw: Record<string, any> | undefined, locations: { path: string }[] | undefined, cwd: string): string[] {
     const out: string[] = [];
-    for (const k of ["filePath", "filepath", "file_path", "target_file", "path"]) if (str(raw?.[k])) out.push(raw![k]);
+    // Antigravity's are Path, AbsolutePath, TargetFile (agy-1.5.17-acp-mode-default.jsonl).
+    for (const k of ["filePath", "filepath", "file_path", "target_file", "path", "Path", "AbsolutePath", "TargetFile", "FilePath"]) if (str(raw?.[k])) out.push(raw![k]);
     for (const l of locations ?? []) out.push(l.path);
     return [...new Set(out.map((p) => abs(p, cwd)))];
 }
@@ -1124,6 +1282,17 @@ function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">, o: Orches
     return named && servedToolArgs(o, named, raw) ? { tool: named, name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
 }
 
+/** A command's text, as the agent names it (Antigravity's run_command: CommandLine). */
+function commandOf(raw: Record<string, any> | undefined): string | undefined {
+    return str(raw?.command) ?? str(raw?.CommandLine);
+}
+
+/** An edit's whole new content, when it says the file's whole new content (a write, not a replacement). */
+function wholeContent(raw: Record<string, any>): string | undefined {
+    if (raw.oldString !== undefined || raw.old_string !== undefined) return undefined;
+    return typeof raw.content === "string" ? raw.content : typeof raw.Content === "string" ? raw.Content : undefined;
+}
+
 /** A call as one of Cavvy's tools, by its kind; another kind as its own name. */
 function cavvyTool(t: ToolState, cwd: string, o: OrchestratorServer | undefined): { name: string; input: Record<string, unknown> } {
     const raw = t.rawInput ?? {};
@@ -1131,20 +1300,25 @@ function cavvyTool(t: ToolState, cwd: string, o: OrchestratorServer | undefined)
     if (served) return served;
     const path = pathsOf(raw, t.locations, cwd)[0];
     switch (t.kind) {
-        case "execute":
-            return str(raw.command) ? { name: "Bash", input: { command: raw.command, ...(str(raw.description) ? { description: raw.description } : {}) } } : { name: t.title ?? "command", input: raw };
+        case "execute": {
+            const command = commandOf(raw);
+            const description = str(raw.description) ?? str(raw.toolSummary);
+            return command ? { name: "Bash", input: { command, ...(description ? { description } : {}) } } : { name: t.title ?? "command", input: raw };
+        }
         case "edit":
             if (!path) break;
-            return typeof raw.content === "string" && raw.oldString === undefined ? { name: "Write", input: { file_path: path } } : { name: "Edit", input: { file_path: path } };
+            return wholeContent(raw) !== undefined ? { name: "Write", input: { file_path: path } } : { name: "Edit", input: { file_path: path } };
         case "read":
             if (path) return { name: "Read", input: { file_path: path } };
             break;
         case "fetch":
-            if (str(raw.url)) return { name: "WebFetch", input: { url: raw.url } };
+            if (str(raw.url) ?? str(raw.Url)) return { name: "WebFetch", input: { url: str(raw.url) ?? raw.Url } };
             break;
-        case "search":
-            if (str(raw.pattern)) return { name: "Grep", input: { pattern: raw.pattern, ...(path ? { path } : {}) } };
+        case "search": {
+            const pattern = str(raw.pattern) ?? str(raw.Query);
+            if (pattern) return { name: "Grep", input: { pattern, ...(path ? { path } : {}) } };
             break;
+        }
     }
     return { name: t.title ?? t.kind ?? "tool", input: raw };
 }
@@ -1179,7 +1353,7 @@ export function permissionFor(def: AgentCliDef, toolCall: any, known: Pick<ToolS
     const title = str(toolCall.title);
     switch (kind) {
         case "execute": {
-            const command = str(raw.command) ?? str(known?.rawInput?.command);
+            const command = commandOf(raw) ?? commandOf(known?.rawInput);
             return command ? { toolName: "Bash", input: { command }, title } : undefined;
         }
         case "edit":
@@ -1196,12 +1370,12 @@ export function permissionFor(def: AgentCliDef, toolCall: any, known: Pick<ToolS
             const preview: ToolDisplay | undefined = kind === "delete" ? { summary: "Deletes the file" } : diff ? { diff: { path: rel(abs(String(diff.path ?? all[0]), cwd)), before: typeof diff.oldText === "string" ? diff.oldText : "", after: diff.newText } } : undefined;
             // Cavvy remembers a yes by tool and input: an edit whose whole new content it says is a Write of that
             // content, so the yes covers only that; a delete or move says so, so a yes to an edit doesn't cover it.
-            const full = diff ? diff.newText : typeof raw.content === "string" && raw.oldString === undefined && raw.old_string === undefined ? raw.content : undefined;
+            const full = diff ? diff.newText : wholeContent(raw);
             const input = kind === "edit" && full !== undefined ? { file_path: all[0], content: full } : { file_path: all[0], ...(kind === "edit" ? {} : { operation: kind }) };
             return { toolName: "content" in input ? "Write" : "Edit", input, title, otherPaths: all.slice(1), ...(all.length > 1 ? { reason: `This change also writes ${all.slice(1).join(", ")}.` } : {}), ...(preview ? { preview } : {}) };
         }
         case "fetch": {
-            const url = str(raw.url);
+            const url = str(raw.url) ?? str(raw.Url);
             return url ? { toolName: "WebFetch", input: { url }, title } : undefined;
         }
     }

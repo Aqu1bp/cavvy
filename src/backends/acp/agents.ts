@@ -9,7 +9,7 @@ import { isAbsolute, join, relative, resolve, sep } from "path";
 import { isReadOnlyCommand } from "../../permissions/bash-safety";
 import type { PermissionMode } from "../../permissions/modes";
 import type { Usage } from "../../providers/types";
-import { canonical } from "../../util/files";
+import { canonical, expandPath } from "../../util/files";
 import { cliMessage, runCli } from "../cli";
 import type { SpawnConfig } from "../live/types";
 
@@ -60,6 +60,28 @@ export interface AcpAgent {
      * session/list says it belongs, and otherwise starts a new one with the conversation (as when a resume fails).
      */
     keepsFolder?: boolean;
+    /**
+     * It runs as it runs on its own (Antigravity): what it asks about (session/request_permission) is the user's to
+     * answer, with its own choices, and Cavvy's rules decide none of it. No gate, no tripwire.
+     */
+    ownAsks?: boolean;
+    /**
+     * Cavvy's modes as its own session modes (session/set_mode), set before each prompt. One its session doesn't list
+     * (Auto, for some accounts) runs as `default`'s, and the user is told.
+     */
+    sessionModes?: Record<PermissionMode, string>;
+    /** What a process starts with in a mode (Antigravity's Bypass flag): another restarts it, resuming the session. */
+    modeArgs?(mode: PermissionMode): string[];
+    /** It takes Cavvy's MCP server over HTTP, though its initialize doesn't say so (Antigravity 1.5.17). */
+    mcpHttp?: boolean;
+    /** The tool of MCP server `server` an ask (its toolCall) is about, if it's one of that server's. */
+    mcpTool?(toolCall: any, server: string): string | undefined;
+    /** Its model ids name their effort (gemini-4-neon-medium): Cavvy's effort isn't sent. */
+    effortInModel?: boolean;
+    /** Its available_commands_update lists its own commands and skills: Cavvy offers them, and sends them as typed. */
+    listsCommands?: boolean;
+    /** It can't read a PDF sent in the prompt, but reads one linked (resource_link) from a file of Cavvy's. */
+    pdfAsLink?: boolean;
 }
 
 /** A tool call the agent's gate holds until Cavvy answers (AcpGate). */
@@ -520,7 +542,71 @@ const GROK: AcpAgent = {
     },
 };
 
-const AGENTS: Record<string, AcpAgent> = { opencode: OPENCODE, grok: GROK };
+/** How long `agy models` may take. */
+const AGY_LIST_MS = 30_000;
+
+/** What agy says signed out ("Please sign in to view available models. Launch the CLI without arguments to sign in."). */
+export const AGY_SIGNED_OUT = /\b(please sign in|sign in to|not signed in|not logged in|log ?in required|authentication required)\b/i;
+
+/** `agy models`: its models (id, a tab, its name), one a line; signed out, it says so and lists none. */
+export async function agyModels(bin: string, signal?: AbortSignal): Promise<{ signedIn: boolean; models: { id: string; name: string }[] }> {
+    const started = Date.now();
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: AGY_LIST_MS });
+    const said = `${r.stdout}\n${r.stderr}`;
+    if (AGY_SIGNED_OUT.test(said)) return { signedIn: false, models: [] };
+    // Stopped when it took too long, it says nothing.
+    if (r.code !== 0) throw new Error(cliMessage(r.stderr) || cliMessage(r.stdout) || (Date.now() - started >= AGY_LIST_MS ? `no answer in ${AGY_LIST_MS / 1000} seconds` : `exit code ${r.code}`));
+    const models = r.stdout
+        .split("\n")
+        .map((l) => /^([\w.-]+)\t(.+)$/.exec(l.trim()))
+        .filter((m): m is RegExpExecArray => Boolean(m))
+        .map((m) => ({ id: m[1]!, name: m[2]!.trim() }));
+    return { signedIn: true, models };
+}
+
+/**
+ * Antigravity's CLI 1.5.17 (`agy acp`): test/fixtures/protocol/agy-1.5.17-acp-*.jsonl. It runs as it does on its own:
+ * - Its modes are default, accept-edits, auto (where the account has it) and plan, set by session/set_mode, live
+ *   between prompts; a prompt keeps the mode it began in (-mode-midturn.jsonl). Bypass is its own
+ *   --dangerously-skip-permissions, which it starts with (-mode-bypass.jsonl).
+ * - It asks about edits and commands in default, commands in accept-edits and plan, and what its reviewer won't clear
+ *   in auto, each with Allow (allow_once) and Deny (reject_once) only (-always.jsonl). Before each call of an MCP
+ *   server's tool too, naming it "Run mcp_<server>_<tool>" (-mcp-http.jsonl).
+ * - Its tool calls name their input its own way: CommandLine, Path, Content (-mode-default.jsonl).
+ * - Each model id names its effort, and session/set_config_option model takes one so, setting both (-controls.jsonl).
+ * - It lists its own skills (~/.agents/skills, its own folders) with its commands (-handshake.jsonl).
+ */
+const ANTIGRAVITY: AcpAgent = {
+    spawn: (cfg) => ({
+        args: [...ANTIGRAVITY.modeArgs!(cfg.readOnly ? "plan" : cfg.mode), ...[...new Set((cfg.additionalDirectories ?? []).map((d) => expandPath(d, cfg.cwd)))].flatMap((d) => ["--add-dir", d])],
+        env: {},
+    }),
+    modeArgs: (mode) => (mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : []),
+    sessionModes: { default: "default", acceptEdits: "accept-edits", auto: "auto", plan: "plan", bypassPermissions: "default" },
+    async listModels(bin, signal) {
+        const l = await agyModels(bin, signal);
+        if (!l.signedIn) throw new Error("Antigravity isn't signed in. Run `agy` in a terminal to sign in.");
+        return l.models;
+    },
+    async status(bin, signal) {
+        const l = await agyModels(bin, signal);
+        return l.signedIn ? { signedIn: true, description: `signed in, ${l.models.length} model${l.models.length === 1 ? "" : "s"}` } : { signedIn: false, description: "not signed in" };
+    },
+    ownAsks: true,
+    tripwire: () => undefined,
+    mcpHttp: true,
+    mcpTool(t, server) {
+        const title = str(t?.title);
+        const prefix = `Run mcp_${server}_`;
+        if (!title?.startsWith(prefix) || (t.kind !== undefined && t.kind !== "other")) return undefined;
+        return title.slice(prefix.length) || undefined;
+    },
+    effortInModel: true,
+    listsCommands: true,
+    pdfAsLink: true,
+};
+
+const AGENTS: Record<string, AcpAgent> = { opencode: OPENCODE, grok: GROK, antigravity: ANTIGRAVITY };
 
 export function acpAgent(id: string): AcpAgent {
     const a = AGENTS[id];

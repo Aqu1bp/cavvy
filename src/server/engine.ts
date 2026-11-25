@@ -2254,7 +2254,6 @@ export class Engine {
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
-                        ...(def.autoAsks ? { autoAsks: true } : {}),
                     },
                 });
                 continue;

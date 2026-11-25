@@ -60,6 +60,8 @@ export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
         .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"')
         .replace(/("subscription_tier[A-Za-z_]*"\s*:\s*)"[^"]*"/g, '$1"<tier>"')
+        // Antigravity's plan, in its initialize answer's _meta ({tier: {name, id, upgradeUri}}).
+        .replace(/("tier"\s*:\s*\{\s*"name"\s*:\s*)"[^"]*"(\s*,\s*"id"\s*:\s*)"[^"]*"/g, '$1"<tier>"$2"<tier>"')
         // Grok's addresses for a subagent's run (subagent_spawned and its progress).
         .replace(/("(?:agentAddress|attempt_id|attemptId)"\s*:\s*)"[^"]*"/g, '$1"<id>"')
         // Opaque, server-issued blobs (Grok's encrypted reasoning signatures).
