@@ -82,6 +82,8 @@ export interface AcpAgent {
     listsCommands?: boolean;
     /** It can't read a PDF sent in the prompt, but reads one linked (resource_link) from a file of Cavvy's. */
     pdfAsLink?: boolean;
+    /** Which of its models read a PDF (when not all of them do). */
+    readsPdf?: (modelId: string) => boolean;
 }
 
 /** A tool call the agent's gate holds until Cavvy answers (AcpGate). */
@@ -604,6 +606,8 @@ const ANTIGRAVITY: AcpAgent = {
     effortInModel: true,
     listsCommands: true,
     pdfAsLink: true,
+    // Its read_file shows a PDF to its Gemini models only: another refuses it ("not supported by the current model").
+    readsPdf: (id) => id.startsWith("gemini-"),
 };
 
 const AGENTS: Record<string, AcpAgent> = { opencode: OPENCODE, grok: GROK, antigravity: ANTIGRAVITY };

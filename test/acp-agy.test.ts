@@ -12,7 +12,7 @@ const { AcpConnection } = await import("../src/backends/acp/connection");
 const { acpAgent, agyModels } = await import("../src/backends/acp/agents");
 const { agentCli } = await import("../src/backends/defs");
 const { backendModel } = await import("../src/backends/types");
-const { cliRunsSkills } = await import("../src/backends/native-skills");
+const { cliRunsSkill, cliRunsSkills } = await import("../src/backends/native-skills");
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type CliEvent = import("../src/backends/live/types").CliEvent;
 type SessionHost = import("../src/backends/types").SessionHost;
@@ -212,7 +212,8 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         // One that doesn't (delegate, schedules): its ask is the user's, named as Cavvy's tool.
         const asks = await replay("mcp-http", { orchestrator: { ...o, checksItself: [] } });
         await asks.turn("Call the probe_ping tool");
-        expect(asks.asked).toEqual([expect.objectContaining({ native: true, toolName: "mcp__probe__probe_ping", input: { toolSummary: "Ping probe MCP server" }, title: "Run mcp_probe_probe_ping" })]);
+        expect(asks.asked).toEqual([expect.objectContaining({ native: true, toolName: "mcp__probe__probe_ping", input: {} })]);
+        expect(asks.asked[0]!.title).toBeUndefined();
         // Another server's tool is the user's to answer.
         const other = acpAgent("antigravity").mcpTool!;
         expect(other({ kind: "other", title: "Run mcp_probe_probe_ping" }, "probe")).toBe("probe_ping");
@@ -265,12 +266,20 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
 });
 
 describe("Antigravity's hooks", () => {
-    test("its def: over `agy acp`, its own skills, effort in its model ids", () => {
+    test("its def: over `agy acp`, skills of its own, effort in its model ids", () => {
         expect(AGY).toMatchObject({ protocol: "acp", acpArgs: ["acp"], caps: { skills: "own", live: { model: true, effort: false, mode: "per-turn" }, pdfs: true } });
-        expect(cliRunsSkills("antigravity")).toBe(true);
-        expect(cliRunsSkills("opencode")).toBe(false);
-        expect(cliRunsSkills("claude-code")).toBe(true);
+        // Cavvy's skills are pasted for it, but one of a name it lists is its own, and goes as typed.
+        expect(cliRunsSkills("antigravity")).toBe(false);
+        expect(cliRunsSkill("antigravity", "grill-me", new Set(["grill-me"]))).toBe(true);
+        expect(cliRunsSkill("antigravity", "mine", new Set(["grill-me"]))).toBe(false);
+        expect(cliRunsSkill("antigravity", "mine", undefined)).toBe(false);
+        expect(cliRunsSkill("opencode", "grill-me", new Set(["grill-me"]))).toBe(false);
+        expect(cliRunsSkill("claude-code", "mine", undefined)).toBe(true);
+        expect(cliRunsSkills("codex")).toBe(true);
         expect(cliRunsSkills(undefined)).toBe(false);
+        // Only its Gemini models read a PDF (with Claude Sonnet 5.5 its read_file refused one, by hand in the app).
+        const reads = acpAgent("antigravity").readsPdf!;
+        expect(["gemini-4-neon-medium", "gemini-3.8-flash-low", "claude-sonnet-5-5-low", "gpt-oss-120b-medium"].map(reads)).toEqual([true, true, false, false]);
     });
 
     test("`agy models`: its ids and names; signed out, none", async () => {

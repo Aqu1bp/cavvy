@@ -45,7 +45,7 @@ import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { partialInput, PARTIAL_SCAN } from "../tools/partial-input";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
-import { cliRunsSkills } from "../backends/native-skills";
+import { cliRunsSkill, cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import { stoppedMonitorNote } from "../tools/monitor";
@@ -3693,7 +3693,8 @@ export class Runtime {
             const words = m ? m[2]!.replace(/[_-]+/g, " ").trim() : tool.name;
             it.heading = words.charAt(0).toUpperCase() + words.slice(1);
             if (m) it.where = `From ${m[1]}`;
-            it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
+            // Its arguments, when it has any (a CLI may not say them: Antigravity's asks don't).
+            if (Object.keys(input).length) it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         }
         it.options.push({ id: "no", label: "Deny" });
@@ -4274,8 +4275,9 @@ export class Runtime {
             if (custom?.source === "plugin" && runsPluginCommand(provider, custom.name, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(`/${custom.name}${args.trim() ? ` ${args.trim()}` : ""}`, { display: trimmed, attachments });
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const about = skill && `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}`;
-            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (skill && cliRunsSkills(provider)) return this.startTurn(trimmed, { attachments, about });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the
+            // /name, as a CLI with skills of its own is one it has of that name.
+            if (skill && cliRunsSkill(provider, cmd, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(trimmed, { attachments, about });
             if (skill) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");

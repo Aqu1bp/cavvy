@@ -24,10 +24,10 @@ Cavvy can run Google's Antigravity CLI (`agy`) with your Antigravity plan, the w
   A mode change takes effect from your next message. A stricter one while it works stops the turn, and it goes on under the new mode. Switching to or from Bypass restarts `agy` on the same conversation.
 - **Permission prompts** are `agy`'s own: you see its question with Allow and Deny, and Cavvy's rules decide none of it. Your `agy` settings and rules apply as they do in a terminal. A Deny with a note sends the note to `agy` as your message, and it goes on with it. A Deny without one stops the turn.
 - **Cavvy's tools.** The agent gets the tools Claude Code and Codex get from Cavvy, on Cavvy's MCP server: the browser, the simulator, delegation to other models, secrets, sign-ins, schedules, pull request watches, themes, your other sessions and your servers. `agy` asks before each MCP call; for the tools that check your rules themselves when they run, Cavvy answers that question for you, so you aren't asked twice. You answer the others (delegation, schedules, watches) as `agy`'s prompt.
-- **Skills and commands** are `agy`'s own: those in `~/.agents/skills` and its other folders show in the `/` menu, and `/name` goes to `agy` as you typed it.
+- **Skills and commands.** `agy`'s own (those in `~/.agents/skills` and its other folders) show in the `/` menu, and `/name` goes to `agy` as you typed it, also for one of Cavvy's skills that `agy` has under the same name. Cavvy's other skills are added to your message, as for other models.
 - `esc` stops the turn at once. The process stays for the next one.
 - **Steer** (a message you send while the turn runs) goes to `agy` at once, as a second prompt: it ends what it was doing there and goes on with the work and your message, as one Cavvy turn.
-- **Images and PDFs.** Images go in the message. A PDF is written to a folder only you can read and linked in the message, and `agy` reads it there without asking. The files are kept while the session is open and deleted when it closes or Cavvy quits. Steering messages carry them the same way.
+- **Images and PDFs.** Images go in the message. A PDF is written to a folder only you can read and linked in the message, and `agy` reads it there without asking. Only its Gemini models read PDFs: with another, a message with a PDF can't be sent until you remove it. The files are kept while the session is open and deleted when it closes or Cavvy quits. Steering messages carry them the same way.
 - Changing the model switches it in the running conversation.
 - **Fork and rewind.** `agy` can't fork or rewind a conversation of its own, so a fork, or a rewind, starts a new one with the conversation so far as context.
 - **Titles.** `agy` can't answer a one-off request, so with no `smallModel` set, a session is named after its first prompt.
@@ -41,6 +41,5 @@ Cavvy never reads, copies or stores Antigravity's sign-in. It starts your instal
 
 - Several accounts, and plan limits.
 - Cavvy's permission rules and hooks on the agent's own tool calls (they run on calls of Cavvy's tools).
-- Cavvy's own skills: `agy` has its own.
 - Importing its conversations, and its usage logs.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.

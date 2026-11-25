@@ -23,12 +23,21 @@ export const CLAUDE_PLUGIN = "cavvy";
 export const CLAUDE_PREFIX = `${CLAUDE_PLUGIN}:`;
 
 /**
- * The CLI runs skills itself, so `/name` and `$name` go to it as typed: Claude Code and Codex Cavvy's too (handed over
- * as a plugin or a skills root), Antigravity its own. Cavvy's API models, and a CLI given them pasted, get them pasted in.
+ * The CLI runs Cavvy's skills itself (handed over as a plugin or a skills root), so `/name` and `$name` go to it as
+ * typed: Claude Code and Codex. Cavvy's API models, and the other CLIs, get them pasted in.
  */
 export function cliRunsSkills(provider: string | undefined): boolean {
     const skills = provider ? agentCli(provider)?.caps.skills : undefined;
-    return skills !== undefined && skills !== "paste";
+    return skills === "plugin" || skills === "skills-root";
+}
+
+/**
+ * The CLI runs a skill of this name itself, sent `/name` as typed: as cliRunsSkills, or one with skills of its own
+ * (Antigravity) that lists it (`listed`: the commands and skills it last said it has).
+ */
+export function cliRunsSkill(provider: string | undefined, name: string, listed: ReadonlySet<string> | undefined): boolean {
+    if (cliRunsSkills(provider)) return true;
+    return Boolean(provider && agentCli(provider)?.caps.skills === "own" && listed?.has(name));
 }
 
 /** HARNESS_SKILL_DIR: Cavvy's old name for it (legacy.ts). */

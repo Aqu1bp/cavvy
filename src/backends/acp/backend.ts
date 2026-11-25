@@ -166,7 +166,9 @@ export async function acpModels(providerId: string, signal?: AbortSignal): Promi
     const agent = acpAgent(providerId);
     const listed = await agent.listModels(bin, signal);
     // Where each id names its effort (gemini-4-neon-medium), Cavvy's effort setting has nothing to set.
-    return listed.map((m) => backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...(agent.effortInModel ? { supportsReasoning: false } : {}) }));
+    return listed.map((m) =>
+        backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...(agent.effortInModel ? { supportsReasoning: false } : {}), ...(agent.readsPdf ? { supportsPdf: agent.readsPdf(m.id) } : {}) }),
+    );
 }
 
 /** A turn running here, for a mode change mid-turn (setMode). */

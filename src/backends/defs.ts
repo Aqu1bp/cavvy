@@ -57,8 +57,8 @@ export interface CliCapabilities {
     /** It loads Cavvy's plugins itself (--plugin-dir). */
     loadsPlugins: boolean;
     /**
-     * How it gets skills: Cavvy's as a plugin, or as an extra skills root; pasted into the prompt; or only its own, from
-     * its own folders (`/name` and `$name` go to it as typed).
+     * How it gets Cavvy's skills: as a plugin, or as an extra skills root; or pasted into the prompt, by one without
+     * skills (`paste`) or with its own (`own`: `/name` of one it lists goes to it as typed, and it runs its own).
      */
     skills: "plugin" | "skills-root" | "paste" | "own";
     /** The commands it lists are its skills (for the $ menu too). */
@@ -346,7 +346,7 @@ const ANTIGRAVITY: AgentCliDef = {
         // Each model id names its effort (gemini-4-neon-medium); its modes take effect from its next prompt
         // (-mode-midturn.jsonl).
         live: { model: true, effort: false, mode: "per-turn" },
-        // Its own skills (~/.agents/skills, its own folders) are its commands: /name goes to it as typed.
+        // Its own skills (~/.agents/skills, its own folders) are among its commands: /name of one goes to it as typed.
         skills: "own",
         pdfs: true,
         autoReviewer: true,

@@ -1055,7 +1055,8 @@ export class AcpConnection implements CliConnection {
         }
         // How the prompt shows it: a command, a change with its diff, a read, an address, or the agent's own words for it.
         const title = str(toolCall?.title);
-        const shown = (mine ? { toolName: `mcp__${o.name}__${mine}`, input: toolCall?.rawInput ?? {}, title } : undefined) ??
+        // One of Cavvy's tools by its name alone: what the agent says of the call is its own bookkeeping, not the call's input.
+        const shown = (mine ? { toolName: `mcp__${o.name}__${mine}`, input: {} } : undefined) ??
             (read === "read" && paths[0] ? { toolName: "Read", input: { file_path: paths[0] }, title } : undefined) ??
             permissionFor(this.def, toolCall, known, this.cwd) ?? { toolName: this.def.name, input: toolCall?.rawInput ?? {}, title: title ?? `${this.def.name} asks to use a tool` };
         let settle!: (outcome: Record<string, unknown>) => void;
