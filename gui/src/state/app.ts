@@ -29,8 +29,7 @@ import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
-import { restoredShown, transcriptPositions } from "../lib/transcript-scroll";
-import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
+import { keyedTurn, placeBefore, restoredShown, transcriptPositions, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
 export const serversUi = () => import("../components/Servers");
@@ -906,12 +905,14 @@ function flush(h: SessionHandle) {
  * takes (openedKeeps), one turn at least. Left being read higher up: the pages down from there (restoredShown). Only the
  * one on screen let go of them (back at its end, nothing running): one working out of sight kept every turn it did, with
  * each step's input and output, about 190 KB a turn of sub-agent work (a real run, 8 sessions, 30 minutes: 48 MB of
- * window heap and climbing). Keeping its last page of 40 instead still came to the same 48 MB at 36 minutes (measured,
- * 6 sessions of heavy prompts on a Mac): 40 such turns are several MB a session.
+ * window heap and climbing).
  * Measured only when the session has another turn (or it's just been left): a step streaming in changes none before it.
+ * Not the one shown just before while it's idle: Panes keeps it built out of sight (parked), to be shown again as it was
+ * left; it's let go of once another takes its place (activate), or once it works (Panes no longer keeps it then).
  */
 function letGoOutOfSight(h: SessionHandle, left = false) {
     if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
+    if (h.id === parkedId && !h.view.state.busy) return;
     const turns = h.view.turns;
     if (!left && trimmedAt.get(h) === turns.length) return;
     const saved = transcriptPositions.get(h.id);
@@ -919,6 +920,9 @@ function letGoOutOfSight(h: SessionHandle, left = false) {
     forgetEarlier(h, reading ? restoredShown(turns.map((t) => t.id), saved) : openedKeeps(turns));
     trimmedAt.set(h, h.view.turns.length);
 }
+
+/** The session shown before the one in view: kept as it was while it's idle (Panes parks it), not let go of. */
+let parkedId: string | undefined;
 
 /** Each session's count of turns when letGoOutOfSight last looked. */
 const trimmedAt = new WeakMap<SessionHandle, number>();
@@ -1391,9 +1395,19 @@ export async function activate(id: string | undefined, cwd?: string) {
     pending.cancel();
     const version = ++openingVersion;
     const cached = id ? handles.get(id) : undefined;
-    // The one left: out of sight once its view has kept where it was read (Transcript, as it goes).
-    const left = app.activeId !== id ? handles.get(app.activeId ?? "") : undefined;
-    if (left) setTimeout(() => letGoOutOfSight(left, true), 0);
+    // The one left is parked (Panes) and kept as it is; the one parked before it is out of sight now, let go of once its
+    // view has kept where it was read (Transcript, as it goes). From Home nothing is parked (Panes was gone).
+    if (app.activeId !== id) {
+        const before = parkedId;
+        parkedId = app.activeId;
+        const left = handles.get(app.activeId ?? "");
+        const gone = before !== undefined && before !== id && before !== parkedId ? handles.get(before) : undefined;
+        setTimeout(() => {
+            if (gone) letGoOutOfSight(gone, true);
+            // Working: Panes doesn't park it, and it streams on out of sight.
+            if (left?.view.state.busy) letGoOutOfSight(left, true);
+        }, 0);
+    }
     if (cached) {
         // Preserve the mounted view (pagination, scroll, drafts) when picking it again.
         // Cached navigation never needs a loading screen, even for another session.

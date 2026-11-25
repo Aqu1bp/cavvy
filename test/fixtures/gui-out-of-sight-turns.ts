@@ -1,6 +1,7 @@
 // A session open but out of sight keeps only what opening it anew takes (or, left being read higher up, the pages down
-// from there), as the one on screen lets go of its earlier turns once it's back at its end: one working all day out of sight kept every turn it did (a real run: about 190 KB a turn of
-// sub-agent work, the window's heap climbing with it). The one on screen keeps what it has meanwhile.
+// from there), as the one on screen lets go of its earlier turns once it's back at its end: one working all day out of
+// sight kept every turn it did (a real run: about 190 KB a turn of sub-agent work, the window's heap climbing with it).
+// The one on screen keeps what it has meanwhile, and so does the one shown just before while it's idle (parked).
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 
@@ -19,7 +20,7 @@ class ServerSocket extends Socket {
         server = this;
         const { id, method, params } = JSON.parse(raw);
         const reply = (result: unknown) => queueMicrotask(() => this.message({ id, result }));
-        if (method === "session.open") reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: true, interactions: [] }, turns: Array.from({ length: 10 }, (_, i) => turn(params.id, i)), agents: [] });
+        if (method === "session.open") reply({ seq: 0, state: { id: params.id, cwd: "/project", busy: params.id !== "shown", interactions: [] }, turns: Array.from({ length: 10 }, (_, i) => turn(params.id, i)), agents: [] });
         else if (method === "hello" || method === "settings.get") reply({});
         else if (method === "session.close" || method === "session.shown") reply(null);
         else reply([]);
@@ -80,15 +81,27 @@ try {
     assert.equal(shown.view.turns.length, 100);
     assert.equal(shown.view.earlier, 0);
 
-    // Switched away from: out of sight, the same.
+    // Switched away from: parked (Panes keeps it built out of sight, to be shown again as it was left), kept as it is.
     await activate("away");
+    await settle();
+    await later();
+    assert.equal(shown.view.turns.length, 100);
+    assert.equal(shown.view.earlier, 0);
+    // The one switched to keeps what it has, and grows on screen.
+    await work("away", 100, 5);
+    assert.equal(away.view.turns.length, KEEP + 5);
+
+    // Another switch: the one parked before is out of sight now, and keeps what opening it anew takes.
+    await activate("read");
     await settle();
     await later();
     assert.equal(shown.view.turns.length, KEEP);
     assert.equal(shown.view.earlier, 100 - KEEP);
-    // The one switched to keeps what it has, and grows on screen.
-    await work("away", 100, 5);
-    assert.equal(away.view.turns.length, KEEP + 5);
+    // The one just left is working: Panes doesn't park it, so it's let go of at once, and as it goes on.
+    assert.equal(away.view.turns.length, KEEP);
+    await work("away", 105, 20);
+    assert.equal(away.view.turns.length, KEEP);
+    assert.equal(away.view.turns.at(-1)!.id, "away-124");
 } finally {
     rpc.close();
 }
