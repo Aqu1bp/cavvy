@@ -184,7 +184,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         sorted: true,
     },
     {
-        // The user's own installed Antigravity CLI (agy), headless (src/backends/agy), signed in its own way.
+        // The user's own installed Antigravity CLI (agy), over ACP (src/backends/acp), signed in its own way.
         id: "antigravity",
         name: "Antigravity",
         kind: "agent",

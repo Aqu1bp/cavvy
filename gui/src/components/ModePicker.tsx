@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
 import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, ShieldCheck } from "lucide-solid";
-import { AUTO_WITHOUT_REVIEWER, MODE_LABELS, type PermissionModeId } from "@shared/protocol";
+import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
 import { Menu } from "./ui/Menu";
 import type { ComposerMenu } from "./ModelPicker";
@@ -31,9 +31,9 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
 /** Words alone, on the button and in its menu. Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
-export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean; /** The model has no reviewer for auto mode. */ autoAsks?: boolean }) {
+export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean }) {
     let anchor: HTMLButtonElement | undefined;
-    const describe = (m: PermissionModeId) => (m === "auto" && p.autoAsks ? AUTO_WITHOUT_REVIEWER : MODE_LABELS[m].description);
+    const describe = (m: PermissionModeId) => MODE_LABELS[m].description;
     return (
         <>
             <button

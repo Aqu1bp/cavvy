@@ -19,6 +19,7 @@ import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
 import { agentCli } from "../backends/defs";
 import { backendModel, isAgentBackend } from "../backends/types";
+import { acpModelTraits } from "../backends/acp/agents";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
 import { dirname } from "path";
@@ -119,6 +120,8 @@ function readCache(): CacheFile {
     for (const def of allProviders()) {
         if (def.kind === "openai" && c.providers[def.id]?.configuration !== providerConfiguration(def)) delete c.providers[def.id];
     }
+    // Antigravity's listings from before each model said whether it reads PDFs (only its Gemini models do).
+    for (const m of c.providers.antigravity?.models ?? []) if (m.supportsPdf === undefined) Object.assign(m, acpModelTraits("antigravity", m.id));
     // Anthropic prices come from our catalog, not the API's cached metadata.
     for (const [provider, entry] of Object.entries(c.providers)) {
         if (getProvider(provider)?.kind !== "anthropic") continue;
@@ -311,7 +314,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
     if (!def) return undefined;
     const cached = readCache().providers[parsed.provider]?.models.find((m) => m.id === parsed.id);
     if (cached) return cached;
-    if (def.kind === "agent") return backendModel(def.id, parsed.id);
+    if (def.kind === "agent") return backendModel(def.id, parsed.id, undefined, acpModelTraits(def.id, parsed.id));
     if (def.kind === "responses") return responsesModelInfo(def.id, parsed.id, resolveBaseUrl(def));
     if (def.kind === "anthropic") {
         const t = anthropicTraits(parsed.id);
