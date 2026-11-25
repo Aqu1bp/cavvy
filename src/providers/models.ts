@@ -120,8 +120,8 @@ function readCache(): CacheFile {
     for (const def of allProviders()) {
         if (def.kind === "openai" && c.providers[def.id]?.configuration !== providerConfiguration(def)) delete c.providers[def.id];
     }
-    // Antigravity's listings from before each model said whether it reads PDFs (only its Gemini models do): listed again.
-    if (c.providers.antigravity?.models.some((m) => m.supportsPdf === undefined)) delete c.providers.antigravity;
+    // Antigravity's listings from before each model said whether it reads PDFs (only its Gemini models do).
+    for (const m of c.providers.antigravity?.models ?? []) if (m.supportsPdf === undefined) Object.assign(m, acpModelTraits("antigravity", m.id));
     // Anthropic prices come from our catalog, not the API's cached metadata.
     for (const [provider, entry] of Object.entries(c.providers)) {
         if (getProvider(provider)?.kind !== "anthropic") continue;

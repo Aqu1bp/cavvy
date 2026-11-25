@@ -46,9 +46,25 @@ class OpenReplay extends Replay {
     override end() {}
 }
 
+/** Open, and its answers to prompts after the recording's own wait until `release` (a model still at work on them). */
+class HeldReplay extends OpenReplay {
+    readonly held: number[] = [];
+    override async send(m: any): Promise<boolean> {
+        if (m.method !== "session/prompt" || !this.sent.some((x) => x.method === "session/prompt")) return super.send(m);
+        this.sent.push(m);
+        this.extra.push(m);
+        this.held.push(m.id);
+        return true;
+    }
+    release() {
+        for (const id of this.held.splice(0)) (this as any).push({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    }
+}
+
 interface ReplayOptions {
     slow?: boolean;
     open?: boolean;
+    held?: boolean;
     mode?: PermissionMode;
     answer?: (r: BackendPermission) => PermissionAnswer | Promise<PermissionAnswer>;
     orchestrator?: { name: string; url: string; authorization: string; tools: string[]; checksItself?: string[]; inputKeys?: Record<string, string[]> };
@@ -59,7 +75,7 @@ interface ReplayOptions {
 
 /** A connection to a recorded agy session, opened in a mode with Gemini 4 Neon at medium effort (what the probes set). */
 async function replay(name: string, o: ReplayOptions = {}) {
-    const rec = new (o.slow ? SlowReplay : o.open ? OpenReplay : Replay)(`agy-1.5.17-acp-${name}`);
+    const rec = new (o.slow ? SlowReplay : o.held ? HeldReplay : o.open ? OpenReplay : Replay)(`agy-1.5.17-acp-${name}`);
     const events: CliEvent[] = [];
     const asked: BackendPermission[] = [];
     let mode: PermissionMode = o.mode ?? "default";
@@ -211,6 +227,21 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         expect(r.rec.extra.map((m) => [m.method, m.params?.prompt?.[0]?.text])).toEqual([["session/prompt", "The user declined this tool call and said:\nuse printf"]]);
     });
 
+    test("a no's words sent as a prompt of their own (its prompt had ended): it can be steered while it works on them", async () => {
+        const r = await replay("mode-default", {
+            held: true,
+            answer: (q) => (q.toolName === "Bash" ? { allow: false, message: "The user declined this tool call and said:\nuse printf", stop: false, fromUser: true } : { allow: true }),
+        });
+        const rec = r.rec as HeldReplay;
+        const { ref } = await r.conn.prompt({ text: "Do these three steps", images: [] });
+        while (!rec.held.length) await Bun.sleep(1);
+        expect(await r.conn.steer(ref, { text: "And say kiwi.", images: [] })).toBe(true);
+        expect(rec.extra.map((m) => m.params.prompt[0].text)).toEqual(["The user declined this tool call and said:\nuse printf", "And say kiwi."]);
+        rec.release();
+        for (let i = 0; i < 500 && !r.events.some((e) => e.t === "turn_ended"); i++) await Bun.sleep(5);
+        expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ ref, reason: "done" });
+    });
+
     test("a question still waiting when the turn stops is withdrawn", async () => {
         const r = await replay("cancel", { answer: () => new Promise<PermissionAnswer>(() => {}) });
         const { ref } = await r.conn.prompt({ text: "sleep 20", images: [] });
@@ -246,7 +277,13 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         await asks.turn("Call the probe_echo tool");
         expect(asks.asked).toEqual([expect.objectContaining({ native: true, toolName: "mcp__probe__probe_echo", input: { word: "kiwi" } })]);
         expect(asks.asked[0]!.title).toBeUndefined();
-        // Another server's tool is the user's to answer.
+        // Another server's tool is the user's to answer, whatever its input says (another agent's way of naming Cavvy's).
+        const theirs = await replay("mcp-http", { orchestrator: { ...o, tools: ["probe_echo", "theme_list"], checksItself: ["theme_list"], inputKeys: { ...o.inputKeys, theme_list: [] } }, answer: () => ({ allow: false, message: "no", stop: false }) });
+        const fake = { tools: new Map(), waiting: new Set() };
+        const options = [{ optionId: "allow", kind: "allow_once" }, { optionId: "deny", kind: "reject_once" }];
+        const call = { kind: "other", title: "Run mcp_github_create_issue", rawInput: { tool_name: "mcp__cavvy__theme_list", tool_input: {} } };
+        expect(await (theirs.conn as any).ownAsk(fake, call, options, "")).toEqual({ outcome: { outcome: "selected", optionId: "deny" } });
+        expect(theirs.asked).toEqual([expect.objectContaining({ native: true, toolName: "Antigravity" })]);
         const other = acpAgent("antigravity").mcpTool!;
         expect(other({ kind: "other", title: "Run mcp_probe_probe_ping" }, "probe")).toBe("probe_ping");
         expect(other({ kind: "other", title: "Run mcp_github_create_issue" }, "probe")).toBeUndefined();
@@ -336,7 +373,7 @@ describe("Antigravity's hooks", () => {
         expect(["gemini-4-neon-medium", "gemini-3.8-flash-low", "claude-sonnet-5-5-low", "gpt-oss-120b-medium"].map(reads)).toEqual([true, true, false, false]);
     });
 
-    test("whether a model reads PDFs, listed or not; a cached listing from before that is listed again", async () => {
+    test("whether a model reads PDFs, listed or not, or cached from before it was said", async () => {
         const { resolveModelInfo } = await import("../src/providers/models");
         const { paths } = await import("../src/config/paths");
         const { mkdirSync } = await import("fs");
@@ -346,7 +383,7 @@ describe("Antigravity's hooks", () => {
         mkdirSync(dirname(paths.modelCache()), { recursive: true });
         const cached = (extra: object) => ({ version: 3, providers: { antigravity: { fetchedAt: Date.now(), fp: "x", models: [{ provider: "antigravity", id: "claude-sonnet-5-5-low", name: "Cached", ...extra }] } } });
         writeFileSync(paths.modelCache(), JSON.stringify(cached({})));
-        expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, name: undefined });
+        expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, name: "Cached" });
         writeFileSync(paths.modelCache(), JSON.stringify(cached({ supportsPdf: false })));
         expect(resolveModelInfo("antigravity:claude-sonnet-5-5-low")).toMatchObject({ supportsPdf: false, name: "Cached" });
         rmSync(paths.modelCache(), { force: true });

@@ -389,8 +389,9 @@ export class AcpConnection implements CliConnection {
         const { sent, result } = this.rpc.call("session/prompt", { sessionId: this.sessionId, prompt: blocks });
         turn.open++;
         const n = ++turn.sent;
-        // Its own: the turn's first, or the last sent, where one sent ends the one running.
+        // Its own: the turn's first, or the last sent, where one sent ends the one running (and so is running again).
         const mine = () => (this.agent.steerReplaces ? n === turn.sent : own);
+        if (this.agent.steerReplaces) turn.answered = false;
         result.then(
             (r) => this.answer(turn, r, mine(), group),
             (e) => this.answerFailed(turn, e, mine()),
@@ -491,7 +492,10 @@ export class AcpConnection implements CliConnection {
         if (this.steerable(turn)) return this.steer(turn.ref, input, m);
         if (this.turn !== turn || turn.ended || turn.cancelling || turn.tripped || turn.failed !== undefined) return false;
         liveDebug("acp", "steer after the prompt answered: a prompt of its own", { ref: turn.ref });
-        return this.send(turn, input, false);
+        const sent = await this.send(turn, input, false);
+        // Where it's the turn's own prompt now (AcpAgent.steerReplaces), it can be steered again: what was queued meanwhile goes.
+        if (sent && this.agent.steerReplaces) this.steerQueued();
+        return sent;
     }
 
     async interrupt(ref: string): Promise<void> {
@@ -1295,9 +1299,11 @@ function pathsOf(raw: Record<string, any> | undefined, locations: { path: string
  */
 function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">, o: OrchestratorServer | undefined, agent?: Pick<AcpAgent, "mcpTool">): { tool: string; name: string; input: Record<string, unknown> } | undefined {
     const raw = t.rawInput ?? {};
-    // Its arguments as the server gets them: what else its input has is the agent's own (Antigravity's toolSummary).
-    const own = o && agent?.mcpTool?.(t, o.name);
-    if (own && o.tools.includes(own)) {
+    // Named its own way, it's that or none. Its arguments as the server gets them: what else its input has is the
+    // agent's own (Antigravity's toolSummary).
+    if (agent?.mcpTool) {
+        const own = o && agent.mcpTool(t, o.name);
+        if (!own || !o.tools.includes(own)) return undefined;
         const keys = o.inputKeys?.[own] ?? [];
         return { tool: own, name: `mcp__${o.name}__${own}`, input: Object.fromEntries(Object.entries(raw).filter(([k]) => keys.includes(k))) };
     }
