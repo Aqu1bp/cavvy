@@ -15,6 +15,7 @@ import { hostedTargets, shownBrowser } from "../state/browser-host";
 import { electron, isMod, mod } from "../lib/platform";
 import { DEVICES, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
 import type { PaneStatus, Size } from "../lib/browser";
+import { addressMark, backToAddress, keepsDraft, type AddressMark } from "../lib/find-return";
 import { Menu } from "./ui/Menu";
 
 /** Each session's size and zoom while the window is open: the pane shows it again when it comes back. */
@@ -48,9 +49,11 @@ export interface PaneToolsOptions {
     giveBack: (px: number, close: () => void) => void;
     /** Reloads the current tab (F5, Ctrl+R / ⌘R in the pane, as in a browser). */
     reload: () => void;
+    /** What was typed in the address bar, dropped: the keyboard left the find bar it went to from there. */
+    dropDraft: () => void;
 }
 
-export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element } {
+export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element; keepsDraft: (next: EventTarget | null) => boolean } {
     const [menuOpen, setMenuOpen] = createSignal(false);
     const [finding, setFinding] = createSignal(false);
     const [query, setQuery] = createSignal("");
@@ -131,9 +134,14 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         const tab = o.tab()?.id;
         if (tab !== undefined) void rpc.call("browser.find", { id: o.id(), tab, query: "" }).catch(() => undefined);
     };
+    /** The address bar's caret, when the find bar took the keyboard from there: it goes back there as the bar closes. */
+    let fromAddress: AddressMark | undefined;
     const openFind = () => {
+        // Opened again from the bar itself: it goes back to where it was first opened from.
+        const mark = addressMark(o.address(), document.activeElement);
+        if (mark || !finding()) fromAddress = mark;
         // Where they were in the page, to go back to as it closes (the search moves the page's focus to what it finds).
-        const key = o.native && !finding() ? keyOf(o.tab()?.targetId) : undefined;
+        const key = o.native && !finding() && !fromAddress ? keyOf(o.tab()?.targetId) : undefined;
         if (key) electron?.browserPageFocus?.(key, "keep");
         findOpens++;
         setMenuOpen(false);
@@ -150,13 +158,16 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         asked++;
         setFound(undefined);
         if (query()) clearFound();
-        // Back to the page, where they were in it, as a browser's find bar does.
-        if (o.native) {
-            webview()?.focus();
-            const key = keyOf(o.tab()?.targetId);
-            if (key) electron?.browserPageFocus?.(key, "restore");
+        // Back to where they were, as a browser's find bar does: the address bar with what they typed, or the page.
+        const mark = fromAddress;
+        fromAddress = undefined;
+        if (!backToAddress(o.address(), mark)) {
+            if (o.native) {
+                webview()?.focus();
+                const key = keyOf(o.tab()?.targetId);
+                if (key) electron?.browserPageFocus?.(key, "restore");
+            } else o.keyboard()?.focus({ preventScroll: true });
         }
-        else o.keyboard()?.focus({ preventScroll: true });
         const closing = ++findOpens;
         o.giveBack(findBar?.offsetHeight ?? 0, () => closing === findOpens && setFinding(false));
     };
@@ -320,7 +331,22 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     const bars = () => (
         <>
             <Show when={finding()}>
-                <div ref={findBar} class="br-strip" role="search" aria-label="Find in page">
+                <div
+                    ref={findBar}
+                    class="br-strip"
+                    role="search"
+                    aria-label="Find in page"
+                    onFocusOut={() => {
+                        // Out to somewhere other than the address bar it came from (the page's view says so only once
+                        // it has the focus): what was typed there goes, as it does when the address bar itself is left.
+                        if (fromAddress) setTimeout(() => {
+                            const now = document.activeElement;
+                            if (!fromAddress || keepsDraft(findBar, now) || now === o.address() || !document.hasFocus()) return;
+                            fromAddress = undefined;
+                            o.dropDraft();
+                        });
+                    }}
+                >
                     <Search size={13} class="br-strip-ic" />
                     <input
                         ref={findInput}
@@ -385,5 +411,5 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
             </Show>
         </>
     );
-    return { menu, bars };
+    return { menu, bars, keepsDraft: (next) => !!fromAddress && keepsDraft(findBar, next) };
 }

@@ -122,7 +122,7 @@ import { frameDrag } from "../gui/src/lib/drag";
 import { terminalFontSize } from "../gui/src/lib/text-size";
 import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown; props?: Record<string, unknown>; open?: boolean } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; quitsApp?: (e: KeyboardEvent) => boolean; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown; props?: Record<string, unknown>; open?: boolean } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(opts.open ?? false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -181,7 +181,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs, at?: string) => (saved.push(value), savedAt.push(at)),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
-        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
+        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), quitsApp: opts.quitsApp ?? (() => false), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,
         terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: opts.panelHold ?? (() => undefined), Terminal: Emulator,
         FitAddon: class { fit() { const t = terminals.at(-1)!; t.cols = fitted.cols; t.rows = fitted.rows; } },
@@ -489,6 +489,29 @@ test("the terminal holds back the first key of a chord for the terminal toggle, 
         m.dispose();
         kb.applyKeybindingsFile({ path: "/k.json" });
     }
+});
+
+test("Ctrl+Q in the terminal is left to the app where it's the app's Quit (the desktop app on Linux), and is the shell's elsewhere", async () => {
+    // The menu's Quit runs only for a key the page leaves alone; xterm took Ctrl+Q for the shell, so it never quit.
+    const { quitsApp } = await import("../gui/src/lib/quit-key");
+    const key = (k: string, extra: Partial<KeyboardEvent> = {}) =>
+        ({ type: "keydown", key: k, code: `Key${k.toUpperCase()}`, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, isComposing: false, keyCode: 0, preventDefault() {}, ...extra }) as unknown as KeyboardEvent;
+    const q = key("q", { ctrlKey: true });
+    for (const [on, app] of [[{ os: "linux", desktop: true }, true], [{ os: "macos", desktop: true }, false], [{ os: "windows", desktop: true }, false], [{ os: "linux", desktop: false }, false]] as const) {
+        const m = mounted("TerminalScreen", { quitsApp: (e) => quitsApp(e, on) });
+        try {
+            const handler = m.terminals[0]!.keyHandler!;
+            // false: xterm leaves it alone, so the window's menu has it.
+            expect(handler(q)).toBe(!app);
+            // Ctrl+Shift+Q, Ctrl+Alt+Q and other Ctrl keys are the shell's.
+            expect(handler(key("Q", { ctrlKey: true, shiftKey: true }))).toBe(true);
+            expect(handler(key("q", { ctrlKey: true, altKey: true }))).toBe(true);
+            expect(handler(key("w", { ctrlKey: true }))).toBe(true);
+            expect(handler(key("q"))).toBe(true);
+        } finally { m.dispose(); }
+    }
+    // Where it runs as a browser tab (not the desktop app), Ctrl+Q stays the shell's.
+    expect(quitsApp(q)).toBe(false);
 });
 
 test("a window keeps each machine's terminal tabs apart: back from a server, this computer's are the ones it had", () => {

@@ -58,7 +58,7 @@ async function panel() {
         createEffect: (callback: () => void) => effects.push(callback), on: () => () => {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
         app, connOn: () => app.conn, machine: undefined, setTerminalLogin() {}, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260, fontSize: 14 }, terminalFontSize, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
-        withShortcut: (label: string) => label, terminalKey: () => "shell", toast: (text: string, kind: string) => notices.push({ text, kind }),
+        withShortcut: (label: string) => label, terminalKey: () => "shell", quitsApp: () => false, toast: (text: string, kind: string) => notices.push({ text, kind }),
         rpc: {
             call: (method: string, params: any) => { calls.push({ method, params }); return response(method); },
             onEvent: () => () => {}, onState: () => () => {},
