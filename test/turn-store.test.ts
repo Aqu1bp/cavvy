@@ -622,6 +622,8 @@ test("a session whose messages are under half its file lets go of them once open
     const rt = srv.engine.runtimes.get(t.id)!;
     await rt.openDone();
     await new Promise((r) => setTimeout(r, 10));
+    // Opened from its store, and from a checkpoint with its messages in it (no digest).
+    expect((rt as any).store).toBeDefined();
     expect((rt.session as any).digestible).toBe(false);
     expect(rt.session.historyDigest).toBeDefined();
     expect((rt.session as any).loadedMessages).toHaveLength(0);

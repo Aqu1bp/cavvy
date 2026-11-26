@@ -331,7 +331,8 @@ export class Session {
      * again, its 33 MB file took 15-20 ms.
      */
     letGoOfMessages(): boolean {
-        if (!this.persist || this.digest || this.loadedLines || this.pushedUnread.length) return false;
+        // Not while saving fails: the file hasn't all of them.
+        if (!this.persist || this.unsaved || this.digest || this.loadedLines || this.pushedUnread.length) return false;
         this.digest = digestOf(this.loadedMessages);
         this.loadedMessages = [];
         return true;
