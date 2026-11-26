@@ -10,7 +10,7 @@ import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** A side chat: nothing until there's a figure (no lone "Context"). */ aside?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
@@ -158,7 +158,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             </Show>
         );
     return (
-        <Show when={state() || meter()}>
+        <Show when={(state() || meter()) && !(p.aside && shownPct() === undefined)}>
             <button
                 ref={btn}
                 type="button"

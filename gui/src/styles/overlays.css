@@ -1893,7 +1893,6 @@
 }
 
 /* ---- Push and pull request dialog ------------------------------- */
-.publish-destination { overflow-wrap: anywhere; }
 
 /* ---- Plans: read, save, or implement in a worktree (PlanDialogs, ArchiveDialog) ---- */
 .plan-dialog-body {

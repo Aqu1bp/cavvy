@@ -116,7 +116,7 @@ test("uncommitted changes that would be overwritten block a pull with git's reas
     commitFile(theirs, "a.txt", "theirs\n", true);
     writeFileSync(join(mine, "a.txt"), "mine, uncommitted\n");
     const head = git(mine, "rev-parse", "HEAD");
-    await expect(gitPull(mine)).rejects.toMatchObject({ code: "blocked", message: "Uncommitted changes to a.txt would be overwritten. Commit or stash them first." });
+    await expect(gitPull(mine)).rejects.toMatchObject({ code: "blocked", message: "Can't pull: a.txt has uncommitted changes. Commit or stash them." });
     expect(git(mine, "rev-parse", "HEAD")).toBe(head);
 });
 
@@ -188,7 +188,7 @@ test("a switch blocked by local changes says git's reason, and stays put", async
     commitFile(mine, "a.txt", "other\n");
     git(mine, "switch", "-q", "main");
     writeFileSync(join(mine, "a.txt"), "uncommitted\n");
-    await expect(gitSwitch(mine, { branch: "other" })).rejects.toMatchObject({ code: "blocked", message: "Uncommitted changes to a.txt would be overwritten. Commit or stash them first." });
+    await expect(gitSwitch(mine, { branch: "other" })).rejects.toMatchObject({ code: "blocked", message: "Can't switch to other: a.txt has uncommitted changes. Commit or stash them." });
     expect(git(mine, "branch", "--show-current")).toBe("main");
     await expect(gitSwitch(mine, { branch: "nope" })).rejects.toMatchObject({ code: "not_found" });
 });
@@ -216,9 +216,15 @@ test("a URL rewrite on the remote is refused, as for publishing", async () => {
 test("git's reasons, briefly", () => {
     expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("Untracked x, y, z and 1 more would be overwritten. Move or remove them first.");
     expect(gitReason("fatal: 'feature' is already used by worktree at '/tmp/wt'\n")).toBe("'feature' is already used by worktree at '/tmp/wt'");
+    const local = "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt\n\tb.txt\nPlease commit your changes or stash them before you merge.\nAborting\n";
+    expect(gitReason(local, "Can't pull")).toBe("Can't pull: a.txt, b.txt have uncommitted changes. Commit or stash them.");
+    expect(gitReason(local)).toBe("a.txt, b.txt have uncommitted changes. Commit or stash them.");
+    expect(gitReason("error: Your local changes to the following files would be overwritten by merge:\n", "Can't pull")).toBe("Can't pull: some files have uncommitted changes. Commit or stash them.");
     // After a sentence of Cavvy's: a sentence of its own.
     expect(withReason("Couldn't fetch origin.", gitReason("fatal: could not read from remote repository\n"))).toBe("Couldn't fetch origin. Could not read from remote repository.");
     expect(withReason("Couldn't fetch origin.", "Connection timed out.")).toBe("Couldn't fetch origin. Connection timed out.");
+    // A server's own "ERROR:" (GitHub's, for a repository it can't find) goes as git's own prefixes do.
+    expect(withReason("Couldn't fetch origin.", gitReason("ERROR: Repository not found.\nfatal: Could not read from remote repository.\n"))).toBe("Couldn't fetch origin. Repository not found.");
     expect(withReason("Couldn't fetch origin.", "")).toBe("Couldn't fetch origin.");
     expect(withReason("Couldn't fetch origin.", "git@github.com: Permission denied (publickey).")).toBe("Couldn't fetch origin. git@github.com: Permission denied (publickey).");
 });

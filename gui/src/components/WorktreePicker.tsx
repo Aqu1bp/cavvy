@@ -99,7 +99,6 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                     </Show>
                 </Show>
             </Show>
-            <div class="menu-note">New sessions run in the selected folder.</div>
         </Popover>
         <Show when={creating()}>{(r) => <NewWorktreeDialog request={r()} onClose={() => setCreating(undefined)} />}</Show>
         <Show when={removing()}>{(r) => <RemoveWorktreeDialog request={r()} onClose={() => setRemoving(undefined)} />}</Show>

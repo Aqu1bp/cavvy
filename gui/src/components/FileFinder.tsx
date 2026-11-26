@@ -325,6 +325,7 @@ function FileFinder() {
                     <span><kbd>↵</kbd> Open</span>
                     <span><kbd>{altKey}↵</kbd> Open in editor</span>
                     <span><kbd>{mod}{mod === "⌘" ? "" : "+"}↵</kbd> Add to chat</span>
+                    <Show when={mode() === "files"}><span><kbd>:</kbd> Go to line</span></Show>
                 </div>
             </Show>
         </Dialog>

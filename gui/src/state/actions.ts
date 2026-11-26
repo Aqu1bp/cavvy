@@ -696,7 +696,7 @@ export async function deleteSessions(ids: readonly string[]): Promise<string[]> 
 export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = [], newBranch?: string) {
     try {
         const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, newBranch, ...(pathTokens.length ? { pathTokens } : {}) });
-        toast(`Committed ${result.hash.slice(0, 7)}${newBranch ? ` to ${result.branch}` : ` ${result.subject}`}`, "success");
+        toast(`Committed ${result.hash.slice(0, 7)}${newBranch ? ` to ${result.branch}` : ""}`, "success");
         return result;
     } finally {
         // Failed hooks can still edit working files; a post-publication error
