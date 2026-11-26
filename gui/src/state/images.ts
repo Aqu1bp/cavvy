@@ -93,7 +93,13 @@ export function promptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, i
 
 /** A prompt's images whole, for the viewer: asked for again (a few ms a MB), unless it was one of the last few. Rejects when they're gone. */
 export function wholePromptImages(sessionId: string, pos: NonNullable<Turn["pos"]>, imagesKey: string): Promise<WholeImage[]> {
-    return promptWholes.get(promptKey(sessionId, imagesKey), () => rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then((r) => r.images));
+    return promptWholes.get(promptKey(sessionId, imagesKey), () =>
+        rpc.call("session.promptImages", { id: sessionId, seg: pos.seg, index: pos.index }).then((r) => {
+            // Gone since their thumbnails came: a failure (not kept), as one that couldn't be asked.
+            if (!r.images.length) throw new Error("no images");
+            return r.images;
+        }),
+    );
 }
 
 /**
