@@ -136,7 +136,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <Show when={view()}>
                         <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
                         <p class="mono small publish-destination">{view()?.destination}</p>
-                        <Show when={!view()?.hasUpstream} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
+                        <Show when={!view()?.hasUpstream && view()?.ahead === undefined} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>

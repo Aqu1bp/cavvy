@@ -147,8 +147,11 @@ async function local(cwd: string, signal?: AbortSignal) {
         git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
     ]);
     let ahead: number | undefined, behind: number | undefined;
-    if (tracking) {
-        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
+    // No upstream set, but the remote has the branch already (as last fetched): counted against it, so it isn't called
+    // a new branch.
+    const against = tracking || (!hasUpstream && (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${target}`], signal, false, true)) ? `refs/remotes/${remote}/${target}` : "");
+    if (against) {
+        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${against}`, "--"], signal, false, true);
         if (/^\d+\s+\d+$/.test(counts)) [ahead, behind] = counts.split(/\s+/).map(Number);
     }
     const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");

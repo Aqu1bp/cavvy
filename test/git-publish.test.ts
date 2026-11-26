@@ -26,6 +26,16 @@ test("push creates upstream, updates only the selected branch, and reports ahead
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
 });
 
+test("a branch with no upstream set is counted against the remote's branch of that name, if it has one", async () => {
+    const { cwd } = repo();
+    // A new branch: nothing to count against.
+    expect((await gitPublishInfo(cwd)).ahead).toBeUndefined();
+    // The remote has it (as last fetched), but this branch doesn't track it: counted, not called new.
+    git(cwd, "update-ref", "refs/remotes/origin/feature", "HEAD");
+    git(cwd, "commit", "--allow-empty", "-qm", "one more");
+    expect(await gitPublishInfo(cwd)).toMatchObject({ hasUpstream: false, ahead: 1, behind: 0 });
+});
+
 test("no remote, ambiguous remotes, detached HEAD and changed confirmation cannot push", async () => {
     const { cwd, state } = repo();
     const preview = await gitPublishInfo(cwd);
