@@ -48,7 +48,7 @@ const { applyOp } = await import("../src/server/timeline");
 const { expectHostKey, forgetOldScripts, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines, startupScript } = await import("../src/servers/keys");
 const { setupTiming } = await import("../src/servers/agent-setup");
 const { ownKnownHosts } = await import("../src/servers/ssh");
-const { checkedCloud, getServer, listServers } = await import("../src/servers/store");
+const { checkedCloud, getServer, listServers, removeServer } = await import("../src/servers/store");
 const { ServerAddTool, ServerKeyTool, ServerRemoveTool, serverServerTools } = await import("../src/tools/server-tools");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { sandboxPolicy } = await import("../src/permissions/sandbox");
@@ -289,7 +289,7 @@ describe("the tools, by themselves", () => {
             "linode-cli register-plugin delete", "ibmcloud cf install-plugin delete -f", "gcloud projects add-iam-policy-binding delete --member user:x --role owner", "hcloud context delete default", "gcloud projects delete p", "ibmcloud plugin-delete x",
         ]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain(not);
         for (const c of [
-            "aws lightsail delete-instance --instance-name box", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1", "aws lightsail delete-key-pair --key-pair-name box", "aws lightsail delete-disk --disk-name box-disk", "aws ec2 delete-volume --volume-id vol-1",
+            "aws lightsail delete-instance --instance-name box", "aws ec2 release-hosts --host-ids h-0123 --region us-east-2", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1", "aws lightsail delete-key-pair --key-pair-name box", "aws lightsail delete-disk --disk-name box-disk", "aws ec2 delete-volume --volume-id vol-1",
             "gcloud compute instances delete box --zone us-central1-a --quiet", "gcloud compute firewall-rules delete allow-ssh --quiet", "gcloud compute addresses delete box-ip --region us-central1 --quiet",
             "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "az network public-ip delete --resource-group rg --name box-ip",
             "hcloud server delete box", "hcloud ssh-key delete cavvy-box", "hcloud primary-ip delete box-ip", "doctl compute droplet delete box --force", "doctl compute ssh-key delete 123 --force",
@@ -309,6 +309,33 @@ describe("the tools, by themselves", () => {
         expect(r.content).toContain("box is one of the user's servers now.");
         expect(r.content).toContain("It lacks: git.");
         expect(added).toEqual([{ name: "box", address: "dev@box.example", port: undefined, cloud: undefined }]);
+    });
+
+    test("ServerAdd with a key file of the server's own: its path is checked, shown when asked, and passed on; never for a key Cavvy made", async () => {
+        const v = (i: Record<string, unknown>) => ServerAddTool.validate!(i as any, ctx().c);
+        const base = { name: "box", address: "ec2-user@203.0.113.7" };
+        expect(v({ ...base, identity_file: "~/keys/box.pem" })).toBeUndefined();
+        expect(v({ ...base, identity_file: "/Users/me/keys/box" })).toBeUndefined();
+        for (const f of ["keys/box", "", "~/keys/a\nb", 3]) expect(v({ ...base, identity_file: f })).toContain("starting with / or ~/");
+        expect(v({ ...base, identity_file: "~/.ssh/id_ed25519.pub" })).toContain("not its .pub");
+
+        const added: any[] = [];
+        const s = servers({ add: async (spec) => (added.push(spec), { lacks: [] }) });
+        const manual = ctx({ servers: s, confirm: () => "yes", mode: "default" });
+        await ServerAddTool.run({ ...base, identity_file: "~/keys/box.pem" }, manual.c);
+        expect(manual.asked).toEqual([{ title: "Add box as a server", facts: [["Address", "ec2-user@203.0.113.7"], ["Key", "~/keys/box.pem"]], yes: "Add", no: "Cancel" }]);
+        expect(added).toEqual([{ name: "box", address: "ec2-user@203.0.113.7", port: undefined, identityFile: "~/keys/box.pem", cloud: undefined }]);
+
+        // A machine created after ServerKey signs in with the key Cavvy made for it, and nothing else.
+        const made = servers({ hasKey: async () => true, add: async (spec) => (added.push(spec), { lacks: [] }) });
+        expect((await ServerAddTool.run({ ...base, identity_file: "~/keys/box.pem" }, ctx({ servers: made }).c)).content).toContain("without identity_file");
+        expect(added).toHaveLength(1);
+
+        // Refused with the user's usual keys: the agent hears it can name a key file. Not when it named one.
+        const refused = servers({ add: async () => { throw new Error("203.0.113.7 refused your SSH keys. ec2-user@203.0.113.7: Permission denied (publickey)."); } });
+        expect((await ServerAddTool.run(base, ctx({ servers: refused }).c)).content).toContain("call ServerAdd again with identity_file");
+        const wrong = servers({ add: async () => { throw new Error("203.0.113.7 refused this key."); } });
+        expect((await ServerAddTool.run({ ...base, identity_file: "~/keys/box.pem" }, ctx({ servers: wrong }).c)).content).not.toContain("identity_file");
     });
 
     test("ServerAdd for a machine just created asks nothing, records what it costs and how it's deleted, and needs a login user", async () => {
@@ -575,6 +602,31 @@ describe("from a window, with an agent doing it", () => {
         expect(fake.knownHosts()).toContain("box.example ");
         for (const w of c.view(id).state.watches ?? []) await c.call("session.stopWatch", { id, watchId: w.id });
         c.ws.close();
+    });
+
+    test("a server that signs in with a key file of its own: refused without it, added with it, and the file kept for it", async () => {
+        const c = new Client();
+        await c.opened();
+        const id = await c.session(tempDir("cavvy-agent-setup-"), "bypassPermissions");
+        fake.fail("auth");
+        await c.call("session.send", { id, text: "addserver keyed dev@box.example" });
+        await c.until(id, done, "the turn's end");
+        expect(said(lastTurn(c.view(id)))).toContain("call ServerAdd again with identity_file");
+        expect(getServer("keyed")).toBeUndefined();
+
+        fake.fail();
+        const file = join(tempDir("cavvy-keyfile-"), "keyed.pem");
+        writeFileSync(file, "", { mode: 0o600 });
+        await c.call("session.send", { id, text: `addserver keyed dev@box.example key=${file}` });
+        const list = await c.card(id, "signin", (i) => i.step === "list");
+        await c.call("session.respond", { id, interactionId: list.id, response: { kind: "signin", action: "later" } });
+        await c.until(id, done, "the turn's end");
+        // The pretend model reads the prompt lowercased: the path it passes on is the file's, in another case.
+        expect(getServer("keyed")).toMatchObject({ destination: "dev@box.example" });
+        expect(getServer("keyed")!.identityFile).toBe(file.toLowerCase());
+        for (const w of c.view(id).state.watches ?? []) await c.call("session.stopWatch", { id, watchId: w.id });
+        c.ws.close();
+        removeServer("keyed");
     });
 
     test("delete: asked in Bypass with the commands shown; the provider's sign-in is asked for on the way; then the machine, the server and its keys are gone", async () => {

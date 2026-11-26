@@ -132,7 +132,7 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             const key = getServer(spec.name) ? undefined : madeKey(spec.name);
             // Just created: it's still starting. (A key from before, for one forgotten and now put back, signs in at once.)
             const fresh = Boolean(key) && freshKey(spec.name);
-            let draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] } = { name: spec.name, destination: spec.address, port: spec.port, cloud: spec.cloud };
+            let draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] } = { name: spec.name, destination: spec.address, port: spec.port, ...(spec.identityFile ? { identityFile: spec.identityFile } : {}), cloud: spec.cloud };
             const host = spec.address.slice(spec.address.lastIndexOf("@") + 1);
             // What Cavvy's list said that address shows, to put back if this doesn't work out.
             const had = key ? knownHostLines(host, spec.port) : [];
