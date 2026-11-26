@@ -745,7 +745,7 @@ describe("/rewind command", () => {
         const header = f.shown[1].header.map((l: string) => stripAnsi(l)).join("\n");
         expect(header).toContain("restore a.txt");
         expect(header).toContain("delete  b.txt");
-        expect(header).toContain("shell commands aren't tracked");
+        expect(header).toContain("shell commands aren't undone");
         expect(readFileSync(a, "utf-8")).toBe("1\n");
         expect(existsSync(b)).toBe(false);
         expect(rewindTargets(s.session.messages).map((t) => t.text)).toEqual(["one"]);
@@ -915,7 +915,7 @@ describe("/rewind command", () => {
         expect(stripAnsi(f.shown[0].list.items.find((i: any) => stripAnsi(i.label) === "two").description)).toBe("2 files changed");
         const plan = f.shown[1].header.map(stripAnsi).join("\n");
         expect(plan).toContain("2 files changed since then:");
-        expect(plan).not.toContain("shell commands aren't tracked");
+        expect(plan).not.toContain("shell commands aren't undone");
         expect(existsSync(join(proj, "shell.txt"))).toBe(false);
         expect(readFileSync(join(proj, "kept.txt"), "utf-8")).toBe("before\n");
         expect(f.printed).toContain("Undo it with /rewind undo");
