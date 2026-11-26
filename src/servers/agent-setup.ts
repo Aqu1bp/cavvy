@@ -102,25 +102,24 @@ const SMALL_KB = 900_000;
 /** `aws ec2 release-hosts` exits 0 even when a host isn't released (still in use, or within its minimum): it lists those as Unsuccessful. */
 const releasesHosts = (argv: string[]) => argv[0] === "aws" && argv[1] === "ec2" && argv[2] === "release-hosts";
 
-/** Whether a release-hosts run that exited 0 released every host, from its whole JSON answer: anything else isn't taken as released. */
-function released(out: string): boolean {
+/** The hosts a release-hosts command names: `--host-ids a b` or `--host-ids=a`. */
+function hostIds(argv: string[]): string[] {
+    const ids: string[] = [];
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i]!.startsWith("--host-ids=")) ids.push(argv[i]!.slice("--host-ids=".length));
+        else if (argv[i] === "--host-ids") for (let j = i + 1; j < argv.length && !argv[j]!.startsWith("-"); j++) ids.push(argv[j]!);
+    }
+    return ids;
+}
+
+/** Whether its JSON answer says every host it named was released: anything else isn't taken as released. */
+function released(out: string, ids: string[]): boolean {
     try {
-        const r = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1)) as { Unsuccessful?: unknown };
-        return Array.isArray(r.Unsuccessful) && !r.Unsuccessful.length;
+        const r = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1)) as { Successful?: unknown; Unsuccessful?: unknown };
+        return ids.length > 0 && Array.isArray(r.Unsuccessful) && !r.Unsuccessful.length && Array.isArray(r.Successful) && ids.every((id) => (r.Successful as unknown[]).includes(id));
     } catch {
         return false;
     }
-}
-
-/** A release-hosts command as run: its answer whole and as JSON, whatever the command or the user's config asks for. */
-function wholeJson(args: string[]): string[] {
-    const out: string[] = [];
-    for (let i = 0; i < args.length; i++) {
-        const w = args[i]!;
-        if (w === "--output" || w === "--query") i++;
-        else if (!w.startsWith("--output=") && !w.startsWith("--query=")) out.push(w);
-    }
-    return [...out, "--output", "json"];
 }
 
 /** Runs one teardown command: Cavvy's own process, with arguments only. `missing`: its CLI isn't installed here. */
@@ -128,13 +127,14 @@ async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code:
     const bin = Bun.which(argv[0]!, { PATH: process.env.PATH ?? "" });
     if (!bin) return { code: 127, out: "", missing: true };
     const hosts = releasesHosts(argv);
-    const args = hosts ? wholeJson(argv.slice(1)) : argv.slice(1);
+    // Its only options are ones that leave the answer whole (teardownCommandError): asked for as JSON, whatever the user's config prints.
+    const args = hosts ? [...argv.slice(1), "--output", "json"] : argv.slice(1);
     // In a folder of its own, with nothing in it: no word of the command can name a file of the user's.
     const cwd = mkdtempSync(join(tmpdir(), "cavvy-teardown-"));
     try {
         // Stopped, or at its limit, it ends with whatever it started: a CLI that's a wrapper doesn't delete on behind a "stopped".
         const r = await runBounded([bin, ...args], { cwd, env: childEnv(), timeoutMs: setupTiming.teardownMs, signal });
-        return hosts && r.code === 0 && !released(r.out) ? { ...r, code: 1 } : r;
+        return hosts && r.code === 0 && !released(r.out, hostIds(argv)) ? { ...r, code: 1 } : r;
     } finally {
         rmSync(cwd, { recursive: true, force: true });
     }

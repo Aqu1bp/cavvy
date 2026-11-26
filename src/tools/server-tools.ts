@@ -74,6 +74,7 @@ const DELETE = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassocia
  */
 const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister)-(?:instances?|instance-snapshots?|disks?|disk-snapshots?|static-ips?|address(?:es)?|key-pairs?|hosts?|volumes?|snapshots?|images?|security-groups?|network-interfaces?|subnets?|vpcs?|internet-gateways?|route-tables?|load-balancers?)$/;
 const AWS_SERVICE = /^(?:lightsail|ec2)$/;
+const RELEASE_HOSTS_OPTIONS = ["--host-ids", "--region", "--profile"];
 /** Waiting for a deletion to finish, which the next one may need: it reads, and changes nothing. */
 const AWS_GONE = /-(?:terminated|deleted|not-exists)$/;
 
@@ -112,6 +113,8 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
     const bad = words.slice(1).find((w) => ELSEWHERE.test(w) || pathLike(w));
     if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted by its name or id in the command itself, not by a file, a path, a link or another place it's read from.`;
     const flag = words.findIndex((w, i) => i > 0 && w.startsWith("-"));
+    // Its answer is read to know the host was released (it exits 0 either way): nothing may filter or reshape it.
+    if (words[0] === "aws" && words[1] === "ec2" && words[2] === "release-hosts" && words.some((w) => w.startsWith("-") && !RELEASE_HOSTS_OPTIONS.includes(w.split("=")[0]!))) return "`aws ec2 release-hosts` takes only --host-ids, --region and --profile in a teardown.";
     if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws lightsail delete-…" or "aws ec2 terminate-…" of the same kinds ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;
 }
