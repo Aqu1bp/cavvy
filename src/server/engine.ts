@@ -495,8 +495,11 @@ export class Engine {
     /** Folders whose configuration the user chose not to trust (this run). */
     private declined = new Set<string>();
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    /** Side chats closed a moment ago, by their parent's id: kept for Undo (closeSideChat). */
-    private closedSideChats = new Map<string, { rt: Runtime; timer: ReturnType<typeof setTimeout> }>();
+    /**
+     * Side chats closed a moment ago, by their parent's id: kept for Undo (closeSideChat). `deleted`: closed as their
+     * parent was deleted, and put back with it when it's opened again after an Undo (openSession).
+     */
+    private closedSideChats = new Map<string, { rt: Runtime; timer: ReturnType<typeof setTimeout>; deleted?: true }>();
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
@@ -1476,7 +1479,7 @@ export class Engine {
      * The session's side chat closed: out of its tab at once, its turn stopped. Kept for a while, so Undo can bring it
      * back as it was (reopenSideChat), then discarded; at once if the session gets a new one, closes or is archived.
      */
-    closeSideChat(parent: Runtime) {
+    closeSideChat(parent: Runtime, deleted = false) {
         const side = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
         if (!side) return;
         this.dropClosedSideChat(parent.id);
@@ -1484,7 +1487,7 @@ export class Engine {
         side.interrupt();
         const timer = setTimeout(() => this.dropClosedSideChat(parent.id), this.o.sideChatUndoMs ?? SIDE_CHAT_UNDO_MS);
         timer.unref?.();
-        this.closedSideChats.set(parent.id, { rt: side, timer });
+        this.closedSideChats.set(parent.id, { rt: side, timer, ...(deleted ? { deleted } : {}) });
     }
 
     /** The side chat closed a moment ago, back in its tab. */
@@ -1650,6 +1653,13 @@ export class Engine {
             throw e;
         }
         this.runtimes.set(rt.id, rt);
+        // Deleted a moment ago and put back: its side chat comes back with it.
+        const kept = this.closedSideChats.get(id);
+        if (kept?.deleted && this.runtimes.get(kept.rt.id) === kept.rt) {
+            clearTimeout(kept.timer);
+            this.closedSideChats.delete(id);
+            rt.sideChatChanged(kept.rt.id, kept.rt.status);
+        }
         return rt;
     }
 
@@ -1661,8 +1671,9 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        // A side chat stays as long as its parent is open (its panel shows it again), and goes with it.
-        if (rt.side && this.runtimes.has(rt.side.of)) return;
+        // A side chat stays as long as its parent is open (its panel shows it again), and goes with it; or while it's
+        // kept for an Undo (closeSideChat, deleteSession).
+        if (rt.side && (this.runtimes.has(rt.side.of) || this.closedSideChats.get(rt.side.of)?.rt === rt)) return;
         if (rt.side) return void this.discardSideChat(rt);
         // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
         // while a window shows its simulator.
@@ -1864,6 +1875,10 @@ export class Engine {
         const work = (async () => {
             try {
                 if (rt) {
+                    // Its side chat is kept a while, as a closed one is: an Undo puts it back with the session. One
+                    // closed before goes.
+                    this.dropClosedSideChat(id);
+                    this.closeSideChat(rt, true);
                     this.runtimes.delete(id);
                     keepAwake.set(rt, false);
                     this.summarySent.delete(id);
