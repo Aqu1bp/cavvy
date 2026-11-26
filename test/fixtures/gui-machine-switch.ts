@@ -35,6 +35,9 @@ const sent: { url: string; id: string; text: string }[] = [];
 /** Account picks (session.setAccount, accounts.setDefault): where each went. */
 const picked: { url: string; method: string; accountId: string }[] = [];
 const cli = (accounts: { id: string; name: string }[]) => [{ id: "claude-code", name: "Claude Code", kind: "agent", configured: true, requiresKey: false, agentCli: { accounts, defaultAccount: "default", installed: true, multiAccount: true } }];
+/** Folders asked about (projects.inspect), and settings changed (settings.update): where each went. */
+const inspected: { url: string; path: string }[] = [];
+const updated: { url: string; patch: Record<string, unknown> }[] = [];
 /** Where each lookup by folder or path went (fs.*), and what it was. */
 const looked: { url: string; method: string }[] = [];
 
@@ -53,7 +56,7 @@ class ServerSocket extends Socket {
         if (method === "hello") reply({});
         else if (method === "sessions.list") reply(params?.archived ? [] : onBox ? [summary("b1", { status: "running", live: true })] : [summary("l1")]);
         else if (method === "servers.overview") reply({ machines: [{ name: "box", state: "connected", sessions: [summary("b1", { status: "running", live: true })] }] });
-        else if (method === "servers.connect") reply({ status: "connected", url: "ws://box.test/ws", token: "box-token" });
+        else if (method === "servers.connect") reply(params?.name === "gone" ? { status: "failed", problem: { message: "no route to gone" } } : { status: "connected", url: "ws://box.test/ws", token: "box-token" });
         else if (method === "session.open") {
             opened.push({ url: this.url, id: params.id });
             reply({ seq: 0, epoch: "e", state: { id: params.id, cwd: "/srv/app", busy: false, interactions: [] }, turns: [{ id: `${params.id}-t`, status: "done", startedAt: 1, prompt: { text: "hi" }, blocks: [] }], agents: [] });
@@ -68,7 +71,13 @@ class ServerSocket extends Socket {
             reply(method === "fs.mentions" ? [] : {});
         } else if (method === "settings.get") reply(onBox ? { model: "boxp:only-on-box" } : {});
         else if (method === "projects.recent") reply(onBox ? [{ path: "/srv/app", name: "app", exists: true, trusted: true, needsTrust: [] }, { path: "/srv/api", name: "api", exists: true, trusted: true, needsTrust: [] }] : [{ path: "/home/me/web", name: "web", exists: true, trusted: true, needsTrust: [] }]);
-        else if (method === "projects.inspect") reply({ path: params.path, exists: true });
+        else if (method === "projects.inspect") {
+            inspected.push({ url: this.url, path: params.path });
+            reply({ path: params.path, exists: true });
+        } else if (method === "settings.update") {
+            updated.push({ url: this.url, patch: params.patch });
+            reply(params.patch);
+        }
         else if (method === "session.create") {
             made.push({ url: this.url, cwd: params.cwd, mode: params.mode });
             reply({ seq: 0, epoch: "e", state: { id: `made-${made.length}`, cwd: params.cwd, busy: false, interactions: [] }, turns: [], agents: [] });
@@ -235,6 +244,35 @@ try {
     forgetSession("b1");
     assert.equal(app.activeId, undefined);
     assert.equal(app.homeCwd, "/home/me/web");
+
+    // The list of machines on Home (components/Servers.tsx goTo): Home goes to box in this window, in box's latest
+    // project, with whether it's trusted asked of box first, so the screen changes once. The window isn't loaded
+    // again on box, which showed a half-drawn screen on the way (a project chooser, an empty sidebar).
+    const { goHomeOn, goingTo } = await import("../../gui/src/state/go-home");
+    const asked = inspected.length;
+    const going = goHomeOn("box");
+    assert.deepEqual(goingTo(), { name: "box" }, "the picked machine is named at once, while Home gets there");
+    await going;
+    await settle();
+    assert.equal(homeOn(), "box", "Home on box");
+    assert.equal(app.homeCwd, "/srv/app", "in its latest project");
+    assert.equal(goingTo(), undefined);
+    assert.ok(inspected.slice(asked).some((x) => x.url.includes("box") && x.path === "/srv/app"), "its folder asked about on box");
+    assert.deepEqual(switched, [], "the window stays here");
+    assert.equal(reloads, 0, "and isn't loaded again");
+    // And back to this computer: in its latest project, at once.
+    await goHomeOn(undefined);
+    assert.equal(homeOn(), undefined);
+    assert.equal(app.homeCwd, "/home/me/web");
+    // What the composer has picked goes along, where that machine has the model (lib/picked.ts), as it did when the
+    // window went there: here it hasn't box's only model, so this computer's settings aren't touched.
+    assert.deepEqual(updated.filter((u) => !u.url.includes("box")), [], "box's pick isn't put on a machine without its model");
+    await goHomeOn("box");
+    assert.equal(homeOn(), "box", "box again");
+    // A machine that can't be reached: the window goes there, where its cover says why, as before.
+    await goHomeOn("gone");
+    await settle();
+    assert.deepEqual(switched, [["gone"]], "sent there, to be told why");
 } catch (e) {
     console.error(e);
     process.exit(1);
