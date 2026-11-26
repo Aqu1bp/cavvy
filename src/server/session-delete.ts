@@ -30,6 +30,8 @@ export interface SessionFlags {
     settled: boolean;
     /** Its row menu's Never auto-settle. */
     neverSettle?: boolean;
+    /** Snoozed until then (ms): snoozed again on restore while that's still ahead. */
+    snoozedUntil?: number;
 }
 
 interface TrashEntry extends SessionFlags {
@@ -252,7 +254,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
         } catch {
             // purged later
         }
-        return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled), neverSettle: Boolean(meta.neverSettle) };
+        return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled), neverSettle: Boolean(meta.neverSettle), ...(typeof meta.snoozedUntil === "number" ? { snoozedUntil: meta.snoozedUntil } : {}) };
     } finally {
         release();
     }

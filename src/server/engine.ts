@@ -1857,7 +1857,8 @@ export class Engine {
         if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
-        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id), neverSettle: !!store.neverSettle?.includes(id) };
+        const snoozedUntil = store.snoozed?.[id]?.until;
+        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id), neverSettle: !!store.neverSettle?.includes(id), ...(snoozedUntil !== undefined ? { snoozedUntil } : {}) };
         // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
         const release = claimForDelete(locateSession(id).file);
         const work = (async () => {
@@ -4072,13 +4073,16 @@ export class Engine {
                 const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
                     if (flags.neverSettle) s.neverSettle = [...new Set([...(s.neverSettle ?? []), id])];
+                    // Snoozed when deleted: snoozed again, while its time is still ahead (past it, it's back awake).
+                    if (flags.snoozedUntil !== undefined && flags.snoozedUntil > this.now()) s.snoozed = { ...s.snoozed, [id]: { until: flags.snoozedUntil } };
                     // Brought back: not settled by itself straight away for having been idle.
                     notePlay(s, id, this.now());
                 });
+                if (flags.snoozedUntil !== undefined) this.alarm.arm(nextWake(readStore()));
                 // In whichever list it's in: without its flags saved, it's back as an active one.
                 const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
-                if (!saved && (STORE_FLAGS.some((key) => flags[key]) || flags.neverSettle)) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
+                if (!saved && (STORE_FLAGS.some((key) => flags[key]) || flags.neverSettle || flags.snoozedUntil !== undefined)) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
                 return null;
             }
             case "session.killShell":
