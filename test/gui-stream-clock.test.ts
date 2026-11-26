@@ -31,12 +31,14 @@ test("a step whose callback throws still runs the others, and the clock keeps st
         offStep(streaming);
         // Leave the clock as it started, for the tests after this one in the process: the step it has armed through the
         // fakes (streaming asked for one at the last step) would stay pending for good, and the time of its last step
-        // would hold up another test's clock. A timer due runs empty; then one step runs at -Infinity, the "never" it began with.
+        // would hold up another test's clock. A timer due runs empty; then one step runs at -Infinity, the "never" it began with
+        // (the clock takes the time a step ran from performance.now()).
         for (const { fn } of timers.values()) fn();
         now += 1000;
         const settle = () => {};
         onStep(settle);
         offStep(settle);
+        now = -Infinity;
         frame?.(-Infinity);
         Object.assign(globalThis, { requestAnimationFrame: real.raf, cancelAnimationFrame: real.caf, setTimeout: real.timeout, clearTimeout: real.clear });
         performance.now = real.now;
@@ -47,4 +49,48 @@ test("a step whose callback throws still runs the others, and the clock keeps st
     expect(escaped).toBe(0);
     expect(logged).toHaveLength(1);
     expect(logged[0]).toContain("broken step");
+});
+
+test("a step in a frame that carries the refresh before it isn't followed by a second one", () => {
+    const real = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame, timeout: globalThis.setTimeout, clear: globalThis.clearTimeout, now: performance.now };
+    // A 60 Hz display whose refreshes fall 14 ms before the clock's timer ends (it ends 12 ms before each 50 ms mark).
+    const REFRESH = 1000 / 60;
+    let now = 1000, frame: ((t: number) => void) | undefined, id = 0, wakes = 0;
+    const refreshBefore = (t: number) => Math.floor((t - 1000 + 9) / REFRESH) * REFRESH + 1000 - 9;
+    const timers = new Map<number, { at: number; fn: () => void }>();
+    globalThis.requestAnimationFrame = ((fn: (t: number) => void) => { frame = fn; return 1; }) as any;
+    globalThis.cancelAnimationFrame = (() => { frame = undefined; }) as any;
+    globalThis.setTimeout = ((fn: () => void, ms = 0) => { timers.set(++id, { at: now + ms, fn }); return id; }) as any;
+    globalThis.clearTimeout = ((t: number) => { timers.delete(t); }) as any;
+    performance.now = () => now;
+    const streaming = () => onStep(streaming);
+    try {
+        onStep(streaming);
+        // A second, a millisecond at a time. A frame asked for while none is under way starts at once, with the time
+        // of the refresh before it (as Chromium starts one); the next can't start before the refresh after.
+        let framed = -Infinity;
+        for (const end = now + 1000; now < end; now += 1) {
+            for (const [t, { at, fn }] of timers) if (at <= now) { timers.delete(t); fn(); }
+            const at = refreshBefore(now);
+            if (!frame || at === framed) continue;
+            framed = at;
+            const f = frame;
+            frame = undefined;
+            wakes++;
+            f(at);
+        }
+    } finally {
+        offStep(streaming);
+        for (const { fn } of timers.values()) fn();
+        now += 1000;
+        const settle = () => {};
+        onStep(settle);
+        offStep(settle);
+        now = -Infinity;
+        frame?.(-Infinity);
+        Object.assign(globalThis, { requestAnimationFrame: real.raf, cancelAnimationFrame: real.caf, setTimeout: real.timeout, clearTimeout: real.clear });
+        performance.now = real.now;
+    }
+    expect(wakes).toBeGreaterThan(16);
+    expect(wakes).toBeLessThanOrEqual(21);
 });
