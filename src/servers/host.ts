@@ -365,7 +365,11 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
     const staticDir = named === undefined ? defaultStatic() : existsSync(join(named, "index.html")) ? named : undefined;
-    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json") });
+    // A Mac goes to sleep with nobody at it: not while a session here works (wake.ts).
+    let busy: (() => boolean) | undefined;
+    const wake = process.platform === "darwin" ? new (await import("./wake")).WakeLock({ working: () => busy?.() ?? false }) : undefined;
+    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json"), onTurns: wake && ((running) => wake.turnsRunning(running)) });
+    busy = () => srv.engine.activity().working > 0;
     for (const n of env.notes) log(`note: ${n}`);
 
     let stopping = false;
@@ -378,6 +382,7 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
         const timer = setTimeout(() => process.exit(code), 20_000);
         controlServer?.stop(true);
         await srv.stop().catch(() => undefined);
+        wake?.stop();
         clearTimeout(timer);
         rmSync(socketPath(), { force: true });
         rmSync(stateFile(), { force: true });
