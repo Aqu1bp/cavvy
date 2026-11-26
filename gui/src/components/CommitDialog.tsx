@@ -19,6 +19,8 @@ export function CommitDialog() {
     const [message, setMessage] = createSignal("");
     const [model, setModel] = createSignal<string>();
     const [error, setError] = createSignal<string>();
+    /** Why Generate couldn't draft a message: under its button, as Suggest's is under its own. */
+    const [genError, setGenError] = createSignal<string>();
     const [loading, setLoading] = createSignal(false);
     const [generating, setGenerating] = createSignal(false);
     const [committing, setCommitting] = createSignal(false);
@@ -42,6 +44,7 @@ export function CommitDialog() {
             setMessage("");
             setModel(undefined);
             setError(undefined);
+            setGenError(undefined);
             setGenerating(false);
             setToNew(false);
             setNewName("");
@@ -97,19 +100,19 @@ export function CommitDialog() {
         if (!request || !ready() || generating() || committing()) return;
         const version = revision;
         setGenerating(true);
-        setError(undefined);
+        setGenError(undefined);
         try {
             const { paths: names, tokens } = chosen();
             const result = await gitCommitMessage(request.id, names, tokens);
             if (commitRequest() !== request) return;
             if (revision !== version) {
-                setError("Changed while generating. Generate again.");
+                setGenError("Changed while generating. Generate again.");
                 return;
             }
             setMessage(result.message);
             setModel(result.model);
         } catch (e) {
-            if (commitRequest() === request) setError(errorText(e));
+            if (commitRequest() === request) setGenError(errorText(e).split("\n")[0]!.slice(0, 200));
         } finally {
             if (commitRequest() === request) setGenerating(false);
         }
@@ -143,6 +146,7 @@ export function CommitDialog() {
         if (!request || !ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())) return;
         setCommitting(true);
         setError(undefined);
+        setGenError(undefined);
         try {
             const head = view()?.head;
             const { paths: names, tokens } = chosen();
@@ -202,7 +206,7 @@ export function CommitDialog() {
                                             {naming() ? "Suggesting…" : "Suggest"}
                                         </button>
                                     </div>
-                                    <Show when={nameNote()?.error}>{(m) => <span class="commit-warning small">{m()}</span>}</Show>
+                                    <Show when={nameNote()?.error}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
                                 </Show>
                             </div>
                         </Show>
@@ -249,6 +253,7 @@ export function CommitDialog() {
                             <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
                                 {generating() ? "Generating…" : "Generate message"}
                             </button>
+                            <Show when={genError()}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
                         </div>
                     </Show>
                 </Show>

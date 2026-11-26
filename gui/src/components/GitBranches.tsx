@@ -151,8 +151,12 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             afterGit();
         } catch (e) {
             failed(what, e);
-            // A refused pull has fetched first: the counts here and in the title bar are read again.
-            if (kind === "pull") setMoved((n) => n + 1);
+            // A refused pull has fetched first: the counts here and in the title bar, and the branches it brought, are
+            // read again.
+            if (kind === "pull") {
+                setMoved((n) => n + 1);
+                void refetch();
+            }
         } finally {
             setBusy(undefined);
             input?.focus();
@@ -385,9 +389,16 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             setFailure({ text: e instanceof Error ? e.message : String(e), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined, ref });
         } finally {
             setBusy(undefined);
+            // Disabled while it worked, the field lost the keyboard: back to it, to type another (closed, it's gone).
+            if (input?.isConnected) input.focus();
         }
     };
     if (p.start && p.query) void start(p.query.trim());
+    /** A new query: what checking out the last one said is about that one, so it goes (the list's own failure stays). */
+    const edit = (value: string) => {
+        setQ(value);
+        if (failure()?.ref !== undefined) setFailure(undefined);
+    };
     // The session's own sign-in card takes it from here: this closes to let it show, and opens again once signed in.
     const signIn = async () => {
         const id = signInSession();
@@ -436,7 +447,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             <h2 id="pr-dialog-h" class="sr-only">Work on a pull request</h2>
             <div class="pal-in">
                 <GitPullRequest size={17} class="pal-search" />
-                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Pull request number, URL or title" aria-label="Pull request" spellcheck={false} autocomplete="off" disabled={Boolean(busy())} />
+                <input ref={input} autofocus value={q()} onInput={(e) => edit(e.currentTarget.value)} onKeyDown={onKey} placeholder="Pull request number, URL or title" aria-label="Pull request" spellcheck={false} autocomplete="off" disabled={Boolean(busy())} />
                 <Show when={busy()}><Spinner size={13} class="muted" /></Show>
                 <kbd>Esc</kbd>
             </div>

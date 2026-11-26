@@ -1471,6 +1471,18 @@
     font-size: 0.857rem;
 }
 
+/* A refused push: what to do, in the dialog's type, over git's output. */
+.publish-error {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+}
+
+/* A draft that couldn't be made (Generate, Suggest): a field error's line, under its button. */
+.commit-generate > .wt-error {
+    flex-basis: 100%;
+}
+
 /* ---- Rewind, folder picker, trust ----------------------------------- */
 
 /* The prompts: plain rows, the chosen one tinted. */

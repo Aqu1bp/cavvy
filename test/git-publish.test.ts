@@ -68,6 +68,7 @@ test("non-fast-forward is visible, never forced even with mirror and force refsp
     git(cwd, "config", "remote.origin.mirror", "true"); git(cwd, "config", "remote.origin.push", "+refs/heads/*:refs/heads/*");
     const preview = await gitPublishInfo(cwd);
     await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("The remote has commits this branch doesn't. Pull, then push again.");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "push_failed" });
     expect(git(remote, "rev-parse", "feature")).toBe(remoteHead);
 });
 
@@ -76,6 +77,7 @@ test("a push the remote declines for another reason says only that it failed, ov
     writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\necho 'branch is frozen' >&2\nexit 1\n", { mode: 0o755 });
     const err = await gitPublish(cwd, { fingerprint: (await gitPublishInfo(cwd)).fingerprint, action: "push" }).then(() => undefined, (e: Error) => e);
     expect(err?.message).toStartWith("Push failed.\n");
+    expect(err).toMatchObject({ code: "push_failed" });
     expect(err?.message).toContain("branch is frozen");
     expect(err?.message).not.toContain("Pull, then push again");
 });

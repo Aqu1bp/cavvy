@@ -144,3 +144,13 @@ test("where the branch stands says only what isn't zero, and Up to date when not
     expect(syncWords(0, 3)).toBe("3 behind");
     expect(syncWords(2, 3)).toBe("2 ahead · 3 behind");
 });
+
+test("a refused push leads with what to do, in the dialog's type, and keeps git's output below it as printed", () => {
+    const publishError = componentCode("publishError", {}, undefined, "PublishDialog") as (message: string, code?: string) => { text?: string; raw?: string };
+    expect(publishError("The remote has commits this branch doesn't. Pull, then push again.\nerror: failed to push some refs\n ! [rejected] (fetch first)\n", "push_failed"))
+        .toEqual({ text: "The remote has commits this branch doesn't. Pull, then push again.", raw: "error: failed to push some refs\n ! [rejected] (fetch first)" });
+    expect(publishError("Push failed.", "push_failed")).toEqual({ text: "Push failed." });
+    // Other git failures are git's own words; anything else is Cavvy's sentence.
+    expect(publishError("fatal: bad object", "git")).toEqual({ raw: "fatal: bad object" });
+    expect(publishError("The branch or destination changed. Reopen the dialog.", "stale")).toEqual({ text: "The branch or destination changed. Reopen the dialog." });
+});
