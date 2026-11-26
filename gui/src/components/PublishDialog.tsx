@@ -95,6 +95,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             if ((await rpc.call("session.askSignIn", { id, target: "gh" })) === "signed-in") toast("Signed in to GitHub", "success");
         } catch (e) { toast(errorText(e), "error"); }
     };
+    /** The dialog scrolled to its end, where what went wrong is said: the form above may fill it. */
+    const reveal = (el: HTMLElement) => requestAnimationFrame(() => el.closest(".dialog-body")?.scrollTo({ top: el.closest(".dialog-body")!.scrollHeight }));
     // In the dialog's footer, so a long error above can't push them out of view. As the other dialogs place them: with
     // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
     const cancel = () => <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>;
@@ -149,7 +151,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     </Show>
                 </Show>
                 <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>
-                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert">{e().text}</pre> : <p class="commit-error" role="alert">{e().text}</p>)}</Show>
+                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert" ref={reveal}>{e().text}</pre> : <p class="commit-error" role="alert" ref={reveal}>{e().text}</p>)}</Show>
             </div>
         </Dialog>
     );
