@@ -864,7 +864,7 @@ export async function openInEditor(path: string, line?: number, o: { col?: numbe
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")
-            return toast(code === "no_editor" ? "No editor chosen yet. Pick one under Settings → General → Open files with." : (e as Error).message, "warn", {
+            return toast(code === "no_editor" ? "No editor chosen" : (e as Error).message, "warn", {
                 label: "Settings",
                 run: () => {
                     setSettingsTab("general");

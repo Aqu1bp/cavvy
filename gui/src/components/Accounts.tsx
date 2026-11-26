@@ -2,7 +2,7 @@ import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Check, ChevronRight, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
-import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
+import { refreshModels, refreshProviders, rpc } from "../state/app";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
@@ -10,7 +10,7 @@ import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Spinner } from "./ui/bits";
 import { EnvDialog, InstanceDialog } from "./CliEnv";
-import { resetToast } from "../lib/reset-toast";
+import { removedToast } from "../lib/reset-toast";
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..") ? undefined : "Use 1–64 plain characters, starting with a letter or number, without '..'.";
@@ -281,8 +281,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                     const { id, name } = i();
                     const r = await rpc.call("providers.removeInstance", { id });
                     setRemovingInstance(undefined);
-                    toast(`Removed ${p.provider.name} · ${name}`, "success");
-                    resetToast(r?.reset);
+                    removedToast(name, r?.reset);
                     // Its row is gone: back to the provider's menu button, not the page.
                     providerMenu?.focus();
                     await Promise.all([refreshProviders(), refreshModels()]).catch((e) => setActionError(message(e)));

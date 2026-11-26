@@ -87,7 +87,7 @@ import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-wo
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, gitPrPrompt, parsePrText, PR_TEXT_SYSTEM } from "./git-generate";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, DRAFT_FAILED, gitPrPrompt, parsePrText, PR_TEXT_SYSTEM, type DraftWhat } from "./git-generate";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type Segment, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
@@ -4966,7 +4966,8 @@ export class Runtime {
             const refused = target && this.oneOffRefused(e, target, "make a title");
             if (refused) throw new RpcError(refused.message, "unsupported");
             this.engine.log(`session ${this.id}: no new title: ${(e as Error).message}`);
-            throw new RpcError(`The model didn't answer: ${redact((e as Error).message).split("\n")[0]!.slice(0, 200)}`, "failed");
+            // The provider's own words (a timeout's "aborted") are in the log, as git drafts have it.
+            throw new RpcError("Couldn't make a title.", "failed");
         }
         const title = modelTitle(raw);
         if (!title) throw new RpcError("The model's answer wasn't a title.", "failed");
@@ -5530,7 +5531,7 @@ export class Runtime {
         // The prompt redacts what it shows the model, names included.
         const prompt = await gitCommitPrompt(this.ws.cwd, files).catch((e) => { throw redactedError(e); });
         const message = await this.draft(target, "generate messages", COMMIT_MESSAGE_SYSTEM, prompt, 30_000);
-        if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
+        if (!message.trim()) throw new RpcError(DRAFT_FAILED["generate messages"]);
         return { message, model: modelRef(target.model) };
     }
 
@@ -5539,7 +5540,7 @@ export class Runtime {
      * provider, else the session's provider's small default, else the session's own model. Only with none of those is
      * there nothing to ask.
      */
-    private async draftTarget(what: string): Promise<{ model: ModelInfo; client: ProviderClient }> {
+    private async draftTarget(what: DraftWhat): Promise<{ model: ModelInfo; client: ProviderClient }> {
         if ((!this.model || !this.client) && !this.settings().smallModel) throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
         try {
             return await this.smallTarget();
@@ -5549,12 +5550,18 @@ export class Runtime {
         }
     }
 
-    /** A git draft on `target`. A CLI starts a process of its own for it, so it gets longer. */
-    private async draft(target: { model: ModelInfo; client: ProviderClient }, what: string, system: string, prompt: string, ms: number, maxTokens?: number): Promise<string> {
+    /**
+     * A git draft on `target`. A CLI starts a process of its own for it, so it gets longer. The provider's own failure
+     * (a timeout, "aborted", an HTTP error) is logged; the user is told only that there's no draft.
+     */
+    private async draft(target: { model: ModelInfo; client: ProviderClient }, what: DraftWhat, system: string, prompt: string, ms: number, maxTokens?: number): Promise<string> {
         try {
             return await this.complete(system, prompt, AbortSignal.timeout(isAgentBackend(target.client) ? Math.max(ms, 60_000) : ms), { target, ...(maxTokens ? { maxTokens } : {}) });
         } catch (e) {
-            throw this.oneOffRefused(e, target, what) ?? e;
+            const refused = this.oneOffRefused(e, target, what);
+            if (refused) throw refused;
+            this.engine.log(`session ${this.id}: couldn't ${what}: ${(e as Error)?.message ?? e}`);
+            throw new RpcError(DRAFT_FAILED[what], "draft_failed");
         }
     }
 
@@ -5573,7 +5580,7 @@ export class Runtime {
         const prompt = await gitPrPrompt(this.ws.cwd, base).catch((e) => { throw redactedError(e); });
         const reply = await this.draft(target, "generate pull request text", PR_TEXT_SYSTEM, prompt, 60_000, 2048);
         const text = parsePrText(reply);
-        if (!text) throw new RpcError("The model returned no title. Try again or write your own.");
+        if (!text) throw new RpcError(DRAFT_FAILED["generate pull request text"]);
         return { ...text, model: modelRef(target.model) };
     }
 
@@ -5584,7 +5591,7 @@ export class Runtime {
         const target = await this.draftTarget("suggest branch names");
         const reply = await this.draft(target, "suggest branch names", BRANCH_NAME_SYSTEM, branchPrompt(text), 30_000, 100);
         const branch = branchName(reply, worktreeSettings(this.settings()).branchPrefix);
-        if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
+        if (!branch) throw new RpcError(DRAFT_FAILED["suggest branch names"]);
         return { branch, model: modelRef(target.model) };
     }
 

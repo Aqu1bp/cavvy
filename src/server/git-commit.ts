@@ -136,7 +136,7 @@ async function selection(cwd: string, paths: string[]): Promise<GitFileDiff[]> {
         const file =
             listed.files.find((f) => f.path === path) ??
             (listed.more ? (await gitChanges(cwd, { scope: "uncommitted", path })).files.find((f) => f.path === path) : undefined);
-        if (!file) throw new RpcError(`Not a changed file: ${path}. Refresh the Review pane.`, "invalid");
+        if (!file) throw new RpcError(`${path} has no changes now.`, "invalid");
         if (file.kind === "folder" || file.kind === "repo") throw new RpcError(`Choose individual files instead of the folder or nested repository: ${path}`, "invalid");
         files.push(file);
     }

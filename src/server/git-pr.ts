@@ -45,8 +45,10 @@ async function needGh(cwd: string) {
     if (state === "missing") throw fail("Pull requests need the GitHub CLI (gh).", "gh_missing");
 }
 
-async function ghJson(cwd: string, args: string[]): Promise<unknown> {
+/** `missing`: what to say when gh answers that there's no such pull request (its GraphQL "Could not resolve to a PullRequest"). */
+async function ghJson(cwd: string, args: string[], missing?: string): Promise<unknown> {
     const r = await runGh(cwd, args);
+    if (r.code && missing && /Could not resolve to a PullRequest\b/i.test(r.err + r.out)) throw fail(missing, "not_found");
     if (r.code) throw fail(gitReason(r.err + r.out) || "gh couldn't read the pull request.");
     try {
         return JSON.parse(r.out);
@@ -90,7 +92,7 @@ export async function gitPrWorktree(cwd: string, input: string, log?: Log): Prom
     const { remote, url, repo } = await githubRemote(cwd);
     if (ref.repo && ref.repo.toLowerCase() !== repo.toLowerCase()) throw fail(`That pull request is in ${ref.repo}; this repository is ${repo}.`, "other_repo");
     await needGh(cwd);
-    const v = (await ghJson(cwd, ["pr", "view", String(ref.number), "--repo", `https://github.com/${repo}`, "--json", "number,title,url,headRefName,isCrossRepository,state"])) as Record<string, any>;
+    const v = (await ghJson(cwd, ["pr", "view", String(ref.number), "--repo", `https://github.com/${repo}`, "--json", "number,title,url,headRefName,isCrossRepository,state"], `No pull request #${ref.number}.`)) as Record<string, any>;
     const prUrl = `https://github.com/${repo}/pull/${ref.number}`;
     if (!v || v.number !== ref.number || typeof v.title !== "string" || typeof v.url !== "string" || v.url.toLowerCase() !== prUrl.toLowerCase()) throw fail("Couldn't read gh's answer. Try again.");
     const pr = { number: ref.number, title: text(v.title, 250), url: prUrl, state: text(v.state, 20).toLowerCase() };

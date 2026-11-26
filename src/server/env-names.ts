@@ -8,9 +8,12 @@ export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 /** Account folders are chosen with accounts; Cavvy's own markers are Cavvy's. */
 const RESERVED = new Set(["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "CAVVY"]);
 
-/** Why a name can't be set for a CLI, if it can't. */
-export function envNameProblem(name: string): string | undefined {
-    if (!ENV_NAME.test(name)) return `"${name}" isn't a variable name: use letters, digits and _, not starting with a digit.`;
+/**
+ * Why a name can't be set for a CLI, if it can't. Said under the name's own field in the GUI; `named`: said elsewhere
+ * (the server's answer), so a bad name is quoted.
+ */
+export function envNameProblem(name: string, o?: { named?: boolean }): string | undefined {
+    if (!ENV_NAME.test(name)) return `${o?.named ? `"${name}" isn't a variable name. ` : ""}Letters, digits and _ only, not starting with a digit.`;
     if (RESERVED.has(name) || name.startsWith("CAVVY_")) return name.startsWith("CAVVY") ? `${name} is Cavvy's own.` : `${name} is set by the account: add an account instead.`;
     return undefined;
 }

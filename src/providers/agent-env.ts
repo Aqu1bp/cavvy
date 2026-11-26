@@ -113,7 +113,7 @@ export function validateAgentEnv(provider: string, vars: unknown): AgentEnvVar[]
     return vars.map((v): AgentEnvVar => {
         const name = typeof v?.name === "string" ? v.name.trim() : "";
         if (!name) throw new ProviderError("A variable has no name.");
-        const problem = envNameProblem(name);
+        const problem = envNameProblem(name, { named: true });
         if (problem) throw new ProviderError(problem);
         if (seen.has(name)) throw new ProviderError(`${name} is there twice.`);
         seen.add(name);

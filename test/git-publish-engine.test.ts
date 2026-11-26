@@ -60,7 +60,7 @@ test("engine pushes new upstream, exposes rejection and caches PR state after fa
         expect(calls(state).filter((args) => args[1] === "create")).toHaveLength(1);
         git(cwd, "reset", "--hard", "HEAD~1"); git(cwd, "commit", "--allow-empty", "-qm", "diverged");
         const diverged = await engine.handle(client, "session.gitPublishInfo", { id });
-        await expect(engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: diverged.fingerprint })).rejects.toThrow("No force push was attempted");
+        await expect(engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: diverged.fingerprint })).rejects.toThrow("The remote has commits this branch doesn't. Pull, then push again.");
     } finally { await engine.stop(); }
 });
 

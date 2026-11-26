@@ -356,7 +356,7 @@ async function pushTo(cwd: string, info: { remote: string; target: string; url: 
 
 export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo }> {
     const info = await local(cwd, signal);
-    if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog before publishing.", "stale");
+    if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog.", "stale");
     const base = await defaultBranch(cwd, info.url, signal);
     if (guarded(info, base) && request.confirmProtected !== true) throw fail("Confirm pushing to the protected branch.", "protected_branch");
     const repo = githubRepo(info.url);
@@ -377,7 +377,8 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if ((await local(cwd, signal)).fingerprint !== info.fingerprint) throw fail("The branch or destination changed. Reopen the dialog.", "stale");
     const needsPush = !info.hasUpstream || remoteRef.split("\t")[0] !== info.sha;
     const result = needsPush ? await pushTo(cwd, info, signal) : { code: 0, out: "", err: "" };
-    if (result.code) throw fail(`Push failed. ${/non-fast-forward|fetch first|rejected/i.test(result.out + result.err) ? "The remote rejected the update; fetch and reconcile the branch in a terminal. No force push was attempted.\n" : ""}${result.err}${result.out}`);
+    // Behind the remote (git's "non-fast-forward", "fetch first"): what to do about it, over git's own words.
+    if (result.code) throw fail(`${/non-fast-forward|\(fetch first\)/i.test(result.out + result.err) ? "The remote has commits this branch doesn't. Pull, then push again." : "Push failed."}\n${result.err}${result.out}`);
     if (!info.hasUpstream) {
         // A SHA source cannot set upstream via push -u. Name the reviewed local
         // branch explicitly, even if another client checked out/moved HEAD.

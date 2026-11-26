@@ -3,9 +3,12 @@ import type { GitPublishInfo, GitPrInfo } from "@shared/protocol";
 import { handleFor, rpc, toast } from "../state/app";
 import { commitUnavailable, refreshGitChanges } from "../state/changes";
 import { openExternal } from "../lib/platform";
-import { modelName } from "../lib/model-name";
+import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+
+/** Where the branch stands with its upstream: "Up to date", else only the counts that aren't zero. */
+export const syncWords = (ahead: number, behind: number) => [ahead ? `${ahead} ahead` : "", behind ? `${behind} behind` : ""].filter(Boolean).join(" · ") || "Up to date";
 
 export function PublishDialog(p: { id?: string; onClose: () => void; onPublished: (pr?: GitPrInfo) => void }) {
     const [view, setView] = createSignal<GitPublishInfo>();
@@ -102,7 +105,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <Show when={view()}>
                         <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
                         <p class="mono small publish-destination">{view()?.destination}</p>
-                        <Show when={!view()?.hasUpstream} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{view()?.ahead} ahead · {view()?.behind} behind</p></Show>}>
+                        <Show when={!view()?.hasUpstream} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>
@@ -125,7 +128,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <label class="commit-message-label" for="pr-body">Description</label>
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
                             <div class="commit-generate">
-                                <button class="btn ghost sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${modelName(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
+                                <button class="btn ghost sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
                                 <Show when={drafted()}>
                                     <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                 </Show>

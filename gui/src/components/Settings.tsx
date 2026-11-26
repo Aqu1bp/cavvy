@@ -203,7 +203,7 @@ function General() {
                 <Row title="Model" desc="Also changes when you pick a model in a session.">
                     <ModelSelect label="Model" value={s().model} empty="Automatic" onChange={(v) => void update({ model: v })} />
                 </Row>
-                <Row title="Small model" desc="For session titles and page summaries.">
+                <Row title="Small model" desc="For titles, summaries and git drafts.">
                     <ModelSelect label="Small model" value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
                 </Row>
                 <Row title="Auto-mode reviewer" desc="Checks API models' actions in Auto before they run.">

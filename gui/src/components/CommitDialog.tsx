@@ -6,7 +6,7 @@ import { commitUnavailable } from "../state/changes";
 import { commitRequest, setCommitRequest } from "../state/ui";
 import { mod, os } from "../lib/platform";
 import { plural } from "../lib/format";
-import { modelName } from "../lib/model-name";
+import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -195,7 +195,7 @@ export function CommitDialog() {
                                 <Show when={toNew()}>
                                     <div class="commit-generate">
                                         <input class="input mono grow" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
-                                        <button class="btn ghost sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${modelName(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
+                                        <button class="btn ghost sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${draftedBy(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
                                             {naming() ? "Suggesting…" : "Suggest"}
                                         </button>
                                     </div>
@@ -243,7 +243,7 @@ export function CommitDialog() {
                             }}
                         />
                         <div class="commit-generate">
-                            <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${modelName(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
+                            <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
                                 {generating() ? "Generating…" : "Generate message"}
                             </button>
                         </div>

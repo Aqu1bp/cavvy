@@ -67,8 +67,17 @@ test("non-fast-forward is visible, never forced even with mirror and force refsp
     git(cwd, "reset", "--hard", "HEAD~1"); git(cwd, "commit", "--allow-empty", "-qm", "local version");
     git(cwd, "config", "remote.origin.mirror", "true"); git(cwd, "config", "remote.origin.push", "+refs/heads/*:refs/heads/*");
     const preview = await gitPublishInfo(cwd);
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("No force push was attempted");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("The remote has commits this branch doesn't. Pull, then push again.");
     expect(git(remote, "rev-parse", "feature")).toBe(remoteHead);
+});
+
+test("a push the remote declines for another reason says only that it failed, over git's words", async () => {
+    const { cwd, remote } = repo();
+    writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\necho 'branch is frozen' >&2\nexit 1\n", { mode: 0o755 });
+    const err = await gitPublish(cwd, { fingerprint: (await gitPublishInfo(cwd)).fingerprint, action: "push" }).then(() => undefined, (e: Error) => e);
+    expect(err?.message).toStartWith("Push failed.\n");
+    expect(err?.message).toContain("branch is frozen");
+    expect(err?.message).not.toContain("Pull, then push again");
 });
 
 test("unsafe remote and branch inputs, multiple push URLs and destination changes are refused", async () => {
