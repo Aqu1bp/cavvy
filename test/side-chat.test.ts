@@ -142,6 +142,29 @@ describe("a side chat", () => {
         await until(() => !existsSync(sideChatDir(sideId)));
     });
 
+    test("deleted with its session, it's back with it on Undo, as it was; gone once Undo's while has passed", async () => {
+        const { engine, c, id } = await parentWithTurn("hello there");
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id, text: "what was my first message?" })) as { id: string };
+        const side = engine.runtimes.get(sideId)!;
+        await until(() => side.idle && side.session.messageCount >= 2);
+        await engine.handle(c, "session.delete", { id });
+        // The window lets go of both: the side chat is kept.
+        await engine.handle(c, "session.close", { id: sideId });
+        expect(engine.runtimes.get(sideId)).toBe(side);
+        await engine.handle(c, "session.restore", { id });
+        const back = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+        expect(back.state.sideChat?.id).toBe(sideId);
+        const again = (await engine.handle(c, "session.open", { id: sideId })) as SessionSnapshot;
+        expect(again.turns.map((t) => t.prompt?.text)).toEqual(["what was my first message?"]);
+
+        // Deleted again, and not put back in time: discarded.
+        (engine as unknown as { o: { sideChatUndoMs?: number } }).o.sideChatUndoMs = 150;
+        await engine.handle(c, "session.delete", { id });
+        await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
+        await engine.handle(c, "session.restore", { id });
+        expect(((await engine.handle(c, "session.open", { id })) as SessionSnapshot).state.sideChat).toBeUndefined();
+    });
+
     test("goes when its parent is archived", async () => {
         const { engine, c, id, rt } = await parentWithTurn("hello there");
         const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
