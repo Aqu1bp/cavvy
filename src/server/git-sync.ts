@@ -48,7 +48,11 @@ export function gitReason(text: string, lead?: string): string {
         return lead ? `${lead}: ${f.n ? said : said[0]!.toLowerCase() + said.slice(1)}` : said;
     }
     const untracked = lines.findIndex((l) => /untracked working tree files would be (overwritten|removed)/.test(l));
-    if (untracked >= 0) return `Untracked ${files(untracked).text || "files"} would be overwritten. Move or remove them first.`;
+    if (untracked >= 0) {
+        const f = files(untracked);
+        const said = f.n ? `${f.text} ${f.n === 1 ? "is" : "are"} untracked and would be overwritten. Move or remove ${f.n === 1 ? "it" : "them"}.` : "Untracked files would be overwritten. Move or remove them.";
+        return lead ? `${lead}: ${f.n ? said : said[0]!.toLowerCase() + said.slice(1)}` : said;
+    }
     const said = lines.map((l) => l.replace(/^(error|fatal|warning): /i, "").trim()).filter((l) => l && !/^(hint:|Aborting$|Updating [0-9a-f]+\.\.[0-9a-f]+$)/.test(l));
     return (said[0] ?? "").slice(0, 300);
 }

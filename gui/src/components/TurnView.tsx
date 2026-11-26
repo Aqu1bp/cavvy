@@ -184,7 +184,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     <For each={p.turn.prompt?.files ?? []}>
                         {(f) => (
                             <span class="chip tiny" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
-                                {f.from === "side-chat" ? <MessageSquareText size={11} /> : <FileText size={11} />} <span class="truncate">{f.name}</span> · {formatSize(f.size)}
+                                {f.from === "side-chat" ? <MessageSquareText size={11} /> : <FileText size={11} />} <span class="truncate">{f.name}</span> · {f.from === "side-chat" && f.lines !== undefined ? plural(f.lines, "line") : formatSize(f.size)}
                             </span>
                         )}
                     </For>
