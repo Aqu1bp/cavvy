@@ -2531,7 +2531,7 @@ export class App {
             const taken = new Set(listed.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
             const provider = this.model?.provider;
             const own: Pick<Command, "name" | "description" | "args" | "aliases">[] =
-                provider && provider !== "codex" && this.cliCommands?.provider === provider
+                provider && baseCli(provider) !== "codex" && this.cliCommands?.provider === provider
                     ? [...this.cliCommands.names].filter((n) => !taken.has(n)).map((n) => ({ name: n, description: `${getProvider(provider)?.name ?? provider}'s own command` }))
                     : [];
             const items = [...listed, ...own]
