@@ -136,9 +136,13 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     let input: HTMLInputElement | undefined;
     let listEl: HTMLDivElement | undefined;
     const close = () => !busy() && setGitDialog(undefined);
-    /** Why `what` ("Can't pull") didn't happen: git's reason after it, so a blocked switch doesn't read as a blocked pull. */
+    /**
+     * Why `what` ("Can't pull") didn't happen: git's reason after it, so a blocked switch doesn't read as a blocked pull.
+     * A reason that already says what failed ("Couldn't fetch origin. …") is shown as it is, not after a second one.
+     */
     const failed = (what: string, e: unknown) => {
         const why = e instanceof Error ? e.message : String(e);
+        if (/^(Can't|Couldn't|Cannot) /.test(why)) return void setNote({ text: why, level: "error" });
         setNote({ text: `${what}: ${/^[A-Z][a-z]/.test(why) ? why[0]!.toLowerCase() + why.slice(1) : why}`, level: "error" });
     };
 
