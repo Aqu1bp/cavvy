@@ -18,10 +18,13 @@ export function tabWrap<T>(items: readonly T[], at: T | null, inside: boolean, s
 }
 
 /**
- * Gives `el` the keyboard if nothing has been given it on purpose since a dialog opened: it's on nothing, or still on
- * what the dialog gave it first (its buttons, its ×). For a field that comes once a dialog's content has loaded.
+ * Gives `el` the keyboard if nothing has been given it on purpose since its dialog opened: it's on nothing, still
+ * outside the dialog (on what opened it), or on what the dialog gave it first (its buttons). For a field that comes
+ * once a dialog's content has loaded. `select`: its text too, so typing replaces what was filled in.
  */
-export function takeFocus(el: HTMLElement | undefined): void {
+export function takeFocus(el: HTMLElement | undefined, select = false): void {
     const at = document.activeElement;
-    if (el && (!at || at === document.body || at.closest(".dialog-actions, .dialog-close"))) el.focus();
+    if (!el?.isConnected || (at && at !== document.body && el.closest('[role="dialog"]')?.contains(at) && !at.closest(".dialog-actions"))) return;
+    el.focus();
+    if (select && el instanceof HTMLInputElement) el.select();
 }

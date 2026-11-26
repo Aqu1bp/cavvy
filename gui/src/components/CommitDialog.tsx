@@ -256,7 +256,8 @@ export function CommitDialog() {
                         // The message takes the keyboard, unless it has been moved on purpose since the dialog opened.
                         ref={(el) => {
                             messageEl = el;
-                            requestAnimationFrame(() => takeFocus(el));
+                            // As soon as it's in the page (a key pressed straight after the click is dispatched after this).
+                            queueMicrotask(() => (el.isConnected ? takeFocus(el) : requestAnimationFrame(() => takeFocus(el))));
                         }}
                         placeholder="Commit message"
                         value={message()}
