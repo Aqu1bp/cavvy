@@ -364,7 +364,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     }
     // From the prompt as written: a key file's path keeps its case.
     const addServer = /\baddserver ([\w-]+) (\S+)(?: key=(\S+))?/i.exec(prompt);
-    if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1], address: addServer[2], ...(addServer[3] ? { identity_file: addServer[3] } : {}) } }] } : { text: lastResult };
+    if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1]!.toLowerCase(), address: addServer[2], ...(addServer[3] ? { identity_file: addServer[3] } : {}) } }] } : { text: lastResult };
     const deleteServer = /\bdeleteserver ([\w-]+)/.exec(p);
     if (deleteServer) return toolRounds === 0 ? { text: "Deleting it.", calls: [{ name: "ServerRemove", args: { name: deleteServer[1] } }] } : { text: lastResult };
     // Asks the user to sign in to something ("signin gh", "signin fly on box"; "signin fly: fly auth login" offers a command Cavvy doesn't know), then carries on.

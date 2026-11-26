@@ -707,7 +707,9 @@ exit 0
         const { saveServer } = await import("../src/servers/store");
         const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
         const usual = readFileSync(join(mine, "aws"), "utf-8");
-        saveServer({ ...getServer("box")!, name: "mac", cloud: { provider: "AWS EC2", teardown: [["aws", "ec2", "release-hosts", "--host-ids", "h-0123"]] } });
+        // A --query that would hide what wasn't released, and an --output that isn't JSON: the answer is read whole all the same.
+        const step = ["aws", "ec2", "release-hosts", "--host-ids", "h-0123", "--query", "Successful", "--output=text"];
+        saveServer({ ...getServer("box")!, name: "mac", cloud: { provider: "AWS EC2", teardown: [step] } });
         // As the real CLI answers a host it won't release yet: exit 0, the host under Unsuccessful.
         writeFileSync(join(mine, "aws"), `#!/bin/sh
 d=${JSON.stringify(cloud)}
@@ -719,9 +721,9 @@ exit 0
         try {
             const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
             const failed = await setup.remove("mac", o).then(() => "", (e: Error) => e.message);
-            expect(failed).toContain("release-hosts --host-ids h-0123` failed");
+            expect(failed).toContain("release-hosts --host-ids h-0123 --query Successful --output=text` failed");
             expect(failed).toContain("Dedicated host is in use");
-            expect(getServer("mac")!.cloud!.teardown).toEqual([["aws", "ec2", "release-hosts", "--host-ids", "h-0123"]]);
+            expect(getServer("mac")!.cloud!.teardown).toEqual([step]);
             writeFileSync(join(cloud, "allow-host"), "");
             await setup.remove("mac", o);
             expect(getServer("mac")).toBeUndefined();
