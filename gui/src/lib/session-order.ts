@@ -234,7 +234,8 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
 export const machineLabel = (name: string) => (name.length > 18 ? `${name.slice(0, 17)}…` : name);
 
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
- * New attention/open rows append while held, without displacing any existing row.
+ * New attention/open rows join while held without reordering any existing row: each goes at
+ * the end of its own heading's rows (with the heading, if it's new), not under a shelf below.
  * Needs you (pinned above it all) is held only while `pinnedHeld` (the pointer on the
  * rail, a row's menu open): its ids aren't the list's order, so a selection alone
  * needn't keep it from following who's waiting. */
@@ -251,17 +252,35 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         return "id" in e && !live.has(e.id) ? [] : [e];
     });
     const ids = new Set(sidebarIds(kept));
-    const added = next.flatMap((e): SidebarEntry[] => {
+    const out = [...pinned, ...kept];
+    next.forEach((e, i) => {
+        let add: SidebarEntry;
         if (e.kind === "run") {
             const missing = e.ids.filter((id) => !ids.has(id));
-            if (!missing.some((id) => requiredSession(live.get(id)!, activeId))) return [];
+            if (!missing.some((id) => requiredSession(live.get(id)!, activeId))) return;
             // A newly required member must not move targets below its held group.
-            return [{ ...e, key: `${e.key}:pending:${missing[0]}`, ids: missing }];
+            add = { ...e, key: `${e.key}:pending:${missing[0]}`, ids: missing };
+        } else if ("id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId)) add = e;
+        else return;
+        // Its heading (a day, a project, a shelf), none for the rows above the first.
+        const head = next.slice(0, i).findLast(sectionHead);
+        const at = head ? out.findIndex((x) => x.key === head.key) : -1;
+        if (!head || at >= 0) {
+            // The end of that heading's rows: before the next heading, or its Show more.
+            const end = out.findIndex((x, j) => j > at && (sectionHead(x) || x.kind === "more"));
+            out.splice(end < 0 ? out.length : end, 0, add);
+            return;
         }
-        return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
+        // A heading the held list hasn't got: it comes with its row, before the next heading it has.
+        const later = new Set(next.slice(i + 1).filter(sectionHead).map((x) => x.key));
+        const before = out.findIndex((x) => later.has(x.key));
+        out.splice(before < 0 ? out.length : before, 0, head, add);
     });
-    return [...pinned, ...kept, ...added];
+    return out;
 }
+
+/** What starts a part of the list: a day's or a project's heading, or a shelf's. */
+const sectionHead = (e: SidebarEntry) => e.kind === "day" || e.kind === "project" || e.kind === "snoozed" || e.kind === "settled" || e.kind === "archived";
 
 /**
  * The layout as the rail draws it: a session pinned under Needs you isn't listed a second time in its own place

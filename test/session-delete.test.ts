@@ -105,7 +105,7 @@ describe("session.delete", () => {
         }
     }, 30_000);
 
-    test("moves the session's files out of projects/ and Undo brings back the same bytes, pin and archived state", async () => {
+    test("moves the session's files out of projects/ and Undo brings back the same bytes, pin, archived and Never auto-settle", async () => {
         const cwd = createDemoProject(tempDir("cavvy-del-git-"));
         const { engine, c, events, id, f } = await setup(cwd);
         try {
@@ -119,6 +119,7 @@ describe("session.delete", () => {
             writeFileSync(f.turnsIndex, '{"v":0}', { mode: 0o600 });
             await engine.handle(c, "session.pin", { id, pinned: true });
             await engine.handle(c, "session.archive", { id, archived: true });
+            await engine.handle(c, "session.neverSettle", { id, on: true });
             const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), queue: readFileSync(f.queue), turns: readFileSync(f.turns), turnsIndex: readFileSync(f.turnsIndex), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
             const before = { status: git(cwd, "status", "--porcelain"), readme: readFileSync(join(cwd, "README.md")) };
             expect(existsSync(f.lock)).toBe(true);
@@ -128,6 +129,7 @@ describe("session.delete", () => {
             expect(engine.runtimes.has(id)).toBe(false);
             expect(store().pinned ?? []).not.toContain(id);
             expect(store().archived ?? []).not.toContain(id);
+            expect(store().neverSettle ?? []).not.toContain(id);
             expect(events).toContainEqual({ type: "sessions.remove", id });
             for (const archived of [false, true]) expect(((await engine.handle(c, "sessions.list", { archived })) as SessionSummary[]).some((s) => s.id === id)).toBe(false);
             expect((await fails(engine.handle(c, "session.open", { id }))).code).toBe("not_found");
@@ -146,8 +148,9 @@ describe("session.delete", () => {
             expect([mode(f.file), mode(f.ui), mode(f.history)]).toEqual([0o600, 0o600, 0o700]);
             expect(gone(join(trashDir(), id))).toBe(true);
             const back = ((await engine.handle(c, "sessions.list", { archived: true })) as SessionSummary[]).find((s) => s.id === id);
-            expect(back).toMatchObject({ pinned: true, archived: true });
-            expect(events.some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.pinned && e.session.archived)).toBe(true);
+            expect(back).toMatchObject({ pinned: true, archived: true, neverSettle: true });
+            expect(store().neverSettle).toContain(id);
+            expect(events.some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.pinned && e.session.archived && e.session.neverSettle)).toBe(true);
             const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
             expect(snap.turns.length).toBeGreaterThan(0);
             expect(((await engine.handle(c, "session.rewindTargets", { id })) as unknown[]).length).toBeGreaterThan(0);
