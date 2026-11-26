@@ -22,6 +22,10 @@ describe("snooze times, in the window's time zone", () => {
     test("past 6 pm, tonight is three hours on; on a Monday, next week is the Monday after; Sunday's is the next day", () => {
         const evening = at(2026, 11, 18, 19, 15);
         expect(snoozeChoices(evening)[1]!.at).toBe(evening + 3 * HOUR);
+        // Under 2 hours before 6 pm: 3 hours on, after "1 hour", not before it.
+        const late = at(2026, 11, 18, 17) + 11 * 60_000;
+        expect(snoozeChoices(late)[1]!.at).toBe(late + 3 * HOUR);
+        expect(snoozeChoices(at(2026, 11, 18, 16))[1]!.at).toBe(at(2026, 11, 18, 18));
         expect(snoozeChoices(at(2026, 11, 23, 10))[3]!.at).toBe(at(2026, 11, 30, 9));
         expect(snoozeChoices(at(2026, 11, 22, 10))[3]!.at).toBe(at(2026, 11, 23, 9));
     });

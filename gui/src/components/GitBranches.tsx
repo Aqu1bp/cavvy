@@ -319,7 +319,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                                     <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} title={r.title} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
                                         <span class="pal-ic">{icon(r)}</span>
                                         <span class="pal-text">
-                                            <Show when={r.verb} fallback={<span class="pal-l mono">{r.label}</span>}>
+                                            <Show when={r.verb} fallback={<span class={r.key === "pr" ? "pal-l" : "pal-l mono"}>{r.label}</span>}>
                                                 <span class="pal-l">{r.verb} “<span class="mono">{r.label}</span>”</span>
                                             </Show>
                                             <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
