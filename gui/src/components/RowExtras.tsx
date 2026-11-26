@@ -245,7 +245,6 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
                     <For each={snoozeChoices(Date.now())}>
                         {(c) => (
                             <button role="menuitem" class="menu-item compact snz-opt" onClick={() => choose(c.at)}>
-                                <AlarmClock size={14} class="snz-blank" aria-hidden="true" />
                                 <span>{c.label}</span>
                                 <span class="menu-hint">{c.hint}</span>
                             </button>
@@ -253,7 +252,7 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
                     </For>
                     <div class="menu-sep" />
                     <button role="menuitem" class="menu-item compact snz-opt" onClick={() => (p.close(), askCustom(p.ids))}>
-                        <AlarmClock size={14} class="snz-blank" aria-hidden="true" /> Custom…
+                        Custom…
                     </button>
                 </Submenu>
             </Show>

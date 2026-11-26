@@ -28,6 +28,8 @@ export interface SessionFlags {
     pinned: boolean;
     archived: boolean;
     settled: boolean;
+    /** Its row menu's Never auto-settle. */
+    neverSettle?: boolean;
 }
 
 interface TrashEntry extends SessionFlags {
@@ -250,7 +252,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
         } catch {
             // purged later
         }
-        return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled) };
+        return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled), neverSettle: Boolean(meta.neverSettle) };
     } finally {
         release();
     }
