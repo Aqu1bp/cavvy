@@ -88,8 +88,8 @@ export function mountWhere(el: HTMLElement): () => void {
         () => (
             <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "start")}>
                 <Server size={14} class="ic" />
-                {/* The machine picked, while Home gets there. */}
-                <span class="truncate">{(goingTo() ? goingTo()!.name : runsOn()) ?? HERE}</span>
+                {/* Where a session sent now runs: Home is still there until it has moved (dimmed meanwhile). */}
+                <span class="truncate">{runsOn() ?? HERE}</span>
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
         ),
