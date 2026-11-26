@@ -32,6 +32,9 @@
     /* The scrollbar's room kept from the start (where it takes room): the column doesn't narrow and wrap again when
        the conversation first overflows. */
     scrollbar-gutter: stable;
+    /* Its size is its place's (inset: 0), whatever is in it: said outright, layout for what changes inside starts here
+       rather than at the window, which laid every pane out again with each step of a reply. */
+    contain: layout size;
 }
 
 /* Followed at its end with a scrollbar that's laid over the content: put away until the reader scrolls
