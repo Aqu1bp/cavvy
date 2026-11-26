@@ -120,15 +120,14 @@ mac_start() {
     if boots && admin; then
         # The daemon has it from here: an agent that ran it until now goes.
         mac_unload "user/$uid/$label"
-        rm -f "$agent"
-        mac_load system "$daemon"
-    else
-        # Also where the daemon is installed and only an administrator may start it: it starts Cavvy at boot, and
-        # the agent whenever it's started after that.
-        mkdir -p "$(dirname "$agent")"
-        mac_plist '<key>LimitLoadToSessionType</key><string>Background</string>' > "$agent.tmp" && mv -f "$agent.tmp" "$agent"
-        mac_load "user/$uid" "$agent"
+        if mac_load system "$daemon"; then rm -f "$agent"; return 0; fi
+        # launchd wouldn't take the daemon: the agent runs Cavvy, rather than nothing.
     fi
+    # Also where the daemon is installed and only an administrator may start it: it starts Cavvy at boot, and the
+    # agent whenever it's started after that.
+    mkdir -p "$(dirname "$agent")"
+    mac_plist '<key>LimitLoadToSessionType</key><string>Background</string>' > "$agent.tmp" && mv -f "$agent.tmp" "$agent"
+    mac_load "user/$uid" "$agent"
 }
 # After Cavvy's own stop: out of launchd too, so one that didn't answer (hung, or crashing each time it's started)
 # isn't started again. A daemon that can't be taken out stays loaded, with nothing running. Only this user's daemon:

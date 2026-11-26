@@ -155,6 +155,25 @@ describe("a Mac where sudo doesn't ask", () => {
         expect(asked().at(-1)).toBe(`root bootstrap system ${daemonFile}`);
     });
 
+    test("a daemon launchd won't load doesn't leave nothing running: the agent runs Cavvy", async () => {
+        mac.refuseDaemon(true);
+        try {
+            const from = mac.launchd().length;
+            const r = await setUpServer(entry, { source: source(B) });
+            expect(r.status).toMatchObject({ running: true, build: B });
+            expect(asked(from)).toContain(`root bootstrap system ${daemonFile}`);
+            expect(asked(from).at(-1)).toBe(`user bootstrap user/${uid} ${agentFile}`);
+            expect(existsSync(agentFile)).toBe(true);
+        } finally {
+            mac.refuseDaemon(false);
+        }
+        // Once launchd takes it again, it's the daemon's, and the agent goes.
+        const back = await setUpServer(entry, { source: source(A) });
+        expect(back.status).toMatchObject({ running: true, build: A });
+        expect(asked().at(-1)).toBe(`root bootstrap system ${daemonFile}`);
+        expect(existsSync(agentFile)).toBe(false);
+    });
+
     test("another user's daemon under the same name is left alone, and there's nothing to tell this one to run", async () => {
         const theirs = "<plist><string>/Users/other/.cavvy/server</string></plist>\n";
         writeFileSync(daemonFile, theirs);

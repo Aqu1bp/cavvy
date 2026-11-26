@@ -43,6 +43,8 @@ export interface FakeServer {
     allowLinger(yes: boolean): void;
     /** With `mac`: whether `sudo` there runs things without asking for a password. */
     allowSudo(yes: boolean): void;
+    /** With `mac`: launchd there won't load a daemon, whoever asks (true), or will again. */
+    refuseDaemon(yes: boolean): void;
     /** With `mac`: what was asked of the pretend launchd, in order ("user bootstrap user/501 <file>"; "root …" when through sudo). */
     launchd(): string[];
     /** With `mac`: where the pretend Mac keeps its LaunchDaemons. */
@@ -221,6 +223,10 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
         allowSudo(yes) {
             if (yes) writeFileSync(join(dir, "sudo-allowed"), "");
             else rmSync(join(dir, "sudo-allowed"), { force: true });
+        },
+        refuseDaemon(yes) {
+            if (yes) writeFileSync(join(dir, "refuse-daemon"), "");
+            else rmSync(join(dir, "refuse-daemon"), { force: true });
         },
         launchd: () =>
             existsSync(join(dir, "launchctl.log"))

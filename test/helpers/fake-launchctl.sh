@@ -13,6 +13,7 @@ print)
     ;;
 bootstrap)
     may "$2" || { echo "Bootstrap failed: 1: Operation not permitted" >&2; exit 1; }
+    case "$2" in system) [ -f "$FAKE_DIR/refuse-daemon" ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; } ;; esac
     m=$(mark "$2/$(basename "$3" .plist)")
     # One that's loaded already, and an agent that isn't for the background session: both are refused like this.
     refused() { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
