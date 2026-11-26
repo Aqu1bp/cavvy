@@ -162,6 +162,16 @@ describe("a Mac where sudo doesn't ask", () => {
         expect(readFileSync(daemonFile, "utf-8")).toBe(theirs);
         expect((await probeServer(entry)).launchDaemon).toBe("other");
         expect(serviceReport(await probeServer(entry))).toEqual({ service: false });
+        // Nor is their job, which runs their Cavvy: this one's update and stop go through its own agent, though
+        // sudo would let it take theirs out of launchd.
+        await stopRemote(entry);
+        const from = mac.launchd().length;
+        const r = await setUpServer(entry, { source: source(B) });
+        expect(r.status).toMatchObject({ running: true, build: B });
+        await stopRemote(entry);
+        expect(await remoteStatus(entry)).toBeUndefined();
+        expect(asked(from).filter((l) => l.includes("system"))).toEqual([]);
+        expect(asked(from)).toContain(`user bootstrap user/${uid} ${agentFile}`);
     });
 });
 

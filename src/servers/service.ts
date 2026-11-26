@@ -131,10 +131,11 @@ mac_start() {
     fi
 }
 # After Cavvy's own stop: out of launchd too, so one that didn't answer (hung, or crashing each time it's started)
-# isn't started again. A daemon that can't be taken out stays loaded, with nothing running.
+# isn't started again. A daemon that can't be taken out stays loaded, with nothing running. Only this user's daemon:
+# the system's job of that name may be another account's Cavvy on the same Mac.
 mac_stop() {
     mac_unload "user/$uid/$label"
-    if admin; then mac_unload "system/$label"; fi
+    if boots && admin; then mac_unload "system/$label"; fi
 }
 `;
 
