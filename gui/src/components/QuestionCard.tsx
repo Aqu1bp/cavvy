@@ -10,6 +10,7 @@ import type { QuestionInteraction } from "@shared/protocol";
 import { respond } from "../state/actions";
 import { handleFor } from "../state/app";
 import { usePane } from "../state/split";
+import { pickOption } from "../lib/question-pick";
 import { blockedBy, isLongPaste, pastedText, readAttachment, toWire, type Attachment } from "../lib/attachments";
 import { AttachmentChips } from "./AttachmentChips";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
@@ -29,6 +30,8 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
     const hasAnswer = () => Boolean(picked().length || typed() || attached().length);
     /** Something written or attached goes with the answer: a pick (a click or its number) is then made, shown, and sent with Answer, not at once. */
     const reviewing = () => Boolean(typed() || attached().length);
+    /** Picks are made and sent with Answer (lib/question-pick.ts): the options show whether they're picked, and Answer shows. */
+    const choosing = () => Boolean(p.it.multi || reviewing() || picked().length);
 
     /** Skipped (undefined), or answered with what's attached; if it doesn't go through, the card keeps it all. */
     const submit = async (answers: string[] | undefined) => {
@@ -40,9 +43,9 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
     };
     const answer = () => submit([...picked(), ...(typed() ? [typed()] : [])]);
     const toggle = (label: string) => {
-        if (!p.it.multi && !reviewing()) return void submit([label]);
-        if (!p.it.multi) return void setPicked((l) => (l[0] === label ? [] : [label]));
-        setPicked((l) => (l.includes(label) ? l.filter((x) => x !== label) : [...l, label]));
+        const next = pickOption(label, { multi: p.it.multi, reviewing: reviewing(), picked: picked() });
+        if ("send" in next) void submit(next.send);
+        else setPicked(next.picked);
     };
     const addFiles = async (files: FileList | File[]) => {
         for (const f of Array.from(files)) {
@@ -102,7 +105,7 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
                         <div class="q-options">
                             <For each={p.it.options}>
                                 {(o, i) => (
-                                    <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} aria-pressed={p.it.multi || reviewing() ? picked().includes(o.label) : undefined} disabled={busy()} onClick={() => toggle(o.label)}>
+                                    <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} aria-pressed={choosing() ? picked().includes(o.label) : undefined} disabled={busy()} onClick={() => toggle(o.label)}>
                                         <kbd>{i() + 1}</kbd>
                                         <span class="q-text">
                                             <span class="q-label">{o.label}</span>
@@ -173,7 +176,7 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
                 </Show>
             </div>
             <div class="itab-actions ask-row">
-                <Show when={p.it.multi || reviewing() || picked().length}>
+                <Show when={choosing()}>
                     <button class="pbtn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
                         Answer
                     </button>
