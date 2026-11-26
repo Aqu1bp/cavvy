@@ -75,6 +75,7 @@ const DELETE = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassocia
 const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister)-(?:instances?|instance-snapshots?|disks?|disk-snapshots?|static-ips?|address(?:es)?|key-pairs?|hosts?|volumes?|snapshots?|images?|security-groups?|network-interfaces?|subnets?|vpcs?|internet-gateways?|route-tables?|load-balancers?)$/;
 const AWS_SERVICE = /^(?:lightsail|ec2)$/;
 const RELEASE_HOSTS_OPTIONS = ["--host-ids", "--region", "--profile"];
+const HOST_ID = /^h-[0-9a-f]{8,17}$/;
 /** Waiting for a deletion to finish, which the next one may need: it reads, and changes nothing. */
 const AWS_GONE = /-(?:terminated|deleted|not-exists)$/;
 
@@ -118,8 +119,11 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
         if (words.some((w) => w.startsWith("-") && !RELEASE_HOSTS_OPTIONS.includes(w.split("=")[0]!))) return "`aws ec2 release-hosts` takes only --host-ids, --region and --profile in a teardown.";
         // One host a command: one that's released while another isn't would otherwise be asked for again, and refused.
         const at = words.findIndex((w) => w === "--host-ids" || w.startsWith("--host-ids="));
-        const one = at >= 0 && (words[at]!.includes("=") ? !words[at + 1] || words[at + 1]!.startsWith("-") : Boolean(words[at + 1]) && !words[at + 1]!.startsWith("-") && (!words[at + 2] || words[at + 2]!.startsWith("-")));
-        if (!one || words.filter((w) => w.startsWith("--host-ids")).length > 1 || words.some((w) => w.startsWith("h-") && w.includes(","))) return "Each `aws ec2 release-hosts` in a teardown names one host: --host-ids h-….";
+        const joined = at >= 0 && words[at]!.includes("=");
+        const id = at < 0 ? undefined : joined ? words[at]!.slice("--host-ids=".length) : words[at + 1];
+        const next = words[at + (joined ? 1 : 2)];
+        const one = id !== undefined && HOST_ID.test(id) && (!next || next.startsWith("-")) && words.filter((w) => w.startsWith("--host-ids")).length === 1;
+        if (!one) return "Each `aws ec2 release-hosts` in a teardown names one host: --host-ids h-….";
     }
     if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws lightsail delete-…" or "aws ec2 terminate-…" of the same kinds ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;

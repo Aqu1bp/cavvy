@@ -289,16 +289,16 @@ describe("the tools, by themselves", () => {
             "linode-cli register-plugin delete", "ibmcloud cf install-plugin delete -f", "gcloud projects add-iam-policy-binding delete --member user:x --role owner", "hcloud context delete default", "gcloud projects delete p", "ibmcloud plugin-delete x",
         ]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain(not);
         for (const c of [
-            "aws lightsail delete-instance --instance-name box", "aws ec2 release-hosts --host-ids h-0123 --region=us-east-2 --profile me", "aws ec2 release-hosts --host-ids=h-0123", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1", "aws lightsail delete-key-pair --key-pair-name box", "aws lightsail delete-disk --disk-name box-disk", "aws ec2 delete-volume --volume-id vol-1",
+            "aws lightsail delete-instance --instance-name box", "aws ec2 release-hosts --host-ids h-0123abcd --region=us-east-2 --profile me", "aws ec2 release-hosts --host-ids=h-0123abcd", "aws lightsail release-static-ip --static-ip-name box-ip", "aws ec2 terminate-instances --instance-ids i-0123", "aws ec2 wait instance-terminated --instance-ids i-0123", "aws ec2 delete-security-group --group-id sg-1", "aws ec2 release-address --allocation-id eipalloc-1", "aws lightsail delete-key-pair --key-pair-name box", "aws lightsail delete-disk --disk-name box-disk", "aws ec2 delete-volume --volume-id vol-1",
             "gcloud compute instances delete box --zone us-central1-a --quiet", "gcloud compute firewall-rules delete allow-ssh --quiet", "gcloud compute addresses delete box-ip --region us-central1 --quiet",
             "az vm delete --resource-group rg --name box --yes", "az group delete --name rg --yes", "az network public-ip delete --resource-group rg --name box-ip",
             "hcloud server delete box", "hcloud ssh-key delete cavvy-box", "hcloud primary-ip delete box-ip", "doctl compute droplet delete box --force", "doctl compute ssh-key delete 123 --force",
             "fly apps destroy box --yes", "fly machine destroy 123 --force", "flyctl ips release 203.0.113.9", "linode-cli linodes delete 123", "vultr-cli instance delete 123", "scw instance server terminate 123 with-ip=true",
             "oci compute instance terminate --instance-id ocid1.instance.oc1 --force", "exo compute instance delete box --force", "civo instance remove box --yes", "yc compute instance delete box", "upctl server delete 123", "ibmcloud is instance-delete 123 --force", "ibmcloud is floating-ip-release 123 --force",
         ]) expect(v({ ...base, provider: "X", teardown: [c] })).toBeUndefined();
-        for (const c of ["aws ec2 release-hosts --host-ids h-0123 h-0456", "aws ec2 release-hosts --host-ids h-0123,h-0456", "aws ec2 release-hosts --region us-east-2", "aws ec2 release-hosts --host-ids h-1 --host-ids h-2", "aws ec2 release-hosts --host-ids=h-1 h-2"]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain("names one host");
+        for (const c of ["aws ec2 release-hosts --host-ids h-0123abcd h-0456", "aws ec2 release-hosts --host-ids h-0123abcd,h-0456", "aws ec2 release-hosts --region us-east-2", "aws ec2 release-hosts --host-ids h-1 --host-ids h-2", "aws ec2 release-hosts --host-ids=h-1 h-2", "aws ec2 release-hosts --host-ids=h-0123abcd,h-0456abcd", "aws ec2 release-hosts --host-ids=", "aws ec2 release-hosts --host-ids h-0123abcd,h-0456abcd"]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain("names one host");
         // Its answer says whether the host was released, so nothing may filter or reshape it.
-        for (const c of ["aws ec2 release-hosts --host-ids h-0123 --query Successful", "aws ec2 release-hosts --host-ids h-0123 --que Successful", "aws ec2 release-hosts --host-ids h-0123 --output=text", "aws ec2 release-hosts --host-ids h-0123 --debug"]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain("takes only --host-ids, --region and --profile");
+        for (const c of ["aws ec2 release-hosts --host-ids h-0123abcd --query Successful", "aws ec2 release-hosts --host-ids h-0123abcd --que Successful", "aws ec2 release-hosts --host-ids h-0123abcd --output=text", "aws ec2 release-hosts --host-ids h-0123abcd --debug"]) expect(v({ ...base, provider: "X", teardown: [c] })).toContain("takes only --host-ids, --region and --profile");
 
         const added: unknown[] = [];
         const s = servers({ add: async (spec) => (added.push(spec), { lacks: ["git"] }) });
@@ -710,21 +710,21 @@ exit 0
         const { saveServer } = await import("../src/servers/store");
         const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
         const usual = readFileSync(join(mine, "aws"), "utf-8");
-        const step = ["aws", "ec2", "release-hosts", "--host-ids", "h-0123", "--region", "us-east-2"];
+        const step = ["aws", "ec2", "release-hosts", "--host-ids", "h-0123abcd", "--region", "us-east-2"];
         saveServer({ ...getServer("box")!, name: "mac", cloud: { provider: "AWS EC2", teardown: [step] } });
         // As the real CLI answers a host it won't release yet: exit 0, the host under Unsuccessful.
         writeFileSync(join(mine, "aws"), `#!/bin/sh
 d=${JSON.stringify(cloud)}
 echo "$*" >> "$d/calls3"
-[ -e "$d/allow-host" ] && { echo '{ "Successful": ["h-0123"], "Unsuccessful": [] }'; exit 0; }
+[ -e "$d/allow-host" ] && { echo '{ "Successful": ["h-0123abcd"], "Unsuccessful": [] }'; exit 0; }
 [ -e "$d/say-nothing" ] && { echo '{ "Successful": [], "Unsuccessful": [] }'; exit 0; }
-echo '{ "Successful": [], "Unsuccessful": [{ "Error": { "Code": "Client.InvalidHost.Occupied", "Message": "Dedicated host is in use" }, "ResourceId": "h-0123" }] }'
+echo '{ "Successful": [], "Unsuccessful": [{ "Error": { "Code": "Client.InvalidHost.Occupied", "Message": "Dedicated host is in use" }, "ResourceId": "h-0123abcd" }] }'
 exit 0
 `);
         try {
             const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
             const failed = await setup.remove("mac", o).then(() => "", (e: Error) => e.message);
-            expect(failed).toContain("release-hosts --host-ids h-0123 --region us-east-2` failed");
+            expect(failed).toContain("release-hosts --host-ids h-0123abcd --region us-east-2` failed");
             expect(failed).toContain("Dedicated host is in use");
             expect(getServer("mac")!.cloud!.teardown).toEqual([step]);
             // An answer that doesn't name the host as released isn't taken as one.
@@ -736,7 +736,7 @@ exit 0
             await setup.remove("mac", o);
             expect(getServer("mac")).toBeUndefined();
             // Asked for JSON, so what it left unreleased can be read whatever the user's aws config prints.
-            expect(readFileSync(join(cloud, "calls3"), "utf-8").trim().split("\n")).toEqual(Array(3).fill("ec2 release-hosts --host-ids h-0123 --region us-east-2 --output json"));
+            expect(readFileSync(join(cloud, "calls3"), "utf-8").trim().split("\n")).toEqual(Array(3).fill("ec2 release-hosts --host-ids h-0123abcd --region us-east-2 --output json"));
         } finally {
             writeFileSync(join(mine, "aws"), usual);
         }
