@@ -362,7 +362,8 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         }
         return { text: lastResult };
     }
-    const addServer = /\baddserver ([\w-]+) (\S+)(?: key=(\S+))?/.exec(p);
+    // From the prompt as written: a key file's path keeps its case.
+    const addServer = /\baddserver ([\w-]+) (\S+)(?: key=(\S+))?/i.exec(prompt);
     if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1], address: addServer[2], ...(addServer[3] ? { identity_file: addServer[3] } : {}) } }] } : { text: lastResult };
     const deleteServer = /\bdeleteserver ([\w-]+)/.exec(p);
     if (deleteServer) return toolRounds === 0 ? { text: "Deleting it.", calls: [{ name: "ServerRemove", args: { name: deleteServer[1] } }] } : { text: lastResult };

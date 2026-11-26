@@ -99,15 +99,32 @@ async function settled(e: ServerEntry, signal: AbortSignal, progress: (text: str
 /** Memory under which Cavvy and an agent CLI don't fit (measured: a 512 MB machine killed both while it installed). */
 const SMALL_KB = 900_000;
 
+/** `aws ec2 release-hosts` exits 0 even when a host isn't released (still in use, or within its minimum): it lists those as Unsuccessful. */
+const releasesHosts = (argv: string[]) => argv[0] === "aws" && argv[1] === "ec2" && argv[2] === "release-hosts";
+
+/** Whether a release-hosts run that exited 0 left a host unreleased, from what it printed. */
+function unreleased(out: string): boolean {
+    try {
+        const r = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1)) as { Unsuccessful?: unknown[] };
+        return Boolean(r.Unsuccessful?.length);
+    } catch {
+        // Not JSON (an --output the command chose): the text and table forms name only what failed.
+        return /unsuccessful/i.test(out);
+    }
+}
+
 /** Runs one teardown command: Cavvy's own process, with arguments only. `missing`: its CLI isn't installed here. */
 async function runTeardown(argv: string[], signal: AbortSignal): Promise<{ code: number; out: string; missing?: boolean }> {
     const bin = Bun.which(argv[0]!, { PATH: process.env.PATH ?? "" });
     if (!bin) return { code: 127, out: "", missing: true };
+    const hosts = releasesHosts(argv);
+    const args = hosts && !argv.some((w) => w === "--output" || w.startsWith("--output=")) ? [...argv.slice(1), "--output", "json"] : argv.slice(1);
     // In a folder of its own, with nothing in it: no word of the command can name a file of the user's.
     const cwd = mkdtempSync(join(tmpdir(), "cavvy-teardown-"));
     try {
         // Stopped, or at its limit, it ends with whatever it started: a CLI that's a wrapper doesn't delete on behind a "stopped".
-        return await runBounded([bin, ...argv.slice(1)], { cwd, env: childEnv(), timeoutMs: setupTiming.teardownMs, signal });
+        const r = await runBounded([bin, ...args], { cwd, env: childEnv(), timeoutMs: setupTiming.teardownMs, signal });
+        return hosts && r.code === 0 && unreleased(r.out) ? { ...r, code: 1 } : r;
     } finally {
         rmSync(cwd, { recursive: true, force: true });
     }
@@ -130,6 +147,8 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
         async add(spec, { signal, progress, trust }) {
             const links = await o.links();
             const key = getServer(spec.name) ? undefined : madeKey(spec.name);
+            // A server Cavvy made a key for signs in with that one: another named here would be shown, then not used.
+            if (key && spec.identityFile) throw new ServerError(`Cavvy has its own key for ${spec.name}: add it without identity_file.`);
             // Just created: it's still starting. (A key from before, for one forgotten and now put back, signs in at once.)
             const fresh = Boolean(key) && freshKey(spec.name);
             let draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] } = { name: spec.name, destination: spec.address, port: spec.port, ...(spec.identityFile ? { identityFile: spec.identityFile } : {}), cloud: spec.cloud };

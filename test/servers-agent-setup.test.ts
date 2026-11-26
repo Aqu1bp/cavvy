@@ -621,9 +621,10 @@ describe("from a window, with an agent doing it", () => {
         const list = await c.card(id, "signin", (i) => i.step === "list");
         await c.call("session.respond", { id, interactionId: list.id, response: { kind: "signin", action: "later" } });
         await c.until(id, done, "the turn's end");
-        // The pretend model reads the prompt lowercased: the path it passes on is the file's, in another case.
-        expect(getServer("keyed")).toMatchObject({ destination: "dev@box.example" });
-        expect(getServer("keyed")!.identityFile).toBe(file.toLowerCase());
+        expect(getServer("keyed")).toMatchObject({ destination: "dev@box.example", identityFile: file });
+        // And it's the key ssh was given, alone.
+        const last = fake.calls().at(-1)!;
+        expect(last.opts).toMatchObject({ IdentityFile: file, IdentitiesOnly: "yes" });
         for (const w of c.view(id).state.watches ?? []) await c.call("session.stopWatch", { id, watchId: w.id });
         c.ws.close();
         removeServer("keyed");
@@ -700,6 +701,37 @@ exit 0
         writeFileSync(join(mine, "aws"), usual);
     });
 
+    test("a dedicated host that AWS didn't release is a failed step, though the CLI exits 0", async () => {
+        const { serverSetup } = await import("../src/servers/agent-setup");
+        const { ServerLinks } = await import("../src/servers/manager");
+        const { saveServer } = await import("../src/servers/store");
+        const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
+        const usual = readFileSync(join(mine, "aws"), "utf-8");
+        saveServer({ ...getServer("box")!, name: "mac", cloud: { provider: "AWS EC2", teardown: [["aws", "ec2", "release-hosts", "--host-ids", "h-0123"]] } });
+        // As the real CLI answers a host it won't release yet: exit 0, the host under Unsuccessful.
+        writeFileSync(join(mine, "aws"), `#!/bin/sh
+d=${JSON.stringify(cloud)}
+echo "$*" >> "$d/calls3"
+[ -e "$d/allow-host" ] && { echo '{ "Successful": ["h-0123"], "Unsuccessful": [] }'; exit 0; }
+echo '{ "Successful": [], "Unsuccessful": [{ "Error": { "Code": "Client.InvalidHost.Occupied", "Message": "Dedicated host is in use" }, "ResourceId": "h-0123" }] }'
+exit 0
+`);
+        try {
+            const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
+            const failed = await setup.remove("mac", o).then(() => "", (e: Error) => e.message);
+            expect(failed).toContain("release-hosts --host-ids h-0123` failed");
+            expect(failed).toContain("Dedicated host is in use");
+            expect(getServer("mac")!.cloud!.teardown).toEqual([["aws", "ec2", "release-hosts", "--host-ids", "h-0123"]]);
+            writeFileSync(join(cloud, "allow-host"), "");
+            await setup.remove("mac", o);
+            expect(getServer("mac")).toBeUndefined();
+            // Asked for JSON, so what it left unreleased can be read whatever the user's aws config prints.
+            expect(readFileSync(join(cloud, "calls3"), "utf-8").trim().split("\n")).toEqual(["ec2 release-hosts --host-ids h-0123 --output json", "ec2 release-hosts --host-ids h-0123 --output json"]);
+        } finally {
+            writeFileSync(join(mine, "aws"), usual);
+        }
+    });
+
     test("a step that finished as the teardown was interrupted is done: the next try doesn't run it again", async () => {
         const { serverSetup } = await import("../src/servers/agent-setup");
         const { ServerLinks } = await import("../src/servers/manager");
@@ -759,6 +791,8 @@ exit 0
         const made = await makeServerKey("twin");
         const known = () => (existsSync(ownKnownHosts()) ? readFileSync(ownKnownHosts(), "utf-8") : "");
         const before = known();
+        // Cavvy's key is the one it signs in with: a key file named too would be shown to the user, then not used.
+        await expect(setup.add({ name: "twin", address: "ubuntu@203.0.113.50", identityFile: "~/keys/twin.pem" }, o)).rejects.toThrow("add it without identity_file");
         await expect(setup.add({ name: "twin", address: `ubuntu@${hostOf(box)}`, port: box.port }, o)).rejects.toThrow("is the address of box, one of the user's servers already");
         expect(known()).toBe(before);
         // A machine that never shows the identity made for it: the address keeps what it had.
