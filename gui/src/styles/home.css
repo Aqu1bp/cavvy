@@ -95,6 +95,12 @@
     }
 }
 
+/* Home just went to another machine (state/actions.ts goHomeOn): drawn where it ends up, in one change. */
+.home.home-jumped .home-col,
+.home.home-jumped .home-q {
+    transition: none;
+}
+
 /* Drawn before the window came up, at launch: it's all there when the window is. */
 .home.instant :is(.home-q, .home-composer, .composer-strip, .cli-sessions) {
     animation: none;

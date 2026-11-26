@@ -7,6 +7,7 @@ import { createEffect, createResource, createSignal, For, Show } from "solid-js"
 import type { CliSessionInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
 import { continueCliSession } from "../state/actions";
+import { cliListedBefore, listCli } from "../state/home-ahead";
 import { setSettingsTab } from "../state/ui";
 import { ago, basename } from "../lib/format";
 import { now } from "../lib/clock";
@@ -29,9 +30,16 @@ const agoText = (at: number) => {
 export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: number, section: boolean) => void }) {
     const [all, setAll] = createSignal(false);
     const [busy, setBusy] = createSignal<string>();
-    const [list, { refetch }] = createResource(
+    const [list, { refetch, mutate }] = createResource(
         () => app.conn === "open" && p.cwd,
-        (cwd) => rpc.call("cliSessions.list", { cwd }).catch(() => undefined),
+        (cwd) => {
+            const fresh = listCli(rpc, cwd).catch(() => undefined);
+            // Listed before Home came here (state/home-ahead.ts): shown with the folder, and replaced by what's listed now.
+            const before = cliListedBefore(cwd);
+            if (!before) return fresh;
+            void fresh.then((r) => r && p.cwd === cwd && mutate(r));
+            return before;
+        },
     );
     const sessions = () => list()?.sessions ?? [];
     // Ones already in Cavvy aren't offered on Home: "Show all" lists them after the rest.

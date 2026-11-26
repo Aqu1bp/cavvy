@@ -25,7 +25,7 @@ import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
-import { pickedPatch, takePicked } from "../lib/picked";
+import { pickedPatch, takePicked, type Picked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
@@ -84,13 +84,13 @@ const [homeAway, setHomeAway] = createSignal<{ on: string; cwd: string; link: Rp
 const [awayModes, setAwayModes] = createStore<Record<string, PermissionModeId>>({});
 /** Each other machine's recent projects, for Home's project menu while it's on that machine. */
 const [machineProjects, setMachineProjects] = createStore<Record<string, ProjectInfo[]>>({});
-function machineProjectsAgain(on: string, link: Rpc) {
-    void link.call("projects.recent", {}).then((p) => setMachineProjects(on, reconcile(p, { key: "path" })), () => undefined);
+function machineProjectsAgain(on: string, link: Rpc): Promise<unknown> {
+    return link.call("projects.recent", {}).then((p) => setMachineProjects(on, reconcile(p, { key: "path" })), () => undefined);
 }
 /** Each other machine's settings, for Home on it: the model, effort and permission mode a session made there starts with. */
 const [machineSettings, setMachineSettings] = createStore<Record<string, GuiSettings>>({});
-function machineSettingsAgain(on: string, link: Rpc) {
-    void link.call("settings.get", {}).then((s) => setMachineSettings(on, reconcile(s)), () => undefined);
+function machineSettingsAgain(on: string, link: Rpc): Promise<unknown> {
+    return link.call("settings.get", {}).then((s) => setMachineSettings(on, reconcile(s)), () => undefined);
 }
 /** The other machine Home is on, while it's shown in that machine's folder ("" this computer, in a window on a server). */
 export function homeOn(): string | undefined {
@@ -104,7 +104,11 @@ export function homeOn(): string | undefined {
 export function homeOnMachine(on: string, cwd: string): boolean {
     const id = [...awayOn].find(([k, m]) => m === on && away.has(k))?.[0];
     if (id === undefined) return false;
-    const link = away.get(id)!;
+    homeOnLink(on, cwd, away.get(id)!);
+    return true;
+}
+/** Home in `cwd` on `on`, over `link` (linkFor's): what it shows of that machine is asked for again behind it. */
+export function homeOnLink(on: string, cwd: string, link: Rpc) {
     batch(() => {
         setHomeAway({ on, cwd, link });
         setApp("homeCwd", cwd);
@@ -113,7 +117,32 @@ export function homeOnMachine(on: string, cwd: string): boolean {
     if (!(on in machineSettings)) machineSettingsAgain(on, link);
     machineProjectsAgain(on, link);
     if (!(on in machineModels)) machineModelsAgain(on, link);
-    return true;
+}
+/**
+ * `pick` taken up on machine `on` (undefined: the window's own), over `link`, once its settings and models are in:
+ * where it has that model, a new session there starts as picked here (lib/picked.ts), as when the window goes there.
+ */
+export function carryPick(pick: Picked, on: string | undefined, link: Rpc) {
+    const settings = on === undefined ? app.settings : machineSettings[on];
+    const models = (on === undefined ? app.models : (machineModels[on] ?? [])).flatMap((g) => g.models);
+    const patch = settings && pickedPatch(pick, settings, models);
+    if (!patch) return;
+    // Shown at once; what the machine then says it has is what stays.
+    if (on === undefined) setApp("settings", { ...app.settings, ...patch });
+    else setMachineSettings(on, patch);
+    void link.call("settings.update", { patch }).then(
+        (s) => (on === undefined ? setApp("settings", s) : setMachineSettings(on, reconcile(s))),
+        reportError,
+    );
+}
+/** What Home on `on` names from the start (its settings and models), asked for and in. */
+export function machineReady(on: string, link: Rpc): Promise<unknown> {
+    return Promise.all([machineSettingsAgain(on, link), machineModelsAgain(on, link)]);
+}
+/** Home has been on `on` in this window: its settings, models and latest project are known (asked for again behind). */
+export function machineKnown(on: string): { cwd: string } | undefined {
+    const cwd = machineProjects[on]?.[0]?.path;
+    return cwd && on in machineSettings && on in machineModels ? { cwd } : undefined;
 }
 /** Home back on the window's own machine. */
 export function homeHere() {
@@ -213,9 +242,8 @@ export function modelsFor(sessionId: string | undefined): ProviderModels[] {
     return on === undefined ? app.models : (machineModels[on] ?? []);
 }
 /** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
-function machineModelsAgain(on: string, link: Rpc, refresh = false) {
-    void link.call("models.list", { refresh }).then((m) => setMachineModels(on, reconcile(m, { key: "provider" })), () => undefined);
-    machineProvidersAgain(on, link);
+function machineModelsAgain(on: string, link: Rpc, refresh = false): Promise<unknown> {
+    return Promise.all([link.call("models.list", { refresh }).then((m) => setMachineModels(on, reconcile(m, { key: "provider" })), () => undefined), machineProvidersAgain(on, link)]);
 }
 /** Each other machine's providers, as its Cavvy lists them: its CLIs' accounts, for its sessions opened in this window (providersFor). */
 const [machineProviders, setMachineProviders] = createStore<Record<string, ProviderInfo[]>>({});
@@ -224,9 +252,10 @@ export function providersFor(sessionId: string | undefined): ProviderInfo[] {
     const on = awayMachine(sessionId);
     return on === undefined ? app.providers : (machineProviders[on] ?? []);
 }
-function machineProvidersAgain(on: string, link: Rpc) {
-    void link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
+function machineProvidersAgain(on: string, link: Rpc): Promise<unknown> {
+    const listed = link.call("providers.list", {}).then((p) => setMachineProviders(on, reconcile(p, { key: "id" })), () => undefined);
     void link.call("limits.get", {}).then((l) => Array.isArray(l) && setMachineLimits(on, reconcile(Object.fromEntries(l.map((x) => [planLimitKey(x.provider, x.accountId), fromWireLimits(x)])))), () => undefined);
+    return listed;
 }
 /** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
@@ -303,6 +332,11 @@ const heldLinks = new Set<string>();
 export function machineLink(on: string): Promise<Rpc> {
     heldLinks.add(on);
     return linkMade(on || undefined);
+}
+
+/** The connection to `name`'s Cavvy started now, not waited on: about to be picked from the list of machines. */
+export function warmLink(name: string | undefined) {
+    void linkMade(name).catch(() => undefined);
 }
 
 /** Connected to `name`'s Cavvy (undefined: this computer's), to open a session of it in this window. */
