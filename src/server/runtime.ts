@@ -2661,20 +2661,22 @@ export class Runtime {
         };
     }
 
-    /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
+    /**
+     * Who answers one-off requests (titles, summaries, git drafts): smallModel on whichever provider (Claude Code and
+     * Codex answer them too, backends/one-off.ts), else a small model of the session's provider, else its own.
+     */
     private async smallTarget(): Promise<{ model: ModelInfo; client: ProviderClient }> {
-        let model = this.model!;
-        let client = this.client!;
         const smallRef = this.settings().smallModel;
-        const p = smallRef ? parseModelRef(smallRef) : undefined;
-        if (p) {
+        const set = smallRef ? resolveModelInfo(smallRef) : undefined;
+        if (set) {
             try {
-                const c = await clientFor(p.provider);
-                return { model: resolveModelInfo(smallRef!) ?? model, client: c };
+                return { model: set, client: await clientFor(set.provider) };
             } catch {
                 // Its provider was removed or turned off: as when none is set.
             }
         }
+        let model = this.model!;
+        let client = this.client!;
         const small = smallModelFor(model.provider, this.engine.listings);
         if (small) model = small;
         return { model, client };
@@ -4956,11 +4958,13 @@ export class Runtime {
         const about = conversationGist(this.session.messages);
         if (!about) throw new RpcError("There's nothing in this session to name it after yet.", "empty");
         let raw: string;
+        let target: { model: ModelInfo; client: ProviderClient } | undefined;
         try {
-            const target = await this.smallTarget();
+            target = await this.smallTarget();
             raw = await this.complete(`You name coding-assistant sessions for a sidebar, from the conversation so far: what it's about now, not only how it started. Reply with only the title: ${TITLE_RULES}`, redactPrefix(about, 4000), AbortSignal.timeout(60_000), { target });
         } catch (e) {
-            if (e instanceof WholeTurnsOnly) throw new RpcError("This session's model can't make a title.", "unsupported");
+            const refused = target && this.oneOffRefused(e, target, "make a title");
+            if (refused) throw new RpcError(refused.message, "unsupported");
             this.engine.log(`session ${this.id}: no new title: ${(e as Error).message}`);
             throw new RpcError(`The model didn't answer: ${redact((e as Error).message).split("\n")[0]!.slice(0, 200)}`, "failed");
         }
@@ -5522,22 +5526,43 @@ export class Runtime {
         await this.ready;
         this.checkGitCommit();
         const files = this.gitPaths(paths, pathTokens);
-        if (!this.model || !this.client) throw new RpcError("Set a small model in Settings to generate messages.", "no_model");
-        const target = await this.smallTarget();
-        if (isAgentBackend(target.client)) throw new RpcError("Set a small model from another provider in Settings to generate messages.", "no_model");
+        const target = await this.draftTarget("generate messages");
         // The prompt redacts what it shows the model, names included.
         const prompt = await gitCommitPrompt(this.ws.cwd, files).catch((e) => { throw redactedError(e); });
-        const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
+        const message = await this.draft(target, "generate messages", COMMIT_MESSAGE_SYSTEM, prompt, 30_000);
         if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
         return { message, model: modelRef(target.model) };
     }
 
-    /** The small model that drafts git text, or why there's none: as Generate message has it. */
+    /**
+     * The model that drafts git text, as titles pick theirs (smallTarget): the small model set in Settings on whichever
+     * provider, else the session's provider's small default, else the session's own model. Only with none of those is
+     * there nothing to ask.
+     */
     private async draftTarget(what: string): Promise<{ model: ModelInfo; client: ProviderClient }> {
-        if (!this.model || !this.client) throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
-        const target = await this.smallTarget();
-        if (isAgentBackend(target.client)) throw new RpcError(`Set a small model from another provider in Settings to ${what}.`, "no_model");
-        return target;
+        if ((!this.model || !this.client) && !this.settings().smallModel) throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
+        try {
+            return await this.smallTarget();
+        } catch {
+            // Only a session without a model gets here (a set small model whose provider is gone falls back to it).
+            throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
+        }
+    }
+
+    /** A git draft on `target`. A CLI starts a process of its own for it, so it gets longer. */
+    private async draft(target: { model: ModelInfo; client: ProviderClient }, what: string, system: string, prompt: string, ms: number, maxTokens?: number): Promise<string> {
+        try {
+            return await this.complete(system, prompt, AbortSignal.timeout(isAgentBackend(target.client) ? Math.max(ms, 60_000) : ms), { target, ...(maxTokens ? { maxTokens } : {}) });
+        } catch (e) {
+            throw this.oneOffRefused(e, target, what) ?? e;
+        }
+    }
+
+    /** A model that runs whole turns only (an ACP agent, Antigravity) can't answer one-off requests: what to change instead. */
+    private oneOffRefused(e: unknown, target: { model: ModelInfo }, what: string): RpcError | undefined {
+        if (!(e instanceof WholeTurnsOnly)) return undefined;
+        const set = this.settings().smallModel === modelRef(target.model);
+        return new RpcError(`${providerLabel(target.model.provider)} can't ${what}. Choose ${set ? "another" : "a"} small model in Settings.`, "no_model");
     }
 
     /** A pull request's title and description into `base`, from this branch's commits and diff and the repository's template. */
@@ -5546,7 +5571,7 @@ export class Runtime {
         this.checkGitCommit("publishing");
         const target = await this.draftTarget("generate pull request text");
         const prompt = await gitPrPrompt(this.ws.cwd, base).catch((e) => { throw redactedError(e); });
-        const reply = await this.complete(PR_TEXT_SYSTEM, prompt, AbortSignal.timeout(60_000), { target, maxTokens: 2048 });
+        const reply = await this.draft(target, "generate pull request text", PR_TEXT_SYSTEM, prompt, 60_000, 2048);
         const text = parsePrText(reply);
         if (!text) throw new RpcError("The model returned no title. Try again or write your own.");
         return { ...text, model: modelRef(target.model) };
@@ -5557,7 +5582,7 @@ export class Runtime {
         await this.ready;
         if (!text.trim()) throw new RpcError("Write a commit message first.", "invalid");
         const target = await this.draftTarget("suggest branch names");
-        const reply = await this.complete(BRANCH_NAME_SYSTEM, branchPrompt(text), AbortSignal.timeout(30_000), { target, maxTokens: 100 });
+        const reply = await this.draft(target, "suggest branch names", BRANCH_NAME_SYSTEM, branchPrompt(text), 30_000, 100);
         const branch = branchName(reply, worktreeSettings(this.settings()).branchPrefix);
         if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
         return { branch, model: modelRef(target.model) };

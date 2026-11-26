@@ -45,7 +45,8 @@ import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from 
 import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
 import { clearModelSettings, type ModelSetting } from "../providers/model-refs";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { allProviders, getProvider, providerLabel, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { WholeTurnsOnly } from "../backends/one-off";
 import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
 import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
 
@@ -3283,21 +3284,28 @@ export class Engine {
     private async suggestBranch(cwd: string, text: string): Promise<GitBranchNameInfo> {
         if (!text.trim()) throw new RpcError("Describe the work first.", "invalid");
         const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
-        const none = (other = false) => new RpcError(other ? "Set a small model from another provider in Settings to suggest branch names." : "Set a small model in Settings to suggest branch names.", "no_model");
-        let model = settings.smallModel ? resolveModelInfo(settings.smallModel) : undefined;
-        if (!model) {
+        const none = () => new RpcError("Set a small model in Settings to suggest branch names.", "no_model");
+        // The small model set, on whichever provider (Claude Code and Codex answer one-offs too); one whose provider is gone is skipped.
+        const set = settings.smallModel ? resolveModelInfo(settings.smallModel) : undefined;
+        let target = set && (await clientFor(set.provider).then((client) => ({ model: set, client }), () => undefined));
+        if (!target) {
             const main = (settings.model && resolveModelInfo(settings.model)) || (this.fallbackModel && resolveModelInfo(this.fallbackModel)) || defaultModelFrom(this.listings);
             if (!main) throw none();
-            model = smallModelFor(main.provider, this.listings) ?? main;
+            const model = smallModelFor(main.provider, this.listings) ?? main;
+            target = { model, client: await clientFor(model.provider).catch(() => { throw none(); }) };
         }
-        const client = await clientFor(model.provider).catch(() => {
-            throw none();
-        });
-        if (isAgentBackend(client)) throw none(true);
-        const res = await client.stream(
-            { model, system: BRANCH_NAME_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: redact(branchPrompt(text)) }] }], tools: [], maxTokens: 100, effort: "low", lightweight: true, signal: AbortSignal.timeout(30_000) },
-            () => {},
-        );
+        const { model, client } = target;
+        const res = await client
+            .stream(
+                // A CLI starts a process of its own for it: a few seconds more than an API call.
+                { model, system: BRANCH_NAME_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: redact(branchPrompt(text)) }] }], tools: [], maxTokens: 100, effort: "low", lightweight: true, signal: AbortSignal.timeout(isAgentBackend(client) ? 60_000 : 30_000) },
+                () => {},
+            )
+            .catch((e) => {
+                // It runs whole turns only (an ACP agent, Antigravity).
+                if (e instanceof WholeTurnsOnly) throw new RpcError(`${providerLabel(model.provider)} can't suggest branch names. Choose ${set === model ? "another" : "a"} small model in Settings.`, "no_model");
+                throw e;
+            });
         const branch = branchName(textOf(res), worktreeSettings(settings).branchPrefix);
         if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
         return { branch, model: modelRef(model) };
