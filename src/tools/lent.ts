@@ -6,6 +6,7 @@
 // Here: what can be lent, and whether this process has been lent it. How a call travels is the engine's.
 
 import type { PermissionMode } from "../permissions/modes";
+import { simulatorsLikely } from "../simulator/simctl";
 import type { ToolResult } from "./types";
 
 /** What a machine can lend, by kind. */
@@ -40,10 +41,10 @@ export const lentAs = (): PermissionMode => lenderSaid;
 /**
  * A call of `tool` here runs on the lending machine (the user's Mac): the mode it's held to there, its user's default.
  * A session's call of it is decided under the stricter of that and its own (Agent.prepare): Bypass on a server is
- * for the server.
+ * for the server. A Mac server runs the call on its own simulators, as simulator-tools.ts routes it: none.
  */
 export function lentMode(tool: string): PermissionMode | undefined {
-    return /^Simulator/.test(tool) && lentNow.has("simulator") ? lenderMode : undefined;
+    return /^Simulator/.test(tool) && lentNow.has("simulator") && !simulatorsLikely() ? lenderMode : undefined;
 }
 
 export function lent(kind: Lendable): boolean {
