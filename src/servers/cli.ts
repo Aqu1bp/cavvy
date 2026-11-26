@@ -140,6 +140,14 @@ function serviceLines(service: ServiceReport | undefined): string[] {
     return [service.bootFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.bootFix}` : "It won't start Cavvy again after a reboot."];
 }
 
+/** Said of a Mac whose Xcode can't build or run an iOS app yet. */
+function xcodeLines(c: HostCheck): string[] {
+    if (c.xcode === "missing") return ["Xcode isn't installed there: iOS and Mac apps need it."];
+    if (c.xcode === "unopened") return ["Xcode there hasn't been opened yet. Open it once at the Mac's screen."];
+    if (c.xcode === "no-simulator") return ["No iOS simulator there. On it: xcodebuild -downloadPlatform iOS"];
+    return [];
+}
+
 type CheckedCli = HostCheck["clis"][number];
 
 /** Installed on a server and not usable there yet: not signed in, or signed in and not turned on in its Cavvy. */
@@ -165,6 +173,7 @@ export function checkLines(name: string, c: HostCheck, service?: ServiceReport):
     if (!c.gh.installed) lines.push("The GitHub CLI isn't installed there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there. On it: gh auth login");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
+    lines.push(...xcodeLines(c));
     return lines;
 }
 

@@ -460,6 +460,8 @@ export interface HostCheck {
     /** The permission mode sessions start in there. Left out by a server from before it was said. */
     mode?: PermissionMode;
     memMb: number;
+    /** A Mac: how Xcode stands. Not the server's own word: the machine that asks finds out beside this (service.ts remoteCheck). */
+    xcode?: "ready" | "missing" | "unopened" | "no-simulator";
 }
 
 async function runs(argv: string[], timeoutMs = 15_000): Promise<boolean> {

@@ -5,8 +5,8 @@
 //
 // The pretend server reports itself as Linux x64 with glibc whatever this
 // machine is, so the flow is the same on a Mac and in CI. Asked to (`mac`), it
-// is a Mac with Apple silicon instead, on any machine: launchd and sudo
-// are stand-ins there (fake-launchctl.sh and the shims below).
+// is a Mac with Apple silicon instead, on any machine: launchd, sudo and
+// Xcode's tools are stand-ins there (fake-launchctl.sh and the shims below).
 //
 // This module must not import anything from src.
 
@@ -47,6 +47,8 @@ export interface FakeServer {
     launchd(): string[];
     /** With `mac`: where the pretend Mac keeps its LaunchDaemons. */
     daemons: string;
+    /** With `mac`: how Xcode stands there. `hangs`: it's there and waits on a question at the Mac's screen. `broken`: it runs and its simulator tool doesn't. */
+    xcode(state: "ready" | "missing" | "unopened" | "hangs" | "broken" | "no-simulator"): void;
     /** As if the user had connected to it before: its key is in the pretend known_hosts. */
     trust(host: string): void;
     knownHosts(): string;
@@ -102,11 +104,31 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
     if (mac) {
         const q = JSON.stringify;
         mkdirSync(daemons);
+        mkdirSync(join(dir, "Xcode.app", "Contents", "Developer"), { recursive: true });
+        writeFileSync(join(dir, "xcode"), "ready");
         shim("sysctl", 'if [ "$2" = hw.memsize ]; then echo 17179869184; else exit 1; fi');
         shim("launchctl", `FAKE_DIR=${q(dir)} exec sh ${q(join(REPO, "test", "helpers", "fake-launchctl.sh"))} "$@"`);
         shim("sudo", `[ -f ${q(join(dir, "sudo-allowed"))} ] || { echo "sudo: a password is required" >&2; exit 1; }\n[ "$1" = "-n" ] && shift\nFAKE_SUDO=1 exec "$@"`);
         // Only as an administrator, as into /Library: the owner and mode it's asked for are taken as given.
         shim("install", '[ -n "$FAKE_SUDO" ] || { echo "install: Operation not permitted" >&2; exit 1; }\nwhile [ $# -gt 2 ]; do shift; done\ncp "$1" "$2"');
+        const state = `$(cat ${q(join(dir, "xcode"))})`;
+        shim("xcode-select", `if [ "${state}" = missing ]; then echo /Library/Developer/CommandLineTools; else echo ${q(join(dir, "Xcode.app", "Contents", "Developer"))}; fi`);
+        // Not let run yet: killed as it starts with nobody at the Mac, left waiting when somebody is.
+        shim("xcodebuild", `case "${state}" in unopened) kill -9 $$ ;; hangs) exec sleep 60 ;; esac\necho "Xcode 27.2"`);
+        shim("xcrun", `case "${state}" in broken) exit 72 ;; esac\necho "== Runtimes =="\necho "watchOS 27.2 (27.2 - 24S5) - com.apple.CoreSimulator.SimRuntime.watchOS-27-2"\n[ "${state}" = no-simulator ] || echo "iOS 27.2 (27.2 - 24C5) - com.apple.CoreSimulator.SimRuntime.iOS-27-2"`);
+    }
+    // A login shell that says nothing, so the system's profile can't add this machine's tools to the pretend server's PATH.
+    shim("quiet-shell", "exit 0");
+    if (o.systemd) {
+        shim("systemctl", `[ "$1 $2" = "--user show-environment" ] && exit 0\nshift\necho "$*" >> ${JSON.stringify(join(dir, "systemctl.log"))}\nexit 0`);
+        shim(
+            "loginctl",
+            `f=${JSON.stringify(join(dir, "linger"))}\ncase "$1" in\n  show-user) cat "$f" 2>/dev/null || echo no ;;\n  enable-linger) [ -f ${JSON.stringify(join(dir, "linger-allowed"))} ] || exit 1; echo yes > "$f" ;;\n  *) exit 1 ;;\nesac`,
+        );
+    } else {
+        // No service manager, on any machine the tests run on: Cavvy runs detached (the real one is tried on a real server).
+        shim("systemctl", "exit 1");
+        shim("loginctl", "exit 1");
     }
     shim("getconf", 'if [ "$1" = GNU_LIBC_VERSION ]; then echo "glibc 2.39"; else PATH="$FAKE_REAL_PATH" exec getconf "$@"; fi');
     const bin = join(dir, "ssh");
@@ -207,6 +229,9 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
                       .filter(Boolean)
                 : [],
         daemons,
+        xcode(state) {
+            writeFileSync(join(dir, "xcode"), state);
+        },
         trust(host) {
             writeFileSync(join(dir, "known_hosts"), `${host} ${hostKey()}\n`, { flag: "a" });
         },

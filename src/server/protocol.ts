@@ -1954,6 +1954,8 @@ export interface ServerCheck {
     /** Starts again by itself after the server restarts; when not, the command that makes it so. */
     service: boolean;
     bootFix?: string;
+    /** A Mac: how Xcode stands for iOS work there. */
+    xcode?: "ready" | "missing" | "unopened" | "no-simulator";
 }
 
 

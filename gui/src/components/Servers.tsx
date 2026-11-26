@@ -162,6 +162,9 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     if (!c.gh.installed) lines.push("No GitHub CLI there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there.");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
+    if (c.xcode === "missing") lines.push("No Xcode there: iOS and Mac apps need it.");
+    else if (c.xcode === "unopened") lines.push("Open Xcode once at that Mac's screen.");
+    else if (c.xcode === "no-simulator") lines.push("No iOS simulator there. On it: xcodebuild -downloadPlatform iOS");
     if (!c.service) lines.push(c.bootFix ? `It won't start again after a reboot. On it: ${c.bootFix}` : "It won't start again after a reboot.");
     return lines;
 }

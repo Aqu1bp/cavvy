@@ -1,6 +1,6 @@
 // A Mac as a server, against a pretend one (test/helpers/fake-ssh.ts with `mac`): the real scripts run, and the
 // Cavvy "installed" there is this checkout's. What isn't real: launchd (fake-launchctl.sh loads a job and runs its
-// program once, and refuses what launchd refuses) and sudo. The real ones are tried on a real Mac.
+// program once, and refuses what launchd refuses), sudo, and Xcode's tools. The real ones are tried on a real Mac.
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -14,7 +14,8 @@ const iso = isolate();
 const mac = fakeSsh({ mac: true });
 const { setUpServer } = await import("../src/servers/install");
 const { probeServer, targetFor, MAC_LABEL } = await import("../src/servers/remote");
-const { MAC_BOOT_FIX, pairOverSsh, remoteStatus, serviceReport, setUpService, stopRemote } = await import("../src/servers/service");
+const { MAC_BOOT_FIX, pairOverSsh, remoteCheck, remoteStatus, serviceReport, setUpService, stopRemote, xcodeTiming } = await import("../src/servers/service");
+const { checkLines } = await import("../src/servers/cli");
 import type { BuildSource } from "../src/servers/build";
 import type { ServerEntry } from "../src/servers/store";
 
@@ -161,6 +162,38 @@ describe("a Mac where sudo doesn't ask", () => {
         expect(readFileSync(daemonFile, "utf-8")).toBe(theirs);
         expect((await probeServer(entry)).launchDaemon).toBe("other");
         expect(serviceReport(await probeServer(entry))).toEqual({ service: false });
+    });
+});
+
+describe("Xcode on a Mac", () => {
+    const lines = async () => checkLines("mini", await remoteCheck(entry), { service: true }).filter((l) => /Xcode|simulator/.test(l));
+
+    test("ready, missing, not opened yet, and without an iOS simulator: each is said with what to do", async () => {
+        expect((await remoteCheck(entry)).xcode).toBe("ready");
+        expect(await lines()).toEqual([]);
+        mac.xcode("missing");
+        expect(await lines()).toEqual(["Xcode isn't installed there: iOS and Mac apps need it."]);
+        // Nobody at the Mac: macOS kills it as it starts.
+        mac.xcode("unopened");
+        expect(await lines()).toEqual(["Xcode there hasn't been opened yet. Open it once at the Mac's screen."]);
+        mac.xcode("broken");
+        expect((await remoteCheck(entry)).xcode).toBe("unopened");
+        mac.xcode("no-simulator");
+        expect(await lines()).toEqual(["No iOS simulator there. On it: xcodebuild -downloadPlatform iOS"]);
+    });
+
+    test("one that waits on a question at the Mac's screen is given a moment, not the whole check", async () => {
+        mac.xcode("hangs");
+        const was = xcodeTiming.versionSeconds;
+        xcodeTiming.versionSeconds = 1;
+        try {
+            const started = Date.now();
+            expect((await remoteCheck(entry)).xcode).toBe("unopened");
+            expect(Date.now() - started).toBeLessThan(15_000);
+        } finally {
+            xcodeTiming.versionSeconds = was;
+            mac.xcode("ready");
+        }
     });
 });
 

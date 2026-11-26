@@ -61,6 +61,7 @@ export const serviceTiming = {
 
 /** A script with the waits as they're set now. */
 const timed = (script: string) => script.replaceAll("@@START_TRIES@@", String(Math.max(1, Math.round(serviceTiming.startWaitSeconds * 2))));
+const seconds = (n: number) => String(Math.max(1, Math.round(n)));
 
 /**
  * A Mac's part of LIB. Both jobs run the same thing: `current/cavvy`, unless Cavvy was stopped on purpose (launchd
@@ -313,9 +314,58 @@ else "$bin" host revoke --machine "$1" >/dev/null 2>&1; fi
 exit 0
 `;
 
+/**
+ * How Xcode stands on a Mac, for building and running iOS apps there: `missing` (none, or only the command line
+ * tools), `unopened` (it's there and hasn't been opened at the Mac's screen, which is where macOS asks whether it may
+ * run and where it installs the rest of itself), `no-simulator` (no iOS simulator to run an app in), or `ready`.
+ */
+export const XCODE_STATES = ["ready", "missing", "unopened", "no-simulator"] as const;
+export type XcodeState = (typeof XCODE_STATES)[number];
+
+/** How long Xcode's tools are given to answer (changeable for tests). */
+export const xcodeTiming = { versionSeconds: 8, simulatorsSeconds: 15 };
+
+/**
+ * Prints `check=` with the server's own account, and on a Mac `xcode=` (XcodeState). An Xcode that macOS hasn't let
+ * run yet is killed as it starts when nobody is signed in at the Mac, and waits on a question at its screen when
+ * somebody is: so it's given a few seconds, and one that fails or runs out of them is `unopened`. Asked while the
+ * server's Cavvy answers, so the wait isn't added to it.
+ */
 const CHECK = `${LIB}
 [ -x "$bin" ] || exit 46
-c=$("$bin" host check) || exit 1
+# Runs the rest for at most $1 seconds (a Mac has no timeout).
+within() {
+    t=$1; shift
+    "$@" &
+    p=$!
+    # What watches the clock takes its sleep with it when it's told the wait is over.
+    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$t" & s=$!; wait "$s" && kill -9 "$p" ) >/dev/null 2>&1 < /dev/null &
+    w=$!
+    wait "$p" 2>/dev/null
+    code=$?
+    kill "$w" >/dev/null 2>&1
+    return $code
+}
+xcode() {
+    dev=$(xcode-select -p 2>/dev/null) || { echo missing; return; }
+    case "$dev" in *.app/*) [ -d "$dev" ] || { echo missing; return; } ;; *) echo missing; return ;; esac
+    within @@XCODE_VERSION@@ xcodebuild -version >/dev/null 2>&1 || { echo unopened; return; }
+    sims=$(within @@XCODE_SIMULATORS@@ xcrun simctl list runtimes 2>/dev/null) || { echo unopened; return; }
+    if echo "$sims" | grep -v unavailable | grep -q 'SimRuntime\\.iOS-'; then echo ready; else echo no-simulator; fi
+}
+if [ -n "$mac" ]; then
+    x="$d/.xcode.$$"
+    xcode > "$x" 2>/dev/null &
+    asking=$!
+fi
+c=$("$bin" host check)
+code=$?
+if [ -n "$mac" ]; then
+    wait "$asking" 2>/dev/null
+    echo "xcode=$(cat "$x" 2>/dev/null)"
+    rm -f "$x"
+fi
+[ "$code" -eq 0 ] || exit 1
 echo "check=$c"
 `;
 
@@ -556,13 +606,15 @@ export async function revokeOverSsh(e: ServerEntry, machine: string, o: { client
     await ssh(e, remoteSh(timed(REVOKE), [machine, o.client ?? ""]), { timeoutMs: 30_000, signal: o.signal });
 }
 
-/** The server's own account of what's there for agents. */
+/** The server's own account of what's there for agents, and on a Mac how Xcode stands. */
 export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise<HostCheck> {
-    const r = await ssh(e, remoteSh(timed(CHECK)), { timeoutMs: 60_000, signal });
+    const script = timed(CHECK).replaceAll("@@XCODE_VERSION@@", seconds(xcodeTiming.versionSeconds)).replaceAll("@@XCODE_SIMULATORS@@", seconds(xcodeTiming.simulatorsSeconds));
+    const r = await ssh(e, remoteSh(script), { timeoutMs: 60_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     const check = r.code === 0 ? readCheck(value(r.stdout, "check")) : undefined;
     if (!check) throw new ServerError(`Couldn't check ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
-    return check;
+    const xcode = XCODE_STATES.find((x) => x === value(r.stdout, "xcode"));
+    return xcode ? { ...check, xcode } : check;
 }
 
 /** Builds the server no longer needs go: all but the one running, `previous` and `keep`. */
