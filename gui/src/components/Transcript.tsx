@@ -2,11 +2,11 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, onReset, rpc, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, onReset, rpc, toast, transcriptMounted, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, rewindTarget, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
+import { AGAIN, anchoredTop, atBottom, FAR, STAGED, onBuildAgain, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
@@ -61,6 +61,9 @@ const JUMP_PAGE = 12;
  * further it went: 100,000 items, Linux, headless, 1 frame in 550 dropped 5 pages up, 197 at 40 pages.
  */
 const DRAWN_MAX = 3 * PAGE;
+/** How far from the view a turn keeps what's in it, in screens; further, for GONE_MS, it keeps only its box. */
+const KEEP_SCREENS = 3;
+const GONE_MS = 3000;
 /** An element's padding and border, above and below it (px). */
 function outside(el: Element): number {
     if (typeof getComputedStyle !== "function") return 0;
@@ -112,6 +115,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
     const id = p.handle.id;
+    const viewed = p.handle;
+    // In the window (shown, parked or held): its session keeps what it has (state/app.ts letGoOutOfSight).
+    transcriptMounted(viewed, true);
     const saved = p.saved;
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
@@ -291,6 +297,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
      * end, starts over from standing still each time, stalling and setting off again.
      */
     let jumpFrame = 0;
+    /** Turns let go of (gone, below) in or near the view, built back now. */
+    let nearNow = () => {};
     const jumpStep = () => {
         jumpFrame = 0;
         if (!scroller || !smoothScroll) return;
@@ -301,6 +309,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             if (left !== 0) scroller.scrollTop = end;
         } else {
             scroller.scrollTop += Math.max(left * JUMP_STEP, Math.min(left, 2));
+            // Written in a frame's callbacks, drawn in that frame: its scroll event comes after.
+            nearNow();
             jumpFrame = requestAnimationFrame(jumpStep);
         }
         wrote();
@@ -320,6 +330,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         cancelAnimationFrame(jumpFrame);
         jumpFrame = 0;
         scroller.scrollTo({ top: height, behavior: "instant" });
+        nearNow();
         wrote();
     };
 
@@ -694,6 +705,120 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let far: SettlingObserver | undefined;
     /** Each turn's element (TurnView gives it), so finding one doesn't search the whole column. */
     const turnEls = new Map<string, HTMLElement>();
+
+    /**
+     * Turns more than KEEP_SCREENS from the view for GONE_MS keep only their box, at the size they were drawn at (still
+     * far, transcript.css), and let go of what's in them: built again as they come back within reach, still skipped
+     * then, so a screen or more before they're seen. Far, a turn's elements cost the window as much as near ones, only
+     * not laid out: a long reply's code is thousands of them (a session of long replies, 40 turns built: 185,000
+     * elements, and the one shown before as many again). Not one running, the last one, one with the keyboard or a
+     * selection in it, nor while parked (shown again as it was left).
+     */
+    const goneFlags = new Map<string, ReturnType<typeof createSignal<boolean>>>();
+    const goneFlag = (turnId: string) => {
+        let f = goneFlags.get(turnId);
+        if (!f) goneFlags.set(turnId, (f = createSignal(false)));
+        return f;
+    };
+    /** Those let go of now, for nearNow. */
+    const goneNow = new Set<string>();
+    const setGone = (turnId: string, on: boolean) => {
+        if (on) goneNow.add(turnId);
+        else goneNow.delete(turnId);
+        goneFlag(turnId)[1](on);
+    };
+    let band: SettlingObserver | undefined;
+    /** Since when each turn has been out of reach, by id. */
+    const outOfReach = new Map<string, number>();
+    let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Its content back, in this frame: still skipped if it's far, with its entrances over (transcript.css). */
+    const buildBack = (turnId: string) => {
+        if (!goneNow.has(turnId)) return;
+        turnEls.get(turnId)?.setAttribute(AGAIN, "");
+        setGone(turnId, false);
+    };
+    const mayGo = (turnId: string, parking = false) => {
+        const el = turnEls.get(turnId);
+        if (!el || (pane.parked() && !parking) || !el.hasAttribute(FAR)) return false;
+        const all = turns();
+        const t = byId().get(turnId);
+        if (!t || t.status === "running" || all[all.length - 1]?.id === turnId) return false;
+        if (document.activeElement && el.contains?.(document.activeElement)) return false;
+        const sel = typeof getSelection === "function" ? getSelection() : null;
+        return !(sel && sel.rangeCount && !sel.isCollapsed && sel.containsNode(el, true));
+    };
+    /**
+     * Those due to go, let go of a few at a time while the window has nothing else to do: a long turn's elements take
+     * milliseconds to dispose of, and all of a session's at once, in the click that left it, held up the next one's
+     * first frame (a long session opened: 42-45 ms, 53 with them let go of in that click).
+     */
+    const due: string[] = [];
+    let dueParking = false;
+    let letting: number | undefined;
+    const whenIdle = (fn: (left: () => number) => void): number =>
+        typeof requestIdleCallback === "function"
+            ? requestIdleCallback((d) => fn(() => d.timeRemaining()), { timeout: 1000 })
+            : (setTimeout(() => fn(() => Infinity), 0) as unknown as number);
+    const releaseDue = () => {
+        if (letting !== undefined || !due.length) return;
+        letting = whenIdle((left) => {
+            letting = undefined;
+            while (due.length && left() > 4) {
+                const turnId = due.shift()!;
+                if (!goneNow.has(turnId) && outOfReach.has(turnId) && mayGo(turnId, dueParking)) setGone(turnId, true);
+            }
+            if (due.length) releaseDue();
+            else dueParking = false;
+        });
+    };
+    /** `parking`: it's just been left (parked, Panes), shown again only as it was: those out of reach go now. */
+    const sweep = (parking = false) => {
+        sweepTimer = undefined;
+        if (pane.parked() && !parking) return;
+        dueParking ||= parking;
+        const now = performance.now();
+        let next = Infinity;
+        for (const [turnId, since] of outOfReach) {
+            const at = since + GONE_MS;
+            if (at > now && !parking) next = Math.min(next, at);
+            else if (!goneNow.has(turnId) && !due.includes(turnId)) due.push(turnId);
+        }
+        releaseDue();
+        if (next !== Infinity) sweepTimer = setTimeout(sweep, next - now);
+    };
+    const sweepLater = () => {
+        if (sweepTimer === undefined && outOfReach.size) sweepTimer = setTimeout(sweep, GONE_MS);
+    };
+    /**
+     * Those let go of that are in or near the view now, built back before it's drawn: a jump or the scrollbar can move
+     * the view further in a frame than the band reaches.
+     */
+    let nearAt = NaN;
+    nearNow = () => {
+        if (!scroller || !goneNow.size) return;
+        // Less than half a screen since it last looked (a reply followed down, a wheel's step): the band reaches it.
+        const top = scroller.scrollTop;
+        if (Math.abs(top - nearAt) < scroller.clientHeight / 2) return;
+        nearAt = top;
+        const view = scroller.getBoundingClientRect();
+        for (const turnId of [...goneNow]) {
+            const box = turnEls.get(turnId)?.getBoundingClientRect();
+            if (box && box.bottom > view.top - view.height && box.top < view.bottom + view.height) buildBack(turnId);
+        }
+    };
+    createEffect(on(pane.parked, (parked) => {
+        clearTimeout(sweepTimer);
+        sweepTimer = undefined;
+        if (parked) sweep(true);
+        else {
+            dueParking = false;
+            sweepLater();
+        }
+    }, { defer: true }));
+    onCleanup(() => {
+        clearTimeout(sweepTimer);
+        if (letting !== undefined) typeof cancelIdleCallback === "function" ? cancelIdleCallback(letting) : clearTimeout(letting);
+    });
     const heights = (() => {
         const was = turnHeights.get(id) ?? new Map<string, number>();
         turnHeights.delete(id);
@@ -717,9 +842,15 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             el.setAttribute(AGAIN, "");
         }
         far?.observe(el);
+        band?.observe(el);
+        onBuildAgain(el, () => buildBack(turnId));
         onCleanup(() => {
             if (turnEls.get(turnId) === el) turnEls.delete(turnId);
             far?.unobserve(el);
+            band?.unobserve(el);
+            outOfReach.delete(turnId);
+            goneNow.delete(turnId);
+            goneFlags.delete(turnId);
         });
     };
 
@@ -749,6 +880,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 // Put in again skipped: what it brought in is let go of a while after it comes near (AGAIN_MS).
                 const again = entries.filter((e) => e.isIntersecting && e.target.hasAttribute(AGAIN)).map((e) => e.target);
                 if (again.length) setTimeout(() => { for (const el of again) el.removeAttribute(AGAIN); }, AGAIN_MS);
+                // One let go of (gone) gets its content back before it's drawn.
+                for (const e of entries) if (e.isIntersecting) buildBack((e.target as HTMLElement).dataset.turn ?? "");
                 for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
                 if (stick() || smoothScroll) return;
                 let moved = 0;
@@ -762,9 +895,27 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // would otherwise cost a main-thread frame at each of its steps.
             far = settlingObserver(relay(to), { root: scroller, rootMargin: "100% 0px" }, [content]);
             for (const el of turnEls.values()) far.observe(el);
+            // Within reach or not (KEEP_SCREENS): out of it a while, what's in a turn is let go of (sweep); back in, built.
+            const reach: { fn?: IntersectionObserverCallback } = {};
+            reach.fn = (entries) => {
+                const now = performance.now();
+                for (const e of entries) {
+                    const turnId = (e.target as HTMLElement).dataset.turn;
+                    if (!turnId) continue;
+                    if (e.isIntersecting) {
+                        outOfReach.delete(turnId);
+                        buildBack(turnId);
+                    } else if (!outOfReach.has(turnId)) outOfReach.set(turnId, now);
+                }
+                sweepLater();
+            };
+            band = settlingObserver(relay(reach), { root: scroller, rootMargin: `${KEEP_SCREENS * 100}% 0px` }, [content]);
+            for (const el of turnEls.values()) band.observe(el);
             onCleanup(() => {
                 far?.disconnect();
                 to.fn = undefined;
+                band?.disconnect();
+                reach.fn = undefined;
             });
         }
         // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"), or once
@@ -906,6 +1057,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // A page asked for and still going in (staged): it comes with it, as it would have once in.
             ...(staged ? { shown: goal() } : {}),
         }));
+        // Where it was read kept: out of sight now, unless another view of it is in.
+        transcriptMounted(viewed, false);
     });
 
     // Back at the end a while after reading far up, with nothing coming: what's drawn above its first page goes, and so do
@@ -1045,6 +1198,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     // the end, and our own writes go down. Moving down near the end sticks it again.
     const onScroll = () => {
         if (!scroller || !ready) return;
+        nearNow();
         const top = scroller.scrollTop;
         const gap = scroller.scrollHeight - scroller.clientHeight - top;
         // The scrollbar dragged to the bottom with turns held there: to the end, as Latest goes, not a page more.
@@ -1310,6 +1464,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             const el = turnEls.get(turn.id);
             if (!el || !scroller) return;
             scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+            // Those let go of there built before this frame is drawn (its scroll event comes after).
+            nearNow();
             wrote();
             reading = capture();
             el.classList.remove("flash");
@@ -1415,7 +1571,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                         {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
                         <KeyedList each={visible()}>{(t) => <>
                             <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                                workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />
+                                workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} gone={goneFlag(t.id)[0]} />
                             <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n)).then((r) => (trimAbove(), r))} root={() => scroller} />}</Show>
                         </>}</KeyedList>
                     </CardFoldsProvider>

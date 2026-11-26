@@ -59,6 +59,18 @@ export const STAGED = "data-staged";
 /** Put in again skipped at a remembered size: what it brings in starts already over (transcript.css; work-rendering's rows too). */
 export const AGAIN = "data-work-again";
 
+/**
+ * A turn's element whose content was let go of while it was far (Transcript: only its box is left, at the size it was
+ * drawn at), to have it built again now: before what's in it is looked up (Find's match).
+ */
+const builtAgain = new WeakMap<Element, () => void>();
+export function onBuildAgain(el: Element, build: () => void) {
+    builtAgain.set(el, build);
+}
+export function buildAgain(el: Element | null | undefined) {
+    if (el) builtAgain.get(el)?.();
+}
+
 export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number; row?: number; rowOffset?: number };
 export type TranscriptPosition = {
     bottom: boolean;
