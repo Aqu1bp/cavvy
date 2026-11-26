@@ -117,18 +117,20 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     // In the dialog's footer, so a long error above can't push them out of view. As the other dialogs place them: with
     // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
     const cancel = () => <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>;
+    // A pull request needs the GitHub CLI, and a base that isn't the branch itself (the default branch is only pushed).
+    const prs = () => Boolean(view()?.gh) && !(view()?.base && view()?.base === view()?.target);
     const actions = () => (
         <div class="dialog-actions">
-            <Show when={view()?.gh} fallback={<><span class="grow" />{cancel()}</>}>
+            <Show when={prs()} fallback={<><span class="grow" />{cancel()}</>}>
                 {cancel()}
                 <span class="grow" />
             </Show>
-            <button class={`btn ${view()?.gh ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
-            <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
+            <button class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
+            <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
     );
-    // Without the GitHub CLI, or signed out of it, it can only push: titled for that.
-    const heading = () => (view() && !view()!.gh ? `Push ${view()!.branch}?` : "Push and open pull request");
+    // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
+    const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : "Push and open pull request");
     return (
         <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={620} footer={actions()}>
             <div class="commit-dialog">
@@ -136,7 +138,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <Show when={view()}>
                         <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
                         <p class="mono small publish-destination">{view()?.destination}</p>
-                        <Show when={!view()?.hasUpstream && view()?.ahead === undefined} fallback={<Show when={view()?.ahead !== undefined && view()?.behind !== undefined}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
+                        <Show when={!view()?.hasUpstream && view()?.ahead == null} fallback={<Show when={view()?.ahead != null && view()?.behind != null}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>
@@ -146,7 +148,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                         <Show when={view()?.pr}>
                             <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>#{view()?.pr?.number} {view()?.pr?.title} · {view()?.pr?.state}</button>
                         </Show>
-                        <Show when={view()?.gh} fallback={<>
+                        <Show when={prs()} fallback={<Show when={!view()?.gh}>
                             <Show when={!view()?.ghSignedOut}><p class="muted small">Pull requests need the GitHub CLI.</p></Show>
                             {/* Its own width, as the pull request dialog's Sign in to GitHub; the comparison beside it. */}
                             <Show when={view()?.ghSignedOut || view()?.compareUrl}>
@@ -157,7 +159,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                     <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                                 </div>
                             </Show>
-                        </>}>
+                        </Show>}>
                             <label class="commit-message-label" for="pr-base">Base</label>
                             <input id="pr-base" class="input mono" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-title">Title</label>
