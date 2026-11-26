@@ -2897,7 +2897,8 @@ export class Agent {
             emit: (e) => {
                 // The CLI saying it compacted: this compaction's own rule (compact_end) says so.
                 if (e.type === "notice" && e.data?.compacted) return;
-                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
+                // Its commands too: listed as it reopened, they'd not be listed again.
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits" || e.type === "cli_commands") this.emit(e);
             },
             drainQueued: () => [],
         };

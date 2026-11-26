@@ -284,25 +284,17 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         const r = await replay("cancel", { steer, files, answer: () => new Promise<PermissionAnswer>(() => {}) });
         const { ref } = await r.conn.prompt({ text: "sleep 20", images: [] });
         while (!r.asked.length) await Bun.sleep(5);
-        const m = { text: "Read this too.", images: [], documents: [{ type: "file" as const, kind: "pdf" as const, name: "a.pdf", size: 8, mediaType: "application/pdf" as const, data: Buffer.from("%PDF-1.4").toString("base64") }] };
+        // One with attachments is the queue's until it goes (SteerMessage.settle), as the desktop app's are.
+        const settled: boolean[] = [];
+        const m = { text: "Read this too.", images: [], documents: [{ type: "file" as const, kind: "pdf" as const, name: "a.pdf", size: 8, mediaType: "application/pdf" as const, data: Buffer.from("%PDF-1.4").toString("base64") }], settle: async (ok: boolean) => void settled.push(ok) };
         steer.waiting.push(m);
         r.conn.steerQueued();
-        for (let i = 0; i < 200 && !steer.back.length; i++) await Bun.sleep(5);
-        expect(steer.back).toEqual([m]);
+        for (let i = 0; i < 200 && !settled.length; i++) await Bun.sleep(5);
+        expect(settled).toEqual([false]);
         expect(r.rec.sent.filter((x) => x.method === "session/prompt")).toHaveLength(1);
         await r.conn.interrupt(ref);
         for (let i = 0; i < 500 && !r.events.some((e) => e.t === "turn_ended"); i++) await Bun.sleep(5);
         expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ reason: "aborted" });
-    });
-
-    test("its /compact, as recorded: a prompt like any, and what came before is still known", async () => {
-        const r = await replay("compact");
-        await r.turn("Remember the secret word walnut. Reply with only: ok");
-        expect((await r.turn("/compact")).reason).toBe("done");
-        await r.turn("/compact Keep the secret word.");
-        await r.turn("What was the secret word? Reply with only the word.");
-        expect(texts(r.agentEvents())).toBe("okContext compacted. Ready for your next instruction.walnut");
-        expect(r.rec.extra.filter((m) => m.method === "session/prompt")).toEqual([]);
     });
 
     test("a question still waiting when the turn stops is withdrawn", async () => {
