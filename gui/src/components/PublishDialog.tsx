@@ -73,13 +73,15 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const firstNeeded = () => ({ confirm: confirmEl, title: titleEl, push: pushEl })[first()];
     const blocked = () => commitUnavailable(handleFor(p.id))?.replace(/committing/g, "publishing").replace("Git runs the repository's hooks", "Git transports can run configured programs");
     const ready = () => Boolean(view()) && !loading() && !busy() && !blocked() && (!view()!.protected || confirmed());
+    /** The base typed, else the remote's default the field shows greyed (left empty). */
+    const baseOr = () => base().trim() || view()?.base || "";
     const publish = async (action: "push" | "pr") => {
         const info = view(), id = p.id;
-        if (!info || !id || !ready() || (action === "pr" && (!info.gh || !title().trim() || !base().trim()))) return;
+        if (!info || !id || !ready() || (action === "pr" && (!info.gh || !title().trim() || !baseOr()))) return;
         const version = revision;
         setBusy(true); setError(undefined);
         try {
-            const result = await rpc.call("session.gitPublish", { id, fingerprint: info.fingerprint, action, confirmProtected: confirmed(), base: base(), title: title(), body: body(), draft: draft() });
+            const result = await rpc.call("session.gitPublish", { id, fingerprint: info.fingerprint, action, confirmProtected: confirmed(), base: baseOr(), title: title(), body: body(), draft: draft() });
             refreshGitChanges();
             toast(result.pr ? `Pushed ${info.remote}/${info.target} · PR #${result.pr.number}` : `Pushed ${info.remote}/${info.target}`, "success");
             if (revision !== version) return;
@@ -100,7 +102,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         if (!id || !view() || busy() || generating()) return;
         setGenerating(true); setGenError(undefined);
         try {
-            const r = await rpc.call("session.gitPrText", { id, base: base().trim() || undefined });
+            const r = await rpc.call("session.gitPrText", { id, base: baseOr() || undefined });
             if (revision !== version) return;
             setDrafted({ model: r.model, title: title(), body: body() });
             setTitle(r.title); setBody(r.body);
@@ -138,7 +140,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                 <span class="grow" />
             </Show>
             <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
-            <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
+            <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
     );
     // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
@@ -176,7 +178,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             </Show>
                         </Show>}>
                             <label class="commit-message-label" for="pr-base">Base</label>
-                            <input id="pr-base" class="input mono" placeholder="main" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
+                            <input id="pr-base" class="input mono" placeholder={view()?.base ?? "main"} value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-title">Title</label>
                             <input ref={titleEl} autofocus={first() === "title"} id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>
