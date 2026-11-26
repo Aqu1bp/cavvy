@@ -150,6 +150,7 @@ test("a refused push leads with what to do, in the dialog's type, and keeps git'
     expect(publishError("The remote has commits this branch doesn't. Pull, then push again.\nerror: failed to push some refs\n ! [rejected] (fetch first)\n", "push_failed"))
         .toEqual({ text: "The remote has commits this branch doesn't. Pull, then push again.", raw: "error: failed to push some refs\n ! [rejected] (fetch first)" });
     expect(publishError("Push failed.", "push_failed")).toEqual({ text: "Push failed." });
+    expect(publishError("Pushed, but couldn't open the pull request.\nGraphQL: No commits between main and feature\n", "pr_failed")).toEqual({ text: "Pushed, but couldn't open the pull request.", raw: "GraphQL: No commits between main and feature" });
     // Other git failures are git's own words; anything else is Cavvy's sentence.
     expect(publishError("fatal: bad object", "git")).toEqual({ raw: "fatal: bad object" });
     expect(publishError("The branch or destination changed. Reopen the dialog.", "stale")).toEqual({ text: "The branch or destination changed. Reopen the dialog." });

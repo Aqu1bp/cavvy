@@ -399,7 +399,7 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if (created.code) {
         const existing = await prView(cwd, repo!, info.target, signal).catch(() => undefined);
         if (existing?.state === "open" || existing?.state === "draft") return { pr: existing };
-        throw fail(`Branch pushed, but pull request creation failed. ${created.err}${created.out}`, "gh");
+        throw fail(`Pushed, but couldn't open the pull request.\n${created.err}${created.out}`, "pr_failed");
     }
     return { pr: await prView(cwd, repo!, info.target, signal) };
 }
