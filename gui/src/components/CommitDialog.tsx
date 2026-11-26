@@ -92,7 +92,7 @@ export function CommitDialog() {
         !view()?.head?.branch
             ? "This commit won't be on a branch."
             : view()!.head!.branch === mainBranch()
-              ? "Committing to the main branch."
+              ? "This is the default branch."
               : undefined;
 
     const generate = async () => {

@@ -60,7 +60,7 @@ describe("the view menu", () => {
             ["cavvy", false, undefined],
         ]);
         // Branch and Commit have a second line: what it's compared with, and which commit.
-        expect(m.views.map((v) => v.desc)).toEqual([undefined, "vs origin/main", "The last commit, or one you pick", undefined, undefined]);
+        expect(m.views.map((v) => v.desc)).toEqual([undefined, "vs origin/main", undefined, undefined, undefined]);
         expect(viewMenu({ place: { scope: "commit" }, repo: true, busy: false, commit: { sha: "a1b2c3d4e5f6", subject: "Fix the build" } }).views[2]).toMatchObject({ on: true, desc: "a1b2c3d Fix the build" });
         expect(m.turns.map((t) => [t.id, t.label, t.on, Boolean(t.disabled)])).toEqual([
             [9, "Turn 3", false, true],

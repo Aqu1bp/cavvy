@@ -28,8 +28,8 @@ export const VIEWS: Record<Exclude<ReviewScope, "turn">, { label: string }> = {
     cavvy: { label: "Cavvy edits" },
 };
 
-/** The Commit view's second line in the menu: the commit shown ("a1b2c3d Fix the build"), or what it shows first. */
-export const commitDesc = (c?: { sha: string; subject: string }) => (c ? `${c.sha.slice(0, 7)} ${c.subject}` : "The last commit, or one you pick");
+/** The Commit view's second line in the menu: the commit shown ("a1b2c3d Fix the build"); none before one is. */
+export const commitDesc = (c?: { sha: string; subject: string }) => (c ? `${c.sha.slice(0, 7)} ${c.subject}` : undefined);
 
 /** A recorded turn as git's answer lists it, oldest first. */
 export type RecordedTurn = { id: number; prompt: string; startedAt: number; endedAt?: number };
