@@ -148,6 +148,8 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             afterGit();
         } catch (e) {
             failed(what, e);
+            // A refused pull has fetched first: the counts here and in the title bar are read again.
+            if (kind === "pull") setMoved((n) => n + 1);
         } finally {
             setBusy(undefined);
             input?.focus();

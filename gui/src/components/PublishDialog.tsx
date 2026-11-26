@@ -95,8 +95,23 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             if ((await rpc.call("session.askSignIn", { id, target: "gh" })) === "signed-in") toast("Signed in to GitHub", "success");
         } catch (e) { toast(errorText(e), "error"); }
     };
+    /** The dialog scrolled to its end, where what went wrong is said: the form above may fill it. */
+    const reveal = (el: HTMLElement) => requestAnimationFrame(() => el.closest(".dialog-body")?.scrollTo({ top: el.closest(".dialog-body")!.scrollHeight }));
+    // In the dialog's footer, so a long error above can't push them out of view. As the other dialogs place them: with
+    // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
+    const cancel = () => <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>;
+    const actions = () => (
+        <div class="dialog-actions">
+            <Show when={view()?.gh} fallback={<><span class="grow" />{cancel()}</>}>
+                {cancel()}
+                <span class="grow" />
+            </Show>
+            <button class={`btn ${view()?.gh ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
+            <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
+        </div>
+    );
     return (
-        <Dialog open={Boolean(p.id)} onClose={close} title="Push and open pull request" width={620}>
+        <Dialog open={Boolean(p.id)} onClose={close} title="Push and open pull request" width={620} footer={actions()}>
             <div class="commit-dialog">
                 <Show when={!loading()} fallback={<Spinner />}>
                     <Show when={view()}>
@@ -106,7 +121,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>
-                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> Push to this protected branch</label>
+                            <label class="check-row"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /><span class="commit-warning">Push to this protected branch</span></label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
@@ -131,18 +146,12 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                 </Show>
                                 <Show when={genError()}><span class="commit-warning small" role="status">{genError()}</span></Show>
                             </div>
-                            <label><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /> Draft</label>
+                            <label class="check-row"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /><span>Draft</span></label>
                         </Show>
                     </Show>
                 </Show>
                 <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>
-                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert">{e().text}</pre> : <p class="commit-error" role="alert">{e().text}</p>)}</Show>
-                <div class="dialog-actions">
-                    <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>
-                    <span class="grow" />
-                    <button class="btn" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
-                    <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
-                </div>
+                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert" ref={reveal}>{e().text}</pre> : <p class="commit-error" role="alert" ref={reveal}>{e().text}</p>)}</Show>
             </div>
         </Dialog>
     );

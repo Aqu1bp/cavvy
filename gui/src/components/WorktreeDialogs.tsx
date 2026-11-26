@@ -210,13 +210,8 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <label class="wt-label" for="wt-folder">
                         Location
                     </label>
-                    <div class="wt-location">
-                        <span class="wt-dir mono" title={dir()}>
-                            <bdi>{tildify(dir().replace(/\/+$/, ""), app.hello?.homeDir)}</bdi>
-                        </span>
-                        <span class="wt-sep mono">/</span>
-                        <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
-                    </div>
+                    {/* The folder's name, in full; the whole path it makes is said once, below. */}
+                    <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
                     <span class="wt-path mono" title={target()}>
                         {target()}
                     </span>
