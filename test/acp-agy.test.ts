@@ -20,6 +20,8 @@ type BackendPermission = import("../src/backends/types").BackendPermission;
 type PermissionAnswer = import("../src/backends/types").PermissionAnswer;
 type PermissionMode = import("../src/permissions/modes").PermissionMode;
 type AttachedFiles = import("../src/backends/acp/connection").AttachedFiles;
+type SteerSource = import("../src/backends/acp/connection").SteerSource;
+type SteerMessage = import("../src/backends/types").SteerMessage;
 
 const AGY = agentCli("antigravity")!;
 const bin = tempDir("fake-agy-");
@@ -61,7 +63,22 @@ class HeldReplay extends OpenReplay {
     }
 }
 
+/** Messages queued to steer with, as the host's queue hands them over; those that never went come back to `back`. */
+class SteerQueue implements SteerSource {
+    readonly waiting: SteerMessage[] = [];
+    readonly back: SteerMessage[] = [];
+    async drain(live: () => boolean, flush: () => void) {
+        if (!live()) return [];
+        flush();
+        return this.waiting.splice(0);
+    }
+    undelivered(messages: SteerMessage[]) {
+        this.back.push(...messages);
+    }
+}
+
 interface ReplayOptions {
+    steer?: SteerQueue;
     slow?: boolean;
     open?: boolean;
     held?: boolean;
@@ -98,7 +115,7 @@ async function replay(name: string, o: ReplayOptions = {}) {
         AGY,
         acpAgent("antigravity"),
         "/tmp/acp-agy",
-        () => undefined,
+        () => o.steer,
         () => o.orchestrator as any,
         () => Boolean(o.readOnly),
         () => o.files,
@@ -242,6 +259,52 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
         expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ ref, reason: "done" });
     });
 
+    test("one queued while its prompt had ended goes once a no's words run as a prompt of their own", async () => {
+        const steer = new SteerQueue();
+        const r = await replay("mode-default", {
+            held: true,
+            steer,
+            answer: (q) => {
+                if (q.toolName !== "Bash") return { allow: true };
+                // Queued now, and taken by nothing: its prompt ends at the no (5 ms after it, as recorded).
+                steer.waiting.push({ text: "And say kiwi.", images: [], documents: [] });
+                return { allow: false, message: "The user declined this tool call and said:\nuse printf", stop: false, fromUser: true };
+            },
+        });
+        const rec = r.rec as HeldReplay;
+        await r.conn.prompt({ text: "Do these three steps", images: [] });
+        for (let i = 0; i < 400 && rec.held.length < 2; i++) await Bun.sleep(5);
+        expect(rec.extra.map((m) => m.params.prompt[0].text)).toEqual(["The user declined this tool call and said:\nuse printf", "And say kiwi."]);
+        rec.release();
+    });
+
+    test("a steer whose PDF can't be written didn't go: it comes back, and the turn goes on", async () => {
+        const steer = new SteerQueue();
+        const files: AttachedFiles = { dir: "/dev/null/agy-files", paths: new Set(), count: 0 };
+        const r = await replay("cancel", { steer, files, answer: () => new Promise<PermissionAnswer>(() => {}) });
+        const { ref } = await r.conn.prompt({ text: "sleep 20", images: [] });
+        while (!r.asked.length) await Bun.sleep(5);
+        const m = { text: "Read this too.", images: [], documents: [{ type: "file" as const, kind: "pdf" as const, name: "a.pdf", size: 8, mediaType: "application/pdf" as const, data: Buffer.from("%PDF-1.4").toString("base64") }] };
+        steer.waiting.push(m);
+        r.conn.steerQueued();
+        for (let i = 0; i < 200 && !steer.back.length; i++) await Bun.sleep(5);
+        expect(steer.back).toEqual([m]);
+        expect(r.rec.sent.filter((x) => x.method === "session/prompt")).toHaveLength(1);
+        await r.conn.interrupt(ref);
+        for (let i = 0; i < 500 && !r.events.some((e) => e.t === "turn_ended"); i++) await Bun.sleep(5);
+        expect(r.events.find((e) => e.t === "turn_ended")).toMatchObject({ reason: "aborted" });
+    });
+
+    test("its /compact, as recorded: a prompt like any, and what came before is still known", async () => {
+        const r = await replay("compact");
+        await r.turn("Remember the secret word walnut. Reply with only: ok");
+        expect((await r.turn("/compact")).reason).toBe("done");
+        await r.turn("/compact Keep the secret word.");
+        await r.turn("What was the secret word? Reply with only the word.");
+        expect(texts(r.agentEvents())).toBe("okContext compacted. Ready for your next instruction.walnut");
+        expect(r.rec.extra.filter((m) => m.method === "session/prompt")).toEqual([]);
+    });
+
     test("a question still waiting when the turn stops is withdrawn", async () => {
         const r = await replay("cancel", { answer: () => new Promise<PermissionAnswer>(() => {}) });
         const { ref } = await r.conn.prompt({ text: "sleep 20", images: [] });
@@ -358,7 +421,7 @@ describe("Antigravity 1.5.17 over ACP, recorded", () => {
 
 describe("Antigravity's hooks", () => {
     test("its def: over `agy acp`, skills of its own, effort in its model ids", () => {
-        expect(AGY).toMatchObject({ protocol: "acp", acpArgs: ["acp"], caps: { skills: "own", live: { model: true, effort: false, mode: "per-turn" }, pdfs: true } });
+        expect(AGY).toMatchObject({ protocol: "acp", acpArgs: ["acp"], caps: { skills: "own", live: { model: true, effort: false, mode: "per-turn" }, pdfs: true, compact: "command" } });
         // Cavvy's skills are pasted for it, but one of a name it lists is its own, and goes as typed.
         expect(cliRunsSkills("antigravity")).toBe(false);
         expect(cliRunsSkill("antigravity", "grill-me", new Set(["grill-me"]))).toBe(true);

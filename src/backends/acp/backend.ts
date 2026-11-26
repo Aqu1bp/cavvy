@@ -282,8 +282,10 @@ export class AcpBackend implements AgentBackendClient {
     }
 
     /** Not supported: it compacts by itself, if at all (Agent.compactBackend says so before this). */
-    async compact(): Promise<BackendResult> {
-        return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+    /** Its own /compact, as a prompt on the session being continued (agy-1.5.17-acp-compact.jsonl). */
+    async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
+        if (this.cli.caps.compact !== "command") return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+        return this.runTurn({ ...t, prompt: `/compact${t.instructions ? ` ${t.instructions}` : ""}`, images: [] });
     }
 
     /**

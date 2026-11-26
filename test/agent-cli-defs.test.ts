@@ -40,7 +40,7 @@ test("Antigravity's CLI: over ACP, with its own skills, and effort in its model 
     expect(d.protocol).toBe("acp");
     expect(d.acpArgs).toEqual(["acp"]);
     expect(d.cli.command).toBe("agy");
-    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, live: { model: true, effort: false, mode: "per-turn" }, backgroundTasks: false, fork: false, compact: "none", hooks: "none", mcpAttach: "none", skills: "own", resolvesUnknownCommands: false, importSessions: false, usageLogs: false });
+    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, live: { model: true, effort: false, mode: "per-turn" }, backgroundTasks: false, fork: false, compact: "command", hooks: "none", mcpAttach: "none", skills: "own", resolvesUnknownCommands: false, importSessions: false, usageLogs: false });
 });
 
 test("the defs' capabilities agree with the branches they will replace", () => {

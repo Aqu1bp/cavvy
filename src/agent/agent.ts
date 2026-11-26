@@ -1446,7 +1446,7 @@ export class Agent {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
         if (this.idleTried) return null;
-        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact === "none") return null;
+        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact !== "native") return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 

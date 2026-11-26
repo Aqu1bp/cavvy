@@ -308,6 +308,31 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
     });
 });
 
+describe("/compact", () => {
+    test("one that has its own (Antigravity's): sent as its command on the same session; Cavvy never compacts it itself", async () => {
+        const caps = agentCli("opencode")!.caps as { compact: string };
+        const was = caps.compact;
+        const a = await makeAgent();
+        await a.run("hi");
+        const id = a.session.backends.get("opencode")?.id;
+        try {
+            await expect(a.agent.compact({ auto: false, signal: new AbortController().signal })).rejects.toThrow(/isn't supported for OpenCode/);
+            caps.compact = "command";
+            const said = a.events.filter((e) => e.type === "text").length;
+            expect(await a.agent.compact({ auto: false, signal: new AbortController().signal, instructions: "Keep the word." })).toBe(true);
+            const prompts = logLines().flatMap((l) => (l.received?.method === "session/prompt" ? [l.received.params] : []));
+            expect(prompts.at(-1)).toMatchObject({ sessionId: id, prompt: [{ type: "text", text: "/compact Keep the word." }] });
+            expect(a.events.filter((e) => e.type === "compact_start" || e.type === "compact_end").map((e) => e.type)).toEqual(["compact_start", "compact_end"]);
+            // Its reply to the command isn't the conversation's.
+            expect(a.events.filter((e) => e.type === "text").length).toBe(said);
+            // Not when idle, nor at a threshold (runtime.ts compactAt): it compacts by itself.
+            expect(a.agent.idleCompactPlan()).toBeNull();
+        } finally {
+            caps.compact = was;
+        }
+    });
+});
+
 describe("the server's lists", () => {
     test("providers.list, accounts.list and the plan checks don't throw with OpenCode on", async () => {
         const { Engine } = await import("../src/server/engine");
