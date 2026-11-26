@@ -240,6 +240,12 @@ export function CommitDialog() {
                             class="input mono"
                             rows={7}
                             autofocus
+                            // Shown once the changes have loaded, after the dialog gave the keyboard to its first
+                            // control (Cancel): the message takes it, unless it has been moved on purpose since.
+                            ref={(el) => requestAnimationFrame(() => {
+                                const at = document.activeElement;
+                                if (!at || at === document.body || at.closest(".dialog-actions")) el.focus();
+                            })}
                             placeholder="Commit message"
                             value={message()}
                             disabled={committing()}

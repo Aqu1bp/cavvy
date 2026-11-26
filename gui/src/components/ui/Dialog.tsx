@@ -72,9 +72,9 @@ function DialogInner(p: DialogProps) {
             }
         };
         document.addEventListener("keydown", onKey, true);
-        // Focus the first field, or the dialog itself.
+        // Focus the field marked autofocus, else the first, or the dialog itself.
         requestAnimationFrame(() => {
-            const first = box?.querySelector<HTMLElement>("[autofocus], input, textarea, select, button:not(.dialog-close)");
+            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dialog-close)");
             (first ?? box)?.focus();
         });
         onCleanup(() => {
