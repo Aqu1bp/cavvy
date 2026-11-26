@@ -1301,7 +1301,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     const barAway = (away: boolean) => scroller?.toggleAttribute("data-bar-away", away);
     let barWait: ReturnType<typeof setTimeout> | undefined;
     createEffect(() => {
-        const atEnd = stick();
+        // At the end itself: following starts a little short of it (atBottom), where a reader may stop.
+        const atEnd = stick() && scrolledDown();
         barAway(false);
         clearTimeout(barWait);
         if (atEnd) barWait = setTimeout(() => barAway(scroller!.offsetWidth === scroller!.clientWidth), BAR_SHOWN_MS);
