@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { lastAnswer } from "../gui/src/lib/side-chat";
 import { clientAction } from "../gui/src/lib/commands";
-import { app, rpc, setApp } from "../gui/src/state/app";
+import { app, rpc, setApp, setToasts, toasts } from "../gui/src/state/app";
 import { send } from "../gui/src/state/actions";
 import { inspectorPane, setInspectorPane } from "../gui/src/state/ui";
 
@@ -34,6 +34,8 @@ describe("/btw on Home, with no session yet", () => {
         else delete (globalThis as { document?: unknown }).document;
         setApp({ activeId: original.activeId, homeCwd: original.homeCwd });
         setInspectorPane(undefined);
+        // The store is the app's, shared with the other test files run in the same process (test/gui-toast-store.test.ts).
+        setToasts([]);
     });
     const snapshot = (id: string) => ({ state: { id, cwd: "/work/app", projectName: "app", busy: false, status: "idle" }, turns: [], agents: [], seq: 0, epoch: 1 });
 
@@ -75,6 +77,7 @@ describe("/btw on Home, with no session yet", () => {
         try {
             expect(await send("/btw why?")).toBe(false);
             expect(app.activeId).toBeUndefined();
+            expect(toasts.map((t) => t.message)).toEqual(["Disconnected"]);
         } finally {
             call.mockRestore();
         }
