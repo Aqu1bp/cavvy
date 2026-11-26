@@ -143,8 +143,9 @@ export async function planFileRestore(o: { snapshots?: TurnSnapshots; history?: 
     const changes = new Map<string, { old?: Entry; now?: Entry }>();
     const items: FileRestoreItem[] = [];
     for (const [rel, d] of diff) {
-        // Another repository inside this one (a submodule, a worktree): its files aren't in the snapshot.
-        if (left.has(rel) || d.old?.mode === "160000" || d.now?.mode === "160000") continue;
+        // Another repository inside this one (a submodule, a worktree): its files aren't in the snapshot. Cavvy's own
+        // local settings (an "Always allow" rule, the .gitignore that keeps them out of git) aren't the session's work.
+        if (left.has(rel) || d.old?.mode === "160000" || d.now?.mode === "160000" || CAVVY_LOCAL.test(rel)) continue;
         changes.set(rel, d);
         items.push({ path: join(root, rel), action: !d.old ? "delete" : !d.now ? "create" : "write", undoable: true });
     }
@@ -166,6 +167,9 @@ export async function planFileRestore(o: { snapshots?: TurnSnapshots; history?: 
     items.sort((a, b) => a.path.localeCompare(b.path));
     return { whole: true, items, skipped, state: { snapshots, history, root, now, changes, copies: kept } };
 }
+
+/** Cavvy's own per-project local settings and the .gitignore it writes beside them (config/settings.ts), at any depth. */
+const CAVVY_LOCAL = /(^|\/)\.cavvy\/(settings\.local\.json|\.gitignore)$/;
 
 /** What's on disk at `abs` is what `e` records: its bytes, as a file (executable or not) or a link; no entry, nothing there. */
 async function matches(abs: string, e: Entry | undefined): Promise<boolean> {
