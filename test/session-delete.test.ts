@@ -120,6 +120,8 @@ describe("session.delete", () => {
             await engine.handle(c, "session.pin", { id, pinned: true });
             await engine.handle(c, "session.archive", { id, archived: true });
             await engine.handle(c, "session.neverSettle", { id, on: true });
+            const until = Date.now() + 3600_000;
+            await engine.handle(c, "session.snooze", { id, until });
             const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), queue: readFileSync(f.queue), turns: readFileSync(f.turns), turnsIndex: readFileSync(f.turnsIndex), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
             const before = { status: git(cwd, "status", "--porcelain"), readme: readFileSync(join(cwd, "README.md")) };
             expect(existsSync(f.lock)).toBe(true);
@@ -150,6 +152,9 @@ describe("session.delete", () => {
             const back = ((await engine.handle(c, "sessions.list", { archived: true })) as SessionSummary[]).find((s) => s.id === id);
             expect(back).toMatchObject({ pinned: true, archived: true, neverSettle: true });
             expect(store().neverSettle).toContain(id);
+            // Still snoozed, until the same time.
+            expect(back?.snoozedUntil).toBe(until);
+            expect(store().snoozed?.[id]?.until).toBe(until);
             expect(events.some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.pinned && e.session.archived && e.session.neverSettle)).toBe(true);
             const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
             expect(snap.turns.length).toBeGreaterThan(0);
