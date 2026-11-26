@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
+import { AGAIN, anchoredTop, atBottom, FAR, STAGED, onBuildAgain, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 import { finishEntrances, finishEntrancesIn } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
@@ -74,6 +74,10 @@ const matches = (n: Node, selector: string) => selector.split(", ").some((s) => 
 const glides: { el: Node; from: number; duration: number; anim: { playState: string; cancel(): void } }[] = [];
 /** The far-turn observer (Transcript.tsx): what it watches, how, and its callback (report() says what's near). */
 const io = { targets: new Set<Node>(), options: undefined as any, cb: undefined as undefined | ((entries: any[]) => void) };
+/** The other one: whether a turn is within reach (KEEP_SCREENS), its content let go of a while after it isn't. */
+const reach = { targets: new Set<Node>(), options: undefined as any, cb: undefined as undefined | ((entries: any[]) => void) };
+/** Each turn's `gone` (TurnView's prop): only its box left, at the size it was drawn at. */
+const goneOf = new Map<string, () => boolean>();
 let shiftNow = 0;
 /** The conversation's moves while the panels slide (Transcript.tsx hold): what each translates from, and its timing. */
 const slides: { from: string; options: { duration: number; easing?: string }; anim: { playState: string; startTime?: number } }[] = [];
@@ -158,6 +162,7 @@ const forgets: number[] = [];
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
     forgetEarlier: (_h: any, keep: number) => void forgets.push(keep),
+    transcriptMounted: () => {},
     loadTurn: async () => {},
     rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
@@ -166,7 +171,7 @@ const scope = {
     keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    AGAIN, anchoredTop, atBottom, FAR, STAGED, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, BuiltFromEnd, KeyedList,
+    AGAIN, anchoredTop, atBottom, FAR, STAGED, onBuildAgain, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: flowingNow, finishEntrances, finishEntrancesIn, DrawnAgain, BuiltFromEnd, KeyedList,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
     FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
@@ -192,6 +197,11 @@ const scope = {
     },
     // The far turns' observer (lib/settling-observer.ts), as a plain one: when it lets go of its targets is its own test's.
     settlingObserver: (cb: (entries: any[]) => void, options: any) => {
+        if (options.rootMargin !== "100% 0px") {
+            reach.cb = cb;
+            reach.options = options;
+            return { observe: (target: Node) => reach.targets.add(target), unobserve: (target: Node) => reach.targets.delete(target), disconnect: () => reach.targets.clear(), wake() {} };
+        }
         io.cb = cb;
         io.options = options;
         return { observe: (target: Node) => io.targets.add(target), unobserve: (target: Node) => io.targets.delete(target), disconnect: () => io.targets.clear(), wake() {} };
@@ -217,6 +227,7 @@ const scope = {
         workOpen.set(p.turn.id, p.workOpen);
         workToggles.set(p.turn.id, p.onToggleWork);
         const n = create("article"); n.props["data-turn"] = p.turn.id;
+        if (p.gone) goneOf.set(p.turn.id, p.gone);
         p.onElement?.(n, p.turn.id);
         onFolds.set(p.turn.id, p.onFold);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
@@ -816,6 +827,28 @@ try {
     const removed = turn("turn-89");
     setFarTurns(farTurns().slice(0, 89));
     assert.ok(!io.targets.has(removed) && io.targets.has(turn("turn-9")), "a turn removed is no longer watched (and one paged in is)");
+    // Out of reach (three screens) a while, a far turn keeps only its box, at the size it was drawn at; back within
+    // reach, it's built again at once, its entrances already over.
+    assert.equal(reach.targets.size, io.targets.size, "each turn drawn is watched for whether it's within reach too");
+    assert.deepEqual(reach.options, { root: scroller(), rootMargin: "300% 0px" }, "within three screens of the view");
+    const inReach = (ids: string[], near: boolean) => reach.cb!(ids.map((id) => ({ target: turn(id), isIntersecting: near })));
+    inReach(["turn-10", "turn-11", "turn-50"], false);
+    settle();
+    assert.equal(goneOf.get("turn-10")!(), false, "not at once");
+    for (let i = 0; i < 3; i++) settle();
+    assert.deepEqual(["turn-10", "turn-11"].map((id) => goneOf.get(id)!()), [true, true], "a far turn out of reach a while keeps only its box");
+    assert.equal(goneOf.get("turn-50")!(), false, "not one drawn now (not far)");
+    inReach(["turn-10"], true);
+    assert.equal(goneOf.get("turn-10")!(), false, "back within reach, it's built again at once");
+    assert.equal(turn("turn-10").props[AGAIN], "", "with its entrances already over");
+    // A jump or the scrollbar moves the view further in a frame than the observer reaches: those near it then are built
+    // before it's drawn.
+    const eleven = turn("turn-11");
+    const elevenBox = eleven.getBoundingClientRect;
+    eleven.getBoundingClientRect = () => ({ top: 10, bottom: 300, height: 290 });
+    scroll(scroller().scrollTop - 1);
+    assert.equal(goneOf.get("turn-11")!(), false, "one in view after a scroll is built in that frame");
+    eleven.getBoundingClientRect = elevenBox;
     skippedAt.clear(); turnHeights.clear();
     dispose();
     assert.equal(io.targets.size, 0, "nor is any once the conversation is closed");

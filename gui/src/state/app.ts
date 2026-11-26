@@ -29,7 +29,7 @@ import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
-import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
+import { keyedTurn, placeBefore, restoredShown, transcriptPositions, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
 export const serversUi = () => import("../components/Servers");
@@ -896,6 +896,61 @@ function flush(h: SessionHandle) {
         ),
     );
     if (ops.some((op) => op.op === "reset")) for (const fn of resetting.get(h.id) ?? []) fn();
+    if (ops.some((op) => op.op === "turn")) letGoOutOfSight(h);
+}
+
+/**
+ * A session open but out of sight keeps only the turns it shows when it's back; those before go, and come back as "Show
+ * earlier" or scrolling up brings them, as for one opened anew. Left at its end (or never shown): what opening it anew
+ * takes (openedKeeps), one turn at least. Left being read higher up: the pages down from there (restoredShown). Only the
+ * one on screen let go of them (back at its end, nothing running): one working out of sight kept every turn it did, with
+ * each step's input and output, about 190 KB a turn of sub-agent work (a real run, 8 sessions, 30 minutes: 48 MB of
+ * window heap and climbing).
+ * Measured only when the session has another turn (or its view has just gone): a step streaming in changes none before it.
+ * Not one whose view is in the window: the one shown just before, which Panes keeps built out of sight (parked) to be
+ * shown again as it was left, or one held on the stage while another opens. It's let go of once its view goes, after
+ * that's kept where it was read (transcriptMounted).
+ */
+function letGoOutOfSight(h: SessionHandle, left = false) {
+    if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
+    if (mountedViews.get(h.id)) return;
+    const turns = h.view.turns;
+    if (!left && trimmedAt.get(h) === turns.length) return;
+    const saved = transcriptPositions.get(h.id);
+    const reading = saved && !saved.bottom && saved.anchor;
+    forgetEarlier(h, reading ? restoredShown(turns.map((t) => t.id), saved) : openedKeeps(turns));
+    trimmedAt.set(h, h.view.turns.length);
+}
+
+/** How many transcript views each session has in the window (Panes: shown, parked, or held while another opens). */
+const mountedViews = new Map<string, number>();
+
+/**
+ * A session's transcript view put in the window, or taken out (after it's kept where it was read): taken out, the
+ * session is out of sight, and keeps only what opening it anew takes.
+ */
+export function transcriptMounted(h: SessionHandle, mounted: boolean) {
+    const n = (mountedViews.get(h.id) ?? 0) + (mounted ? 1 : -1);
+    if (n > 0) return void mountedViews.set(h.id, n);
+    mountedViews.delete(h.id);
+    if (!mounted) setTimeout(() => letGoOutOfSight(h, true), 0);
+}
+
+/** Each session's count of turns when letGoOutOfSight last looked. */
+const trimmedAt = new WeakMap<SessionHandle, number>();
+
+/**
+ * How many of the latest turns a session opened anew is sent: as many as fit OPEN_BYTES back from the latest, one at
+ * least, measured as the server measures them (Runtime.snapshot: each as JSON). What's here can be more than what's sent
+ * (a step's whole output, not folded), so this keeps no more than an open would.
+ */
+export function openedKeeps(turns: readonly unknown[]): number {
+    let size = 0;
+    for (let i = turns.length - 1; i > 0; i--) {
+        size += JSON.stringify(unwrap(turns[i])).length;
+        if (size >= OPEN_BYTES) return turns.length - i;
+    }
+    return turns.length;
 }
 
 function schedule(h: SessionHandle) {
