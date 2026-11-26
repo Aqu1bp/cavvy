@@ -6,8 +6,8 @@
 import type { CliSessionsList, ProjectInfo } from "@shared/protocol";
 import type { Rpc } from "../lib/rpc";
 
-/** By machine ("" the window's own) and folder. */
-const key = (on: string | undefined, path: string) => `${on ?? ""}\0${path}`;
+/** By machine (undefined the window's own; "" this computer, in a window on a server) and folder. */
+const key = (on: string | undefined, path: string) => `${on === undefined ? "" : `@${on}`}\0${path}`;
 const inspects = new Map<string, ProjectInfo>();
 const clis = new Map<string, CliSessionsList>();
 
