@@ -12,7 +12,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
         createEffect: (effect: () => unknown) => effects.push(effect),
         on: (read: () => unknown, effect: (value: unknown) => unknown) => () => effect(read()),
         rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : { pr: { number: 7 } }; } },
-        toast() {}, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal() {},
+        toast() {}, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal() {}, takeFocus() {},
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
     });
     // The dialog and its footer, where the buttons are.

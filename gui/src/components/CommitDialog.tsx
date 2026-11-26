@@ -9,6 +9,7 @@ import { plural } from "../lib/format";
 import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import { takeFocus } from "../lib/focus-trap";
 
 /** A file as the Review pane names it in a commit request: its handle when its name was shown redacted, else its name. */
 const key = (f: GitFileDiff) => f.pathToken ?? f.path;
@@ -95,6 +96,7 @@ export function CommitDialog() {
               ? "Committing to the main branch."
               : undefined;
 
+    let messageEl: HTMLTextAreaElement | undefined;
     const generate = async () => {
         const request = commitRequest();
         if (!request || !ready() || generating() || committing()) return;
@@ -114,7 +116,14 @@ export function CommitDialog() {
         } catch (e) {
             if (commitRequest() === request) setGenError(errorText(e).split("\n")[0]!.slice(0, 200));
         } finally {
-            if (commitRequest() === request) setGenerating(false);
+            if (commitRequest() === request) {
+                setGenerating(false);
+                // Generate gave up the keyboard as it went busy: back to the message's end, to go on from there.
+                if (messageEl && (!document.activeElement || document.activeElement === document.body)) {
+                    messageEl.focus();
+                    messageEl.setSelectionRange(messageEl.value.length, messageEl.value.length);
+                }
+            }
         }
     };
     /** What the new branch is for: the message's subject, else what the session is about. */
@@ -232,36 +241,38 @@ export function CommitDialog() {
                                 <p class="muted">No changes left in these files.</p>
                             </Show>
                         </div>
-                        <label class="sr-only" for="commit-message">
-                            Commit message
-                        </label>
-                        <textarea
-                            id="commit-message"
-                            class="input mono"
-                            rows={7}
-                            autofocus
-                            // Shown once the changes have loaded, after the dialog gave the keyboard to its first
-                            // control (Cancel): the message takes it, unless it has been moved on purpose since.
-                            ref={(el) => requestAnimationFrame(() => {
-                                const at = document.activeElement;
-                                if (!at || at === document.body || at.closest(".dialog-actions")) el.focus();
-                            })}
-                            placeholder="Commit message"
-                            value={message()}
-                            disabled={committing()}
-                            onKeyDown={onMessageKey}
-                            onInput={(e) => {
-                                revision++;
-                                setMessage(e.currentTarget.value);
-                            }}
-                        />
-                        <div class="commit-generate">
-                            <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
-                                {generating() ? "Generating…" : "Generate message"}
-                            </button>
-                            <Show when={genError()}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
-                        </div>
                     </Show>
+                </Show>
+                {/* There at once, while the changes load: what's typed straight away lands in it. */}
+                <Show when={loading() || view()?.repo}>
+                    <label class="sr-only" for="commit-message">
+                        Commit message
+                    </label>
+                    <textarea
+                        id="commit-message"
+                        class="input mono"
+                        rows={7}
+                        autofocus
+                        // The message takes the keyboard, unless it has been moved on purpose since the dialog opened.
+                        ref={(el) => {
+                            messageEl = el;
+                            requestAnimationFrame(() => takeFocus(el));
+                        }}
+                        placeholder="Commit message"
+                        value={message()}
+                        disabled={committing()}
+                        onKeyDown={onMessageKey}
+                        onInput={(e) => {
+                            revision++;
+                            setMessage(e.currentTarget.value);
+                        }}
+                    />
+                    <div class="commit-generate">
+                        <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
+                            {generating() ? "Generating…" : "Generate message"}
+                        </button>
+                        <Show when={genError()}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
+                    </div>
                 </Show>
                 <Show when={blocked()}>
                     <p class="commit-warning">{blocked()}</p>

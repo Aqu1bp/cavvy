@@ -16,3 +16,12 @@ export function tabWrap<T>(items: readonly T[], at: T | null, inside: boolean, s
     if (shift ? at === first : at === last) return shift ? last : first;
     return undefined;
 }
+
+/**
+ * Gives `el` the keyboard if nothing has been given it on purpose since a dialog opened: it's on nothing, or still on
+ * what the dialog gave it first (its buttons, its ×). For a field that comes once a dialog's content has loaded.
+ */
+export function takeFocus(el: HTMLElement | undefined): void {
+    const at = document.activeElement;
+    if (el && (!at || at === document.body || at.closest(".dialog-actions, .dialog-close"))) el.focus();
+}

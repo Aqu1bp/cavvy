@@ -767,8 +767,8 @@ input[type="range"] {
     background: var(--hover);
 }
 
-/* Text fields show focus with their own border or container, not an outline. */
-input:focus-visible,
+/* Text fields show focus with their own border or container, not an outline; a checkbox keeps the ring. */
+input:not([type="checkbox"]):focus-visible,
 textarea:focus-visible,
 select:focus-visible {
     outline: none;

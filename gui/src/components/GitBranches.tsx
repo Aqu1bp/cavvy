@@ -250,8 +250,15 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         if (name && !pr && !l.local.some((b) => b.name === name)) out.push({ key: "create", verb: "Create branch", label: name, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
         return out;
     });
-    // On the first row that can be picked (not the current branch), for each new query and new list.
-    createEffect(on(rows, (r) => setSel(Math.max(0, r.findIndex((x) => !x.disabled)))));
+    // On the first row that can be picked (not the current branch), for each new query. The same list read again (a
+    // session there started or finished) keeps the row that was on, so Enter still does what it showed.
+    let lastQ = q();
+    createEffect(on(rows, (r, before) => {
+        const key = before && q() === lastQ ? before[sel()]?.key : undefined;
+        lastQ = q();
+        const kept = key === undefined ? -1 : r.findIndex((x) => x.key === key && !x.disabled);
+        setSel(kept >= 0 ? kept : Math.max(0, r.findIndex((x) => !x.disabled)));
+    }));
     const runAt = (i: number) => {
         const r = rows()[i];
         if (r && !r.disabled) r.run();
