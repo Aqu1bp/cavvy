@@ -30,7 +30,7 @@ globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r)); };
 const later = () => new Promise<void>((r) => setTimeout(r, 20));
 
-const { start, rpc, openSession, activate, app, handleFor, OPEN_BYTES } = await import("../../gui/src/state/app");
+const { start, rpc, openSession, activate, app, handleFor, transcriptMounted, OPEN_BYTES } = await import("../../gui/src/state/app");
 const { transcriptPositions, TURN_PAGE } = await import("../../gui/src/lib/transcript-scroll");
 /** What a session opened anew is sent of these turns (all the same size): as many as fit OPEN_BYTES, one at least. */
 const KEEP = Math.ceil(OPEN_BYTES / JSON.stringify(turn("x", 99)).length);
@@ -60,6 +60,8 @@ try {
     const away = await openSession("away");
     const read = await openSession("read");
     await activate("shown");
+    // Its transcript in the window, as Panes puts it in.
+    transcriptMounted(shown, true);
     await settle();
     assert.equal(app.activeId, "shown");
 
@@ -81,8 +83,9 @@ try {
     assert.equal(shown.view.turns.length, 100);
     assert.equal(shown.view.earlier, 0);
 
-    // Switched away from: parked (Panes keeps it built out of sight, to be shown again as it was left), kept as it is.
+    // Switched away from: parked (Panes keeps its view built out of sight, to be shown again as it was left), kept as it is.
     await activate("away");
+    transcriptMounted(away, true);
     await settle();
     await later();
     assert.equal(shown.view.turns.length, 100);
@@ -91,17 +94,33 @@ try {
     await work("away", 100, 5);
     assert.equal(away.view.turns.length, KEEP + 5);
 
-    // Another switch: the one parked before is out of sight now, and keeps what opening it anew takes.
+    // Another switch, to one still opening: the stage holds what it showed meanwhile, so the views stay in, kept whole.
     await activate("read");
     await settle();
     await later();
-    assert.equal(shown.view.turns.length, KEEP);
-    assert.equal(shown.view.earlier, 100 - KEEP);
-    // The one just left is working: Panes doesn't park it, so it's let go of at once, and as it goes on.
+    assert.equal(shown.view.turns.length, 100);
+    await work("away", 105, 1);
+    assert.equal(away.view.turns.length, KEEP + 6);
+    // Then Panes takes them out. The one parked before, left read higher up, keeps from the place its view kept down.
+    transcriptMounted(read, true);
+    transcriptPositions.set("shown", { bottom: false, top: 0, anchor: { turnId: "shown-50", offset: 0 }, openWork: [] });
+    transcriptMounted(shown, false);
+    // The one just left is working: Panes doesn't park it, so it's let go of once its view goes, and as it goes on.
+    transcriptMounted(away, false);
+    await later();
+    assert.ok(shown.view.turns.some((t) => t.id === "shown-50"), "the place read is kept");
+    assert.ok(shown.view.earlier > 0 && shown.view.turns.length + shown.view.earlier === 100, `${shown.view.turns.length} kept`);
     assert.equal(away.view.turns.length, KEEP);
-    await work("away", 105, 20);
+    await work("away", 106, 20);
     assert.equal(away.view.turns.length, KEEP);
-    assert.equal(away.view.turns.at(-1)!.id, "away-124");
+    assert.equal(away.view.turns.at(-1)!.id, "away-125");
+
+    // Home (New session): Panes goes, and the one that was on screen is out of sight once its view has gone.
+    transcriptPositions.set("read", { bottom: true, top: 0, openWork: [] });
+    await activate(undefined);
+    transcriptMounted(read, false);
+    await later();
+    assert.equal(read.view.turns.length, KEEP);
 } finally {
     rpc.close();
 }

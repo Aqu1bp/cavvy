@@ -162,6 +162,7 @@ const forgets: number[] = [];
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
     forgetEarlier: (_h: any, keep: number) => void forgets.push(keep),
+    transcriptMounted: () => {},
     loadTurn: async () => {},
     rpc: { call: async () => ({ matches: [] }) },
     loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),

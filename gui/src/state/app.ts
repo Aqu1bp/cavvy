@@ -906,13 +906,14 @@ function flush(h: SessionHandle) {
  * one on screen let go of them (back at its end, nothing running): one working out of sight kept every turn it did, with
  * each step's input and output, about 190 KB a turn of sub-agent work (a real run, 8 sessions, 30 minutes: 48 MB of
  * window heap and climbing).
- * Measured only when the session has another turn (or it's just been left): a step streaming in changes none before it.
- * Not the one shown just before while it's idle: Panes keeps it built out of sight (parked), to be shown again as it was
- * left; it's let go of once another takes its place (activate), or once it works (Panes no longer keeps it then).
+ * Measured only when the session has another turn (or its view has just gone): a step streaming in changes none before it.
+ * Not one whose view is in the window: the one shown just before, which Panes keeps built out of sight (parked) to be
+ * shown again as it was left, or one held on the stage while another opens. It's let go of once its view goes, after
+ * that's kept where it was read (transcriptMounted).
  */
 function letGoOutOfSight(h: SessionHandle, left = false) {
     if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
-    if (h.id === parkedId && !h.view.state.busy) return;
+    if (mountedViews.get(h.id)) return;
     const turns = h.view.turns;
     if (!left && trimmedAt.get(h) === turns.length) return;
     const saved = transcriptPositions.get(h.id);
@@ -921,8 +922,19 @@ function letGoOutOfSight(h: SessionHandle, left = false) {
     trimmedAt.set(h, h.view.turns.length);
 }
 
-/** The session shown before the one in view: kept as it was while it's idle (Panes parks it), not let go of. */
-let parkedId: string | undefined;
+/** How many transcript views each session has in the window (Panes: shown, parked, or held while another opens). */
+const mountedViews = new Map<string, number>();
+
+/**
+ * A session's transcript view put in the window, or taken out (after it's kept where it was read): taken out, the
+ * session is out of sight, and keeps only what opening it anew takes.
+ */
+export function transcriptMounted(h: SessionHandle, mounted: boolean) {
+    const n = (mountedViews.get(h.id) ?? 0) + (mounted ? 1 : -1);
+    if (n > 0) return void mountedViews.set(h.id, n);
+    mountedViews.delete(h.id);
+    if (!mounted) setTimeout(() => letGoOutOfSight(h, true), 0);
+}
 
 /** Each session's count of turns when letGoOutOfSight last looked. */
 const trimmedAt = new WeakMap<SessionHandle, number>();
@@ -1395,19 +1407,6 @@ export async function activate(id: string | undefined, cwd?: string) {
     pending.cancel();
     const version = ++openingVersion;
     const cached = id ? handles.get(id) : undefined;
-    // The one left is parked (Panes) and kept as it is; the one parked before it is out of sight now, let go of once its
-    // view has kept where it was read (Transcript, as it goes). From Home nothing is parked (Panes was gone).
-    if (app.activeId !== id) {
-        const before = parkedId;
-        parkedId = app.activeId;
-        const left = handles.get(app.activeId ?? "");
-        const gone = before !== undefined && before !== id && before !== parkedId ? handles.get(before) : undefined;
-        setTimeout(() => {
-            if (gone) letGoOutOfSight(gone, true);
-            // Working: Panes doesn't park it, and it streams on out of sight.
-            if (left?.view.state.busy) letGoOutOfSight(left, true);
-        }, 0);
-    }
     if (cached) {
         // Preserve the mounted view (pagination, scroll, drafts) when picking it again.
         // Cached navigation never needs a loading screen, even for another session.

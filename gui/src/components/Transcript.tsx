@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, onReset, rpc, toast, type SessionHandle } from "../state/app";
+import { activate, app, earlierArriving, fillGap, forgetEarlier, loadEarlier, loadEarlierTo, loadTurn, onRenew, onReset, rpc, toast, transcriptMounted, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, rewindTarget, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -115,6 +115,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
     const id = p.handle.id;
+    const viewed = p.handle;
+    // In the window (shown, parked or held): its session keeps what it has (state/app.ts letGoOutOfSight).
+    transcriptMounted(viewed, true);
     const saved = p.saved;
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
@@ -1054,6 +1057,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             // A page asked for and still going in (staged): it comes with it, as it would have once in.
             ...(staged ? { shown: goal() } : {}),
         }));
+        // Where it was read kept: out of sight now, unless another view of it is in.
+        transcriptMounted(viewed, false);
     });
 
     // Back at the end a while after reading far up, with nothing coming: what's drawn above its first page goes, and so do
@@ -1459,6 +1464,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             const el = turnEls.get(turn.id);
             if (!el || !scroller) return;
             scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+            // Those let go of there built before this frame is drawn (its scroll event comes after).
+            nearNow();
             wrote();
             reading = capture();
             el.classList.remove("flash");
