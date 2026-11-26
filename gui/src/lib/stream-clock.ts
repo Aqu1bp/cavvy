@@ -20,7 +20,10 @@ let last = -Infinity;
 
 function fire(now: number) {
     frame = 0;
-    last = now;
+    // When the step ran, not when its frame began: a frame started between two refreshes carries the time of the
+    // refresh before it, up to 17 ms back at 60 Hz. Counted from there, the next step was due at once, and ran again a
+    // refresh later with nothing to show: a second frame for the step, on some displays for every step.
+    last = performance.now();
     const fns = [...due];
     due.clear();
     try {
