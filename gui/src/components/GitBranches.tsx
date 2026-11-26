@@ -152,7 +152,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         act("fetch", "Can't fetch", () => rpc.call("git.fetch", where), (r) => {
             setSync(r);
             void refetch();
-            setNote({ text: `Fetched ${r.remote}. ${syncWords(r)}.`, level: "info" });
+            setNote({ text: `Fetched ${r.remote}.`, level: "info" });
         });
     const pull = () =>
         act("pull", "Can't pull", () => rpc.call("git.pull", where), (r) => {
