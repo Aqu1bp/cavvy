@@ -611,6 +611,12 @@
     color: var(--fg-3);
 }
 
+/* What the row does, when that isn't what the list's other rows do (the branch dialog's "New session there"). */
+.pal-act {
+    color: var(--fg-2);
+    font-weight: 500;
+}
+
 .pal-l mark {
     color: inherit;
     background: color-mix(in srgb, var(--accent) 22%, transparent);

@@ -1762,6 +1762,8 @@ export interface GitBranchEntry {
     at?: number;
     /** Checked out in this other worktree. */
     worktree?: string;
+    /** That worktree's folder is gone (git lists it as prunable): git.switch removes the worktree, then switches. */
+    worktreeGone?: true;
 }
 export interface GitBranchList {
     current?: string;

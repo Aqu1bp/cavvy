@@ -1,6 +1,8 @@
 // A branch and its upstream: ahead/behind from local refs, fetch and fast-forward pull on the user's click, the
 // branches to switch to, switching and creating one. Network calls go through git-publish's rules (runGit with
 // `network`: the folder's network trust, URL rewrites refused, run away from the work tree, output redacted).
+import { stat } from "fs/promises";
+import { isAbsolute } from "path";
 import { redact } from "../util/redact";
 import { headBranch } from "../util/git";
 import type { GitBranchList, GitPullResult, GitSyncInfo } from "./protocol";
@@ -146,8 +148,14 @@ export async function gitBranches(cwd: string, signal?: AbortSignal): Promise<Gi
         const into = local ? list.local : list.remote;
         if (into.length < MAX_BRANCHES) into.push(entry);
     }
+    // A worktree whose folder was deleted still holds its branch: said, so the row can offer to clear it.
+    const gone = new Set<string>();
+    await Promise.all([...new Set(list.local.flatMap((b) => (b.worktree ? [b.worktree] : [])))].map(async (w) => void (!(await folderExists(w)) && gone.add(w))));
+    for (const b of list.local) if (b.worktree && gone.has(b.worktree)) b.worktreeGone = true;
     return list;
 }
+
+const folderExists = (path: string) => stat(path).then((s) => s.isDirectory(), () => false);
 
 /** A name git takes for a new branch, or the reason it doesn't. */
 async function newBranchName(cwd: string, name: string, signal?: AbortSignal): Promise<string> {
@@ -183,6 +191,13 @@ export async function gitSwitch(cwd: string, o: { branch: string; remote?: boole
         }
     } else {
         if (!(await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${b}`], signal, true))) throw fail(`There's no branch named ${b}.`, "not_found");
+        // Checked out in a worktree whose folder is gone: git holds the branch for it until that worktree is removed. A
+        // locked one stays (git says why).
+        const at = await git(cwd, ["for-each-ref", "--format=%(worktreepath)", `refs/heads/${b}`], signal, true);
+        if (isAbsolute(at) && !(await folderExists(at))) {
+            const rm = await runGit(cwd, ["worktree", "remove", at], false, signal);
+            if (rm.code) throw fail(gitReason(rm.err + rm.out) || `Git couldn't remove the worktree ${b} was checked out in.`, "blocked");
+        }
         args = ["switch", "--no-guess", b];
     }
     const r = await runGit(cwd, args, false, signal);

@@ -1,6 +1,6 @@
 // Fetch, pull, ahead/behind and branch switching, on scratch repositories: a bare remote and two clones of it.
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 setDefaultTimeout(60_000);
@@ -151,6 +151,35 @@ test("switch to a remote branch makes a local one tracking it; back to a local o
     expect(await gitSwitch(mine, { branch: "main" })).toEqual({ branch: "main" });
     // Its local branch is there now: switched to, not made again.
     expect(await gitSwitch(mine, { branch: "origin/feature", remote: true })).toEqual({ branch: "feature" });
+});
+
+test("branches checked out in other worktrees: where, the main checkout's seen from a worktree, one whose folder is gone", async () => {
+    const { mine } = setup();
+    const root = join(mine, "..");
+    git(mine, "worktree", "add", "-q", join(root, "wt-a"), "-b", "feat/a");
+    git(mine, "worktree", "add", "-q", join(root, "wt-gone"), "-b", "feat/gone");
+    git(mine, "worktree", "add", "-q", join(root, "wt-locked"), "-b", "feat/locked");
+    git(mine, "worktree", "lock", join(root, "wt-locked"));
+    rmSync(join(root, "wt-gone"), { recursive: true });
+    rmSync(join(root, "wt-locked"), { recursive: true });
+    const seen = (l: Awaited<ReturnType<typeof gitBranches>>) => Object.fromEntries(l.local.map((b) => [b.name, [b.worktree ?? "", b.worktreeGone ?? false]]));
+    expect(seen(await gitBranches(mine))).toEqual({
+        main: ["", false],
+        "feat/a": [join(root, "wt-a"), false],
+        "feat/gone": [join(root, "wt-gone"), true],
+        "feat/locked": [join(root, "wt-locked"), true],
+    });
+    // From a worktree, the main checkout's branch is the one held elsewhere.
+    expect(seen(await gitBranches(join(root, "wt-a")))).toMatchObject({ main: [mine, false], "feat/a": ["", false] });
+    // A branch a live worktree holds: git's reason, nothing removed.
+    await expect(gitSwitch(mine, { branch: "feat/a" })).rejects.toMatchObject({ code: "blocked" });
+    expect(git(mine, "worktree", "list")).toContain("wt-a");
+    // One whose folder is gone: that worktree is removed, then it switches.
+    expect(await gitSwitch(mine, { branch: "feat/gone" })).toEqual({ branch: "feat/gone" });
+    expect(git(mine, "worktree", "list")).not.toContain("wt-gone");
+    // A locked one stays, with git's reason.
+    await expect(gitSwitch(mine, { branch: "feat/locked" })).rejects.toMatchObject({ code: "blocked", message: expect.stringContaining("locked") });
+    expect(git(mine, "branch", "--show-current")).toBe("feat/gone");
 });
 
 test("a switch blocked by local changes says git's reason, and stays put", async () => {
