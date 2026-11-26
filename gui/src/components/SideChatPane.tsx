@@ -16,7 +16,7 @@ import { columnSteps, PANE_NARROW } from "../lib/layout";
 import { sideChatText, type Attachment } from "../lib/attachments";
 import { awayMachine, openSession, reportError, rpcFor, toast, type SessionHandle } from "../state/app";
 import { send } from "../state/actions";
-import { setComposerAdd } from "../state/ui";
+import { askSideChat, setAskSideChat, setComposerAdd } from "../state/ui";
 import { asideFocused, PaneContext, setAsideFocused, showAside } from "../state/split";
 import type { Transcript } from "./Transcript";
 import type { Composer } from "./Composer";
@@ -59,6 +59,14 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
             setAsideFocused(false);
         });
     });
+    // A bare /btw: its box takes the keyboard, for the question (the session's had it).
+    createEffect(
+        on(askSideChat, (n) => {
+            if (!n) return;
+            setAskSideChat(0);
+            requestAnimationFrame(() => root?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+        }),
+    );
     /** With none open: the question opens one, and goes to it with what's attached. */
     const open = async (text: string, attachments: Attachment[]) => {
         try {

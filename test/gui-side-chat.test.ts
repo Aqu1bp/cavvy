@@ -14,6 +14,9 @@ test("the last answer is the latest turn's last words, not a step's", () => {
     // A turn that said nothing yet (still working): the one before's.
     expect(lastAnswer([turn([{ t: "text", id: "a", text: "earlier" }]), turn([{ t: "tool", id: "c", name: "Read" }])])).toBe("earlier");
     expect(lastAnswer([])).toBeUndefined();
+    // A turn still running (its words so far, or waiting on a card): the finished one before's.
+    expect(lastAnswer([turn([{ t: "text", id: "a", text: "earlier" }]), { id: "t2", status: "running", blocks: [{ t: "text", id: "b", text: "Writing it." }] } as any])).toBe("earlier");
+    expect(lastAnswer([{ id: "t", status: "running", blocks: [{ t: "text", id: "b", text: "Writing it." }] } as any])).toBeUndefined();
 });
 
 test("/btw opens the side chat with its question", () => {

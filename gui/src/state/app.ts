@@ -874,10 +874,10 @@ function letGo(h: SessionHandle) {
  * closed, the one just left too, each opened afresh on the way back (another machine's: 119-137 ms, against 14-19).
  * Not one holding a message handed back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to
  * be shown (not yet the one in view): with the others all working or waiting on the user, it was the one closed, and
- * what was typed into it went nowhere.
+ * what was typed into it went nowhere. Nor one with a side chat open, which closing it would throw away.
  */
 function trim(opened: string) {
-    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined;
+    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined || h.view.state.sideChat !== undefined;
     let idle = 0;
     for (const h of handles.values()) if (!kept(h)) idle++;
     if (idle <= KEEP_OPEN) return;
