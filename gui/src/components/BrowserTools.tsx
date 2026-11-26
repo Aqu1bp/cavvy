@@ -336,13 +336,15 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                     class="br-strip"
                     role="search"
                     aria-label="Find in page"
-                    onFocusOut={(e) => {
-                        // Out to somewhere other than the address bar it came from: what was typed there goes, as it
-                        // does when the address bar itself is left.
-                        if (fromAddress && e.relatedTarget && !keepsDraft(findBar, e.relatedTarget) && e.relatedTarget !== o.address()) {
+                    onFocusOut={() => {
+                        // Out to somewhere other than the address bar it came from (the page's view says so only once
+                        // it has the focus): what was typed there goes, as it does when the address bar itself is left.
+                        if (fromAddress) setTimeout(() => {
+                            const now = document.activeElement;
+                            if (!fromAddress || keepsDraft(findBar, now) || now === o.address() || !document.hasFocus()) return;
                             fromAddress = undefined;
                             o.dropDraft();
-                        }
+                        });
                     }}
                 >
                     <Search size={13} class="br-strip-ic" />

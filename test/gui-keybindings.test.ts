@@ -161,25 +161,6 @@ describe("the window's keymap", () => {
         expect(kb.keymap().issues[0]!.message).toContain("EACCES");
         kb.applyKeybindingsFile({ path: "/k.json" });
     });
-
-    test("Ctrl+Q in a terminal quits the desktop app on Linux, and is the shell's elsewhere", () => {
-        // The menu's Quit runs only for a key the page leaves alone, and a terminal sends Ctrl+Q to its shell: in the
-        // desktop app on Linux it's left to the app, so it quits (or asks first) from a terminal too.
-        const linux = { os: "linux" as const, desktop: true };
-        const q = ev("q", "KeyQ", { ctrlKey: true });
-        expect(kb.quitsApp(q, linux)).toBe(true);
-        expect(kb.quitsApp(ev("Q", "KeyQ", { ctrlKey: true }), linux)).toBe(true);
-        // ⌘Q on a Mac is the menu's before the page sees it; Windows' Quit has no key; a browser tab isn't the app.
-        expect(kb.quitsApp(q, { os: "macos", desktop: true })).toBe(false);
-        expect(kb.quitsApp(q, { os: "windows", desktop: true })).toBe(false);
-        expect(kb.quitsApp(q, { os: "linux", desktop: false })).toBe(false);
-        // Other keys with it aren't Quit.
-        for (const extra of [{ shiftKey: true }, { altKey: true }, { metaKey: true }]) expect(kb.quitsApp(ev("q", "KeyQ", { ctrlKey: true, ...extra }), linux)).toBe(false);
-        expect(kb.quitsApp(ev("q", "KeyQ"), linux)).toBe(false);
-        expect(kb.quitsApp(ev("w", "KeyW", { ctrlKey: true }), linux)).toBe(false);
-        // This test runs as a browser tab would (no desktop app): the terminal keeps Ctrl+Q.
-        expect(kb.terminalKey(q)).toBe("shell");
-    });
 });
 
 describe("server", () => {

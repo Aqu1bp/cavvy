@@ -21,6 +21,7 @@ import { linkProvider } from "../lib/terminal-link-provider";
 import { isLocalUrl } from "../lib/terminal-links";
 import { Menu } from "./ui/Menu";
 import { terminalKey } from "../state/keybindings";
+import { quitsApp } from "../lib/quit-key";
 import { terminalTakesKeys, terminalUsed } from "../lib/terminal-keys";
 import { setupTickets, signInTabs, type Tab } from "../lib/terminal-tabs";
 
@@ -307,8 +308,8 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         const themeObserver = new MutationObserver(theme);
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
         term.attachCustomKeyEventHandler((e) => {
-            // Leave the app's toggle (and its chords) and clipboard shortcuts to their owners.
-            if (terminalKey(e) === "app") return false;
+            // Leave the app's toggle (and its chords), Quit and clipboard shortcuts to their owners.
+            if (quitsApp(e) || terminalKey(e) === "app") return false;
             if (isMod(e) && e.key.toLowerCase() === "c" && term.hasSelection()) {
                 if (e.type === "keydown") void copyText(term.getSelection());
                 return false;

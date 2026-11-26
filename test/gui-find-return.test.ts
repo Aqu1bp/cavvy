@@ -80,6 +80,9 @@ test("the pane uses them: kept as the bar opens, the address bar before the page
     const close = tools.slice(tools.indexOf("const closeFind = () => {"));
     expect(close.indexOf("if (!backToAddress(o.address(), mark)) {")).toBeGreaterThan(0);
     expect(close.indexOf("if (!backToAddress(o.address(), mark)) {")).toBeLessThan(close.indexOf("webview()?.focus();"));
+    // Out of the find bar to anywhere but the address bar: the address typed goes, as leaving the address bar drops it.
+    const out = tools.slice(tools.indexOf("onFocusOut={() => {"));
+    expect(out.indexOf("o.dropDraft();")).toBeGreaterThan(out.indexOf("now === o.address()"));
     const pane = readFileSync(join(import.meta.dir, "../gui/src/components/BrowserPane.tsx"), "utf8");
     expect(pane).toContain("onBlur={(e) => tools.keepsDraft(e.relatedTarget) || setDraft(undefined)}");
 });
