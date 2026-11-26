@@ -153,8 +153,8 @@ export function RewindDialog() {
     };
     /** How many files the plan restores, those past the list's end too. */
     const listedCount = () => (plan()?.restore.length ?? 0) + (plan()?.more ?? 0);
-    /** Nothing to rewind to: the line, and Close alone. */
-    const empty = () => !busySession() && targets.state === "ready" && !targets()!.length;
+    /** Nothing to rewind to (yet, or while a response runs): the line, and Close alone. */
+    const empty = () => busySession() || (targets.state === "ready" && !targets()!.length);
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
