@@ -34,6 +34,12 @@
     scrollbar-gutter: stable;
 }
 
+/* Followed at its end with a scrollbar that's laid over the content: put away until the reader scrolls
+   (Transcript.tsx, barAway). It takes no room there, so nothing moves. */
+.transcript[data-bar-away] {
+    scrollbar-width: none;
+}
+
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
    to what the conversation scrolls through, and nothing beside the column is cut. */
 .transcript-glide {
