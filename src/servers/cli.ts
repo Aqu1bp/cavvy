@@ -39,7 +39,7 @@ export const SERVERS_HELP = `Usage:
   ${APP_NAME} --server <name>[:<folder>]       the terminal app, running on the server
   ${APP_NAME} gui --server <name>              the server's GUI, in your browser
 
-A server is any Linux machine you reach with ssh. Your SSH config, keys and agent are used as they are.`;
+A server is any Linux machine, or a Mac with Apple silicon, that you reach with ssh. Your SSH config, keys and agent are used as they are.`;
 
 /** Says why something on a server failed, as the user needs it. False for anything that isn't theirs to read. */
 function report(e: unknown): boolean {
@@ -137,7 +137,7 @@ function setupOptions(e: ServerEntry, o: { force?: boolean; update?: boolean } =
 /** Said when a server can't keep Cavvy as a service. */
 function serviceLines(service: ServiceReport | undefined): string[] {
     if (!service || service.service) return [];
-    return [service.lingerFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.lingerFix}` : "It won't start Cavvy again after a reboot."];
+    return [service.bootFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.bootFix}` : "It won't start Cavvy again after a reboot."];
 }
 
 type CheckedCli = HostCheck["clis"][number];

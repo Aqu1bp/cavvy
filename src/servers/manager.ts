@@ -381,7 +381,7 @@ export class ServerLinks {
             gh: check.gh,
             browser: check.browser,
             service: service.service,
-            ...(service.lingerFix ? { lingerFix: service.lingerFix } : {}),
+            ...(service.bootFix ? { bootFix: service.bootFix } : {}),
         };
     }
 

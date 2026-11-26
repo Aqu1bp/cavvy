@@ -4,7 +4,9 @@
 // there is this checkout's, run from source, so the real server code answers.
 //
 // The pretend server reports itself as Linux x64 with glibc whatever this
-// machine is, so the flow is the same on a Mac and in CI.
+// machine is, so the flow is the same on a Mac and in CI. Asked to (`mac`), it
+// is a Mac with Apple silicon instead, on any machine: launchd and sudo
+// are stand-ins there (fake-launchctl.sh and the shims below).
 //
 // This module must not import anything from src.
 
@@ -39,6 +41,12 @@ export interface FakeServer {
     asked(): string[];
     /** With `systemd`: whether the server lets a user's services outlive their sign-in when asked. */
     allowLinger(yes: boolean): void;
+    /** With `mac`: whether `sudo` there runs things without asking for a password. */
+    allowSudo(yes: boolean): void;
+    /** With `mac`: what was asked of the pretend launchd, in order ("user bootstrap user/501 <file>"; "root …" when through sudo). */
+    launchd(): string[];
+    /** With `mac`: where the pretend Mac keeps its LaunchDaemons. */
+    daemons: string;
     /** As if the user had connected to it before: its key is in the pretend known_hosts. */
     trust(host: string): void;
     knownHosts(): string;
@@ -59,7 +67,7 @@ export interface FakeServer {
      */
     install(name: string, body?: string): void;
     /** A build of Cavvy to "install": this checkout, run from source. `gui`: with a GUI page beside it. */
-    bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
+    bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64" | "darwin-arm64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
     cleanup(): void;
 }
 
@@ -73,7 +81,7 @@ function keygen(file: string) {
  * whether lingering is on. It starts nothing itself, and lingering is refused until allowLinger(true), so Cavvy
  * there runs detached as on a server that refuses it.
  */
-export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
+export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServer {
     // Short: a socket's path under it has to fit in 104 bytes on macOS.
     const dir = mkdtempSync("/tmp/cvr-");
     const home = join(dir, "home");
@@ -86,24 +94,23 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         writeFileSync(join(dir, "bin", name), `#!/bin/sh\n${body}\n`);
         chmodSync(join(dir, "bin", name), 0o755);
     };
-    // What the probe asks, answered as a Linux x64 server would.
-    shim("uname", 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo "Linux fake 6.8.0 x86_64" ;; esac');
-    // A login shell that says nothing, so the system's profile can't add this machine's tools to the pretend server's PATH.
-    shim("quiet-shell", "exit 0");
-    if (o.systemd) {
-        shim("systemctl", `[ "$1 $2" = "--user show-environment" ] && exit 0\nshift\necho "$*" >> ${JSON.stringify(join(dir, "systemctl.log"))}\nexit 0`);
-        shim(
-            "loginctl",
-            `f=${JSON.stringify(join(dir, "linger"))}\ncase "$1" in\n  show-user) cat "$f" 2>/dev/null || echo no ;;\n  enable-linger) [ -f ${JSON.stringify(join(dir, "linger-allowed"))} ] || exit 1; echo yes > "$f" ;;\n  *) exit 1 ;;\nesac`,
-        );
-    } else {
-        // No service manager, on any machine the tests run on: Cavvy runs detached (the real one is tried on a real server).
-        shim("systemctl", "exit 1");
-        shim("loginctl", "exit 1");
+    // What the probe asks, answered as a Linux x64 server would, or a Mac.
+    if (o.mac) shim("uname", 'case "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo "Darwin fake 27.2.0 arm64" ;; esac');
+    else shim("uname", 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo "Linux fake 6.8.0 x86_64" ;; esac');
+    const daemons = join(dir, "LaunchDaemons");
+    const mac = Boolean(o.mac);
+    if (mac) {
+        const q = JSON.stringify;
+        mkdirSync(daemons);
+        shim("sysctl", 'if [ "$2" = hw.memsize ]; then echo 17179869184; else exit 1; fi');
+        shim("launchctl", `FAKE_DIR=${q(dir)} exec sh ${q(join(REPO, "test", "helpers", "fake-launchctl.sh"))} "$@"`);
+        shim("sudo", `[ -f ${q(join(dir, "sudo-allowed"))} ] || { echo "sudo: a password is required" >&2; exit 1; }\n[ "$1" = "-n" ] && shift\nFAKE_SUDO=1 exec "$@"`);
+        // Only as an administrator, as into /Library: the owner and mode it's asked for are taken as given.
+        shim("install", '[ -n "$FAKE_SUDO" ] || { echo "install: Operation not permitted" >&2; exit 1; }\nwhile [ $# -gt 2 ]; do shift; done\ncp "$1" "$2"');
     }
     shim("getconf", 'if [ "$1" = GNU_LIBC_VERSION ]; then echo "glibc 2.39"; else PATH="$FAKE_REAL_PATH" exec getconf "$@"; fi');
     const bin = join(dir, "ssh");
-    writeFileSync(bin, `#!/bin/sh\nFAKE_SSH_DIR=${JSON.stringify(dir)} exec ${JSON.stringify(process.execPath)} --no-env-file ${JSON.stringify(join(REPO, "test", "helpers", "fake-ssh-main.ts"))} "$@"\n`);
+    writeFileSync(bin, `#!/bin/sh\n${o.mac ? `CAVVY_LAUNCH_DAEMONS=${JSON.stringify(daemons)} ` : ""}FAKE_SSH_DIR=${JSON.stringify(dir)} exec ${JSON.stringify(process.execPath)} --no-env-file ${JSON.stringify(join(REPO, "test", "helpers", "fake-ssh-main.ts"))} "$@"\n`);
     chmodSync(bin, 0o755);
     process.env.CAVVY_SSH = bin;
 
@@ -189,6 +196,17 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             if (yes) writeFileSync(join(dir, "linger-allowed"), "");
             else rmSync(join(dir, "linger-allowed"), { force: true });
         },
+        allowSudo(yes) {
+            if (yes) writeFileSync(join(dir, "sudo-allowed"), "");
+            else rmSync(join(dir, "sudo-allowed"), { force: true });
+        },
+        launchd: () =>
+            existsSync(join(dir, "launchctl.log"))
+                ? readFileSync(join(dir, "launchctl.log"), "utf-8")
+                      .split("\n")
+                      .filter(Boolean)
+                : [],
+        daemons,
         trust(host) {
             writeFileSync(join(dir, "known_hosts"), `${host} ${hostKey()}\n`, { flag: "a" });
         },
@@ -225,7 +243,7 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             const bundle = join(dir, `bundle-${id}-${o.gui ? "gui" : "plain"}.tar.gz`);
             const tar = Bun.spawnSync(["tar", "-czf", bundle, "-C", stage, "cavvy", ...(o.gui ? ["gui"] : [])], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: { ...process.env, COPYFILE_DISABLE: "1" } as Record<string, string> });
             if (tar.exitCode !== 0) throw new Error(`tar failed: ${tar.stderr.toString()}`);
-            return { id, target: "linux-x64", bundle, bundleBytes: readFileSync(bundle).length, sha256: createHash("sha256").update(program).digest("hex"), gui: Boolean(o.gui) };
+            return { id, target: mac ? "darwin-arm64" : "linux-x64", bundle, bundleBytes: readFileSync(bundle).length, sha256: createHash("sha256").update(program).digest("hex"), gui: Boolean(o.gui) };
         },
         cleanup() {
             delete process.env.CAVVY_SSH;

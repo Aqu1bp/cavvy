@@ -23,12 +23,25 @@ export const LOGIN_EXIT = { notInstalled: 4, notSignedIn: 5, unknown: 6, problem
 /** A build's name on disk: nothing a shell or a path would read into. */
 export const BUILD_ID = /^[0-9a-z][0-9a-z.-]{5,60}$/;
 
-export type LinuxTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | "darwin-arm64";
+/** The kinds of machine a server's build is made for: Linux with glibc, and a Mac with Apple silicon. */
+export type ServerTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | "darwin-arm64";
+
+/** The name of Cavvy's job in launchd, and of its files. */
+export const MAC_LABEL = "dev.cavvy.server";
+
+/**
+ * `$daemon`: the LaunchDaemon's file, and `boots`: whether it's there and is this user's Cavvy (another user of the
+ * same Mac may have their own under that name, which is left alone). For scripts where `$HOME` is the user's.
+ */
+export const MAC_DAEMON = `
+daemon="\${CAVVY_LAUNCH_DAEMONS:-/Library/LaunchDaemons}/${MAC_LABEL}.plist"
+boots() { [ -f "$daemon" ] && grep -qF "$HOME/.cavvy/server" "$daemon"; }
+`;
 
 export interface ServerFacts {
     os: string;
     arch: string;
-    /** "glibc 2.39", "musl", or "unknown". */
+    /** "glibc 2.39", "musl", or "unknown" (a Mac isn't asked). */
     libc: string;
     home: string;
     user: string;
@@ -38,6 +51,8 @@ export interface ServerFacts {
     systemd: boolean;
     /** Its services keep running with nobody signed in. Undefined where there's no saying. */
     linger?: boolean;
+    /** A Mac: a LaunchDaemon for Cavvy is installed, so it starts at boot: this user's (`mine`), or another's under the same name. */
+    launchDaemon?: "mine" | "other";
     memMb?: number;
     diskFreeMb?: number;
     /** Builds already there. */
@@ -49,21 +64,28 @@ export interface ServerFacts {
 }
 
 const PROBE = `
-echo "os=$(uname -s)"
+os=$(uname -s)
+echo "os=$os"
 echo "arch=$(uname -m)"
 echo "home=$HOME"
 echo "user=$(id -un)"
 echo "shell=\${SHELL:-}"
-if v=$(getconf GNU_LIBC_VERSION 2>/dev/null); then echo "libc=$v"
-elif ldd --version 2>&1 | grep -qi musl; then echo "libc=musl"
-else echo "libc=unknown"; fi
-grep -qw avx2 /proc/cpuinfo 2>/dev/null && echo "avx2=1"
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    echo "systemd=1"
-    echo "linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
+if [ "$os" = Darwin ]; then
+    # A Mac has no /proc, and neither glibc nor a processor too old for the build to ask about.
+    if m=$(sysctl -n hw.memsize 2>/dev/null); then echo "mem=$((m / 1048576))"; fi
+    ${MAC_DAEMON}
+    if boots; then echo "boot=mine"; elif [ -f "$daemon" ]; then echo "boot=other"; fi
+else
+    if v=$(getconf GNU_LIBC_VERSION 2>/dev/null); then echo "libc=$v"
+    elif ldd --version 2>&1 | grep -qi musl; then echo "libc=musl"
+    else echo "libc=unknown"; fi
+    grep -qw avx2 /proc/cpuinfo 2>/dev/null && echo "avx2=1"
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        echo "systemd=1"
+        echo "linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
+    fi
+    awk '/^MemTotal:/ { printf "mem=%d\\n", $2 / 1024 }' /proc/meminfo 2>/dev/null
 fi
-awk '/^MemTotal:/ { printf "mem=%d\\n", $2 / 1024 }' /proc/meminfo 2>/dev/null
-if [ "$(uname -s)" = Darwin ]; then echo "mem=$(( $(sysctl -n hw.memsize) / 1048576 ))"; fi
 df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { printf "disk=%d\\n", $4 / 1024 }'
 d="${REMOTE_DIR}"
 if [ -d "$d/builds" ]; then
@@ -96,6 +118,7 @@ export function parseFacts(out: string): ServerFacts {
         return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
     };
     const linger = one.get("linger");
+    const boot = one.get("boot");
     const current = one.get("current");
     return {
         os: one.get("os") ?? "",
@@ -107,6 +130,7 @@ export function parseFacts(out: string): ServerFacts {
         avx2: one.get("avx2") === "1",
         systemd: one.get("systemd") === "1",
         linger: linger === "yes" ? true : linger === "no" ? false : undefined,
+        ...(boot === "mine" || boot === "other" ? { launchDaemon: boot } : {}),
         memMb: num("mem"),
         diskFreeMb: num("disk"),
         builds,
@@ -134,14 +158,14 @@ export function checkRoom(facts: ServerFacts, e: ServerEntry) {
 }
 
 /** Which build runs there, or why none does: thrown as what the user reads. */
-export function targetFor(facts: ServerFacts, e: ServerEntry): LinuxTarget {
+export function targetFor(facts: ServerFacts, e: ServerEntry): ServerTarget {
     const host = hostOf(e);
     const cant = (why: string) => new ServerError(`Cavvy can't run on ${host}: ${why}`);
     if (facts.os === "Darwin") {
         if (facts.arch === "arm64") return "darwin-arm64";
-        throw cant(`it needs Apple silicon, and this is ${facts.arch || "unknown"}.`);
+        throw cant(facts.arch === "x86_64" ? "it needs a Mac with Apple silicon, and this one has an Intel processor." : `it needs a Mac with Apple silicon, and this one's processor is ${facts.arch || "unknown"}.`);
     }
-    if (facts.os !== "Linux") throw cant(`it needs Linux, and this is ${facts.os || "something else"}.`);
+    if (facts.os !== "Linux") throw cant(`it needs Linux or macOS, and this is ${facts.os || "something else"}.`);
     const arch = facts.arch === "x86_64" || facts.arch === "amd64" ? "x64" : facts.arch === "aarch64" || facts.arch === "arm64" ? "arm64" : undefined;
     if (!arch) throw cant(`it needs an x64 or arm64 processor, and this is ${facts.arch || "unknown"}.`);
     if (!facts.libc.startsWith("glibc")) throw cant(facts.libc === "musl" ? "it needs glibc, and this system uses musl (Alpine)." : "it needs glibc, which wasn't found there.");

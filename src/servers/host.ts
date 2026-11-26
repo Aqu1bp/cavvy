@@ -1,6 +1,7 @@
 // The Cavvy a server runs for the machines that connect to it: `cavvy host …`.
 // The machine that sets a server up puts Cavvy there and starts this
-// (src/servers/install.ts); systemd keeps it running where there is one.
+// (src/servers/install.ts); systemd keeps it running where there is one, and
+// launchd on a Mac (src/servers/service.ts).
 //
 // One runs per user on a machine, however many machines connect:
 //   - `<home>/server/host.lock` names the process that is it. One found there

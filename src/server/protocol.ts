@@ -1953,7 +1953,7 @@ export interface ServerCheck {
     browser: boolean;
     /** Starts again by itself after the server restarts; when not, the command that makes it so. */
     service: boolean;
-    lingerFix?: string;
+    bootFix?: string;
 }
 
 

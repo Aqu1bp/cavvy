@@ -1,12 +1,21 @@
 // Keeping a server's Cavvy running (src/servers/host.ts), from the machine
 // that set it up: plain `sh` over ssh, since the server may have nothing else.
 //
-// Where the server has a systemd user manager that keeps services running
-// with nobody signed in ("linger"), Cavvy is a user service there: started at
-// boot, restarted if it crashes. Cavvy asks for linger itself; where that's
-// refused, or there's no systemd, it runs detached instead: it outlives the
-// connection that started it, but not a reboot, and the user is told how to
-// fix that (ServiceReport.lingerFix).
+// Linux: where the server has a systemd user manager that keeps services
+// running with nobody signed in ("linger"), Cavvy is a user service there:
+// started at boot, restarted if it crashes. Cavvy asks for linger itself; where
+// that's refused, or there's no systemd, it runs detached instead: it outlives
+// the connection that started it, but not a reboot, and the user is told how
+// to fix that (ServiceReport.bootFix).
+//
+// A Mac: launchd keeps it running, restarted if it crashes, as one of two jobs
+// (MAC below). A LaunchDaemon that runs as the user starts it at boot with
+// nobody signed in; installing and starting one takes an administrator, so
+// Cavvy does both only where `sudo` doesn't ask. Otherwise it's an agent in the
+// user's background session: it outlives the connection, but not a reboot, and
+// the user is told the one command that installs the daemon. Never `nohup`
+// there: it can't detach from a connection that has no terminal, and starts
+// nothing.
 //
 // An update is a trial: the new build is started, and if it isn't answering
 // as itself within the wait, the build before it is put back and started.
@@ -14,7 +23,7 @@
 import { agentCli } from "../backends/defs";
 import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
-import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
+import { BUILD_ID, MAC_DAEMON, MAC_LABEL, REMOTE_DIR, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
 import { PERMISSION_MODES } from "../permissions/modes";
 
@@ -53,11 +62,87 @@ export const serviceTiming = {
 /** A script with the waits as they're set now. */
 const timed = (script: string) => script.replaceAll("@@START_TRIES@@", String(Math.max(1, Math.round(serviceTiming.startWaitSeconds * 2))));
 
+/**
+ * A Mac's part of LIB. Both jobs run the same thing: `current/cavvy`, unless Cavvy was stopped on purpose (launchd
+ * starts a job at boot whatever it was told before), with its output in the server's log. They leave it alone when it
+ * exits by itself (stopped: exit 0) and start it again when it doesn't. `Interactive`: not held back as background
+ * work, since what it runs is someone's builds. The agent is `Background`: the only kind of session a connection over
+ * SSH has, and one without it isn't loaded there at all.
+ */
+const MAC = `
+mac=""
+if [ "$(uname -s)" = Darwin ]; then mac=1; uid=$(id -u); fi
+label="${MAC_LABEL}"
+agent="$HOME/Library/LaunchAgents/$label.plist"
+${MAC_DAEMON}
+admin() { sudo -n true >/dev/null 2>&1; }
+xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }
+# The job, as launchd reads it. $1: what only one of the two has.
+mac_plist() {
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>if [ -f "\\$0/stopped" ]; then exit 0; fi; exec "\\$0/current/cavvy" host run --login-env &gt;&gt; "\\$0/server.log" 2&gt;&amp;1</string><string>$(xml "$d")</string></array>
+<key>EnvironmentVariables</key><dict><key>CAVVY_NO_KEYCHAIN</key><string>1</string><key>HOME</key><string>$(xml "$HOME")</string><key>USER</key><string>$(xml "$(id -un)")</string><key>LOGNAME</key><string>$(xml "$(id -un)")</string><key>SHELL</key><string>$(xml "\${SHELL:-/bin/zsh}")</string></dict>
+<key>WorkingDirectory</key><string>$(xml "$HOME")</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>ProcessType</key><string>Interactive</string>
+<key>ExitTimeOut</key><integer>30</integer>
+$1
+</dict></plist>
+PLIST
+}
+# launchctl, as an administrator for the system's jobs.
+lctl() { case "$2" in system*) sudo -n launchctl "$@" ;; *) launchctl "$@" ;; esac; }
+# Takes job $1 out of launchd, which ends it if it runs, and waits until it's out: one loaded while the last is
+# still going is refused.
+mac_unload() {
+    lctl bootout "$1" >/dev/null 2>&1
+    n=0
+    while launchctl print "$1" >/dev/null 2>&1 && [ "$n" -lt 80 ]; do sleep 0.5; n=$((n + 1)); done
+}
+# Loads the job in file $2 into $1 in place of the one there, which starts it.
+mac_load() {
+    mac_unload "$1/$label"
+    n=0
+    until out=$(lctl bootstrap "$1" "$2" 2>&1); do
+        n=$((n + 1))
+        if [ "$n" -ge 6 ]; then echo "$out" >&2; return 1; fi
+        sleep 0.5
+    done
+}
+mac_start() {
+    if [ -f "$d/server.log" ] && [ "$(wc -c < "$d/server.log")" -gt 5000000 ]; then mv -f "$d/server.log" "$d/server.log.1"; fi
+    if boots && admin; then
+        # The daemon has it from here: an agent that ran it until now goes.
+        mac_unload "user/$uid/$label"
+        rm -f "$agent"
+        mac_load system "$daemon"
+    else
+        # Also where the daemon is installed and only an administrator may start it: it starts Cavvy at boot, and
+        # the agent whenever it's started after that.
+        mkdir -p "$(dirname "$agent")"
+        mac_plist '<key>LimitLoadToSessionType</key><string>Background</string>' > "$agent.tmp" && mv -f "$agent.tmp" "$agent"
+        mac_load "user/$uid" "$agent"
+    fi
+}
+# After Cavvy's own stop: out of launchd too, so one that didn't answer (hung, or crashing each time it's started)
+# isn't started again. A daemon that can't be taken out stays loaded, with nothing running.
+mac_stop() {
+    mac_unload "user/$uid/$label"
+    if admin; then mac_unload "system/$label"; fi
+}
+`;
+
 /** Shell functions every script below starts with. `$d` is the server folder. */
 const LIB = `
 d="${REMOTE_DIR}"
 unit="$HOME/.config/systemd/user/cavvy.service"
 bin="$d/current/cavvy"
+${MAC}
 has_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
 linger() { loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null; }
 # A service only where it would keep running once this connection closes.
@@ -69,38 +154,9 @@ point_at() {
     # -T: onto the link itself, not into the folder it names (GNU and BusyBox have it).
     mv -T "$d/current.new.$$" "$d/current" 2>/dev/null || { rm -f "$d/current"; mv "$d/current.new.$$" "$d/current"; }
 }
-# macOS: a launchd agent in the user's background session. It outlives the connection that starts it (nohup can't
-# detach from an SSH session there), and launchd restarts it if it crashes.
-label="dev.cavvy.server"
-agent="$HOME/Library/LaunchAgents/$label.plist"
-is_darwin() { [ "$(uname -s)" = Darwin ]; }
-start_agent() {
-    mkdir -p "$(dirname "$agent")"
-    cat > "$agent.tmp" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>$label</string>
-<key>ProgramArguments</key><array><string>$bin</string><string>host</string><string>run</string><string>--login-env</string></array>
-<key>EnvironmentVariables</key><dict><key>CAVVY_NO_KEYCHAIN</key><string>1</string></dict>
-<key>WorkingDirectory</key><string>$HOME</string>
-<key>RunAtLoad</key><true/>
-<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-<key>LimitLoadToSessionType</key><string>Background</string>
-<key>ProcessType</key><string>Interactive</string>
-<key>ExitTimeOut</key><integer>30</integer>
-<key>StandardOutPath</key><string>$d/server.log</string>
-<key>StandardErrorPath</key><string>$d/server.log</string>
-</dict></plist>
-PLIST
-    mv -f "$agent.tmp" "$agent"
-    launchctl bootout "user/$(id -u)/$label" >/dev/null 2>&1
-    launchctl bootstrap "user/$(id -u)" "$agent"
-}
 start() {
-    if is_darwin; then
-        if [ -f "$d/server.log" ] && [ "$(wc -c < "$d/server.log")" -gt 5000000 ]; then mv -f "$d/server.log" "$d/server.log.1"; fi
-        start_agent
+    if [ -n "$mac" ]; then
+        mac_start
     elif as_service; then
         systemctl --user reset-failed cavvy.service >/dev/null 2>&1
         # Started on purpose, so started at boot again too (a stop turns that off).
@@ -118,8 +174,8 @@ start() {
 stop() {
     # Cavvy's own stop waits until the process is gone, sessions closed.
     "$bin" host stop >/dev/null 2>&1
+    if [ -n "$mac" ]; then mac_stop; return 0; fi
     if has_systemd && [ -f "$unit" ]; then systemctl --user stop cavvy.service >/dev/null 2>&1; fi
-    if is_darwin; then launchctl bootout "user/$(id -u)/$label" >/dev/null 2>&1; fi
     return 0
 }
 # Answering, and as build $1 when one is given.
@@ -137,9 +193,21 @@ wait_up() {
 }
 `;
 
-/** Writes the unit and asks for linger. Prints `service=`, `linger=`, `user=`. */
+/**
+ * Writes the unit and asks for linger. Prints `systemd=`, `linger=`, `user=`. On a Mac: writes the LaunchDaemon's
+ * file beside Cavvy, and installs it where sudo doesn't ask (what's loaded is left: the next start reads it).
+ * Prints `mac=1`, and `boot=` (`mine`, or `other` for another user's) when a daemon is installed.
+ */
 const SETUP = `${LIB}
-if has_systemd; then
+if [ -n "$mac" ]; then
+    mkdir -p "$d"
+    mac_plist "<key>UserName</key><string>$(xml "$(id -un)")</string>" > "$d/$label.plist.tmp" && mv -f "$d/$label.plist.tmp" "$d/$label.plist"
+    if { boots || [ ! -f "$daemon" ]; } && ! cmp -s "$d/$label.plist" "$daemon" && admin; then
+        sudo -n install -o root -g wheel -m 644 "$d/$label.plist" "$daemon" >/dev/null 2>&1 || true
+    fi
+    echo "mac=1"
+    if boots; then echo "boot=mine"; elif [ -f "$daemon" ]; then echo "boot=other"; fi
+elif has_systemd; then
     mkdir -p "$(dirname "$unit")"
     printf '%s' "$1" > "$unit.tmp" && mv -f "$unit.tmp" "$unit"
     systemctl --user daemon-reload
@@ -285,18 +353,23 @@ function json<T>(text: string | undefined): T | undefined {
 export interface ServiceReport {
     /** Started at boot and restarted if it crashes. Otherwise it runs until the server restarts. */
     service: boolean;
-    /** What to run on the server (it needs an administrator) so it can be a service. */
-    lingerFix?: string;
+    /** What to run on the server (it needs an administrator) so Cavvy starts at boot there. */
+    bootFix?: string;
 }
 
-function report(systemd: boolean, linger: boolean, user: string): ServiceReport {
-    if (systemd && linger) return { service: true };
-    return { service: false, lingerFix: systemd && /^[\w.-]+$/.test(user) ? `sudo loginctl enable-linger ${shQuote(user)}` : undefined };
+/** On a Mac: puts the LaunchDaemon that SETUP wrote beside Cavvy where launchd reads it at boot. What runs now is left. */
+export const MAC_BOOT_FIX = `sudo install -o root -g wheel -m 644 ~/.cavvy/server/${MAC_LABEL}.plist /Library/LaunchDaemons/`;
+
+function report(o: { systemd: boolean; linger: boolean; user: string; mac: boolean; boot?: string }): ServiceReport {
+    // Another user's daemon has the name there: nothing this user runs would change that.
+    if (o.mac) return o.boot === "mine" ? { service: true } : { service: false, bootFix: o.boot === undefined ? MAC_BOOT_FIX : undefined };
+    if (o.systemd && o.linger) return { service: true };
+    return { service: false, bootFix: o.systemd && /^[\w.-]+$/.test(o.user) ? `sudo loginctl enable-linger ${shQuote(o.user)}` : undefined };
 }
 
 /** The same report, from what a probe found, for a server that's only being looked at. */
 export function serviceReport(facts: ServerFacts): ServiceReport {
-    return report(facts.systemd, facts.linger === true, facts.user);
+    return report({ systemd: facts.systemd, linger: facts.linger === true, user: facts.user, mac: facts.os === "Darwin", boot: facts.launchDaemon });
 }
 
 const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0);
@@ -369,7 +442,8 @@ const said = (stderr: string) => printable(stderr.trim().split("\n").at(-1) ?? "
 export async function setUpService(e: ServerEntry, signal?: AbortSignal): Promise<ServiceReport> {
     const r = await ssh(e, remoteSh(timed(SETUP), [UNIT]), { timeoutMs: 60_000, signal });
     if (r.code !== 0) throw new ServerError(`Couldn't set ${hostOf(e)} up to keep Cavvy running: ${said(r.stderr) || `exit ${r.code}`}`);
-    return report(value(r.stdout, "systemd") === "1", value(r.stdout, "linger") === "yes", value(r.stdout, "user") ?? "");
+    const boot = value(r.stdout, "boot");
+    return report({ systemd: value(r.stdout, "systemd") === "1", linger: value(r.stdout, "linger") === "yes", user: value(r.stdout, "user") ?? "", mac: value(r.stdout, "mac") === "1", boot: boot === "mine" || boot === "other" ? boot : undefined });
 }
 
 export class UpdateFailed extends ServerError {
