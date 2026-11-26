@@ -20,20 +20,30 @@ function dayAt(now: number, days: number, hour: number): number {
     return d.getTime();
 }
 
+/** The next 9 am that's 2 hours away or more: this morning's in the small hours, else tomorrow's. Custom… starts at it. */
+export function nextMorning(now: number): number {
+    const morning = dayAt(now, 0, 9);
+    return morning - now >= 2 * HOUR ? morning : dayAt(now, 1, 9);
+}
+
 /**
  * 1 hour; tonight at 6 pm, or 9 pm once 6 pm is under 2 hours away (none later in the evening: it would come too soon
- * after "1 hour", or after midnight); tomorrow at 9 am; next Monday at 9 am.
+ * after "1 hour", or after midnight); tomorrow at 9 am; next Monday at 9 am. In the small hours (9 am 2 hours away or
+ * more), the day ahead is the one a person still calls tomorrow: this morning at 9 am and this evening at 6 pm instead.
  */
 export function snoozeChoices(now: number): SnoozeChoice[] {
     const today = new Date(now);
     const choice = (label: string, at: number, dayNamed = false) => ({ label, at, hint: dayNamed ? clock(at) : wakeTime(at, now) });
+    const nextWeek = choice("Next week", dayAt(now, (8 - today.getDay()) % 7 || 7, 9));
+    const morning = nextMorning(now);
+    if (morning === dayAt(now, 0, 9)) return [choice("1 hour", now + HOUR), choice("This morning", morning, true), choice("This evening", dayAt(now, 0, 18), true), nextWeek];
     const tonight = [18, 21].map((h) => dayAt(now, 0, h)).find((at) => at - now >= 2 * HOUR);
     return [
         choice("1 hour", now + HOUR),
         ...(tonight ? [choice("Tonight", tonight)] : []),
-        choice("Tomorrow morning", dayAt(now, 1, 9), true),
+        choice("Tomorrow morning", morning, true),
         // Monday is day 1: from a Monday, the next one.
-        choice("Next week", dayAt(now, (8 - today.getDay()) % 7 || 7, 9)),
+        nextWeek,
     ];
 }
 

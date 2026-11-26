@@ -17,6 +17,12 @@ export const DEVICES: readonly { name: string; size: Size }[] = [
     { name: "Laptop", size: { width: 1280, height: 800 } },
 ];
 
+/** The device a size is, either way round (Phone rotated is still Phone); none: a custom size. */
+export function deviceOf(size: Size | undefined): (typeof DEVICES)[number] | undefined {
+    if (!size) return undefined;
+    return DEVICES.find((d) => (d.size.width === size.width && d.size.height === size.height) || (d.size.width === size.height && d.size.height === size.width));
+}
+
 export const ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 /** The sides a device size may have (the server keeps a page within these too: src/browser/page.ts). */
 export const MIN_SIDE = 200;

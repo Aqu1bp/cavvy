@@ -13,7 +13,7 @@ import type { BrowserTabInfo } from "@shared/protocol";
 import { reportError, rpc } from "../state/app";
 import { hostedTargets, shownBrowser } from "../state/browser-host";
 import { electron, isMod, mod } from "../lib/platform";
-import { DEVICES, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
+import { DEVICES, deviceOf, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
 import type { PaneStatus, Size } from "../lib/browser";
 import { addressMark, backToAddress, keepsDraft, type AddressMark } from "../lib/find-return";
 import { Menu } from "./ui/Menu";
@@ -331,9 +331,9 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                 <div class="menu-sep" />
                 {item(Maximize, () => "Fill pane", () => pick(undefined), () => ({ checked: !o.view()?.device }))}
                 <For each={DEVICES}>
-                    {(d) => item(DEVICE_ICONS[d.name] ?? Smartphone, () => `${d.name} · ${d.size.width} × ${d.size.height}`, () => pick(d.size), () => ({ checked: o.view()?.device?.width === d.size.width && o.view()?.device?.height === d.size.height }))}
+                    {(d) => item(DEVICE_ICONS[d.name] ?? Smartphone, () => `${d.name} · ${d.size.width} × ${d.size.height}`, () => pick(d.size), () => ({ checked: deviceOf(o.view()?.device) === d }))}
                 </For>
-                {item(Ruler, () => "Custom size…", custom, () => ({ checked: !!o.view()?.device && !DEVICES.some((d) => d.size.width === o.view()!.device!.width && d.size.height === o.view()!.device!.height) }))}
+                {item(Ruler, () => "Custom size…", custom, () => ({ checked: !!o.view()?.device && !deviceOf(o.view()?.device) }))}
                 {item(RotateCwSquare, () => "Rotate", rotate, () => ({ disabled: !o.view()?.device }))}
                 <div class="menu-sep" />
                 {item(ZoomIn, () => "Zoom in", () => zoomBy(1), () => ({ disabled: zoom() >= 2 }))}

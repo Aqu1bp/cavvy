@@ -12,7 +12,7 @@ import { freeRail } from "../state/ui";
 import { unselect } from "../state/sidebar";
 import { sessionCount, type BulkPlan } from "../lib/rail-select";
 import { archiveSessions, deleteSessions, newSession, rename, settleSessions } from "../state/actions";
-import { customProblem, fromLocalInput, localInput, snoozeChoices } from "../lib/snooze";
+import { customProblem, fromLocalInput, localInput, nextMorning, snoozeChoices } from "../lib/snooze";
 import { wakeTime } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Submenu } from "./ui/Submenu";
@@ -108,7 +108,7 @@ async function neverSettle(id: string, on: boolean) {
 function askCustom(ids: readonly string[]) {
     const host = document.body.appendChild(document.createElement("div"));
     const dispose = render(() => {
-        const [value, setValue] = createSignal(localInput(snoozeChoices(Date.now()).find((c) => c.label === "Tomorrow morning")!.at));
+        const [value, setValue] = createSignal(localInput(nextMorning(Date.now())));
         const [problem, setProblem] = createSignal<string>();
         const close = () => {
             dispose();

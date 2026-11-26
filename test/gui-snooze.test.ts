@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionSummary } from "../src/server/protocol";
 import { isSnoozed, sidebarEntries, sidebarIds } from "../gui/src/lib/session-order";
-import { customProblem, fromLocalInput, localInput, snoozeChoices } from "../gui/src/lib/snooze";
+import { customProblem, fromLocalInput, localInput, nextMorning, snoozeChoices } from "../gui/src/lib/snooze";
 import { wakeTime } from "../gui/src/lib/format";
 
 const HOUR = 3_600_000;
@@ -29,6 +29,25 @@ describe("snooze times, in the window's time zone", () => {
         expect(snoozeChoices(at(2026, 11, 18, 23, 30)).map((c) => c.label)).toEqual(["1 hour", "Tomorrow morning", "Next week"]);
         expect(pick(at(2026, 11, 23, 10), "Next week")).toBe(at(2026, 11, 30, 9));
         expect(pick(at(2026, 11, 22, 10), "Next week")).toBe(at(2026, 11, 23, 9));
+    });
+
+    test("in the small hours: this morning and this evening, in order; from 7 am, the day's own", () => {
+        // A Thursday.
+        const now = at(2026, 11, 26, 0, 30);
+        expect(snoozeChoices(now).map((c) => [c.label, c.at])).toEqual([
+            ["1 hour", now + HOUR],
+            ["This morning", at(2026, 11, 26, 9)],
+            ["This evening", at(2026, 11, 26, 18)],
+            ["Next week", at(2026, 11, 30, 9)],
+        ]);
+        expect(snoozeChoices(at(2026, 11, 26, 7)).map((c) => c.label)).toEqual(["1 hour", "This morning", "This evening", "Next week"]);
+        expect(snoozeChoices(at(2026, 11, 26, 7, 1)).map((c) => c.label)).toEqual(["1 hour", "Tonight", "Tomorrow morning", "Next week"]);
+        // The day is the label's: the hint is the time alone.
+        const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        expect(snoozeChoices(now).slice(1, 3).map((c) => c.hint)).toEqual([time(at(2026, 11, 26, 9)), time(at(2026, 11, 26, 18))]);
+        // Custom… starts at the next morning the menu offers.
+        expect(nextMorning(now)).toBe(at(2026, 11, 26, 9));
+        expect(nextMorning(at(2026, 11, 26, 7, 1))).toBe(at(2026, 11, 27, 9));
     });
 
     test("over the end of a month", () => {
