@@ -1,6 +1,6 @@
 # Servers
 
-Cavvy can run on another machine and be used from this one: a VPS, a build box, anything running Linux that you reach with `ssh`. The sessions, the agent CLIs, the files and the commands are all on the server, and they keep going when your laptop sleeps or the connection drops.
+Cavvy can run on another machine and be used from this one: a VPS, a build box, a Mac mini, anything running Linux or macOS that you reach with `ssh`. The sessions, the agent CLIs, the files and the commands are all on the server, and they keep going when your laptop sleeps or the connection drops.
 
 ```bash
 cavvy servers add box me@box.example     # connect, put Cavvy there, start it
@@ -11,7 +11,7 @@ cavvy gui --server box                   # the server's GUI, in your browser
 
 `--port` and `--identity <file>` say how to connect when that isn't in your SSH config. Everything else in `~/.ssh/config` applies (a `Host` alias, `ProxyJump`, your agent): Cavvy runs the system's `ssh`.
 
-A server needs Linux on x64 or arm64 with glibc (so not Alpine), about 400 MB of disk, and nothing installed beforehand. Your login shell there has to be sh, bash, zsh, dash or ksh (not csh or tcsh). Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
+A server needs Linux on x64 or arm64 with glibc (so not Alpine), or a Mac with Apple silicon ([a Mac as a server](#a-mac-as-a-server)); about 400 MB of disk; and nothing installed beforehand. Your login shell there has to be sh, bash, zsh, dash or ksh (not csh or tcsh). Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
 
 ## Adding a server
 
@@ -36,8 +36,34 @@ What can go wrong, and what you see:
 | Your key needs its passphrase, and no agent holds it | `This key needs its passphrase. Add it to ssh-agent, then retry.`, with the `ssh-add` command. Cavvy never asks for a passphrase or a password. |
 | First connection | Its key's fingerprint, and `Trust <host>?`. Only the key you were shown is saved: to your `known_hosts`, or to Cavvy's own list when your SSH config keeps no keys for that host. Without a terminal to ask at, nothing is trusted. |
 | Its key changed | `<host>'s identity changed.`, with the `ssh-keygen -R` command that removes the old one. Cavvy never accepts a changed key itself. |
-| It can't run Cavvy | `Cavvy can't run on <host>:` and why (not Linux, the processor, musl, no room). |
+| It can't run Cavvy | `Cavvy can't run on <host>:` and why (not Linux or macOS, the processor, an Intel Mac, musl, no room). |
 | The copy arrived changed, or doesn't start there | It says so, and nothing is installed. |
+
+## A Mac as a server
+
+A Mac is added like any other server, and is the one kind that can do iOS and Mac work by itself: Xcode builds, and its own Simulator, with nobody at it.
+
+```bash
+cavvy servers add mini me@mini.example
+```
+
+What it needs:
+
+- **Apple silicon.** An Intel Mac is refused.
+- **Remote Login** turned on (System Settings → General → Sharing), so `ssh` reaches it.
+- **Xcode, opened once at the Mac's screen**, for iOS and Mac work. Cavvy doesn't install Xcode. macOS asks at the screen whether a newly installed Xcode may run, and Xcode installs the rest of itself there; until then its tools don't run over SSH. `cavvy servers check` says which of these is missing:
+
+  | | |
+  |---|---|
+  | `Xcode isn't installed there` | Install it on the Mac (the App Store, or Apple's developer downloads). |
+  | `Xcode there hasn't been opened yet` | Open it once at the Mac's screen (or over Screen Sharing) and let it finish. |
+  | `No iOS simulator there` | On the Mac: `xcodebuild -downloadPlatform iOS`. It needs no Apple Account. |
+
+- **An administrator, once, for starting at boot.** See [keeping it running](#keeping-it-running-and-updating).
+
+A session on a Mac server has the simulator tools, and they use that Mac's own simulators (not your Mac's): the session's Simulator tab shows the device there. Agent CLIs sign in there as on any server (`cavvy servers login mini`); the Mac's keychain isn't used.
+
+While a session there is working, Cavvy keeps the Mac from going to sleep for being idle, so a Mac mini on its default settings doesn't stop a build part way. Once nothing is working it sleeps as it's set to, and a sleeping Mac can't be reached: if you want it there whenever you connect, turn sleep off in its settings.
 
 ## Having an agent set one up
 
@@ -101,7 +127,7 @@ Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and 
 
 ## Your Mac's Simulator, from a server
 
-A server has no iOS simulators. Your Mac has, and while the desktop app is open it lends them to the servers it's connected to: a session there then has the simulator tools (`SimulatorControl`, `SimulatorSnapshot`, `SimulatorAct`, `SimulatorScreenshot`), and each call runs on your Mac. That's for sessions opened from the desktop app or `cavvy gui --server`; one run in a terminal with `cavvy --server box` doesn't have them.
+A Linux server has no iOS simulators (a Mac server uses [its own](#a-mac-as-a-server)). Your Mac has, and while the desktop app is open it lends them to the servers it's connected to: a session there then has the simulator tools (`SimulatorControl`, `SimulatorSnapshot`, `SimulatorAct`, `SimulatorScreenshot`), and each call runs on your Mac. That's for sessions opened from the desktop app or `cavvy gui --server`; one run in a terminal with `cavvy --server box` doesn't have them.
 
 It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand.
 
@@ -115,7 +141,7 @@ A screenshot comes back to the server and is kept there, so the chat on the serv
 
 - It needs the desktop app open on a Mac with Xcode, the Simulator turned on in its settings, and a model set up there.
 - With the app closed, sessions on the server don't have the tools. One that calls them just as the app goes is told your Mac went away.
-- Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a server can't build one for iOS.
+- Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a Linux server can't build one for iOS.
 
 ## Permissions on a server
 
@@ -127,11 +153,24 @@ A server is there to run agents freely, and it can be rebuilt. So in the Cavvy t
 
 This goes for every session of that Cavvy, whether you reach it from another machine or start it on the server yourself (`~/.cavvy/server/current/cavvy`). Another copy of Cavvy installed on the same machine keeps the rules of a computer of your own.
 
-Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
+Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings; on a Mac it's Seatbelt, and on. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
 
 ## Keeping it running, and updating
 
 Where the server has systemd, Cavvy runs as a user service: started at boot, restarted if it crashes. That needs "lingering" for your user, which Cavvy turns on itself; where the server refuses, Cavvy still runs but won't come back after a reboot, and `cavvy servers check` gives the command an administrator runs to fix that (`sudo loginctl enable-linger <user>`).
+
+On a Mac, launchd keeps it running and restarts it if it crashes. Starting at boot, with nobody signed in at the Mac, takes a LaunchDaemon (it runs Cavvy as your user, not as root), and installing one takes an administrator:
+
+- If `sudo` on the Mac doesn't ask your user for a password, Cavvy installs it during set-up.
+- Otherwise Cavvy runs until the Mac restarts, and set-up and `cavvy servers check` give the command to run on your own computer, in a terminal:
+
+  ```bash
+  cavvy servers boot mini
+  ```
+
+  `sudo` on the Mac asks for your password there, in that terminal; Cavvy doesn't see it. It takes effect at the next restart. What's running now isn't touched.
+
+Either way the daemon's file is written by root on the Mac, from a script Cavvy sends: your account there is named by `sudo`, its home is the one the Mac has on record, and nothing is copied from a file an agent working as you could have changed.
 
 ```bash
 cavvy servers                 # the servers you've added
@@ -140,10 +179,11 @@ cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it 
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there
+cavvy servers boot <name>     # a Mac: start Cavvy at boot (asks for your password there)
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. When a server the app is connected to runs another version that isn't newer, the app says so once (`box runs another version of Cavvy`, with **Update**), and the Machines menu keeps an update button on its row; if sessions are working there, it asks before stopping them. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app), and on Apple silicon sends a Mac server its own program, so it carries nothing more for Macs; any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. When a server the app is connected to runs another version that isn't newer, the app says so once (`box runs another version of Cavvy`, with **Update**), and the Machines menu keeps an update button on its row; if sessions are working there, it asks before stopping them. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
 
 An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 

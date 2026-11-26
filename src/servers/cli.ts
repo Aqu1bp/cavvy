@@ -14,7 +14,7 @@ import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./c
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
-import { applyBuild, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
+import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
 import type { PermissionMode } from "../permissions/modes";
@@ -34,12 +34,13 @@ export const SERVERS_HELP = `Usage:
   ${APP_NAME} servers update <name>            bring its Cavvy up to this machine's (--force: whatever it runs)
   ${APP_NAME} servers rollback <name>          put it back on the version it ran before its last update
   ${APP_NAME} servers stop <name>              stop Cavvy there
+  ${APP_NAME} servers boot <name>              have a Mac start Cavvy at boot (asks for your password there)
   ${APP_NAME} servers remove <name>            forget it here, and sign this machine out of it
 
   ${APP_NAME} --server <name>[:<folder>]       the terminal app, running on the server
   ${APP_NAME} gui --server <name>              the server's GUI, in your browser
 
-A server is any Linux machine you reach with ssh. Your SSH config, keys and agent are used as they are.`;
+A server is any Linux machine, or a Mac with Apple silicon, that you reach with ssh. Your SSH config, keys and agent are used as they are.`;
 
 /** Says why something on a server failed, as the user needs it. False for anything that isn't theirs to read. */
 function report(e: unknown): boolean {
@@ -134,10 +135,20 @@ function setupOptions(e: ServerEntry, o: { force?: boolean; update?: boolean } =
     };
 }
 
-/** Said when a server can't keep Cavvy as a service. */
-function serviceLines(service: ServiceReport | undefined): string[] {
+/** Said when server `name` can't keep Cavvy as a service: with what fixes that, run on it, or (a Mac) here. */
+function serviceLines(name: string, service: ServiceReport | undefined): string[] {
     if (!service || service.service) return [];
-    return [service.lingerFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.lingerFix}` : "It won't start Cavvy again after a reboot."];
+    const wont = "It won't start Cavvy again after a reboot.";
+    if (service.bootFix) return [`${wont} To fix that, run on it: ${service.bootFix}`];
+    return [service.bootHere ? `${wont} To fix that, run here: ${APP_NAME} servers boot ${name}` : wont];
+}
+
+/** Said of a Mac whose Xcode can't build or run an iOS app yet. */
+function xcodeLines(c: HostCheck): string[] {
+    if (c.xcode === "missing") return ["Xcode isn't installed there: iOS and Mac apps need it."];
+    if (c.xcode === "unopened") return ["Xcode there hasn't been opened yet. Open it once at the Mac's screen."];
+    if (c.xcode === "no-simulator") return ["No iOS simulator there. On it: xcodebuild -downloadPlatform iOS"];
+    return [];
 }
 
 type CheckedCli = HostCheck["clis"][number];
@@ -154,7 +165,7 @@ function noCliLines(c: HostCheck): string[] {
 
 /** What server `name` lacks, as lines: only what the user would act on. */
 export function checkLines(name: string, c: HostCheck, service?: ServiceReport): string[] {
-    const lines = serviceLines(service);
+    const lines = serviceLines(name, service);
     const have = c.clis.filter((x) => x.installed);
     for (const cli of have) {
         if (needsSignIn(cli)) lines.push(`${cli.product} isn't signed in there: ${APP_NAME} servers login ${name}`);
@@ -165,6 +176,7 @@ export function checkLines(name: string, c: HostCheck, service?: ServiceReport):
     if (!c.gh.installed) lines.push("The GitHub CLI isn't installed there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there. On it: gh auth login");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
+    lines.push(...xcodeLines(c));
     return lines;
 }
 
@@ -389,7 +401,7 @@ async function add(args: string[]): Promise<number> {
     if (c?.mode === "bypassPermissions") out("Sessions there run without asking (Bypass).");
     // Asked about one at a time; what's said afterwards is the server as that left it.
     if (c && (await offerSignIns(e, c))) c = await check(e);
-    for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(setup.service)) out(line);
+    for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(e.name, setup.service)) out(line);
     out(`Work there: ${APP_NAME} --server ${e.name}   or   ${APP_NAME} gui --server ${e.name}`);
     return 0;
 }
@@ -433,8 +445,45 @@ async function update(args: string[]): Promise<number> {
     if (r.kept === "newer") out(`${e.name} runs a newer Cavvy than this machine, so it was left as it is. Update Cavvy here, or use --force.`);
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
-    for (const line of serviceLines(r.service)) out(line);
+    for (const line of serviceLines(e.name, r.service)) out(line);
     return 0;
+}
+
+/**
+ * Has a Mac start Cavvy at boot, where its sudo asks for a password: root there writes the LaunchDaemon, and sudo
+ * has this terminal to ask in. What's typed goes to it alone.
+ */
+async function boot(args: string[]): Promise<number> {
+    const name = args.find((a) => !a.startsWith("-"));
+    if (!name) {
+        err(`Usage: ${APP_NAME} servers boot <name>`);
+        return 1;
+    }
+    let e = requireServer(name);
+    const { value: facts } = await withTrust(e, (entry) => probeServer(entry), { saved: true, onTrusted: (entry) => (e = entry) });
+    const taken = `Another account on ${hostOf(e)} already starts its own Cavvy at boot.`;
+    const now = serviceReport(facts);
+    if (now.service) {
+        out(`${e.name} already starts Cavvy at boot.`);
+        return 0;
+    }
+    if (!now.bootHere) {
+        // Not a Mac, or one where it can't be done: what there is to say, as `check` says it.
+        err(facts.launchDaemon === "other" ? taken : serviceLines(e.name, now)[0]!);
+        return 1;
+    }
+    const tty = interactive();
+    const proc = Bun.spawn(sshCommandArgv(e, bootCommand(), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
+    const code = await proc.exited;
+    if (code === 0 && serviceReport(await probeServer(e)).service) {
+        out(`${e.name} will start Cavvy at boot.`);
+        return 0;
+    }
+    if (code === BOOT_TAKEN) err(taken);
+    else if (code === 255 || proc.signalCode) err(`Connection to ${e.name} lost.`);
+    // sudo's own words, or the Mac's, are on the lines above.
+    else err(tty ? `${e.name} wasn't set up to start Cavvy at boot.` : `${e.name} wasn't set up to start Cavvy at boot. Run this in a terminal: sudo there asks for your password.`);
+    return 1;
 }
 
 /** Puts a server back on the build it ran before its last update: for an update that starts but doesn't work. */
@@ -543,6 +592,7 @@ export async function serversCommand(args: string[]): Promise<number> {
         if (sub === "update") return await update(args.slice(1));
         if (sub === "rollback") return await rollback(args.slice(1));
         if (sub === "stop") return await stop(args.slice(1));
+        if (sub === "boot") return await boot(args.slice(1));
         if (sub === "remove" || sub === "rm") return await remove(args.slice(1));
         (sub === "-h" || sub === "--help" || sub === "help" ? out : err)(SERVERS_HELP);
         return sub === "-h" || sub === "--help" || sub === "help" ? 0 : 1;

@@ -175,6 +175,8 @@ export interface EngineOptions {
      * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
      */
     working?: string;
+    /** Told when a turn starts with none running, and when the last one running ends: a Mac server stays awake between the two (src/servers/wake.ts). */
+    onTurns?: (running: boolean) => void;
 }
 
 /**
@@ -550,7 +552,7 @@ export class Engine {
      * it held with them open after a turn each. The next turn compiles again: about 70 ms of CPU more, once.
      */
     private idleNow(id: string) {
-        this.turnsRunning.delete(id);
+        if (this.turnsRunning.delete(id) && !this.turnsRunning.size) this.o.onTurns?.(false);
         if (this.turnsRunning.size || this.stopping || this.shrinkTimer) return;
         this.shrinkTimer = setTimeout(() => {
             this.shrinkTimer = undefined;
@@ -562,6 +564,7 @@ export class Engine {
     /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
     turnRunning(rt: Runtime, running: boolean) {
         if (running) {
+            if (!this.turnsRunning.size) this.o.onTurns?.(true);
             this.turnsRunning.add(rt.id);
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;

@@ -1,12 +1,24 @@
 // Keeping a server's Cavvy running (src/servers/host.ts), from the machine
 // that set it up: plain `sh` over ssh, since the server may have nothing else.
 //
-// Where the server has a systemd user manager that keeps services running
-// with nobody signed in ("linger"), Cavvy is a user service there: started at
-// boot, restarted if it crashes. Cavvy asks for linger itself; where that's
-// refused, or there's no systemd, it runs detached instead: it outlives the
-// connection that started it, but not a reboot, and the user is told how to
-// fix that (ServiceReport.lingerFix).
+// Linux: where the server has a systemd user manager that keeps services
+// running with nobody signed in ("linger"), Cavvy is a user service there:
+// started at boot, restarted if it crashes. Cavvy asks for linger itself; where
+// that's refused, or there's no systemd, it runs detached instead: it outlives
+// the connection that started it, but not a reboot, and the user is told how
+// to fix that (ServiceReport.bootFix).
+//
+// A Mac: launchd keeps it running, restarted if it crashes, as one of two jobs
+// (MAC below). A LaunchDaemon that runs as the user starts it at boot with
+// nobody signed in; installing and starting one takes an administrator, so
+// Cavvy does both only where `sudo` doesn't ask. Otherwise it's an agent in the
+// user's background session: it outlives the connection, but not a reboot, and
+// the user is told the command that installs the daemon with their password
+// (`cavvy servers boot`). The daemon's file is written by root itself, from a
+// script this Cavvy sends (MAC_BOOT): never copied from anything the account
+// could have changed, since launchd runs what it says as whoever it names.
+// Never `nohup` there: it can't detach from a connection that has no terminal,
+// and starts nothing.
 //
 // An update is a trial: the new build is started, and if it isn't answering
 // as itself within the wait, the build before it is put back and started.
@@ -14,7 +26,7 @@
 import { agentCli } from "../backends/defs";
 import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
-import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
+import { BUILD_ID, MAC_DAEMON, MAC_LABEL, macLaunchd, REMOTE_DIR, withMacPaths, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
 import { PERMISSION_MODES } from "../permissions/modes";
 
@@ -51,13 +63,147 @@ export const serviceTiming = {
 };
 
 /** A script with the waits as they're set now. */
-const timed = (script: string) => script.replaceAll("@@START_TRIES@@", String(Math.max(1, Math.round(serviceTiming.startWaitSeconds * 2))));
+const timed = (script: string) => withMacPaths(script).replaceAll("@@START_TRIES@@", String(Math.max(1, Math.round(serviceTiming.startWaitSeconds * 2))));
+const seconds = (n: number) => String(Math.max(1, Math.round(n)));
+
+/** Text as XML holds it, in shell. */
+const XML = `xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }`;
+
+/**
+ * The job as launchd reads it, for a shell's here-document. From `$label` and, each as XML holds it: `$p_dir` (the
+ * server's folder), `$p_home`, `$p_user`, `$p_shell`, and `$p_only` (the key only one of the two jobs has).
+ *
+ * Both jobs run the same thing: `current/cavvy`, unless Cavvy was stopped on purpose (launchd starts a job at boot
+ * whatever it was told before), with its output in the server's log. They leave it alone when it exits by itself
+ * (stopped: exit 0) and start it again when it doesn't. `Interactive`: not held back as background work, since what
+ * it runs is someone's builds.
+ */
+const PLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>if [ -f "\\$0/stopped" ]; then exit 0; fi; exec "\\$0/current/cavvy" host run --login-env &gt;&gt; "\\$0/server.log" 2&gt;&amp;1</string><string>$p_dir</string></array>
+<key>EnvironmentVariables</key><dict><key>CAVVY_NO_KEYCHAIN</key><string>1</string><key>HOME</key><string>$p_home</string><key>USER</key><string>$p_user</string><key>LOGNAME</key><string>$p_user</string><key>SHELL</key><string>$p_shell</string></dict>
+<key>WorkingDirectory</key><string>$p_home</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>ProcessType</key><string>Interactive</string>
+<key>ExitTimeOut</key><integer>30</integer>
+$p_only
+</dict></plist>`;
+
+/**
+ * What root runs to make Cavvy start at boot on a Mac: it writes the LaunchDaemon itself. One text for every user
+ * and every Mac, with nothing passed in: launchd runs a daemon as whoever its file names, so nothing in that file
+ * may come from where the account (or an agent working as it) can write.
+ *   - Who: the account that ran sudo, as sudo says (`$SUDO_USER`), never root.
+ *   - Its home: as the Mac's directory records it, not `$HOME`.
+ *   - Its tools: the system's, not what the account's PATH names (sudo on macOS keeps the caller's PATH: measured).
+ *   - The file: fixed keys, `UserName` that account, owned by root, put in place whole.
+ * Exits 64 when it isn't run through sudo by an account, 65 when the account has no home on record, 66 when
+ * another account's Cavvy has the daemon's name there.
+ */
+const MAC_BOOT = `
+PATH="@@ROOT_PATH@@"
+export PATH
+label="${MAC_LABEL}"
+u="\${SUDO_USER:-}"
+case "$u" in ""|root|*[!A-Za-z0-9._-]*) echo "This is run with sudo, by the account Cavvy runs as." >&2; exit 64 ;; esac
+home=$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: *//p')
+case "$home" in /*) ;; *) echo "This Mac has no home folder on record for $u." >&2; exit 65 ;; esac
+shell=$(dscl . -read "/Users/$u" UserShell 2>/dev/null | sed -n 's/^UserShell: *//p')
+case "$shell" in /*) ;; *) shell=/bin/zsh ;; esac
+dir="@@DAEMONS@@"
+f="$dir/$label.plist"
+p_only="<key>UserName</key><string>$u</string>"
+if [ -f "$f" ] && ! grep -qF "$p_only" "$f"; then echo "Another account's Cavvy already starts at boot on this Mac." >&2; exit 66; fi
+${XML}
+p_dir=$(xml "$home/.cavvy/server")
+p_home=$(xml "$home")
+p_user="$u"
+p_shell=$(xml "$shell")
+umask 022
+tmp=$(mktemp "$dir/.$label.XXXXXX") || exit 1
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp" <<PLIST || exit 1
+${PLIST}
+PLIST
+chown root:wheel "$tmp" && chmod 644 "$tmp" || exit 1
+# As it is already: left, so launchd's copy and the file stay the same thing.
+if cmp -s "$tmp" "$f"; then exit 0; fi
+mv -f "$tmp" "$f"
+`;
+
+/**
+ * A Mac's part of LIB. The agent is `Background`: the only kind of session a connection over SSH has, and one
+ * without it isn't loaded there at all. Its file is the account's own, which is all it can be: it runs as the account.
+ */
+const MAC = `
+mac=""
+if [ "$(uname -s)" = Darwin ]; then mac=1; uid=$(id -u); fi
+label="${MAC_LABEL}"
+agent="$HOME/Library/LaunchAgents/$label.plist"
+${MAC_DAEMON}
+admin() { @@SUDO@@ -n true >/dev/null 2>&1; }
+${XML}
+mac_agent_plist() {
+    p_dir=$(xml "$d")
+    p_home=$(xml "$HOME")
+    p_user=$(xml "$(id -un)")
+    p_shell=$(xml "\${SHELL:-/bin/zsh}")
+    p_only='<key>LimitLoadToSessionType</key><string>Background</string>'
+    cat <<PLIST
+${PLIST}
+PLIST
+}
+# launchctl, as an administrator for the system's jobs.
+lctl() { case "$2" in system*) @@SUDO@@ -n launchctl "$@" ;; *) launchctl "$@" ;; esac; }
+# Takes job $1 out of launchd, which ends it if it runs, and waits until it's out: one loaded while the last is
+# still going is refused.
+mac_unload() {
+    lctl bootout "$1" >/dev/null 2>&1
+    n=0
+    while launchctl print "$1" >/dev/null 2>&1 && [ "$n" -lt 80 ]; do sleep 0.5; n=$((n + 1)); done
+}
+# Loads the job in file $2 into $1 in place of the one there, which starts it.
+mac_load() {
+    mac_unload "$1/$label"
+    n=0
+    until out=$(lctl bootstrap "$1" "$2" 2>&1); do
+        n=$((n + 1))
+        if [ "$n" -ge 6 ]; then echo "$out" >&2; return 1; fi
+        sleep 0.5
+    done
+}
+mac_start() {
+    if [ -f "$d/server.log" ] && [ "$(wc -c < "$d/server.log")" -gt 5000000 ]; then mv -f "$d/server.log" "$d/server.log.1"; fi
+    if boots && admin; then
+        # The daemon has it from here: an agent that ran it until now goes.
+        mac_unload "user/$uid/$label"
+        if mac_load system "$daemon"; then rm -f "$agent"; return 0; fi
+        # launchd wouldn't take the daemon: the agent runs Cavvy, rather than nothing.
+    fi
+    # Also where the daemon is installed and only an administrator may start it: it starts Cavvy at boot, and the
+    # agent whenever it's started after that.
+    mkdir -p "$(dirname "$agent")"
+    mac_agent_plist > "$agent.tmp" && mv -f "$agent.tmp" "$agent"
+    mac_load "user/$uid" "$agent"
+}
+# After Cavvy's own stop: out of launchd too, so one that didn't answer (hung, or crashing each time it's started)
+# isn't started again. A daemon that can't be taken out stays loaded, with nothing running. Only this user's daemon:
+# the system's job of that name may be another account's Cavvy on the same Mac.
+mac_stop() {
+    mac_unload "user/$uid/$label"
+    if boots && admin; then mac_unload "system/$label"; fi
+}
+`;
 
 /** Shell functions every script below starts with. `$d` is the server folder. */
 const LIB = `
 d="${REMOTE_DIR}"
 unit="$HOME/.config/systemd/user/cavvy.service"
 bin="$d/current/cavvy"
+${MAC}
 has_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
 linger() { loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null; }
 # A service only where it would keep running once this connection closes.
@@ -70,7 +216,9 @@ point_at() {
     mv -T "$d/current.new.$$" "$d/current" 2>/dev/null || { rm -f "$d/current"; mv "$d/current.new.$$" "$d/current"; }
 }
 start() {
-    if as_service; then
+    if [ -n "$mac" ]; then
+        mac_start
+    elif as_service; then
         systemctl --user reset-failed cavvy.service >/dev/null 2>&1
         # Started on purpose, so started at boot again too (a stop turns that off).
         systemctl --user enable cavvy.service >/dev/null 2>&1
@@ -87,6 +235,7 @@ start() {
 stop() {
     # Cavvy's own stop waits until the process is gone, sessions closed.
     "$bin" host stop >/dev/null 2>&1
+    if [ -n "$mac" ]; then mac_stop; return 0; fi
     if has_systemd && [ -f "$unit" ]; then systemctl --user stop cavvy.service >/dev/null 2>&1; fi
     return 0
 }
@@ -105,9 +254,17 @@ wait_up() {
 }
 `;
 
-/** Writes the unit and asks for linger. Prints `service=`, `linger=`, `user=`. */
+/**
+ * Writes the unit ($1) and asks for linger. Prints `systemd=`, `linger=`, `user=`. On a Mac: where sudo doesn't ask,
+ * has root write the LaunchDaemon ($2: MAC_BOOT); what's loaded is left, and the next start reads the file. Prints
+ * `mac=1`, and `boot=` (`mine`, or `other` for another account's) when a daemon is installed.
+ */
 const SETUP = `${LIB}
-if has_systemd; then
+if [ -n "$mac" ]; then
+    if { boots || [ ! -f "$daemon" ]; } && admin; then @@SUDO@@ -n /bin/sh -c "$2" >/dev/null 2>&1 || true; fi
+    echo "mac=1"
+    if boots; then echo "boot=mine"; elif [ -f "$daemon" ]; then echo "boot=other"; fi
+elif has_systemd; then
     mkdir -p "$(dirname "$unit")"
     printf '%s' "$1" > "$unit.tmp" && mv -f "$unit.tmp" "$unit"
     systemctl --user daemon-reload
@@ -213,9 +370,58 @@ else "$bin" host revoke --machine "$1" >/dev/null 2>&1; fi
 exit 0
 `;
 
+/**
+ * How Xcode stands on a Mac, for building and running iOS apps there: `missing` (none, or only the command line
+ * tools), `unopened` (it's there and hasn't been opened at the Mac's screen, which is where macOS asks whether it may
+ * run and where it installs the rest of itself), `no-simulator` (no iOS simulator to run an app in), or `ready`.
+ */
+export const XCODE_STATES = ["ready", "missing", "unopened", "no-simulator"] as const;
+export type XcodeState = (typeof XCODE_STATES)[number];
+
+/** How long Xcode's tools are given to answer (changeable for tests). */
+export const xcodeTiming = { versionSeconds: 8, simulatorsSeconds: 15 };
+
+/**
+ * Prints `check=` with the server's own account, and on a Mac `xcode=` (XcodeState). An Xcode that macOS hasn't let
+ * run yet is killed as it starts when nobody is signed in at the Mac, and waits on a question at its screen when
+ * somebody is: so it's given a few seconds, and one that fails or runs out of them is `unopened`. Asked while the
+ * server's Cavvy answers, so the wait isn't added to it.
+ */
 const CHECK = `${LIB}
 [ -x "$bin" ] || exit 46
-c=$("$bin" host check) || exit 1
+# Runs the rest for at most $1 seconds (a Mac has no timeout).
+within() {
+    t=$1; shift
+    "$@" &
+    p=$!
+    # What watches the clock takes its sleep with it when it's told the wait is over.
+    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$t" & s=$!; wait "$s" && kill -9 "$p" ) >/dev/null 2>&1 < /dev/null &
+    w=$!
+    wait "$p" 2>/dev/null
+    code=$?
+    kill "$w" >/dev/null 2>&1
+    return $code
+}
+xcode() {
+    dev=$(xcode-select -p 2>/dev/null) || { echo missing; return; }
+    case "$dev" in *.app/*) [ -d "$dev" ] || { echo missing; return; } ;; *) echo missing; return ;; esac
+    within @@XCODE_VERSION@@ xcodebuild -version >/dev/null 2>&1 || { echo unopened; return; }
+    sims=$(within @@XCODE_SIMULATORS@@ xcrun simctl list runtimes 2>/dev/null) || { echo unopened; return; }
+    if echo "$sims" | grep -v unavailable | grep -q 'SimRuntime\\.iOS-'; then echo ready; else echo no-simulator; fi
+}
+if [ -n "$mac" ]; then
+    x="$d/.xcode.$$"
+    xcode > "$x" 2>/dev/null &
+    asking=$!
+fi
+c=$("$bin" host check)
+code=$?
+if [ -n "$mac" ]; then
+    wait "$asking" 2>/dev/null
+    echo "xcode=$(cat "$x" 2>/dev/null)"
+    rm -f "$x"
+fi
+[ "$code" -eq 0 ] || exit 1
 echo "check=$c"
 `;
 
@@ -253,18 +459,22 @@ function json<T>(text: string | undefined): T | undefined {
 export interface ServiceReport {
     /** Started at boot and restarted if it crashes. Otherwise it runs until the server restarts. */
     service: boolean;
-    /** What to run on the server (it needs an administrator) so it can be a service. */
-    lingerFix?: string;
+    /** What to run on the server (it needs an administrator) so Cavvy starts at boot there. */
+    bootFix?: string;
+    /** A Mac: `cavvy servers boot <name>`, run on this computer, makes it start at boot (it asks for the password there). */
+    bootHere?: true;
 }
 
-function report(systemd: boolean, linger: boolean, user: string): ServiceReport {
-    if (systemd && linger) return { service: true };
-    return { service: false, lingerFix: systemd && /^[\w.-]+$/.test(user) ? `sudo loginctl enable-linger ${shQuote(user)}` : undefined };
+function report(o: { systemd: boolean; linger: boolean; user: string; mac: boolean; boot?: string }): ServiceReport {
+    // Another account's daemon has the name there: nothing this one runs would change that.
+    if (o.mac) return o.boot === "mine" ? { service: true } : o.boot === undefined ? { service: false, bootHere: true } : { service: false };
+    if (o.systemd && o.linger) return { service: true };
+    return { service: false, bootFix: o.systemd && /^[\w.-]+$/.test(o.user) ? `sudo loginctl enable-linger ${shQuote(o.user)}` : undefined };
 }
 
 /** The same report, from what a probe found, for a server that's only being looked at. */
 export function serviceReport(facts: ServerFacts): ServiceReport {
-    return report(facts.systemd, facts.linger === true, facts.user);
+    return report({ systemd: facts.systemd, linger: facts.linger === true, user: facts.user, mac: facts.os === "Darwin", boot: facts.launchDaemon });
 }
 
 const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0);
@@ -335,9 +545,23 @@ const said = (stderr: string) => printable(stderr.trim().split("\n").at(-1) ?? "
 
 /** Sets the server up to keep Cavvy running, as well as it allows. */
 export async function setUpService(e: ServerEntry, signal?: AbortSignal): Promise<ServiceReport> {
-    const r = await ssh(e, remoteSh(timed(SETUP), [UNIT]), { timeoutMs: 60_000, signal });
+    const r = await ssh(e, remoteSh(timed(SETUP), [UNIT, withMacPaths(MAC_BOOT)]), { timeoutMs: 60_000, signal });
     if (r.code !== 0) throw new ServerError(`Couldn't set ${hostOf(e)} up to keep Cavvy running: ${said(r.stderr) || `exit ${r.code}`}`);
-    return report(value(r.stdout, "systemd") === "1", value(r.stdout, "linger") === "yes", value(r.stdout, "user") ?? "");
+    const boot = value(r.stdout, "boot");
+    return report({ systemd: value(r.stdout, "systemd") === "1", linger: value(r.stdout, "linger") === "yes", user: value(r.stdout, "user") ?? "", mac: value(r.stdout, "mac") === "1", boot: boot === "mine" || boot === "other" ? boot : undefined });
+}
+
+/** What `bootCommand` exits with when another account's Cavvy has the daemon's name on that Mac. */
+export const BOOT_TAKEN = 66;
+
+/**
+ * The command, for a terminal, that makes a Mac start Cavvy at boot: root there writes the LaunchDaemon (MAC_BOOT),
+ * and sudo asks for the user's password in that terminal. For a Mac where sudo asks; where it doesn't, set-up has
+ * done this already.
+ */
+export function bootCommand(): string {
+    // sudo by its full path as the command itself: no `sh` looked up on the account's PATH first.
+    return [macLaunchd.sudo, "-p", "Password for %p on %h: ", "/bin/sh", "-c", withMacPaths(MAC_BOOT)].map(shQuote).join(" ");
 }
 
 export class UpdateFailed extends ServerError {
@@ -450,13 +674,15 @@ export async function revokeOverSsh(e: ServerEntry, machine: string, o: { client
     await ssh(e, remoteSh(timed(REVOKE), [machine, o.client ?? ""]), { timeoutMs: 30_000, signal: o.signal });
 }
 
-/** The server's own account of what's there for agents. */
+/** The server's own account of what's there for agents, and on a Mac how Xcode stands. */
 export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise<HostCheck> {
-    const r = await ssh(e, remoteSh(timed(CHECK)), { timeoutMs: 60_000, signal });
+    const script = timed(CHECK).replaceAll("@@XCODE_VERSION@@", seconds(xcodeTiming.versionSeconds)).replaceAll("@@XCODE_SIMULATORS@@", seconds(xcodeTiming.simulatorsSeconds));
+    const r = await ssh(e, remoteSh(script), { timeoutMs: 60_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     const check = r.code === 0 ? readCheck(value(r.stdout, "check")) : undefined;
     if (!check) throw new ServerError(`Couldn't check ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
-    return check;
+    const xcode = XCODE_STATES.find((x) => x === value(r.stdout, "xcode"));
+    return xcode ? { ...check, xcode } : check;
 }
 
 /** Builds the server no longer needs go: all but the one running, `previous` and `keep`. */
