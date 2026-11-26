@@ -114,7 +114,13 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
     if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted by its name or id in the command itself, not by a file, a path, a link or another place it's read from.`;
     const flag = words.findIndex((w, i) => i > 0 && w.startsWith("-"));
     // Its answer is read to know the host was released (it exits 0 either way): nothing may filter or reshape it.
-    if (words[0] === "aws" && words[1] === "ec2" && words[2] === "release-hosts" && words.some((w) => w.startsWith("-") && !RELEASE_HOSTS_OPTIONS.includes(w.split("=")[0]!))) return "`aws ec2 release-hosts` takes only --host-ids, --region and --profile in a teardown.";
+    if (words[0] === "aws" && words[1] === "ec2" && words[2] === "release-hosts") {
+        if (words.some((w) => w.startsWith("-") && !RELEASE_HOSTS_OPTIONS.includes(w.split("=")[0]!))) return "`aws ec2 release-hosts` takes only --host-ids, --region and --profile in a teardown.";
+        // One host a command: one that's released while another isn't would otherwise be asked for again, and refused.
+        const at = words.findIndex((w) => w === "--host-ids" || w.startsWith("--host-ids="));
+        const one = at >= 0 && (words[at]!.includes("=") ? !words[at + 1] || words[at + 1]!.startsWith("-") : Boolean(words[at + 1]) && !words[at + 1]!.startsWith("-") && (!words[at + 2] || words[at + 2]!.startsWith("-")));
+        if (!one || words.filter((w) => w.startsWith("--host-ids")).length > 1 || words.some((w) => w.startsWith("h-") && w.includes(","))) return "Each `aws ec2 release-hosts` in a teardown names one host: --host-ids h-….";
+    }
     if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws lightsail delete-…" or "aws ec2 terminate-…" of the same kinds ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;
 }
