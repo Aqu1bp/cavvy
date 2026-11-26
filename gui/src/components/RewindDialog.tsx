@@ -14,11 +14,11 @@ import { Spinner } from "./ui/bits";
 const names = (backends: string[]) => backends.join(" and ");
 /**
  * Why everything can't be restored, and what can: one line ("Another session is working here: only Cavvy's edits can be
- * restored."), which also says where the rest is when Claude Code or Codex answered since ("Use git for Claude Code's.").
- * As the terminal's /rewind says it (src/commands/rewind.ts).
+ * restored."), which also says where the rest is when Claude Code or Codex answered since ("Use git for Claude Code's").
+ * With none of Cavvy's edits to restore either (`any` false): "…, so files can't be restored. Use git."
  */
-const onlyOwnEdits = (refused: string, backends?: string[]) =>
-    `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.${backends?.length ? ` Use git for ${names(backends.map((b) => `${b}'s`))}.` : ""}`;
+const onlyOwnEdits = (refused: string, backends: string[] | undefined, any: boolean) =>
+    any ? `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.${backends?.length ? ` Use git for ${names(backends.map((b) => `${b}'s`))}.` : ""}` : `${refused.replace(/\.$/, "")}, so files can't be restored. Use git.`;
 
 /** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
@@ -27,7 +27,7 @@ function changedLabel(t: RewindTargetInfo): string {
     const untracked = t.backends?.length && !t.whole ? `${names(t.backends)} changes not tracked` : undefined;
     if (!t.tracked) return untracked ?? "files not tracked";
     if (t.files) return untracked ? `${plural(t.files, "file")} changed · ${untracked}` : `${plural(t.files, "file")} changed`;
-    return untracked ?? "no file changes";
+    return untracked ?? "";
 }
 
 
@@ -151,7 +151,7 @@ export function RewindDialog() {
         e.preventDefault();
         rows[to]!.focus();
     };
-    /** Nothing to rewind to: the line, and Cancel alone. */
+    /** Nothing to rewind to: the line, and Close alone. */
     const empty = () => !busySession() && targets.state === "ready" && !targets()!.length;
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
@@ -193,7 +193,7 @@ export function RewindDialog() {
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
                                         <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
-                                        <span class="muted small">{changedLabel(t)}</span>
+                                        <Show when={changedLabel(t)}>{(label) => <span class="muted small">{label()}</span>}</Show>
                                         <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{times()[i()]}</time>}</Show>
                                     </button>
                                 )}
@@ -213,7 +213,7 @@ export function RewindDialog() {
                                 <Show when={plan()!.refused}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">{onlyOwnEdits(plan()!.refused!, plan()!.backends)}</span>
+                                        <span class="small">{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</span>
                                     </div>
                                 </Show>
                                 {/* With a refusal, its line says this too. */}
@@ -226,7 +226,6 @@ export function RewindDialog() {
                                     </div>
                                 </Show>
                                 <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
-                                    <div class="small">{plan()!.whole ? `${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} changed since then:` : `Cavvy changed ${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">
@@ -275,7 +274,7 @@ export function RewindDialog() {
                     <span class="grow" />
                 </Show>
                 <button class="btn ghost" onClick={close}>
-                    Cancel
+                    {empty() ? "Close" : "Cancel"}
                 </button>
                 <Show when={!empty()}>
                     <span class="grow" />

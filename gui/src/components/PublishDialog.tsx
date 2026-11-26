@@ -136,8 +136,11 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             <div class="commit-dialog">
                 <Show when={!loading()} fallback={<Spinner />}>
                     <Show when={view()}>
-                        <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
-                        <p class="mono small publish-destination">{view()?.destination}</p>
+                        {/* The title names the branch; this, where it goes (its URL on hover). */}
+                        <p title={view()?.destination}>
+                            <Show when={view()?.branch !== view()?.target} fallback="To ">Push <strong class="mono">{view()?.branch}</strong> to </Show>
+                            <strong class="mono">{view()?.remote}/{view()?.target}</strong>
+                        </p>
                         <Show when={!view()?.hasUpstream && view()?.ahead == null} fallback={<Show when={view()?.ahead != null && view()?.behind != null}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
                             <p class="muted small">New branch</p>
                         </Show>
@@ -161,7 +164,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             </Show>
                         </Show>}>
                             <label class="commit-message-label" for="pr-base">Base</label>
-                            <input id="pr-base" class="input mono" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
+                            <input id="pr-base" class="input mono" placeholder="main" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-title">Title</label>
                             <input id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>

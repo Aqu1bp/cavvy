@@ -21,7 +21,7 @@ async function panel() {
     const mounts: (() => void)[] = [];
     const buttons: any[] = [];
     const calls: { method: string; params: any }[] = [];
-    const notices: { text: string; kind: string }[] = [];
+    const notices: { text: string; kind: string; action?: { label: string; run: () => void } }[] = [];
     const app = { conn: "open" };
     const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: Script, setup?: Setup) => void } = {};
     let opened = false;
@@ -58,7 +58,7 @@ async function panel() {
         createEffect: (callback: () => void) => effects.push(callback), on: () => () => {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
         app, connOn: () => app.conn, machine: undefined, setTerminalLogin() {}, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260, fontSize: 14 }, terminalFontSize, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
-        withShortcut: (label: string) => label, terminalKey: () => "shell", quitsApp: () => false, toast: (text: string, kind: string) => notices.push({ text, kind }),
+        withShortcut: (label: string) => label, terminalKey: () => "shell", quitsApp: () => false, toast: (text: string, kind: string, action?: { label: string; run: () => void }) => notices.push({ text, kind, action }),
         rpc: {
             call: (method: string, params: any) => { calls.push({ method, params }); return response(method); },
             onEvent: () => () => {}, onState: () => () => {},
@@ -224,9 +224,13 @@ test("a full window refuses another setup tab with a recoverable warning", async
     expect(p.tabs()).toHaveLength(12);
     expect(p.notices).toHaveLength(1);
     expect(p.notices[0]!.kind).toBe("warn");
-    expect(p.notices[0]!.text).toContain("didn't run");
-    expect(p.notices[0]!.text).toContain("12 terminals");
-    expect(p.notices[0]!.text).toContain("project scripts menu");
+    expect(p.notices[0]!.text).toBe("Setup script didn't run");
+    // Run tries it as a plain script run, which says why it can't.
+    expect(p.notices[0]!.action!.label).toBe("Run");
+    p.notices[0]!.action!.run();
+    expect(p.tabs()).toHaveLength(12);
+    expect(p.notices[1]!.kind).toBe("error");
+    expect(p.notices[1]!.text).toContain("12 terminals");
 });
 
 test("disconnect before tab creation or before shell start never runs setup", async () => {
@@ -235,7 +239,9 @@ test("disconnect before tab creation or before shell start never runs setup", as
     p.run();
     expect(p.tabs()).toHaveLength(0);
     expect(p.notices[0]!.kind).toBe("warn");
-    expect(p.notices[0]!.text).toContain("not connected");
+    expect(p.notices[0]!.text).toBe("Setup script didn't run");
+    p.notices[0]!.action!.run();
+    expect(p.notices[1]!.text).toContain("Not connected");
     p.app.conn = "open";
     p.run();
     p.app.conn = "closed";
@@ -291,7 +297,7 @@ function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; open
         },
         openProject: async (path: string) => { steps.push("opened"); if (!options.openFails) app.homeCwd = path; },
         terminalActions: options.terminalMissing ? {} : { runScript: (...args: any[]) => { steps.push("setup"); runs.push(args); } },
-        requestComposerFocus() {}, toast: (text: string) => notices.push(text), reportError: (error: Error) => { throw error; },
+        requestComposerFocus() {}, toast: (text: string, _kind?: string, action?: { label: string }) => notices.push(action ? `${text} [${action.label}]` : text), reportError: (error: Error) => { throw error; },
     };
     let source = readFileSync(new URL("../gui/src/components/WorktreeDialogs.tsx", import.meta.url), "utf8");
     source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
@@ -329,7 +335,7 @@ test("Settings or another overlay opened during checkout skips setup with recove
             await creating;
             expect(d.steps).toEqual(["created", "opened"]);
             expect(d.runs).toEqual([]);
-            expect(d.notices.some((text) => text.includes("didn't run") && text.includes("covering") && text.includes("project scripts menu"))).toBe(true);
+            expect(d.notices).toContain("Setup script didn't run [Run]");
         } finally {
             setSettingsTab(undefined);
             setPaletteOpen(false);
@@ -380,7 +386,8 @@ test("a worktree that cannot be opened or lacks a terminal reports setup recover
         await d.create();
         expect(d.steps).toEqual(["created", "opened"]);
         expect(d.runs).toEqual([]);
-        expect(d.notices.some((text) => text.includes("didn't run") && text.includes("project scripts menu"))).toBe(true);
+        // With no terminal here, nothing to Run.
+        expect(d.notices).toContain(options.terminalMissing ? "Setup script didn't run" : "Setup script didn't run [Run]");
     }
 });
 

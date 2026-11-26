@@ -798,7 +798,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     );
     // The model a turn would use: listed, else the configured reference's id (a model not in the list yet).
     const meterModel = () => model() ?? refModel(savedRef());
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? savedRef()?.split(":")[0]} model={meterModel()} home={p.variant === "home"} />;
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? savedRef()?.split(":")[0]} model={meterModel()} home={p.variant === "home"} aside={Boolean(p.aside)} />;
     return (
         <div
             ref={root}

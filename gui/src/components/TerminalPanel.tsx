@@ -112,12 +112,13 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setSelected(tab.id);
     };
     // A click on a project script: its own tab, shown, with the command typed into its shell.
-    const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => {
+    const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun): void => {
         // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
-        const cant = (why: string, plain: string) => (setup ? toast(`Setup script “${script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn") : toast(plain, "error"));
-        if (!restored()) return cant("terminal tabs are reconnecting.", "Terminal tabs are reconnecting. Try again in a moment.");
-        if (conn() !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
-        if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
+        // Run tries it again as a plain script run: then a failure says why.
+        const cant = (plain: string): void => (setup ? toast("Setup script didn't run", "warn", { label: "Run", run: () => runScript(cwd, script) }) : toast(plain, "error"));
+        if (!restored()) return cant("Terminal tabs are reconnecting. Try again in a moment.");
+        if (conn() !== "open") return cant(`Not connected to Cavvy server, so “${script.name}” can't start.`);
+        if (full()) return cant(`${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
         // The session's: a sign-in tab of the window's own machine no longer holds the view.
         setTerminalLogin(false);

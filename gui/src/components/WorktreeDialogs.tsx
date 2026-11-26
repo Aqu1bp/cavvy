@@ -133,11 +133,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 
     /** In the new worktree, now open: a tab of its own, with the command typed once its shell is reading. */
     const startSetup = (made: CreateWorktreeResult, setup: NonNullable<CreateWorktreeResult["setup"]>) => {
-        const didnt = (why: string) => toast(`Setup script “${setup.script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn");
-        // A tab outside the project on screen would run where nobody sees it.
-        if (app.homeCwd !== made.path) return didnt("the new worktree couldn't be opened.");
-        if (setupObscured() || trustRequest()) return didnt("Settings or another dialog is covering the new worktree.");
-        if (!terminalActions.runScript) return didnt("the terminal isn't available here.");
+        // Run tries it again as a plain script run, as the project scripts menu does.
+        const didnt = () => toast("Setup script didn't run", "warn", terminalActions.runScript ? { label: "Run", run: () => terminalActions.runScript?.(made.path, setup.script) } : undefined);
+        // A tab outside the project on screen would run where nobody sees it; so would one under Settings or a dialog.
+        if (app.homeCwd !== made.path || setupObscured() || trustRequest() || !terminalActions.runScript) return didnt();
         terminalActions.runScript(made.path, setup.script, { ticket: setup.ticket, label: setupTabLabel(made.path), command: setup.script.command });
     };
 
@@ -169,7 +168,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true, setupScript: setup } : {}) });
             setBusy(false);
             p.onClose();
-            if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} Run it from the project scripts menu.`, "warn");
+            if (made.setupError) toast(`Created worktree ${made.branch}; setup script didn't run`, "warn");
             else toast(`Created worktree ${made.branch}`, "success");
             // Home went to another machine meanwhile (a session opened from the palette): the path isn't that one's.
             if (homeOn() === on) {
@@ -186,7 +185,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     };
 
     return (
-        <Dialog open onClose={close} title="New worktree" subtitle="A new branch, checked out in a folder of its own." width={540}>
+        <Dialog open onClose={close} title="New worktree" width={540}>
             <form
                 class="wt-form"
                 onSubmit={(e) => {

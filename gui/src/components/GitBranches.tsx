@@ -143,7 +143,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     const failed = (what: string, e: unknown) => {
         const why = e instanceof Error ? e.message : String(e);
         if (/^(Can't|Couldn't|Cannot) /.test(why)) return void setNote({ text: why, level: "error" });
-        setNote({ text: `${what}: ${/^[A-Z][a-z]/.test(why) ? why[0]!.toLowerCase() + why.slice(1) : why}`, level: "error" });
+        setNote({ text: `${what}: ${/^[A-Z]([a-z]|\s)/.test(why) ? why[0]!.toLowerCase() + why.slice(1) : why}`, level: "error" });
     };
 
     const act = async <T,>(kind: "fetch" | "pull" | "switch", what: string, work: () => Promise<T>, done: (r: T) => void) => {
@@ -177,7 +177,8 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             void refetch();
             void refetchSync();
             if (r.result === "pulled") setNote({ text: `Pulled ${plural(r.pulled ?? r.behind, "commit")} from ${r.upstream}.`, level: "info" });
-            else if (r.result === "current") setNote({ text: "Already up to date.", level: "info" });
+            // Up to date: the line above says so. Ahead, it says only that: nothing came down.
+            else if (r.result === "current") setNote(r.ahead ? { text: "Nothing to pull.", level: "info" } : undefined);
             else setNote({ text: `Diverged from ${r.upstream}: merge or rebase in a terminal.`, level: "warn" });
         });
     const switchTo = (branch: string, remote?: boolean) =>

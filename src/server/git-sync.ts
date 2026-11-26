@@ -30,21 +30,26 @@ export async function worktreeTop(cwd: string, signal?: AbortSignal): Promise<st
 
 /**
  * Git's refusal, briefly: which files are in the way and what to do, or its first line that says something.
- * "error: Your local changes to the following files would be overwritten by checkout:\n\ta.txt\n…" becomes
- * "Uncommitted changes to a.txt would be overwritten. Commit or stash them first."
+ * "error: Your local changes to the following files would be overwritten by checkout:\n\ta.txt\n…" becomes, with
+ * `lead` "Can't pull", "Can't pull: a.txt has uncommitted changes. Commit or stash them." (the lead goes first there, as
+ * the sentence starts with a file's name).
  */
-export function gitReason(text: string): string {
+export function gitReason(text: string, lead?: string): string {
     const lines = text.split("\n").map((l) => l.trimEnd());
     const files = (from: number) => {
         const list: string[] = [];
         for (let i = from + 1; i < lines.length && /^\s/.test(lines[i]!); i++) list.push(lines[i]!.trim());
-        return list.length > 3 ? `${list.slice(0, 3).join(", ")} and ${list.length - 3} more` : list.join(", ");
+        return { n: list.length, text: list.length > 3 ? `${list.slice(0, 3).join(", ")} and ${list.length - 3} more` : list.join(", ") };
     };
     const local = lines.findIndex((l) => /local changes to the following files would be overwritten/.test(l));
-    if (local >= 0) return `Uncommitted changes to ${files(local) || "some files"} would be overwritten. Commit or stash them first.`;
+    if (local >= 0) {
+        const f = files(local);
+        const said = `${f.n ? `${f.text} ${f.n === 1 ? "has" : "have"}` : "Some files have"} uncommitted changes. Commit or stash them.`;
+        return lead ? `${lead}: ${f.n ? said : said[0]!.toLowerCase() + said.slice(1)}` : said;
+    }
     const untracked = lines.findIndex((l) => /untracked working tree files would be (overwritten|removed)/.test(l));
-    if (untracked >= 0) return `Untracked ${files(untracked) || "files"} would be overwritten. Move or remove them first.`;
-    const said = lines.map((l) => l.replace(/^(error|fatal|warning): /, "").trim()).filter((l) => l && !/^(hint:|Aborting$|Updating [0-9a-f]+\.\.[0-9a-f]+$)/.test(l));
+    if (untracked >= 0) return `Untracked ${files(untracked).text || "files"} would be overwritten. Move or remove them first.`;
+    const said = lines.map((l) => l.replace(/^(error|fatal|warning): /i, "").trim()).filter((l) => l && !/^(hint:|Aborting$|Updating [0-9a-f]+\.\.[0-9a-f]+$)/.test(l));
     return (said[0] ?? "").slice(0, 300);
 }
 
@@ -135,7 +140,7 @@ export async function gitPull(cwd: string, signal?: AbortSignal): Promise<GitPul
     if (!behind) return { ...base, result: "current" };
     if (ahead) return { ...base, result: "diverged" };
     const merged = await runGit(cwd, ["merge", "--ff-only", "--no-edit", "--no-stat", u.tracking], false, signal);
-    if (merged.code) throw fail(gitReason(merged.err + merged.out) || "Git couldn't fast-forward this branch.", "blocked");
+    if (merged.code) throw fail(gitReason(merged.err + merged.out, "Can't pull") || "Git couldn't fast-forward this branch.", "blocked");
     return { ...base, ahead: 0, behind: 0, result: "pulled", pulled: behind };
 }
 
@@ -211,7 +216,7 @@ export async function gitSwitch(cwd: string, o: { branch: string; remote?: boole
         args = ["switch", "--no-guess", b];
     }
     const r = await runGit(cwd, args, false, signal);
-    if (r.code) throw fail(gitReason(r.err + r.out) || `Git couldn't switch to ${target}.`, "blocked");
+    if (r.code) throw fail(gitReason(r.err + r.out, `Can't switch to ${redact(target)}`) || `Git couldn't switch to ${target}.`, "blocked");
     return { branch: redact(target), ...(created ? { created } : {}) };
 }
 
@@ -219,6 +224,6 @@ export async function gitSwitch(cwd: string, o: { branch: string; remote?: boole
 export async function gitCreateBranch(cwd: string, name: string, signal?: AbortSignal): Promise<{ branch: string }> {
     const n = await newBranchName(cwd, name, signal);
     const r = await runGit(cwd, ["switch", "--no-guess", "-c", n], false, signal);
-    if (r.code) throw fail(gitReason(r.err + r.out) || `Git couldn't create ${n}.`, "blocked");
+    if (r.code) throw fail(gitReason(r.err + r.out, `Can't create ${redact(n)}`) || `Git couldn't create ${n}.`, "blocked");
     return { branch: redact(n) };
 }

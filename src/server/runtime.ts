@@ -4956,7 +4956,7 @@ export class Runtime {
         await this.ready;
         if (!this.client || this.closed) throw new RpcError("This session has no model to name it with.", "no_model");
         const about = conversationGist(this.session.messages);
-        if (!about) throw new RpcError("There's nothing in this session to name it after yet.", "empty");
+        if (!about) throw new RpcError("Nothing to name it after yet.", "empty");
         let raw: string;
         let target: { model: ModelInfo; client: ProviderClient } | undefined;
         try {
