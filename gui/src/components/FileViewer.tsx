@@ -10,7 +10,7 @@ import type { SessionHandle } from "../state/app";
 import { rpc, toast } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs } from "../state/prefs";
-import { review, setReview, setViewedImage, shellLayout } from "../state/ui";
+import { closeReview, review, setViewedImage, shellLayout } from "../state/ui";
 import { openInEditor } from "../state/actions";
 import { highlightLineStream } from "../lib/highlight";
 import { escapeHtml } from "../lib/markdown";
@@ -192,8 +192,8 @@ export function FileViewer(p: { handle: SessionHandle }) {
                 <ReviewResizer />
             </Show>
             <div class="rv-h">
-                <button class="hb rv-back" title={prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close file" onClick={() => setReview(undefined)}>
-                    <Show when={prefs.panel} fallback={<X size={16} />}>
+                <button class="hb rv-back" title={review()?.back ? "Back to the changes (Esc)" : prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close file" onClick={closeReview}>
+                    <Show when={prefs.panel || review()?.back} fallback={<X size={16} />}>
                         <ChevronLeft size={16} />
                     </Show>
                 </button>

@@ -6,7 +6,8 @@ import { os } from "./platform";
 
 /** The file viewer on `path` (relative to the session's folder), at `line`. */
 export function viewFile(path: string, line?: number) {
-    setReview({ file: { path, ...(line ? { line } : {}) } });
+    // Over the diff reader: closing the viewer goes back to it (closeReview).
+    setReview((r) => ({ file: { path, ...(line ? { line } : {}) }, back: r?.file ? r.back : r }));
 }
 
 /** "@path", quoted when it has a space, as the composer's @ menu writes it. */
