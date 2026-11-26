@@ -11,11 +11,12 @@
 import "../styles/side-chat.css";
 import { CornerDownLeft, X } from "lucide-solid";
 import { createEffect, createResource, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { lastAnswer } from "../lib/side-chat";
+import { lastAnswer, sideChatMoved } from "../lib/side-chat";
 import { columnSteps, PANE_NARROW } from "../lib/layout";
 import { sideChatText, type Attachment } from "../lib/attachments";
 import { awayMachine, openSession, reportError, rpcFor, toast, type SessionHandle } from "../state/app";
 import { send } from "../state/actions";
+import { refreshGitChanges } from "../state/changes";
 import { askSideChat, setAskSideChat, setComposerAdd } from "../state/ui";
 import { asideFocused, PaneContext, setAsideFocused, showAside } from "../state/split";
 import type { Transcript } from "./Transcript";
@@ -156,6 +157,14 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
             if (!shown || asked !== p.parent.id) return;
             setAskSideChat(undefined);
             requestAnimationFrame(() => stage?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+        }),
+    );
+
+    // What it changed in the folder: the session's views of its changes (the title bar's count, the pane) are of the
+    // folder too, but read again on the session's own edits and turns only. Again as its edits land and as a turn ends.
+    createEffect(
+        on([() => h()?.view.state.filesChanged, () => Boolean(h()?.view.state.busy)] as const, (now, before) => {
+            if (sideChatMoved(before, now)) refreshGitChanges();
         }),
     );
 
