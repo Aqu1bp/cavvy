@@ -93,6 +93,17 @@ describe("the provider xterm asks", () => {
         hint() {},
     });
 
+    test("a link opens on a plain click, not a right-click (the menu) or a middle-click", async () => {
+        const opened: string[] = [];
+        const provider = linkProvider(screen(30, [{ text: "see http://localhost:1/ a/b.ts:3" }]), { ...actions({ "a/b.ts": "/p/a/b.ts" }, []), openUrl: (u: string) => opened.push(u), openFile: (f: string) => opened.push(f) });
+        const links = await new Promise<{ activate(e: MouseEvent, text: string): void }[]>((done) => provider.provideLinks(1, (l) => done((l ?? []) as never)));
+        expect(links.length).toBe(2);
+        for (const button of [2, 1]) for (const l of links) l.activate({ button } as MouseEvent, "");
+        expect(opened).toEqual([]);
+        for (const l of links) l.activate({ button: 0 } as MouseEvent, "");
+        expect(opened).toEqual(["http://localhost:1/", "/p/a/b.ts"]);
+    });
+
     test("a url wrapped onto the next row is one link, on either row", async () => {
         const provider = linkProvider(screen(11, [{ text: "go http://l" }, { text: "ocalhost:1/", wrapped: true }, { text: "next" }]), actions({}, []));
         const want = [{ text: "http://localhost:1/", range: { start: { x: 4, y: 1 }, end: { x: 11, y: 2 } } }];

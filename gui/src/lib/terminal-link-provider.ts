@@ -69,7 +69,12 @@ export function linkProvider(term: Terminal, act: LinkActions): ILinkProvider & 
                 range,
                 text: line.text.slice(l.start, l.end),
                 decorations: { underline: true, pointerCursor: true },
-                activate: () => (l.kind === "url" ? act.openUrl(l.url) : act.openFile(abs!, l.line, l.col)),
+                // A plain (left) click only: a right-click is the terminal's menu, a middle-click its paste.
+                activate: (e) => {
+                    if (e.button !== 0) return;
+                    if (l.kind === "url") act.openUrl(l.url);
+                    else act.openFile(abs!, l.line, l.col);
+                },
                 hover: () => act.hint(l, true),
                 leave: () => act.hint(l, false),
             });
