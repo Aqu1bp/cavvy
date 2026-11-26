@@ -15,3 +15,11 @@ export function lastAnswer(turns: readonly Turn[]): string | undefined {
     }
     return undefined;
 }
+
+/**
+ * Whether the side chat may have changed the folder since it was last looked at: an edit landed, or a turn ended.
+ * `before` and `now` are [files changed, busy]; nothing on the first look (the side chat just opened).
+ */
+export function sideChatMoved(before: readonly [number | undefined, boolean] | undefined, now: readonly [number | undefined, boolean]): boolean {
+    return before?.[0] !== undefined && (now[0] !== before[0] || (before[1] && !now[1]));
+}

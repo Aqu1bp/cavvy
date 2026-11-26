@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { lastAnswer } from "../gui/src/lib/side-chat";
+import { lastAnswer, sideChatMoved } from "../gui/src/lib/side-chat";
 import { clientAction } from "../gui/src/lib/commands";
 import { app, rpc, setApp, setToasts, toasts } from "../gui/src/state/app";
 import { send } from "../gui/src/state/actions";
@@ -82,4 +82,13 @@ describe("/btw on Home, with no session yet", () => {
             call.mockRestore();
         }
     });
+});
+
+test("the session's views of its changes are read again as the side chat's edits land and its turns end", () => {
+    expect(sideChatMoved(undefined, [0, false])).toBe(false);
+    expect(sideChatMoved([undefined, false], [0, false])).toBe(false);
+    expect(sideChatMoved([0, true], [1, true])).toBe(true);
+    expect(sideChatMoved([1, true], [1, false])).toBe(true);
+    expect(sideChatMoved([1, false], [1, true])).toBe(false);
+    expect(sideChatMoved([1, false], [1, false])).toBe(false);
 });
