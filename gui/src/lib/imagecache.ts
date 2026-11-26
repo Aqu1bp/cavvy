@@ -35,15 +35,18 @@ export async function imagesKeyOf(images: readonly { mediaType: string; data: st
     }
 }
 
-export class ImageCache<T = string> {
+/** What a kept value holds, in characters: a URL's, or an image's base64 and thumbnail. */
+const charsOf = (v: string | { data?: string; thumb?: string }) => (typeof v == "string" ? v.length : (v.data?.length ?? 0) + (v.thumb?.length ?? 0));
+
+export class ImageCache<T extends string | { data?: string; thumb?: string } = string> {
     /** Each request, and its size once it's in (0 until then). */
     private entries = new Map<string, { p: Promise<T[]>; size: number }>();
 
     /**
-     * Up to `max` entries and, with `sizeOf`, `maxSize` in all (the most recent one is kept even when it alone is
-     * over), the least recently used dropped first.
+     * Up to `max` entries and `maxSize` characters in all (the most recent one is kept even when it alone is over),
+     * the least recently used dropped first.
      */
-    constructor(private max: number, private maxSize = Infinity, private sizeOf?: (value: T) => number) {}
+    constructor(private max: number, private maxSize = Infinity) {}
 
     get(key: string, load: () => Promise<T[]>): Promise<T[]> {
         const all = this.entries;
@@ -59,8 +62,8 @@ export class ImageCache<T = string> {
         all.set(key, entry);
         p.then(
             (values) => {
-                if (all.get(key) !== entry || !this.sizeOf) return;
-                for (const v of values) entry.size += this.sizeOf(v);
+                if (all.get(key) !== entry) return;
+                for (const v of values) entry.size += charsOf(v);
                 this.trim();
             },
             () => all.get(key) === entry && all.delete(key),
@@ -86,9 +89,8 @@ export class ImageCache<T = string> {
         const all = this.entries;
         let total = 0;
         for (const e of all.values()) total += e.size;
-        let left = all.size;
         for (const [key, e] of all) {
-            if (--left === 0 || (all.size <= this.max && total <= this.maxSize)) return;
+            if (all.size < 2 || (all.size <= this.max && total <= this.maxSize)) return;
             all.delete(key);
             total -= e.size;
         }

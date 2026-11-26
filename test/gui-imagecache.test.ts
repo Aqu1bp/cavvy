@@ -49,7 +49,7 @@ describe("ImageCache", () => {
     });
 
     test("bounded by size too: the least recently used goes until the rest fit, the newest stays", async () => {
-        const c = new ImageCache<string>(10, 10, (v) => v.length);
+        const c = new ImageCache<string>(10, 10);
         const asked: string[] = [];
         const load = (v: string) => () => (asked.push(v), Promise.resolve([v]));
         await c.get("a", load("aaaa"));
@@ -67,7 +67,7 @@ describe("ImageCache", () => {
     });
 
     test("an older load that ends late doesn't push out newer ones", async () => {
-        const cache = new ImageCache<string>(10, 10, (v) => v.length);
+        const cache = new ImageCache<string>(10, 10);
         let finish!: (v: string[]) => void;
         const slow = cache.get("old", () => new Promise((r) => (finish = r)));
         await cache.get("new", async () => ["12345"]);
@@ -79,7 +79,7 @@ describe("ImageCache", () => {
     });
 
     test("a failure frees nothing it didn't hold", async () => {
-        const c = new ImageCache<string>(10, 10, (v) => v.length);
+        const c = new ImageCache<string>(10, 10);
         await c.get("a", () => Promise.resolve(["aaaaaa"]));
         await expect(c.get("x", () => Promise.reject(new Error("gone")))).rejects.toThrow("gone");
         await Bun.sleep(0);
