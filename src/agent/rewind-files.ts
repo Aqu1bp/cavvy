@@ -89,7 +89,8 @@ export function workingAlongside(root: string | undefined, inProcess: string[] =
 export function changedBy(snapshots: TurnSnapshots | undefined, history: FileHistory | undefined, checkpoint: number | undefined): { tracked: boolean; whole: boolean; files: number } {
     if (checkpoint === undefined || !history) return { tracked: false, whole: false, files: 0 };
     const turn = snapshots?.turn(checkpoint);
-    if (turn?.start.tree && !turn.start.incomplete && turn.changed) return { tracked: true, whole: true, files: turn.changed.length };
+    // Cavvy's own local settings are left out, as a restore leaves them (planFileRestore).
+    if (turn?.start.tree && !turn.start.incomplete && turn.changed) return { tracked: true, whole: true, files: turn.changed.filter((rel) => !CAVVY_LOCAL.test(rel)).length };
     return { tracked: true, whole: false, files: history.filesIn(checkpoint).length };
 }
 
