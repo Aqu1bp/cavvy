@@ -162,13 +162,15 @@ Where the server has systemd, Cavvy runs as a user service: started at boot, res
 On a Mac, launchd keeps it running and restarts it if it crashes. Starting at boot, with nobody signed in at the Mac, takes a LaunchDaemon (it runs Cavvy as your user, not as root), and installing one takes an administrator:
 
 - If `sudo` on the Mac doesn't ask your user for a password, Cavvy installs it during set-up.
-- Otherwise Cavvy runs until the Mac restarts, and set-up and `cavvy servers check` give the one command to run on the Mac, which asks for your password there:
+- Otherwise Cavvy runs until the Mac restarts, and set-up and `cavvy servers check` give the command to run on your own computer, in a terminal:
 
   ```bash
-  sudo install -o root -g wheel -m 644 ~/.cavvy/server/dev.cavvy.server.plist /Library/LaunchDaemons/
+  cavvy servers boot mini
   ```
 
-  It takes effect at the next restart. What's running now isn't touched.
+  `sudo` on the Mac asks for your password there, in that terminal; Cavvy doesn't see it. It takes effect at the next restart. What's running now isn't touched.
+
+Either way the daemon's file is written by root on the Mac, from a script Cavvy sends: your account there is named by `sudo`, its home is the one the Mac has on record, and nothing is copied from a file an agent working as you could have changed.
 
 ```bash
 cavvy servers                 # the servers you've added
@@ -177,6 +179,7 @@ cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it 
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there
+cavvy servers boot <name>     # a Mac: start Cavvy at boot (asks for your password there)
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
