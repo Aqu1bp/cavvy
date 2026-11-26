@@ -126,6 +126,14 @@ for (const reason of ["hover", "menu", "rename"]) {
     });
 }
 
+test("held, a day whose only session went (deleted) loses its heading too", () => {
+    const now = new Date(2026, 9, 27, 8, 30).getTime();
+    const list = [session("pin", { pinned: true }), session("a", { updatedAt: now - 60_000 })];
+    const before = sidebarEntries(list, [], options({ now }));
+    const left = list.filter((s) => s.id !== "pin");
+    expect(holdSidebar(before, sidebarEntries(left, [], options({ now })), true, left).map((e) => e.key)).toEqual(["day:Today", "a"]);
+});
+
 test("held, a new session joins its day's rows, not the shelf at the bottom; a new day heading comes with it", () => {
     const now = new Date(2026, 9, 27, 8, 30).getTime();
     const at = (d: number, h: number) => new Date(2026, 9, 27 - d, h).getTime();

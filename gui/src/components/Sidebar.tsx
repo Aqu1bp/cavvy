@@ -121,7 +121,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
                 {p.s.pinned ? <PinOff size={14} /> : <Pin size={14} />} {p.s.pinned ? "Unpin" : "Pin"}
             </button>
-            <Show when={!p.s.archived}>
+            {/* Snoozed, it's off the list already: Wake now (below) brings it back. */}
+            <Show when={!p.s.archived && !isSnoozed(p.s)}>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), void settle(p.s.id, !p.s.settled))}>
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
@@ -951,7 +952,7 @@ export function Sidebar() {
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled" || ((e.kind === "day" || e.kind === "project") && e.collapsed)))}>
+                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled" || e.kind === "snoozed" || ((e.kind === "day" || e.kind === "project") && e.collapsed)))}>
                     {/* In the place of the first day's heading, the size of one: where the first session's "Today" comes. */}
                     <div class="side-empty">
                         <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived" : "No sessions yet"}>
