@@ -162,14 +162,15 @@ describe("signing a release's builds (scripts/sign-release.mjs)", () => {
         return root;
     }
     /** What the build job hands over: a bundle and its description. */
-    function built(o: { id?: string; says?: object } = {}) {
+    function built(o: { id?: string; says?: object; target?: BuildManifest["target"] } = {}) {
         const dir = mkdtempSync(join(work, "built-"));
         const id = o.id ?? commit.slice(0, 12);
+        const target = o.target ?? "linux-arm64";
         const bundle = Buffer.from("a bundle");
-        writeFileSync(join(dir, bundleName(id, "linux-arm64")), bundle);
-        const text = manifestText({ id, target: "linux-arm64", bundleSha256: createHash("sha256").update(bundle).digest("hex"), bytes: bundle.length, sha256: SHA, gui: true, ...o.says } as BuildManifest);
-        writeFileSync(join(dir, manifestName(id, "linux-arm64")), text);
-        return { dir, text, sig: join(dir, `${manifestName(id, "linux-arm64")}.sig`) };
+        writeFileSync(join(dir, bundleName(id, target)), bundle);
+        const text = manifestText({ id, target, bundleSha256: createHash("sha256").update(bundle).digest("hex"), bytes: bundle.length, sha256: SHA, gui: true, ...o.says } as BuildManifest);
+        writeFileSync(join(dir, manifestName(id, target)), text);
+        return { dir, text, sig: join(dir, `${manifestName(id, target)}.sig`) };
     }
     async function run(root: string, dir: string, env: Record<string, string> = {}) {
         const p = Bun.spawn([process.execPath, join(root, "scripts", "sign-release.mjs"), dir], { stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "", CAVVY_RELEASE_SIGNING_KEY: pem, GITHUB_REF_NAME: "v9.9.9", GITHUB_SHA: commit, ...env } });
@@ -181,6 +182,10 @@ describe("signing a release's builds (scripts/sign-release.mjs)", () => {
         const b = built();
         expect(await run(repo([publicHalf]), b.dir)).toEqual({ code: 0, err: "" });
         expect(signedBy(b.text, readFileSync(b.sig, "utf-8"), [publicHalf])).toBe(true);
+        // A Mac's build is one of them.
+        const m = built({ target: "darwin-arm64" });
+        expect(await run(repo([publicHalf]), m.dir)).toEqual({ code: 0, err: "" });
+        expect(signedBy(m.text, readFileSync(m.sig, "utf-8"), [publicHalf])).toBe(true);
     });
 
     test("nothing is signed that isn't this release's, or with a key no Cavvy lists", async () => {
