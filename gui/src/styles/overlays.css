@@ -295,7 +295,12 @@
     max-height: min(82vh, calc(100vh - 32 * var(--sp)));
     overflow: hidden;
     border-radius: calc(22 * var(--sp));
-    background: var(--sheen), var(--ctl-strong);
+    /* Opaque: --ctl-strong over the window's own colour. The scrim's backdrop-filter makes it the dialog's backdrop
+       root, so a blur here would only blur the scrim, and the page would show through a see-through --ctl-strong
+       barely softened (its text read through the dialog). */
+    background: var(--sheen), linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
     color: var(--fg);
     animation: ov-pop 320ms var(--spring);
