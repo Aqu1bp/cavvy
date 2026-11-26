@@ -32,8 +32,8 @@ async function until(pred: () => boolean, ms = 10_000) {
     }
 }
 
-async function parentWithTurn(prompt = "hello there") {
-    const engine = new Engine();
+async function parentWithTurn(prompt: string | null = "hello there", o: { allowBypass?: boolean } = {}) {
+    const engine = new Engine(o);
     const events: ServerEvent[] = [];
     const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
     engine.clients.add(c as never);
@@ -41,8 +41,10 @@ async function parentWithTurn(prompt = "hello there") {
     const snap = (await engine.handle(c as never, "session.create", { cwd })) as SessionSnapshot;
     const id = snap.state.id;
     const rt = engine.runtimes.get(id)!;
-    await engine.handle(c as never, "session.send", { id, text: prompt });
-    await until(() => rt.idle && rt.session.messageCount >= 2);
+    if (prompt !== null) {
+        await engine.handle(c as never, "session.send", { id, text: prompt });
+        await until(() => rt.idle && rt.session.messageCount >= 2);
+    }
     return { engine, c: c as never, events, cwd, id, rt };
 }
 
@@ -67,8 +69,8 @@ describe("a side chat", () => {
         expect(side.session.messages[0]!.role).toBe("user");
         expect(side.side!.context.length).toBe(before);
         expect(side.side!.context[0]).toBe(rt.session.messages[0]!);
-        // Read-only, the parent's model, not listed, shown on the parent.
-        expect(side.snapshot().state.mode).toBe("plan");
+        // The parent's mode and model, not listed, shown on the parent.
+        expect(side.snapshot().state.mode).toBe(rt.mode);
         expect(side.snapshot().state.model?.ref).toBe(rt.snapshot().state.model?.ref);
         expect(side.snapshot().state.sideOf).toBe(id);
         expect(rt.snapshot().state.sideChat?.id).toBe(sideId);
@@ -146,6 +148,74 @@ describe("a side chat", () => {
         await engine.handle(c, "session.archive", { id, archived: true });
         await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
         expect(rt.snapshot().state.sideChat).toBeUndefined();
+    });
+
+    test("of a session with nothing in it yet: a question in its folder", async () => {
+        const { engine, c, id, rt } = await parentWithTurn(null);
+        expect(rt.session.messageCount).toBe(0);
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id, text: "what was my first message?" })) as { id: string };
+        const side = engine.runtimes.get(sideId)!;
+        await until(() => side.idle && side.session.messageCount >= 2);
+        expect(side.side!.context).toEqual([]);
+        expect(lastText(side.session.messages)).toContain('Your first message was "what was my first message?"');
+        // Told there's no conversation above, not that there is.
+        const sent = JSON.stringify(mock.bodies.at(-1)!.messages);
+        expect(sent).toContain("a session that hasn't started yet");
+        expect(sent).not.toContain("the conversation above");
+        expect(rt.session.messageCount).toBe(0);
+        // /btw there opens it the same way.
+        await engine.handle(c, "session.closeSideChat", { id });
+        expect(await engine.handle(c, "session.send", { id, text: "/btw why?" })).toEqual({ queued: false });
+        expect(rt.snapshot().state.sideChat?.id).toBeString();
+        expect(rt.session.messageCount).toBe(0);
+    });
+
+    for (const mode of ["default", "acceptEdits", "auto", "bypassPermissions", "plan"] as const) {
+        test(`starts in the session's mode: ${mode}`, async () => {
+            const { engine, c, id, rt } = await parentWithTurn("hello there", { allowBypass: true });
+            await engine.handle(c, "session.setMode", { id, mode });
+            const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+            expect(engine.runtimes.get(sideId)!.snapshot().state.mode).toBe(mode);
+            expect(rt.mode).toBe(mode);
+        });
+    }
+
+    test("then keeps its own: the session's changes don't reach it, nor its the session", async () => {
+        const { engine, c, id, rt } = await parentWithTurn();
+        await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+        const side = engine.runtimes.get(sideId)!;
+        await engine.handle(c, "session.setMode", { id, mode: "plan" });
+        expect(side.mode).toBe("acceptEdits");
+        await engine.handle(c, "session.setMode", { id: sideId, mode: "default" });
+        expect(rt.mode).toBe("plan");
+        expect(side.mode).toBe("default");
+    });
+
+    test("is never Bypass where Bypass isn't allowed", async () => {
+        const { engine, c, id, rt } = await parentWithTurn();
+        // Left in Bypass when it was allowed; it isn't now.
+        rt.mode = "bypassPermissions";
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+        expect(engine.runtimes.get(sideId)!.mode).toBe("default");
+        await expect(engine.handle(c, "session.setMode", { id: sideId, mode: "bypassPermissions" })).rejects.toThrow(/Bypass mode is off/);
+    });
+
+    test("edits in the session's folder as its mode says: asked in Manual, made in Accept edits", async () => {
+        const { engine, c, id, cwd } = await parentWithTurn();
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id, text: "writenote" })) as { id: string };
+        const side = engine.runtimes.get(sideId)!;
+        await until(() => side.snapshot().state.status === "waiting");
+        expect(existsSync(join(cwd, "SIDE-NOTE.md"))).toBe(false);
+        side.interrupt();
+        await until(() => side.idle);
+        await engine.handle(c, "session.closeSideChat", { id });
+        await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+        const { id: next } = (await engine.handle(c, "session.sideChat", { id, text: "writenote" })) as { id: string };
+        const edits = engine.runtimes.get(next)!;
+        await until(() => edits.idle && edits.session.messageCount >= 4);
+        expect(lastText(edits.session.messages)).toContain("Wrote `SIDE-NOTE.md`");
+        expect(existsSync(join(cwd, "SIDE-NOTE.md"))).toBe(true);
     });
 
     test("a side chat has none of its own", async () => {

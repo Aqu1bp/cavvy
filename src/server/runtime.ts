@@ -25,7 +25,7 @@ import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/hist
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
 import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
-import { SIDE_CHAT_REMINDER, type SideChatOrigin } from "../agent/side-chat";
+import { sideChatReminder, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -2785,7 +2785,7 @@ export class Runtime {
         // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
         if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
         // A side chat's model hears what it is with the first question (an agent made again before then too).
-        if (this.side && !this.session.messageCount) this.agent.addReminder(SIDE_CHAT_REMINDER);
+        if (this.side && !this.session.messageCount) this.agent.addReminder(sideChatReminder(this.side.context));
         this.leftIn = undefined;
     }
 

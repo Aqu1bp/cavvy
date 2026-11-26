@@ -17,6 +17,7 @@
 //                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "writenote"      writes SIDE-NOTE.md itself (asks permission in Manual mode)
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
 //   "first message"  says what the user's first message was, and how many they've sent
 //   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
@@ -277,6 +278,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             };
         if (toolRounds === 1) return { text: "While it works, the auth module:", calls: [{ name: "Read", args: { file_path: "src/auth/index.ts" } }] };
         return { text: "Strategies are registered in `src/auth/index.ts`. The test review is still running in the background; its findings come with your next message." };
+    }
+    if (/\bwritenote\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Writing it.", calls: [{ name: "Write", args: { file_path: "SIDE-NOTE.md", content: "# Side note\n" } }] };
+        return { text: /^(File created|The file)/.test(lastResult) ? "Wrote `SIDE-NOTE.md`." : "I didn't write it." };
     }
     if (/\bnote\b/.test(p)) {
         if (toolRounds === 0)
