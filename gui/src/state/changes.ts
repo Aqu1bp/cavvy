@@ -87,11 +87,12 @@ export function changedOutside(): number {
 
 /**
  * Git's view of a session's folder, or of another `worktree` of its repository; fetched again as edits land,
- * when a turn starts or ends, and on changedOutside().
+ * when a turn starts or ends (its side chat's too), and on changedOutside().
  */
 export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined, worktree: () => string | undefined = () => undefined, commit: () => string | undefined = () => undefined) {
     return createResource(
-        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), commit: commit(), ws: prefs.reviewIgnoreWhitespace, n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
+        // `side`: its side chat's turns change the same folder (and it needn't be on screen): read again as one starts and ends.
+        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), commit: commit(), ws: prefs.reviewIgnoreWhitespace, n: handle().view.state.filesChanged, busy: handle().view.state.busy, side: handle().view.state.sideChat?.status, outside: changedOutside() },
         ({ id, scope, base, turnId, worktree, commit }) => fetchGitChanges(id, scope, base, undefined, turnId, worktree, undefined, { commit }),
     );
 }
