@@ -12,11 +12,12 @@ import { takeFocus } from "../lib/focus-trap";
 export const syncWords = (ahead: number, behind: number) => [ahead ? `${ahead} ahead` : "", behind ? `${behind} behind` : ""].filter(Boolean).join(" · ") || "Up to date";
 
 /**
- * How a failed push is shown: a refused push (`push_failed`) leads with what to do, git's output after it; other git
- * failures are only git's output; anything else is Cavvy's own sentence.
+ * How a failed push is shown: a refused push (`push_failed`), or a pull request that wasn't opened (`pr_failed`), leads
+ * with what happened, git's or GitHub's output after it; other git failures are only git's output; anything else is
+ * Cavvy's own sentence.
  */
 export function publishError(message: string, code?: string): { text?: string; raw?: string } {
-    if (code === "push_failed") {
+    if (code === "push_failed" || code === "pr_failed") {
         const at = message.indexOf("\n");
         const raw = at < 0 ? "" : message.slice(at + 1).trim();
         return { text: at < 0 ? message : message.slice(0, at), ...(raw ? { raw } : {}) };

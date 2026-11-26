@@ -181,8 +181,9 @@ async function newBranchName(cwd: string, name: string, signal?: AbortSignal): P
     const n = name.trim();
     if (!n || n.length > 200 || n.startsWith("-") || /[\x00-\x20\x7f]/.test(n)) throw fail("Enter a branch name without spaces.", "invalid");
     const ok = await runGit(cwd, ["check-ref-format", "--branch", n], false, signal);
-    if (ok.code) throw fail(`“${n}” isn't a valid branch name.`, "invalid");
-    if (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${n}`], signal, true)) throw fail(`A branch named ${n} already exists.`, "branch_exists");
+    // Said after the name ("Can't create <name>: …"), so not with it again.
+    if (ok.code) throw fail("Not a valid branch name.", "invalid");
+    if (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${n}`], signal, true)) throw fail("That branch already exists.", "branch_exists");
     return n;
 }
 

@@ -142,7 +142,7 @@ test("existing PR and concurrent creation return the PR without duplicate creati
 test("PR failure reports that push succeeded; errors are redacted and bounded", async () => {
     const { cwd, remote } = repo(true);
     const preview = await gitPublishInfo(cwd); process.env.FAKE_PUBLISH_MODE = "create-error";
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toThrow("Branch pushed, but pull request creation failed");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toThrow("Pushed, but couldn't open the pull request.\n");
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
     process.env.FAKE_PUBLISH_MODE = "error";
     try { await gitPrState(cwd); throw new Error("expected failure"); } catch (e) {

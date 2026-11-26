@@ -201,8 +201,9 @@ test("create a branch at HEAD, keeping uncommitted changes; refuse a taken or in
     expect(git(mine, "branch", "--show-current")).toBe("feature/new");
     expect(git(mine, "rev-parse", "HEAD")).toBe(head);
     expect(git(mine, "status", "--porcelain")).toBe("M a.txt");
-    await expect(gitCreateBranch(mine, "main")).rejects.toMatchObject({ code: "branch_exists" });
-    await expect(gitCreateBranch(mine, "bad..name")).rejects.toMatchObject({ code: "invalid" });
+    // Shown after "Can't create <name>:", so the name isn't said again.
+    await expect(gitCreateBranch(mine, "main")).rejects.toMatchObject({ code: "branch_exists", message: "That branch already exists." });
+    await expect(gitCreateBranch(mine, "bad..name")).rejects.toMatchObject({ code: "invalid", message: "Not a valid branch name." });
     await expect(gitCreateBranch(mine, "-x")).rejects.toMatchObject({ code: "invalid" });
 });
 
