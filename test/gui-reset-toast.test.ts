@@ -16,6 +16,7 @@ test("one toast: the name, and whether defaults that used it were reset", () => 
     removedToast("OpenRouter", undefined);
     removedToast("OpenRouter", ["smallModel"]);
     removedToast("A very long instance name for a proxy setup", []);
-    expect(toasts).toEqual(["Removed OpenRouter", "Removed OpenRouter. Defaults reset.", "Removed A very long instance na…"]);
+    removedToast("OpenRouter proxy for the whole team", ["smallModel"]);
+    expect(toasts).toEqual(["Removed OpenRouter", "Removed OpenRouter. Defaults reset.", "Removed A very long instance…", "Removed OpenRouter proxy for… Defaults reset."]);
     for (const t of toasts) expect(t.split(/\s+/).length).toBeLessThan(8);
 });

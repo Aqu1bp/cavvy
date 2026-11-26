@@ -290,7 +290,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 </Show>
                 <div class="dialog-actions">
                     <Show when={busy()}>
-                        <span class="muted small">Checking out files; a big repository takes a while…</span>
+                        <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
                     <button type="button" class="btn ghost" disabled={busy()} onClick={close}>

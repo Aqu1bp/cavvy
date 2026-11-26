@@ -19,6 +19,8 @@ export function draftedBy(ref: string, sessionId?: string): string {
     const provider = ref.slice(0, Math.max(0, ref.indexOf(":")));
     const g = modelsFor(sessionId).find((x) => x.provider === provider);
     const name = modelName(ref, sessionId);
-    if (!g || name.toLowerCase().includes(g.providerName.toLowerCase())) return name;
-    return `${g.providerName} (${name.replace(/\s*\(recommended\)$/i, "").replace(/\s*\(([^()]*)\)$/, ", $1")})`;
+    // "Mock (demo)" is Mock's.
+    const whose = g?.providerName.replace(/\s*\([^()]*\)$/, "");
+    if (!whose || name.toLowerCase().includes(whose.toLowerCase())) return name;
+    return `${whose} (${name.replace(/\s*\(recommended\)$/i, "").replace(/\s*\(([^()]*)\)$/, ", $1")})`;
 }

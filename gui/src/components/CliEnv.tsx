@@ -6,7 +6,7 @@ import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 import { envNameProblem, looksSecret } from "@shared/env-names";
-import { resetToast } from "../lib/reset-toast";
+import { resetToast, shortName } from "../lib/reset-toast";
 
 /**
  * A variable being edited. `saved`: a secret with a value already saved, kept when its value is left blank. `auto`: a
@@ -225,7 +225,7 @@ export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInst
         const fields = { name: name().trim(), path: path().trim() || undefined, args: lines(args()), env: envVars(rows()), models: lines(models()) };
         try {
             const r = p.instance ? await rpc.call("providers.updateInstance", { id: p.instance.id, ...fields }) : (await rpc.call("providers.addInstance", { base: p.provider.id, ...fields }), undefined);
-            toast(p.instance ? "Saved. Applies from the next message." : `Added ${cli} · ${fields.name}`, "success");
+            toast(p.instance ? "Saved. Applies from the next message." : `Added ${shortName(fields.name)}`, "success");
             if (r) resetToast(r.reset);
             p.onClose();
             await Promise.all([refreshProviders(), refreshModels()]).catch(() => undefined);

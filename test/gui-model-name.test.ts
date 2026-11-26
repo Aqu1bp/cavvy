@@ -13,11 +13,12 @@ function load(groups: { provider: string; providerName: string; models: { ref: s
 test("a model whose name doesn't say whose it is is named with its provider", () => {
     const draftedBy = load([
         { provider: "claude-code", providerName: "Claude Code", models: [{ ref: "claude-code:default", id: "default", name: "Default (recommended)" }, { ref: "claude-code:sonnet", id: "sonnet", name: "Sonnet (1M context)" }] },
-        { provider: "mock", providerName: "Mock", models: [{ ref: "mock:mock-haiku", id: "mock-haiku", name: "Mock Haiku" }] },
+        { provider: "mock", providerName: "Mock (demo)", models: [{ ref: "mock:mock-haiku", id: "mock-haiku", name: "Mock Haiku" }] },
     ]);
     expect(draftedBy("claude-code:default")).toBe("Claude Code (Default)");
     expect(draftedBy("claude-code:sonnet")).toBe("Claude Code (Sonnet, 1M context)");
     expect(draftedBy("claude-code:typed-by-hand")).toBe("Claude Code (typed-by-hand)");
     expect(draftedBy("mock:mock-haiku")).toBe("Mock Haiku");
+    expect(draftedBy("mock:other")).toBe("Mock (other)");
     expect(draftedBy("gone:some-model")).toBe("some-model");
 });
