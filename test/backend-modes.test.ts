@@ -1,4 +1,4 @@
-// What Cavvy answers when an agent CLI (Claude Code, Codex, an ACP agent, Antigravity) or one of its sub-agents
+// What Cavvy answers when an agent CLI (Claude Code, Codex, an ACP agent such as OpenCode or Grok) or one of its sub-agents
 // asks about a call, by the session's mode: Agent.backendPermission, where every backend's request ends up.
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -50,7 +50,6 @@ describe("bypass: what an agent CLI still asks about runs, with no card", () => 
         ["Claude Code's background sub-agent", { ownMode: true, background: true, agentLabel: "general-purpose" }],
         ["Codex", {}],
         ["an ACP agent", { asksAlways: true, hooksOnly: true }],
-        ["Antigravity", { asksAlways: true, hooksOnly: true }],
         ["a delegated task's", { agentLabel: "sub-agent" }],
         ["a call Cavvy has only part of", { asksAlways: true, incomplete: true }],
     ];
@@ -62,12 +61,31 @@ describe("bypass: what an agent CLI still asks about runs, with no card", () => 
         });
     }
 
-    test("a catastrophic command still asks, as for Cavvy's own tools in bypass, whichever backend sent it", async () => {
-        for (const extra of [{ ownMode: true }, { hooksOnly: true, asksAlways: true }, {}] as Partial<BackendPermission>[]) {
-            const { ask, asked } = setup("bypassPermissions");
+    test("a catastrophic command still asks, whichever backend sent it, even where a rule or a hook allows it", async () => {
+        for (const extra of [{ ownMode: true }, { hooksOnly: true, asksAlways: true }, {}, { hookDecision: "allow" }, { incomplete: true, asksAlways: true }] as Partial<BackendPermission>[]) {
+            const { ask, asked } = setup("bypassPermissions", { permissions: { allow: ["Bash(rm:*)"] } });
             await ask({ toolName: "Bash", input: { command: "rm -rf ~" }, ...extra });
             expect(asked.map((r) => [r.input.command, r.decision.dangerous])).toEqual([["rm -rf ~", true]]);
         }
+    });
+
+    test("Cavvy's own models in bypass are asked about nothing, a catastrophic command included: the guard is for what an agent CLI asks", async () => {
+        const checker = new PermissionChecker(() => ({}), realpathSync(tmpdir()), () => undefined);
+        expect(checker.check(Bash, { command: "rm -rf ~" }, "bypassPermissions", realpathSync(tmpdir()))).toMatchObject({ behavior: "allow" });
+        expect(checker.bypassGuard(Bash, { command: "rm -rf ~" }, realpathSync(tmpdir()))).toMatchObject({ behavior: "ask", dangerous: true });
+    });
+
+    test("a command that only names Cavvy's credentials isn't held back by the guard (a read-only agent's read, say)", async () => {
+        const { ask, asked } = setup("bypassPermissions");
+        expect(await ask({ toolName: "Bash", input: { command: "cat ~/.cavvy/credentials.json" }, ownMode: true })).toEqual({ allow: true });
+        expect(asked).toHaveLength(0);
+    });
+
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) gets a card", async () => {
+        const { ask, asked } = setup("bypassPermissions");
+        expect(await ask({ ...python, ownMode: true, ownBypassAsk: true } as BackendPermission)).toEqual({ allow: true });
+        expect(asked).toHaveLength(1);
+        // A sub-agent of it whose definition is stricter than Bypass asks under its own mode (childMode): a card too.
     });
 
     test("extra sandbox access is granted, but not past a deny rule", async () => {

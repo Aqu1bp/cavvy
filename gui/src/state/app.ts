@@ -7,6 +7,7 @@ import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
+import { servedKey } from "../lib/limits";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { canReveal, credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
@@ -28,7 +29,7 @@ import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
-import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
+import { keyedTurn, placeBefore, restoredShown, transcriptPositions, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
 export const serversUi = () => import("../components/Servers");
@@ -229,6 +230,10 @@ function machineProvidersAgain(on: string, link: Rpc) {
 }
 /** Each other machine's plan limits, as its Cavvy knows them: its accounts are its own ("Default" there isn't this computer's). */
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
+/** The aliases' served models of `sessionId`'s machine's accounts: this computer's only (another machine's aren't known here). */
+export function servedFor(sessionId: string | undefined): Record<string, string> {
+    return awayMachine(sessionId) === undefined ? app.served : {};
+}
 /** The plan limits of `sessionId`'s machine's accounts. */
 export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
     const on = awayMachine(sessionId);
@@ -541,6 +546,8 @@ export interface AppState {
     seen: Record<string, number>;
     /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
+    /** The model each alias was last served as, by servedKey (provider, account, alias): which model limits cover it. */
+    served: Record<string, string>;
     /** The desktop app's updates from main (Settings → About, and the rail's Update button while there's one). */
     update?: AppUpdateInfo;
 }
@@ -594,6 +601,7 @@ export const [app, setApp] = createStore<AppState>({
     settings: {},
     seen: loadSeen(),
     limits: {},
+    served: {},
     ...loadNavigation(),
 });
 
@@ -905,6 +913,61 @@ function flush(h: SessionHandle) {
         ),
     );
     if (ops.some((op) => op.op === "reset")) for (const fn of resetting.get(h.id) ?? []) fn();
+    if (ops.some((op) => op.op === "turn")) letGoOutOfSight(h);
+}
+
+/**
+ * A session open but out of sight keeps only the turns it shows when it's back; those before go, and come back as "Show
+ * earlier" or scrolling up brings them, as for one opened anew. Left at its end (or never shown): what opening it anew
+ * takes (openedKeeps), one turn at least. Left being read higher up: the pages down from there (restoredShown). Only the
+ * one on screen let go of them (back at its end, nothing running): one working out of sight kept every turn it did, with
+ * each step's input and output, about 190 KB a turn of sub-agent work (a real run, 8 sessions, 30 minutes: 48 MB of
+ * window heap and climbing).
+ * Measured only when the session has another turn (or its view has just gone): a step streaming in changes none before it.
+ * Not one whose view is in the window: the one shown just before, which Panes keeps built out of sight (parked) to be
+ * shown again as it was left, or one held on the stage while another opens. It's let go of once its view goes, after
+ * that's kept where it was read (transcriptMounted).
+ */
+function letGoOutOfSight(h: SessionHandle, left = false) {
+    if (h.id === app.activeId || onScreen.beside().includes(h.id) || handles.get(h.id) !== h) return;
+    if (mountedViews.get(h.id)) return;
+    const turns = h.view.turns;
+    if (!left && trimmedAt.get(h) === turns.length) return;
+    const saved = transcriptPositions.get(h.id);
+    const reading = saved && !saved.bottom && saved.anchor;
+    forgetEarlier(h, reading ? restoredShown(turns.map((t) => t.id), saved) : openedKeeps(turns));
+    trimmedAt.set(h, h.view.turns.length);
+}
+
+/** How many transcript views each session has in the window (Panes: shown, parked, or held while another opens). */
+const mountedViews = new Map<string, number>();
+
+/**
+ * A session's transcript view put in the window, or taken out (after it's kept where it was read): taken out, the
+ * session is out of sight, and keeps only what opening it anew takes.
+ */
+export function transcriptMounted(h: SessionHandle, mounted: boolean) {
+    const n = (mountedViews.get(h.id) ?? 0) + (mounted ? 1 : -1);
+    if (n > 0) return void mountedViews.set(h.id, n);
+    mountedViews.delete(h.id);
+    if (!mounted) setTimeout(() => letGoOutOfSight(h, true), 0);
+}
+
+/** Each session's count of turns when letGoOutOfSight last looked. */
+const trimmedAt = new WeakMap<SessionHandle, number>();
+
+/**
+ * How many of the latest turns a session opened anew is sent: as many as fit OPEN_BYTES back from the latest, one at
+ * least, measured as the server measures them (Runtime.snapshot: each as JSON). What's here can be more than what's sent
+ * (a step's whole output, not folded), so this keeps no more than an open would.
+ */
+export function openedKeeps(turns: readonly unknown[]): number {
+    let size = 0;
+    for (let i = turns.length - 1; i > 0; i--) {
+        size += JSON.stringify(unwrap(turns[i])).length;
+        if (size >= OPEN_BYTES) return turns.length - i;
+    }
+    return turns.length;
 }
 
 function schedule(h: SessionHandle) {
@@ -1542,9 +1605,21 @@ export async function refreshProjects() {
 
 let watchingEditor = false;
 
+/**
+ * Asks where plans stand now (limits.refresh), for `sessionId`'s machine: when their usage is opened (the rail's
+ * card, Settings → Usage). The answers come as `limits` events; a check that fails leaves what's shown. The server
+ * skips an account reported or checked a moment ago.
+ */
+export function checkLimits(sessionId?: string, plans?: { provider: string; accountId?: string }[]): Promise<void> {
+    return rpcFor(sessionId).call("limits.refresh", plans ? { plans } : {}).then(() => undefined, () => undefined);
+}
+
 export async function refreshLimits() {
     const limits = await rpc.call("limits.get", {});
     setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), fromWireLimits(l)]))));
+    // A server from before served.get has none to say: aliases are then told by their listing alone.
+    const served = await rpc.call("served.get", {}).catch(() => []);
+    setApp("served", reconcile(Object.fromEntries(served.map((s) => [servedKey(s.provider, s.accountId, s.model), s.served]))));
 }
 
 export async function refreshUpdate() {
@@ -1563,6 +1638,9 @@ function recheckUpdate() {
     if (document.visibilityState !== "visible" || app.conn !== "open" || !u?.checkedAt || u.unavailable || u.updating || u.checking) return;
     rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
 }
+
+/** What the server says about themes is handled there, loaded with the first of it or the first theme shown (App.tsx). */
+export const themeEvents = () => import("./theme-events");
 
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
@@ -1765,8 +1843,16 @@ function onEvent(ev: ServerEvent) {
         case "limits":
             setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(fromWireLimits(ev.limits)));
             return;
+        case "served":
+            setApp("served", servedKey(ev.served.provider, ev.served.accountId, ev.served.model), ev.served.served);
+            return;
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);
+            return;
+        case "themes.changed":
+        case "theme.apply":
+            // A window on a server hears this computer's themes on its connection here (lib/machines.ts), not the server's.
+            if (!machine) void themeEvents().then((m) => m.onThemeEvent(ev));
             return;
         case "app.update":
             // In a window on a server, this computer's Cavvy says (lib/machines.ts): the server's has no app to update.
@@ -1888,7 +1974,7 @@ export function start() {
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
                 const providers = refreshProviders();
-                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined), prefs.themeId && themeEvents().then((m) => m.refreshThemes(), () => undefined)]);
                 // The models are asked for with the lists (the composer names its model from them, offers its efforts,
                 // and a pick brought from another machine is checked against them), but after them, and not waited
                 // for: the machine answers in the order it's asked, and the first screen waits for the lists (asked

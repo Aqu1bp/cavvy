@@ -146,6 +146,12 @@ describe("origin/main differential policy invariants", () => {
             for (const mode of ["auto", "default", "plan", "bypassPermissions"] as const) {
                 const before: Decision = old.check(BashTool, { command: cmd }, mode, ws);
                 const after = current.check(BashTool, { command: cmd }, mode, ws);
+                // Relaxed on purpose (#281): Bypass asks about nothing, so what origin/main still asked about there as
+                // dangerous now runs. What it refused there (a deny rule) is refused, as the comparison below holds it to.
+                if (mode === "bypassPermissions" && before.behavior === "ask" && before.dangerous) {
+                    expect(after, `${_name}: ${mode}/${kind}`).toEqual({ behavior: "allow", reason: "bypass mode" });
+                    continue;
+                }
                 expect(protection(after), `${_name}: ${mode}/${kind}: ${JSON.stringify({ before, after })}`).toBeGreaterThanOrEqual(protection(before));
                 if (before.dangerous) expect(after.dangerous).toBe(true);
                 if (before.behavior === "allow" && before.sandbox && after.behavior === "allow") expect(after.sandbox).toBe(true);

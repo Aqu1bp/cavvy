@@ -65,7 +65,7 @@ import { expandCommand, pluginCommandFor, type CustomCommand } from "./custom";
 import { pluginCommand } from "./plugins";
 import { runsPluginCommand } from "../plugins/native";
 import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
-import { cliRunsSkills } from "../backends/native-skills";
+import { cliRunsSkill } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
@@ -74,7 +74,9 @@ import { agentCli, baseCli } from "../backends/defs";
 import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
-import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { clockTime, limitLines, limitPlanTitle } from "../backends/limits";
+import { reportedOf } from "../server/plan-meter";
+import { planLimitKey } from "../server/protocol";
 import { describeJob, shortTime } from "../agent/schedule";
 import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
@@ -452,7 +454,7 @@ async function agentLogin(app: App, providerId: string) {
     // How it's asked: its own status command, or (an ACP agent) whether it answers initialize.
     // An ACP agent with a status of its own (Grok: `grok models`) is asked that instead.
     const acpHow = agent.protocol === "acp" ? (acpAgent(providerId).status ? `${cli.command} models` : `${cli.command} ${(agent.acpArgs ?? []).join(" ")} · initialize`) : undefined;
-    const how = acpHow ?? (agent.protocol === "agy-stream-json" ? `${cli.command} models` : baseCli(providerId) === "codex" ? "codex app-server · account/read" : "claude auth status");
+    const how = acpHow ?? (baseCli(providerId) === "codex" ? "codex app-server · account/read" : "claude auth status");
     let st: AgentCliStatus | undefined;
     try {
         st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(how)], (signal) => checkAgentCli(providerId, signal));
@@ -461,6 +463,7 @@ async function agentLogin(app: App, providerId: string) {
         return;
     }
     if (!st) return;
+    if (st.plan) app.accountPlans.set(planLimitKey(providerId, "default"), st.plan);
     if (!st.installed) {
         app.notice(`${def.name} isn't installed (no \`${cli.command}\` on your PATH). ${st.installHint}, sign in with \`${st.signIn}\`, then /login ${providerId} again.`, "warn");
         return;
@@ -491,8 +494,6 @@ async function agentLogin(app: App, providerId: string) {
     // It loads this folder's own configuration (hooks, skills, MCP servers) only if you trust the folder.
     const projectConfig = [...agentProjectConfig(app.cwd, providerId), ...(baseCli(providerId) === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
     if (projectConfig.length && !trustedByUser(app.cwd)) {
-        // Antigravity can't be started without them: it doesn't run here until the folder is trusted.
-        const always = agent.projectConfigAlways;
         const trust = await confirm(
             app,
             `Trust this folder's ${def.name} configuration?`,
@@ -501,10 +502,10 @@ async function agentLogin(app: App, providerId: string) {
                 "",
                 `${def.name} would load ${projectConfig.join(", ")} from this folder.`,
                 theme.muted("Hooks, MCP servers and skills there can run commands on your machine; permission rules there can approve actions."),
-                theme.muted(always ? `Until you trust the folder, ${def.name} doesn't run here.` : `Until you trust the folder, ${def.name} runs without them.`),
+                theme.muted(`Until you trust the folder, ${def.name} runs without them.`),
             ],
             "Yes, trust this folder",
-            always ? "Not now" : "No, run without them",
+            "No, run without them",
         );
         if (trust) {
             try {
@@ -543,6 +544,7 @@ async function signInCliAccount(app: App, provider: string, id: string) {
         release();
     }
     const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
+    if (status?.plan) app.accountPlans.set(planLimitKey(provider, selected.id), status.plan);
     if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : (status.problem ?? "not signed in")}`);
     await app.refreshListings();
 }
@@ -1106,10 +1108,11 @@ function costCommand(app: App) {
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     for (const l of app.planLimits.values()) {
-        const name = limitAccountLabel(l.provider, l.accountId);
+        // With its plan as the GUI names it ("Claude Code Max"), once this terminal has checked the account.
+        const name = limitPlanTitle(l.provider, l.accountId, app.accountPlans.get(planLimitKey(l.provider, l.accountId)));
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
-        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
+        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(reportedOf(l, Date.now()))}.`));
     }
     app.print(lines);
 }
@@ -2226,8 +2229,10 @@ function skillToCommand(s: Skill): Command {
         images: true,
         run: (app, args, draft) => {
             const display = `/${s.name}${args ? " " + args : ""}`;
-            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (cliRunsSkills(app.model?.provider)) return app.startTurn(display, { draft });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the
+            // /name. So is a CLI with skills of its own, one it lists (Antigravity).
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (cliRunsSkill(app.model?.provider, s.name, listed)) return app.startTurn(display, { draft });
             const text = formatSkill(s, args);
             if (text === undefined) {
                 app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");

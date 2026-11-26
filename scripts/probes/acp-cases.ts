@@ -8,7 +8,7 @@ import { Acp, AcpLog, type AcpOpts, type PermissionRule, STATE_FILE, state, temp
 const trackSessionFromState = trackSession;
 
 export type Profile = {
-    cli: "grok" | "opencode";
+    cli: "grok" | "opencode" | "agy";
     version: string;
     /** Spawn args; the workspace is the process cwd. */
     args: (ws: string) => string[];

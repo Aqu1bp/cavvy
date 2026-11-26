@@ -12,7 +12,7 @@ import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { join } from "path";
 import { APP_VERSION, cavvyHome } from "../config/paths";
 import { compareBuilds, sourceRoot, targetName, thisBuild, thisBuildTime, UNKNOWN_BUILD, type BuildSource, type ServerBuild } from "./build";
-import type { LinuxTarget } from "./remote";
+import type { ServerTarget } from "./remote";
 import { ServerError } from "./store";
 
 /**
@@ -29,13 +29,13 @@ export const RELEASES_URL = "https://github.com/Aqu1bp/cavvy/releases/download";
 const MAX_BUNDLE_BYTES = 400 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024;
 
-export const bundleName = (id: string, target: LinuxTarget) => `cavvy-server-${id}-${target}.tar.gz`;
-export const manifestName = (id: string, target: LinuxTarget) => `cavvy-server-${id}-${target}.json`;
+export const bundleName = (id: string, target: ServerTarget) => `cavvy-server-${id}-${target}.tar.gz`;
+export const manifestName = (id: string, target: ServerTarget) => `cavvy-server-${id}-${target}.json`;
 
 /** What a release says of one bundle: the text that's signed. */
 export interface BuildManifest {
     id: string;
-    target: LinuxTarget;
+    target: ServerTarget;
     /** Of the bundle file. */
     bundleSha256: string;
     bytes: number;
@@ -72,7 +72,7 @@ export function signedBy(text: string, signature: string, keys: readonly string[
 const HEX64 = /^[0-9a-f]{64}$/;
 
 /** The description, if it's a whole one for this build and this kind of server. */
-function readManifest(text: string, id: string, target: LinuxTarget): BuildManifest | undefined {
+function readManifest(text: string, id: string, target: ServerTarget): BuildManifest | undefined {
     try {
         const m = JSON.parse(text) as Partial<BuildManifest>;
         if (m.id !== id || m.target !== target || typeof m.bundleSha256 !== "string" || !HEX64.test(m.bundleSha256) || typeof m.sha256 !== "string" || !HEX64.test(m.sha256)) return undefined;
@@ -155,7 +155,7 @@ export function publishedSource(p: PublishedOptions = {}): BuildSource {
     const id = p.id ?? thisBuild();
     const keys = p.keys ?? RELEASE_KEYS;
     const base = `${(p.url ?? RELEASES_URL).replace(/\/+$/, "")}/v${p.version ?? APP_VERSION}`;
-    const build = async (target: LinuxTarget, o: { onStep?: (text: string) => void; signal?: AbortSignal } = {}): Promise<ServerBuild> => {
+    const build = async (target: ServerTarget, o: { onStep?: (text: string) => void; signal?: AbortSignal } = {}): Promise<ServerBuild> => {
         if (id === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't set a server up: it doesn't know which build it is. Install Cavvy again, or run it from a checkout.");
         const dir = join(cacheDir(), id, target);
         const meta = join(dir, "bundle.json");

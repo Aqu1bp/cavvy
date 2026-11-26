@@ -1,13 +1,15 @@
 // Local transcript history and the existing per-account plan limit reports.
 import { machine as windowMachine } from "../lib/platform";
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { Hourglass, Info, KeyRound, RotateCcw } from "lucide-solid";
 import { planLimitKey, type UsageBucket, type UsageDays, type UsageSource, type UsageSummary, type UsageTotals } from "@shared/protocol";
-import { app, noModel, refreshLimits, rpc } from "../state/app";
+import { app, checkLimits, noModel, refreshLimits, rpc } from "../state/app";
 import { setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
 import { plural, tokens } from "../lib/format";
-import { costText, emptyText, liftsAt, meterOf, rangeLabel, usd, windowCaption } from "../lib/limits";
+import { meterOf, planTitle, windowTone } from "../lib/limits";
+import { costText, emptyText, liftsAt, rangeLabel, usd, windowCaption } from "../lib/usage-limits";
+import { scopedSummary } from "../lib/rail-plans";
 import { axisTicks, byAccount, niceTop, pct, periodLabel, periodName, processed, share, sourceOf, SOURCES, type AccountTotal } from "../lib/usage";
 import { Segmented, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -15,19 +17,21 @@ const RANGES = [1, 7, 30, 90].map(v => ({ value: String(v), label: v === 1 ? "24
 const VIEWS = [{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }, { value: "limits", label: "Limits" }];
 const [days, setDays] = createSignal<UsageDays>(7);
 
+/** How full a window's bar is: all of it at its limit, else its share. */
+const barShare = (w: { pct?: number; reached: boolean }) => (w.reached ? 100 : Math.max(0, Math.min(100, w.pct ?? 0)));
+
 /** Each plan as a heading (its mark, plan and account), then a bar per limit window. */
 function PlanLimitsGroup() {
     const plans = () => Object.values(app.limits).map((l) => ({ l, m: meterOf(l, now()) })).filter((x) => x.m);
     const name = (id: string) => app.providers.find((p) => p.id === id);
     return (
-        <Show when={plans().length} fallback={<p class="set-note">Plan limits show here after a Claude Code or Codex turn.</p>}>
+        <Show when={plans().length} fallback={<p class="set-note">Plan limits show here after a turn on a plan.</p>}>
             <For each={plans()}>
                 {({ l, m }) => (
                     <>
                         <h3 class="set-h usage-plan-name">
                             <ProviderIcon id={l.provider} name={name(l.provider)?.name} size={13} />
-                            {name(l.provider)?.agentCli?.plan ?? name(l.provider)?.name ?? l.provider}
-                            {" · "}{name(l.provider)?.agentCli?.accounts?.find((a) => a.id === (l.accountId ?? "default"))?.name ?? l.accountId ?? "Default"}
+                            {planTitle(name(l.provider), l.accountId, l.provider).title}
                             <Show when={m!.asOf}>
                                 <span class="plan-asof"> · {m!.asOf}</span>
                             </Show>
@@ -40,16 +44,25 @@ function PlanLimitsGroup() {
                                     <Show when={liftsAt(m!)}>{(at) => <span class="plan-reached-when">· resets {at()}</span>}</Show>
                                 </div>
                             </Show>
+                            {/* Some models' limit reached (Fable's): amber, as the plan's other models go on, beside a stop of the plan's own. */}
+                            <Show when={m!.partly.length}>
+                                <div class="plan-reached credits">
+                                    <Hourglass size={14} aria-hidden="true" />
+                                    <span>{scopedSummary(m!.partly, () => undefined)}</span>
+                                </div>
+                            </Show>
                             <For each={m!.windows}>
                                 {(w) => (
-                                    <div class={`useb ${w.reached ? "reached" : ""}`}>
+                                    <div class={`useb ${windowTone(w)}`}>
                                         <div class="useb-top">
                                             <b>{w.label}</b>
                                             <span class="useb-sub num">{windowCaption(w)}</span>
                                         </div>
-                                        <Show when={w.pct !== undefined}>
-                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.max(0, Math.min(100, w.pct!))}>
-                                                <i style={{ width: `${Math.max(0, Math.min(100, w.pct!))}%` }} />
+                                        {/* One that has reset since the report: an empty bar, as usage started again then. */}
+                                        <Show when={w.pct !== undefined || w.reset || w.reached}>
+                                            {/* At its limit, full (as the rail's card draws it), whatever share the CLI last gave: the caption has that. */}
+                                            <div class="useb-bar" role="meter" aria-label={`${w.label} limit used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={w.reset ? undefined : barShare(w)} aria-valuetext={w.reset ? `Reset ${w.reset}` : undefined}>
+                                                <i style={{ width: `${w.reset ? 0 : barShare(w)}%` }} />
                                             </div>
                                         </Show>
                                     </div>
@@ -71,7 +84,6 @@ const amount = (r: Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheRead
 const costFigure = (r: { cost: number; unknown: boolean; estimated?: boolean }) => (r.unknown && !r.cost ? "—" : `${r.estimated ? "~" : ""}${usd(r.cost)}${r.unknown ? "+" : ""}`);
 const figure = (r: Parameters<typeof amount>[0] & { unknown: boolean }, m: Metric) => (m === "tokens" ? tokens(processed(r)) : costFigure(r));
 /** The CLIs report plans in lower case ("max"). */
-const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
 
 /**
  * Kept separate from loading so the actual dashboard can also be rendered in tests. One total, split the same
@@ -152,8 +164,9 @@ function UsageAccounts(p: { accounts: AccountTotal[]; /** Names the summary give
         if (a.source === "api") return "API key";
         // In a window on a server the accounts counted are this computer's: the window's own (the server's) plan and limit aren't theirs.
         if (windowMachine) return "";
-        const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => /week/i.test(w.label));
-        return [planLabel(account(a)?.plan) ?? info(a)?.agentCli?.plan, weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
+        // The plan's own weekly window, not a model's (Weekly Fable).
+        const weekly = meterOf(app.limits[planLimitKey(a.provider, a.accountId)], now())?.windows.find((w) => !w.scope && /week/i.test(w.label));
+        return [planTitle(info(a), a.accountId).plan, weekly?.reset ? `weekly limit reset ${weekly.reset}` : weekly?.pct !== undefined ? `weekly limit ${weekly.pct}% used` : undefined].filter(Boolean).join(", ");
     };
     const groups = () => SOURCES.map((s) => ({ s, list: p.accounts.filter((a) => a.source === s).sort((x, y) => amount(y, p.metric) - amount(x, p.metric)) })).filter((g) => g.list.length);
     return <>
@@ -264,7 +277,8 @@ export function UsageView() {
         const mine = ++seq;
         setLoading(true); setError("");
         try {
-            if (view() === "limits") await refreshLimits();
+            // Where the plans stand now: the CLIs are asked (the server skips what was just reported), then shown.
+            if (view() === "limits") await checkLimits().then(refreshLimits);
             else {
                 const asked = days();
                 const r = await rpc.call("usage.summary", { days: asked, first: true });
@@ -280,6 +294,8 @@ export function UsageView() {
         finally { if (mine === seq) setLoading(false); }
     };
     createEffect(on([days, view], () => void load()));
+    // Opened: the plans' limits (Limits, and By account's weekly figure) are asked for once, whichever view shows first.
+    onMount(() => void checkLimits());
     // Another range keeps the last one on screen, dimmed, until its own arrives: no flash, no jump.
     const stale = () => loading() && data()?.days !== days();
     return <div class="usage-view" aria-busy={loading()}>

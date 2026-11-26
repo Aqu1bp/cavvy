@@ -4,13 +4,12 @@ import { accountEnv } from "../providers/accounts";
 import { loadAgentSecrets } from "../providers/agent-env";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
-import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
+import { ClaudeCodeBackend, claudeStatus, claudeUsage, describeClaudeAuth } from "./claude-code";
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
 import { findCli } from "./cli";
 import { agentCli, baseCli } from "./defs";
 import { AcpBackend, acpStatus } from "./acp/backend";
-import { AgyBackend, agyStatus } from "./agy/backend";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
     switch (agentCli(def.id)?.protocol) {
@@ -20,8 +19,6 @@ export function createBackend(def: ProviderDef): AgentBackendClient {
             return new CodexBackend(def);
         case "acp":
             return new AcpBackend(def);
-        case "agy-stream-json":
-            return new AgyBackend(def);
         default:
             throw new Error(`No agent backend for ${def.id}`);
     }
@@ -59,10 +56,31 @@ export async function checkAgentCli(providerId: string, signal?: AbortSignal, ac
 
 /**
  * As checkAgentCli, and for Codex on a ChatGPT plan, where its limits stand
- * (from the same app-server). Claude Code reports its limits only in a turn.
+ * (from the same app-server). Claude Code's take a check of their own (checkPlanLimits).
  */
 export async function checkAgentPlan(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
     return checkCli(providerId, signal, accountId, true);
+}
+
+/**
+ * Where an account's plan limits stand now, without a turn, from the CLI itself: Codex's account/rateLimits/read
+ * (all of the account's limits: `full`), Claude Code's `/usage` (`statusUnsaid`). Undefined when the CLI has no such check, or
+ * its answer couldn't be read.
+ */
+export async function checkPlanLimits(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ limits: PlanLimits; full: boolean; statusUnsaid?: boolean } | undefined> {
+    switch (agentCli(providerId)?.protocol) {
+        case "codex-app-server": {
+            const limits = (await codexPlan(providerId, signal, accountId)).limits;
+            return limits && { limits, full: true };
+        }
+        case "claude-stream-json": {
+            // Its text doesn't say whether a window is at its limit.
+            const limits = await claudeUsage(providerId, signal, accountId);
+            return limits && { limits, full: false, statusUnsaid: true };
+        }
+        default:
+            return undefined;
+    }
 }
 
 async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
@@ -71,7 +89,6 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
     await loadAgentSecrets(providerId);
     // An ACP agent has its default sign-in only, and no plan limits to report.
     if (def.protocol === "acp") return { status: await acpStatus(providerId, signal) };
-    if (def.protocol === "agy-stream-json") return { status: await agyStatus(providerId, signal) };
     accountEnv(providerId, accountId);
     const cli = def.cli;
     const base = { signIn: cli.signIn, signOut: cli.signOut, installHint: cli.install };

@@ -6,7 +6,9 @@
 // - for what's only decoration (the label's light, --decor), Cavvy has the focus;
 // - reduced motion is off (the stylesheets).
 // Every endless animation's play state is var(--loops) or var(--decor) (test/perf-rules.test.ts): paused here by
-// attributes, and started again from its start when it can be seen again, never mid-motion.
+// attributes, and started again from its start when it can be seen again, never mid-motion. A theme's scene
+// (data-loop-keeps) is the exception: its layers drift in and out of the window as they move, so they aren't watched
+// for it, and it puts them back on the grid itself, from where they stopped.
 
 import { electron } from "./platform";
 import { STEP_MS } from "./stream-clock";
@@ -16,12 +18,15 @@ let focused = true;
 
 const endless = (a: Animation): boolean => a.effect?.getComputedTiming().iterations === Infinity;
 
+/** A theme's scene: carries on from where it stopped (ThemeBackdrop.tsx), and moves in and out of view as it does. */
+const KEEPS = "[data-loop-keeps]";
+
 /** From their start, on the stream clock's grid: a light coming back crosses from the label's left edge. */
 function restart(anims: Animation[]) {
     const now = document.timeline.currentTime;
     if (typeof now !== "number") return;
     const at = Math.ceil(now / STEP_MS) * STEP_MS;
-    for (const a of anims) if (endless(a) && a.playState === "running") a.startTime = at;
+    for (const a of anims) if (endless(a) && a.playState === "running" && !(a.effect as KeyframeEffect | null)?.target?.closest(KEEPS)) a.startTime = at;
 }
 
 /** Told whether the window can be seen and has the focus, each time either may have changed (the clock, lib/clock.ts). */
@@ -75,7 +80,7 @@ export function gateLoops() {
         "animationstart",
         (e) => {
             const el = e.target as Element;
-            if (!sight || watched.has(el) || !el.getAnimations(e.pseudoElement ? { subtree: true } : undefined).some((a) => (a as CSSAnimation).animationName === e.animationName && endless(a))) return;
+            if (!sight || watched.has(el) || el.closest(KEEPS) || !el.getAnimations(e.pseudoElement ? { subtree: true } : undefined).some((a) => (a as CSSAnimation).animationName === e.animationName && endless(a))) return;
             for (const w of watched) {
                 if (w.isConnected) continue;
                 sight.unobserve(w);

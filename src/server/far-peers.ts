@@ -9,7 +9,8 @@
 import { homedir } from "os";
 import { findMatch, parseRule } from "../permissions/rules";
 import { MCP_SERVER_NAME } from "../config/name";
-import { checkMessage, PeerError, type Delivery, type FarPeers, type PeerSummary } from "../agent/peers";
+import { checkMessage, PeerError, PeerUnsure, type Delivery, type FarPeers, type FarStart, type PeerSummary, type StartChoice } from "../agent/peers";
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 
 /** What the user's own computer is called on its servers. */
@@ -18,12 +19,14 @@ export const HOME_NAME = process.platform === "darwin" ? "mac" : "desktop";
 type Read = { text: string; title: string; turns: number } | undefined;
 type Sent = { text: string; delivery: Delivery; title: string };
 type From = { id: string; title: string; mode: PermissionMode };
+type Started = PeerSummary & { effort?: Effort };
 
 /** One machine's own sessions, by their ids there (session-peers.ts peerOps). */
 export interface PeerOps {
     list(o: { query?: string; limit: number }): PeerSummary[];
     read(id: string, turns?: number): Read;
     send(id: string, text: string, from: From): Promise<Sent>;
+    start(o: { cwd: string; prompt: string; title: string } & StartChoice, from: From): Promise<Started>;
 }
 
 /** A connection to a server's Cavvy, asked as this computer (watch.ts ask). */
@@ -68,6 +71,50 @@ function readOf(id: string, v: unknown): Read {
     return read && { ...read, text: read.text.replace(/^Session \S+ /, () => `Session ${id} `) };
 }
 /** A server's refusal (PeerError there) is the model's to read, as one here would be. */
+/** The session a machine says it started, named as this machine names it (`<machine>/<id>`); a PeerError when what it answered isn't one. */
+function startedOn(on: string, v: unknown): Started {
+    const row = rowFrom(v, on);
+    // The session and where it is: one without a folder isn't one it started.
+    if (!row?.cwd.trim()) throw new PeerUnsure(`${on} didn't say which session it started. It may have started one all the same: ${LOOK_FIRST}`);
+    const effort = EFFORT_LEVELS.find((e) => e === (v as { effort?: unknown }).effort);
+    return { ...row, ...(effort ? { effort } : {}) };
+}
+
+/** What a start asks of the machine it's for, of the kinds it takes. */
+function startOf(params: Record<string, unknown>): { cwd: string; prompt: string; title: string } & StartChoice {
+    const cwd = str(params.cwd, 1000).trim();
+    if (!cwd) throw new PeerError("Say which folder on that machine the session starts in (folder).");
+    const prompt = checkMessage(params.prompt, "prompt");
+    const model = str(params.model, 200).trim();
+    const effort = str(params.effort, 40).trim();
+    return { cwd, prompt, title: str(params.title, 80).replace(/\s+/g, " ").trim() || prompt.replace(/\s+/g, " ").slice(0, 80), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
+/** The session a request says it's from, with the mode it runs in. */
+function fromOf(params: Record<string, unknown>): { id: string; title: string; mode: PermissionMode } {
+    const f = (params.from && typeof params.from === "object" ? params.from : {}) as Record<string, unknown>;
+    if (typeof f.id !== "string" || !/^[\w.-]{1,120}$/.test(f.id)) throw new PeerError("That message names no session it's from.");
+    const mode = (["plan", "default", "acceptEdits", "auto", "bypassPermissions"] as const).find((m) => m === f.mode);
+    if (!mode) throw new PeerError("That message doesn't say what mode its session runs in.");
+    return { id: f.id, title: str(f.title, 300), mode };
+}
+
+/**
+ * As `refused`, for a start: a machine that didn't answer (in time, or went away) may have started the session all
+ * the same, which is said, and told apart from a refusal (the starter's count keeps it).
+ */
+const startRefused = (e: unknown): never => {
+    const said = e instanceof Error ? e.message : String(e);
+    // Said so already, by a machine this one asked through.
+    if (said.includes(LOOK_FIRST)) throw new PeerUnsure(said);
+    if (NO_ANSWER.test(said)) throw new PeerUnsure(`${said} The session may have started all the same: ${LOOK_FIRST}`);
+    throw new PeerError(said);
+};
+/** What an unanswered start ends with, wherever it's said: how it's known for one across the machines it's told through. */
+const LOOK_FIRST = "look with ListSessions (all: true) before starting it again.";
+/** A call that got no answer, as the connections say it (watch.ts request; engine.ts peers.call, dropHub): the whole of what they say. */
+const NO_ANSWER = /^(?:[\w.-]+ didn't answer\.|[\w.-]+ went away before it answered\.|Cavvy on your computer didn't answer in time\.|Cavvy on your computer went away before it answered\.)$/;
+
 const refused = (e: unknown): never => {
     throw new PeerError(e instanceof Error ? e.message : String(e));
 };
@@ -109,18 +156,27 @@ export function homeFarPeers(servers: () => Map<string, ServerAsk>): FarPeers {
             // Named as the server names this computer's sessions.
             return sentTo(id, await s.link.ask("peers.send", { id: s.id, message, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(refusedOf(id)));
         },
+        start: async ({ machine, ...o }, from) => {
+            const link = servers().get(machine);
+            if (!link) throw new PeerError(noMachine(machine, [...servers().keys()]));
+            return startedOn(machine, await link.ask("peers.start", { ...o, from: { ...from, id: `${HOME_NAME}/${from.id}` } }).catch(startRefused));
+        },
     };
 }
+
+/** No machine by that name to start a session on: with the ones there are. */
+const noMachine = (machine: string, known: string[]) =>
+    `No machine "${machine.slice(0, 60)}" to start a session on${known.length ? `. The user's other machines connected now: ${known.join(", ")}` : ": none of the user's other machines is connected right now"}. Leave machine out to start one on this machine.`;
 
 /**
  * On the user's own computer: what a server asks it for a session of that server's (`asker`), over its connection
  * there: this computer's sessions (`mac/<id>`) and the other servers' (`<name>/<id>`).
  */
-export async function answerPeers(asker: string, op: string, params: Record<string, unknown>, here: PeerOps, servers: Map<string, ServerAsk>, denied: (tool: "ListSessions" | "ReadSession" | "SendToSession") => string | undefined = () => undefined): Promise<unknown> {
+export async function answerPeers(asker: string, op: string, params: Record<string, unknown>, here: PeerOps, servers: Map<string, ServerAsk>, denied: (tool: "ListSessions" | "ReadSession" | "SendToSession" | "StartSession") => string | undefined = () => undefined): Promise<unknown> {
     // Its sessions would be named as this computer's are, there and everywhere else.
     if (asker === HOME_NAME) throw new PeerError(`A server named ${HOME_NAME} can't reach sessions on other machines: rename it in Cavvy on your computer to reach them.`);
     /** This computer's own rules, for one of its own sessions. */
-    const allowed = (tool: "ListSessions" | "ReadSession" | "SendToSession") => {
+    const allowed = (tool: "ListSessions" | "ReadSession" | "SendToSession" | "StartSession") => {
         const why = denied(tool);
         if (why) throw new PeerError(why);
     };
@@ -137,6 +193,24 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         const theirs = await far.list({ query, limit }).catch(() => []);
         return newest([...mine, ...theirs], limit);
     }
+    if (op === "start") {
+        const machine = str(params.machine, 60).trim();
+        const o = startOf(params);
+        const f = fromOf(params);
+        // Its own machine, named as another would name it.
+        if (machine === asker) throw new PeerError(`${machine} is this machine: leave machine out to start a session here.`);
+        allowed("StartSession");
+        // Named as the receiving machine names the asker's sessions: through this computer, by the asker's name.
+        const from: From = { id: `${asker}/${f.id}`, title: f.title, mode: f.mode };
+        // On this computer: in the folder's default mode here, whatever the starter runs in (peerOps).
+        if (machine === HOME_NAME) {
+            const s = await here.start(o, from);
+            return { ...s, id: `${HOME_NAME}/${s.id}`, machine: HOME_NAME };
+        }
+        const link = others.get(machine);
+        if (!link) throw new PeerError(noMachine(machine, [HOME_NAME, ...others.keys()]));
+        return startedOn(machine, await link.ask("peers.start", { ...o, from }).catch(startRefused));
+    }
     const id = str(params.id, 300);
     const s = split(id);
     if (!s) throw new PeerError(`No session ${id}. ListSessions (all: true) shows the ones there are.`);
@@ -149,15 +223,14 @@ export async function answerPeers(asker: string, op: string, params: Record<stri
         return here.read(s.id, turns);
     }
     if (op === "send") {
-        const f = (params.from && typeof params.from === "object" ? params.from : {}) as Record<string, unknown>;
-        if (typeof f.id !== "string" || !/^[\w.-]{1,120}$/.test(f.id)) throw new PeerError("That message names no session it's from.");
-        const mode = (["plan", "default", "acceptEdits", "auto", "bypassPermissions"] as const).find((m) => m === f.mode);
-        if (!mode) throw new PeerError("That message doesn't say what mode its session runs in.");
+        const f = fromOf(params);
+        const mode = f.mode;
         // Named as the receiving machine names the asker's sessions: through this computer, by the asker's name.
-        const from: From = { id: `${asker}/${f.id}`, title: str(f.title, 300), mode };
+        const from: From = { id: `${asker}/${f.id}`, title: f.title, mode };
         const message = checkMessage(params.message);
         // Into one of this computer's: a server's session counts as Auto at most, so one here in Bypass takes no work
-        // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't).
+        // from a server (the user's computer is reached only through what it offers; a server can be rebuilt, it can't),
+        // but for the session that started it, while it asks no less than one started now would (peerOps).
         allowed("SendToSession");
         if (s.on === HOME_NAME) {
             return here.send(s.id, message, { ...from, mode: mode === "bypassPermissions" ? "auto" : mode });
@@ -190,6 +263,13 @@ export function serverFarPeers(call: (op: string, params: Record<string, unknown
         },
         read: async (id, turns) => readOf(id, await call("read", { id, turns }).catch(refused)),
         send: async (id, message, from) => sentTo(id, await call("send", { id, message, from }).catch(refusedOf(id))),
+        start: async (o, from) => {
+            const v = await call("start", { ...o, from }).catch(startRefused);
+            // Already named as this machine names it (`mac/<id>`, `box/<id>`).
+            const s = v && typeof v === "object" ? split(String((v as { id?: unknown }).id ?? "")) : undefined;
+            if (!s || !/^[\w.-]{1,40}$/.test(s.on)) throw new PeerUnsure(`The user's computer didn't say which session was started. One may have been all the same: ${LOOK_FIRST}`);
+            return startedOn(s.on, { ...(v as object), id: s.id });
+        },
     };
 }
 

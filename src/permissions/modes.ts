@@ -46,7 +46,7 @@ export const MODE_INFO: Record<PermissionMode, { label: string; short: string; d
     bypassPermissions: {
         label: "Bypass permissions",
         short: "bypass permissions",
-        description: "Run everything without asking (deny rules and catastrophic-command guards still apply). Use only in sandboxes.",
+        description: "Run everything without asking (deny rules still apply). Use only in sandboxes.",
         color: theme.bypass,
         symbol: "⏵⏵",
     },

@@ -171,7 +171,8 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
                 for (const cli of c.clis) if (!cli.installed && ["claude-code", "codex"].includes(cli.id)) lacks.push(`${cli.product} (${cli.install})`);
                 if (!c.git) lacks.push("git");
                 if (!c.gh.installed) lacks.push("the GitHub CLI (gh), for pull requests");
-                if (c.lingerFix) lacks.push(`Cavvy there won't come back after a reboot until an administrator runs \`${c.lingerFix}\``);
+                if (c.bootFix) lacks.push(`Cavvy there won't come back after a reboot until an administrator runs \`${c.bootFix}\``);
+                else if (c.bootHere) lacks.push(`Cavvy there won't come back after a reboot until the user runs \`cavvy servers boot ${spec.name}\` in a terminal on their own computer`);
             } catch {
                 // It's added; what it lacks is found out when it's next looked at.
             }

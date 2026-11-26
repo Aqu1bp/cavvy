@@ -12,10 +12,12 @@ const root = tempDir("account-limits-");
 const { BUILTIN_PROVIDERS, saveAgentConfig } = await import("../src/providers/registry");
 const { createBackend } = await import("../src/backends/index");
 const { mergeLimits, parseClaudeRateLimit, parseCodexRateLimits } = await import("../src/backends/limits");
-const { Engine } = await import("../src/server/engine");
+const { Engine, limitTiming } = await import("../src/server/engine");
+const { stopTiming } = await import("../src/backends/cli");
+const { USAGE_NO_MODEL } = await import("../src/backends/claude-code");
 const { planLimitKey } = await import("../src/server/protocol");
 const { meterOf, limitAlternatives } = await import("../gui/src/lib/limits");
-const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG"];
+const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG", "FAKE_USAGE_TEXT", "FAKE_USAGE_MODEL", "FAKE_USAGE_ERROR", "FAKE_USAGE_SHAPE", "FAKE_USAGE_DELAY_MS", "FAKE_CLAUDE_CLI_VERSION", "FAKE_VERSION_DELAY_MS", "FAKE_USAGE_IGNORE_TERM", "FAKE_USAGE_PARTIAL", "FAKE_AUTH_HANG"];
 const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 for (const provider of ["claude-code", "codex"]) {
     const binary = join(root, provider);
@@ -90,7 +92,7 @@ test("sparse merges never copy another account or provider's windows", () => {
     expect(mergeLimits(personal, work, true)).toEqual(work);
     const claude = { ...work, provider: "claude-code", accountId: "personal" };
     expect(mergeLimits(personal, claude, true)).toEqual(claude);
-    expect(mergeLimits(personal, { ...personal, windows: [], at: 2 }, true).windows).toEqual(personal.windows);
+    expect(mergeLimits(personal, { ...personal, windows: [], at: 2 }, true).windows).toEqual(personal.windows.map((w) => ({ ...w, at: 1 })));
 });
 
 test("RPC state rejects older snapshots independently for each account", async () => {
@@ -101,8 +103,8 @@ test("RPC state rejects older snapshots independently for each account", async (
     engine.limitsReported(report("codex", "personal", 5, 10), false);
     const all = await engine.handle(client, "limits.get", {});
     const keyed = Object.fromEntries(all.map((l) => [planLimitKey(l.provider, l.accountId), l]));
-    expect(meterOf(keyed[planLimitKey("codex", "personal")], 30)?.top).toBe(80);
-    expect(meterOf(keyed[planLimitKey("codex", "work")], 30)?.top).toBe(10);
+    expect(meterOf(keyed[planLimitKey("codex", "personal")], 30)?.top?.pct).toBe(80);
+    expect(meterOf(keyed[planLimitKey("codex", "work")], 30)?.top?.pct).toBe(10);
     expect(planLimitKey("codex", "personal")).not.toBe(planLimitKey("claude-code", "personal"));
     await engine.stop();
 });
@@ -186,4 +188,299 @@ test("a newer Codex read on another account does not suppress a delayed account 
     expect(reports).toHaveLength(1);
     expect(reports[0]!.limits).toMatchObject({ provider: "codex", accountId: "personal" });
     expect(work.find((e) => e.type === "limits")!.limits).toMatchObject({ provider: "codex", accountId: "work", reached: true });
+});
+
+describe("limits.refresh: where a plan stands, asked of the CLI without a turn", () => {
+    const usageLog = join(root, "usage.log");
+    const lines = () => (existsSync(usageLog) ? readFileSync(usageLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    /** The fake Claude Code's /usage runs so far: what each was started with. */
+    const usageRuns = () => lines().filter((l) => l.argv?.[0] === "-p" && l.argv[1] === "/usage");
+    const setup = () => {
+        rmSync(usageLog, { force: true });
+        // What earlier tests reported is fresh: each test starts from nothing.
+        rmSync(join(iso.home, "limits.json"), { force: true });
+        process.env.FAKE_LOG = usageLog;
+        const engine = new Engine();
+        const events: ServerEvent[] = [];
+        const client = { send: (e: ServerEvent) => events.push(e), subs: new Set<string>() };
+        engine.clients.add(client);
+        return { engine, events, client };
+    };
+    const reset = new Date(Date.now() + 2 * 86_400_000);
+    const when = `${reset.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, 8pm (UTC)`;
+    const weekly = (pct: number) => `You are currently using your subscription to power your Claude Code usage\n\nCurrent week (all models): ${pct}% used · resets ${when}\nCurrent week (Fable): 4% used · resets ${when}\n\nWhat's contributing to your usage?\n  95%  a tip`;
+    const work = [{ provider: "claude-code", accountId: "work" }];
+
+    test("Claude Code's /usage: one check at a time per account, not again while it's fresh; no model, MCP servers or hooks; UTC", async () => {
+        const { engine, events, client } = setup();
+        process.env.FAKE_USAGE_TEXT = weekly(15);
+        process.env.FAKE_USAGE_DELAY_MS = "200";
+        await Promise.all([engine.handle(client, "limits.refresh", { plans: work }), engine.handle(client, "limits.refresh", { plans: work })]);
+        // The second ask, during the first check, shares it.
+        expect(usageRuns()).toHaveLength(1);
+        const argv: string[] = usageRuns()[0].argv;
+        expect(argv).toEqual(expect.arrayContaining(["--output-format", "json", "--no-session-persistence", "--strict-mcp-config"]));
+        // A model that doesn't exist: a CLI that sent /usage to one would fail before any request.
+        expect(argv[argv.indexOf("--model") + 1]).toBe(USAGE_NO_MODEL);
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!)).toEqual({ disableAllHooks: true });
+        expect(lines().filter((l) => l.usage).map((l) => l.usage.tz)).toEqual(["UTC"]);
+        expect(usageRuns()[0].claudeConfigDir).toContain("work");
+        const all = await engine.handle(client, "limits.get", {});
+        const got = all.find((l) => l.provider === "claude-code" && l.accountId === "work")!;
+        expect(got.windows.map((w) => [w.label, w.usedPercent])).toEqual([["Weekly", 15], ["Weekly Fable", 4]]);
+        expect(new Date(got.windows[0]!.resetsAt!).getUTCHours()).toBe(20);
+        expect(events.some((e) => e.type === "limits" && e.limits.accountId === "work")).toBe(true);
+        // Fresh: not asked again.
+        await engine.handle(client, "limits.refresh", { plans: work });
+        expect(usageRuns()).toHaveLength(1);
+        await engine.stop();
+    });
+
+    test("a window that has reset since the last report is asked about at once", async () => {
+        const { engine, client } = setup();
+        process.env.FAKE_USAGE_TEXT = `Current week (all models): 1% used · resets ${when}`;
+        const at = Date.now();
+        engine.limitsReported({ provider: "claude-code", accountId: "work", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: at + 50 }, { id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: reset.getTime() }], at }, false);
+        // Just reported: not asked.
+        await engine.handle(client, "limits.refresh", { plans: work });
+        expect(usageRuns()).toHaveLength(0);
+        await Bun.sleep(100);
+        await engine.handle(client, "limits.refresh", { plans: work });
+        expect(usageRuns()).toHaveLength(1);
+        const got = (await engine.handle(client, "limits.get", {})).find((l) => l.provider === "claude-code" && l.accountId === "work")!;
+        // The weekly figure is new; the 5-hour window /usage didn't list has reset, so it's gone.
+        expect(got.windows.map((w) => [w.id, w.usedPercent])).toEqual([["seven_day", 1]]);
+        await engine.stop();
+    });
+
+    test("an account removed during its check doesn't come back with the check's answer", async () => {
+        const { engine, client } = setup();
+        const folder = join(root, "leaving");
+        mkdirSync(folder, { recursive: true });
+        const { addAccount } = await import("../src/providers/accounts");
+        const added = addAccount("claude-code", { id: "leaving", name: "Leaving", folder });
+        process.env.FAKE_USAGE_TEXT = weekly(20);
+        process.env.FAKE_USAGE_DELAY_MS = "400";
+        const check = engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "leaving" }] });
+        const deadline = Date.now() + 5000;
+        while (!usageRuns().length && Date.now() < deadline) await Bun.sleep(20);
+        await engine.handle(client, "accounts.remove", { provider: "claude-code", id: "leaving", confirmedFolder: added.folder });
+        await check;
+        await Bun.sleep(100);
+        expect((await engine.handle(client, "limits.get", {})).some((l) => l.accountId === "leaving")).toBe(false);
+        await engine.stop();
+    });
+
+    test("every account of the CLIs turned on, two checks at a time", async () => {
+        const { engine, client } = setup();
+        process.env.FAKE_USAGE_TEXT = weekly(30);
+        process.env.FAKE_USAGE_DELAY_MS = "300";
+        await engine.handle(client, "limits.refresh", {});
+        const runs = lines().filter((l) => l.usage || l.usageEnd);
+        expect(usageRuns().map((r) => r.claudeConfigDir ?? "default").length).toBe(3);
+        // At most two at once: each start is after all but one of the earlier ones ended.
+        let open = 0, most = 0;
+        for (const l of runs) {
+            open += l.usage ? 1 : -1;
+            most = Math.max(most, open);
+        }
+        expect(most).toBeLessThanOrEqual(2);
+        expect((await engine.handle(client, "limits.get", {})).filter((l) => l.provider === "claude-code").map((l) => l.accountId).sort()).toEqual(["default", "personal", "work"]);
+        await engine.stop();
+    });
+
+    const waitFor = async (ok: () => boolean, ms = 5000) => {
+        const deadline = Date.now() + ms;
+        while (!ok() && Date.now() < deadline) await Bun.sleep(20);
+    };
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    test("an account removed while its check is starting: /usage is never started for it", async () => {
+        const { engine, client } = setup();
+        const folder = join(root, "going");
+        mkdirSync(folder, { recursive: true });
+        const { addAccount } = await import("../src/providers/accounts");
+        const added = addAccount("claude-code", { id: "going", name: "Going", folder });
+        process.env.FAKE_USAGE_TEXT = weekly(20);
+        process.env.FAKE_VERSION_DELAY_MS = "400";
+        const check = engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "going" }] });
+        await waitFor(() => lines().some((l) => l.version));
+        await engine.handle(client, "accounts.remove", { provider: "claude-code", id: "going", confirmedFolder: added.folder });
+        await check;
+        await Bun.sleep(300);
+        expect(usageRuns()).toHaveLength(0);
+        await engine.stop();
+    });
+
+    test("stopping the server stops its checks: one that ignores SIGTERM is killed, one waiting doesn't start", async () => {
+        const saved = { ...stopTiming };
+        Object.assign(stopTiming, { killMs: 300 });
+        try {
+            const { engine, client } = setup();
+            process.env.FAKE_USAGE_TEXT = weekly(20);
+            process.env.FAKE_USAGE_DELAY_MS = "20000";
+            process.env.FAKE_USAGE_IGNORE_TERM = "1";
+            void engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            expect(usageRuns()).toHaveLength(2);
+            const pids = lines().filter((l) => l.usage).map((l) => l.usage.pid as number);
+            const t = Date.now();
+            await engine.stop();
+            expect(Date.now() - t).toBeLessThan(4000);
+            expect(pids.filter(alive)).toEqual([]);
+            await Bun.sleep(300);
+            // The third account's check was waiting for a place: it never started.
+            expect(usageRuns()).toHaveLength(2);
+        } finally {
+            Object.assign(stopTiming, saved);
+        }
+    });
+
+    test("a check that waited long for its place counts from when it asked, and asking while it waits adds nothing", async () => {
+        const saved = limitTiming.freshMs;
+        limitTiming.freshMs = 600;
+        try {
+            const { engine, client } = setup();
+            process.env.FAKE_USAGE_TEXT = "Nothing to read";
+            process.env.FAKE_USAGE_DELAY_MS = "400";
+            // Default and Personal take the places; Work waits for one (400 ms) and then asks (400 ms more).
+            const all = engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            // Asked while it waits: the check it's waiting to make answers that too.
+            await Promise.all([all, engine.handle(client, "limits.refresh", { plans: work })]);
+            expect(usageRuns()).toHaveLength(3);
+            expect(usageRuns()[2].claudeConfigDir).toContain("work");
+            // Asked again as soon as it's done: it asked 400 ms ago, within the throttle, though it was queued 800 ms ago.
+            await engine.handle(client, "limits.refresh", { plans: work });
+            await Bun.sleep(200);
+            expect(usageRuns()).toHaveLength(3);
+            await engine.stop();
+        } finally {
+            limitTiming.freshMs = saved;
+        }
+    });
+
+    test("a CLI turned off while its checks wait or run: none starts, nor is any answer kept", async () => {
+        // Turned off as Settings does it once its named accounts are gone: no agents entry (written directly, as
+        // removeAgentConfig keeps a CLI with named accounts on).
+        const { paths } = await import("../src/config/paths");
+        const saved = readFileSync(paths.providers(), "utf8");
+        const { engine, client } = setup();
+        process.env.FAKE_USAGE_TEXT = weekly(30);
+        process.env.FAKE_USAGE_DELAY_MS = "400";
+        try {
+            const all = engine.handle(client, "limits.refresh", {});
+            await waitFor(() => usageRuns().length === 2);
+            const pf = JSON.parse(saved);
+            delete pf.agents["claude-code"];
+            writeFileSync(paths.providers(), JSON.stringify(pf));
+            await all;
+            await Bun.sleep(200);
+            // The third was waiting for a place: it didn't start; the two running were answered for nothing.
+            expect(usageRuns()).toHaveLength(2);
+            expect((await engine.handle(client, "limits.get", {})).filter((l) => l.provider === "claude-code")).toEqual([]);
+        } finally {
+            writeFileSync(paths.providers(), saved);
+            await engine.stop();
+        }
+    });
+
+    test("stopping the server waits for a check stopped by its account's removal, as long as it takes to kill it", async () => {
+        const saved = { ...stopTiming };
+        Object.assign(stopTiming, { killMs: 300 });
+        try {
+            const { engine, client } = setup();
+            const folder = join(root, "parting");
+            mkdirSync(folder, { recursive: true });
+            const { addAccount } = await import("../src/providers/accounts");
+            const added = addAccount("claude-code", { id: "parting", name: "Parting", folder });
+            process.env.FAKE_USAGE_TEXT = weekly(20);
+            process.env.FAKE_USAGE_DELAY_MS = "20000";
+            process.env.FAKE_USAGE_IGNORE_TERM = "1";
+            void engine.handle(client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: "parting" }] });
+            await waitFor(() => usageRuns().length === 1);
+            const pid = lines().find((l) => l.usage).usage.pid as number;
+            await engine.handle(client, "accounts.remove", { provider: "claude-code", id: "parting", confirmedFolder: added.folder });
+            await engine.stop();
+            expect(alive(pid)).toBe(false);
+        } finally {
+            Object.assign(stopTiming, saved);
+        }
+    });
+
+    test("a /usage or sign-in check stopped before it finished says nothing: no refusal, no sign-in", async () => {
+        const { claudeUsage, claudeStatus } = await import("../src/backends/claude-code");
+        setup();
+        // Half an answer, then nothing: cancelled, it isn't taken for an answer that wasn't /usage's.
+        process.env.FAKE_USAGE_PARTIAL = "1";
+        const c = new AbortController();
+        setTimeout(() => c.abort(), 400);
+        expect(await claudeUsage("claude-code", c.signal, "personal")).toBeUndefined();
+        delete process.env.FAKE_USAGE_PARTIAL;
+        process.env.FAKE_USAGE_TEXT = weekly(12);
+        expect((await claudeUsage("claude-code", undefined, "personal"))?.windows[0]?.usedPercent).toBe(12);
+        // A whole "signed in" answer from a run that had to be stopped isn't one.
+        process.env.FAKE_AUTH_HANG = "1";
+        const d = new AbortController();
+        setTimeout(() => d.abort(), 400);
+        await expect(claudeStatus("claude-code", d.signal, "personal")).rejects.toThrow(/didn't answer/);
+        delete process.env.FAKE_AUTH_HANG;
+    });
+
+    // Last: an account whose answer wasn't a local one is remembered while Cavvy runs.
+    test("an answer it can't read keeps the last report; one that isn't a local /usage answer isn't asked for again; an older CLI isn't asked", async () => {
+        const { engine, client } = setup();
+        engine.limitsReported(report("claude-code", "personal", 40, Date.now() - 10 * 60_000), false);
+        const plans = [{ provider: "claude-code", accountId: "personal" }];
+        process.env.FAKE_USAGE_TEXT = "Something else entirely";
+        await engine.handle(client, "limits.refresh", { plans });
+        expect(usageRuns()).toHaveLength(1);
+        const kept = (await engine.handle(client, "limits.get", {})).find((l) => l.accountId === "personal" && l.provider === "claude-code")!;
+        expect(kept.windows[0]!.usedPercent).toBe(40);
+        await engine.stop();
+
+        const second = setup();
+        process.env.FAKE_CLAUDE_CLI_VERSION = "2.1.310";
+        await second.engine.handle(second.client, "limits.refresh", { plans });
+        expect(usageRuns()).toHaveLength(0);
+        delete process.env.FAKE_CLAUDE_CLI_VERSION;
+        await second.engine.stop();
+        // Answered by the model, with an error, or in a shape not known: asked once, then not again (a new server
+        // check each time, so the throttle isn't what stops it).
+        for (const [account, key, value] of [["work", "FAKE_USAGE_MODEL", "1"], ["personal", "FAKE_USAGE_ERROR", "1"], ["default", "FAKE_USAGE_SHAPE", "other"]] as const) {
+            process.env[key] = value;
+            for (const runs of [1, 0]) {
+                const s = setup();
+                await s.engine.handle(s.client, "limits.refresh", { plans: [{ provider: "claude-code", accountId: account }] });
+                expect(usageRuns()).toHaveLength(runs);
+                await s.engine.stop();
+            }
+            delete process.env[key];
+        }
+    });
+});
+
+test("the model an alias was served as is kept per account, saved, and listed; Claude Code's listing says what its aliases stand for", async () => {
+    const engine = new Engine();
+    const events: ServerEvent[] = [];
+    const client = { send: (e: ServerEvent) => events.push(e), subs: new Set<string>() };
+    engine.clients.add(client);
+    engine.modelServed("claude-code", "work", "default", "claude-opus-5-5");
+    engine.modelServed("claude-code", "work", "default", "claude-opus-5-5");
+    expect(events.filter((e) => e.type === "served")).toHaveLength(1);
+    expect(await engine.handle(client, "served.get", {})).toEqual([{ provider: "claude-code", accountId: "work", model: "default", served: "claude-opus-5-5" }]);
+    await engine.stop();
+    // Saved with the limits, for the next start (loadLimits).
+    const { loadServedModels } = await import("../src/server/limits-store");
+    expect(loadServedModels()).toEqual([{ provider: "claude-code", accountId: "work", model: "default", served: "claude-opus-5-5" }]);
+    // The listing: the default alias's resolved model, for the account it listed with.
+    const models = await createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!).listModels!();
+    expect(models.find((m) => m.id === "default")).toMatchObject({ resolvedModel: "claude-test-1", resolvedFor: "default" });
 });

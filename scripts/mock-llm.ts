@@ -215,8 +215,9 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
     }
     // A message from the agent in another session: say what it asked.
-    if (/messages? from (the agent|agents) in (another of )?the user's/.test(p)) {
-        const said = /From session \S+ \(“[^”]*”\):\n\n([^\n]*)/.exec(prompt)?.[1] ?? "";
+    // (Or what it started this session with: the same answer.)
+    if (/messages? from (the agent|agents) in (another of )?the user's|in another of the user's sessions started this session/.test(p)) {
+        const said = /(?:From session \S+ \(“[^”]*”\)|Session \S+ \(“[^”]*”\) started this session to do this):\n\n([^\n]*)/.exec(prompt)?.[1] ?? "";
         return { text: `Another session asked: “${said}” I'll take it from here.` };
     }
     // Hands work to another session of this project (ListSessions, SendToSession), or starts one (StartSession).

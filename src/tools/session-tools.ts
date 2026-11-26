@@ -16,7 +16,7 @@ const READ_DESCRIPTION = `Read what was said in another Cavvy session: its promp
 
 const SEND_DESCRIPTION = `Send a message to the agent in another Cavvy session. If it's idle, it starts working on it; if it's working, it reads it at its next step. It's shown there as from this session, and that agent is told it came from another session's agent, not the user. An answer, if it sends one, arrives here later as a message: don't wait or poll for it, and end your turn if there's nothing else to do. Use it when the user asks you to hand work to, coordinate with or tell something to another session.`;
 
-const START_DESCRIPTION = `Start a new Cavvy session in this session's folder, with prompt as its first message (from this session). It works on its own, beside this one, and shows in the user's session list. Use it when the user asks for a new session, or for work to run in a session of its own. It runs in this session's permission mode or the folder's default, whichever asks the user more, and on this session's model and effort unless model (provider:model) or effort is given; a model or effort that isn't available is refused with the models there are, before anything starts. Returns its id, for ReadSession and SendToSession.`;
+const START_DESCRIPTION = `Start a new Cavvy session in this session's folder, with prompt as its first message (from this session). It works on its own, beside this one, and shows in the user's session list. Use it when the user asks for a new session, or for work to run in a session of its own. It runs in this session's permission mode or the folder's default, whichever asks the user more, and on this session's model and effort unless model (provider:model) or effort is given; a model or effort that isn't available is refused with the models there are, before anything starts. Returns its id, for ReadSession and SendToSession. With machine, it starts on another of the user's machines instead (their computer from a server, a server from their computer), in folder, a folder of that machine's: there it runs on that machine's own model unless model names one it has, in a mode that asks no less than this session's and, on the user's computer, no less than Auto; on the user's computer only in a folder they've opened in Cavvy there.`;
 
 const LIST_SCHEMA = {
     type: "object",
@@ -52,6 +52,8 @@ const START_SCHEMA = {
         title: { type: "string", description: "A short title for the session list (a few words). Default: the prompt's start." },
         model: { type: "string", description: "provider:model to run on, e.g. as ListSessions shows sessions'. Default: this session's model." },
         effort: { type: "string", enum: EFFORT_LEVELS, description: "Reasoning effort, one the model takes. Default: this session's, where the model takes it." },
+        machine: { type: "string", description: "Another of the user's machines to start it on, as ListSessions (all: true) names them before the / of an id: mac, or a server's name. Leave out for this machine." },
+        folder: { type: "string", description: "With machine: the folder on that machine to start in (an absolute path, or one from ~)." },
     },
     required: ["prompt"],
 };
@@ -149,6 +151,17 @@ export async function startSession(peers: SessionPeers | undefined, input: Recor
     try {
         const prompt = checkMessage(input.prompt, "prompt");
         const title = sessionTitle(input.title, prompt);
+        const machine = str(input.machine).trim();
+        const folder = str(input.folder).trim();
+        if (folder && !machine) return fail("folder is for a session on another machine (machine): one started here is in this session's folder.");
+        if (machine) {
+            const far = peers.far;
+            if (!far) return fail("No other machine of the user's can be reached from this session.");
+            if (!folder) return fail(`Say which folder on ${machine} the session starts in (folder).`);
+            const s = await far.start({ machine, cwd: folder, prompt, title, ...startChoice(input) });
+            const on = [s.model, s.effort ? `${s.effort} effort` : ""].filter(Boolean).join(" at ");
+            return { text: `Started session ${s.id} (“${s.title}”) on ${s.machine ?? machine}, in ${s.cwd}${on ? `, on ${on}` : ""}. It's working on the prompt now; it shows in the user's session list. An answer, if it sends one, arrives here as a message.`, summary: `Started “${s.title}” on ${s.machine ?? machine}` };
+        }
         const s = await peers.start({ prompt, title, ...startChoice(input) });
         const on = [s.model, s.effort ? `${s.effort} effort` : ""].filter(Boolean).join(" at ");
         return { text: `Started session ${s.id} (“${s.title}”) in ${s.cwd}${on ? `, on ${on}` : ""}. It's working on the prompt now; it shows in the user's session list. An answer, if it sends one, arrives here as a message.`, summary: `Started “${s.title}”` };
@@ -191,12 +204,16 @@ const previewSend = async (input: { id?: unknown; message?: unknown }, ctx: Tool
     return { summary: title ? `Send a message to “${title}”` : on ? `Send a message to a session on ${on}` : "Send a message to another session", body: str(input.message).trim() || undefined };
 };
 
-const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: unknown; effort?: unknown }) => {
+const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: unknown; effort?: unknown; machine?: unknown; folder?: unknown }) => {
     // The title the session gets, short enough that what it runs on stays in view after it.
     const title = str(input.title).trim() ? sessionTitle(input.title, "") : "";
     const { model, effort } = startChoice(input);
     const on = [model && redactedLine(model, 80), effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
-    return { summary: `Start a session${title ? `: “${title}”` : ""}${on ? ` (${on})` : ""}`, body: str(input.prompt).trim() || undefined };
+    // On another machine: which, and in which folder there.
+    const machine = redactedLine(str(input.machine).trim(), 40);
+    const folder = redactedLine(str(input.folder).trim(), 200);
+    const body = [machine && folder ? `In ${folder}` : "", str(input.prompt).trim()].filter(Boolean).join("\n\n");
+    return { summary: `Start a session${machine ? ` on ${machine}` : ""}${title ? `: “${title}”` : ""}${on ? ` (${on})` : ""}`, body: body || undefined };
 };
 
 export const SendToSessionTool: Tool<{ id: string; message: string }> = {
@@ -210,7 +227,7 @@ export const SendToSessionTool: Tool<{ id: string; message: string }> = {
     run: async (input, ctx) => asResult(await sendToSession(ctx.state.peers, input)),
 };
 
-export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: string; effort?: string }> = {
+export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: string; effort?: string; machine?: string; folder?: string }> = {
     name: "StartSession",
     description: START_DESCRIPTION,
     parameters: START_SCHEMA,
@@ -219,7 +236,8 @@ export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: st
     title: (i) => `StartSession(${typeof i.title === "string" && i.title.trim() ? i.title.trim().slice(0, 60) : str(i.prompt).replace(/\s+/g, " ").slice(0, 60)})`,
     preview: previewStart,
     // A model or effort it can't start on is refused before the user is asked to allow it.
-    validate: (input, ctx) => ctx.state.peers?.checkStart?.(startChoice(input)),
+    // (On another machine, that machine says, when it's asked to start it: its models aren't known here.)
+    validate: (input, ctx) => (str(input.machine).trim() ? undefined : ctx.state.peers?.checkStart?.(startChoice(input))),
     run: async (input, ctx) => asResult(await startSession(ctx.state.peers, input)),
 };
 

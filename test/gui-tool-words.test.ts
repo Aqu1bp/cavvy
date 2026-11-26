@@ -12,6 +12,24 @@ test("Cavvy's browser tools, however they're called, are one kind", () => {
     expect(toolKind("mcp__github__create_issue")).toBe("mcp__github__create_issue");
 });
 
+test("theme calls say which theme and what of it, so a list and a theme's layers don't fold into one row", () => {
+    for (const [list, set] of [["mcp__cavvy__theme_list", "mcp__cavvy__theme_set"], ["ThemeList", "ThemeSet"]]) {
+        expect(toolLabel(call({ name: list, title: list, input: {} }))).toEqual({ verb: "List themes", arg: undefined });
+        expect(toolLabel(call({ name: list, title: list, input: { id: "night-rain" } }))).toEqual({ verb: "Read theme", arg: "night-rain" });
+        expect(toolLabel(call({ name: list, title: list, input: { id: "night-rain", layer: "dark.7" } }))).toEqual({ verb: "Read layer of", arg: "night-rain" });
+        expect(toolLabel(call({ name: set, title: set, input: { id: "tokyo-rain", theme: { name: "Tokyo" } } }))).toEqual({ verb: "Save theme", arg: "tokyo-rain" });
+        expect(toolLabel(call({ name: set, title: set, input: { id: "night-rain" } }))).toEqual({ verb: "Show theme", arg: "night-rain" });
+        expect(toolLabel(call({ name: set, title: set, input: { id: "tokyo-rain", file: "/tmp/tokyo.json" } }))).toEqual({ verb: "Save theme", arg: "tokyo-rain" });
+        expect(toolLabel(call({ name: set, title: set, input: { id: "none" } }))).toEqual({ verb: "Turn the theme off", arg: undefined });
+    }
+    // The session that asked: list, read the theme, then four of its layers. Only the layers fold.
+    const steps = [{}, { id: "night-rain" }, ...["dark.7", "dark.16", "dark.9", "dark.1"].map((layer) => ({ id: "night-rain", layer }))].map((input, n) => call({ id: `t${n}`, name: "mcp__cavvy__theme_list", title: "mcp__cavvy__theme_list", input }));
+    const { more, joined } = sameInARow(steps);
+    expect(more.get("t2")?.map((t: { id: string }) => t.id)).toEqual(["t3", "t4", "t5"]);
+    expect([...joined]).toEqual(["t3", "t4", "t5"]);
+    expect(runningVerb({ ...steps[2], status: "running" })).toBe("Reading a layer of");
+});
+
 test("a script run in the page doesn't show its code; a page opened shows where", () => {
     const evalCall = call({ name: "mcp__cavvy__browser_eval", title: "BrowserEval((async () => { const csrf = document.querySelector('meta[nam…)", input: { expression: "(async () => { const csrf = 1 })()" } });
     expect(toolLabel(evalCall)).toEqual({ verb: "Run a script in the page", arg: undefined });

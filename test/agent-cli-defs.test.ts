@@ -27,7 +27,7 @@ test("every def is an agent provider; those with accounts are the account provid
         expect(p).toMatchObject({ kind: "agent", auth: "cli", name: d.name });
     }
     // An ACP agent says how it's started, and what it can't do here.
-    for (const d of AGENT_CLIS.filter((d) => d.protocol === "acp")) {
+    for (const d of AGENT_CLIS.filter((d) => d.protocol === "acp" && d.id !== "antigravity")) {
         expect(d.acpArgs?.length).toBeGreaterThan(0);
         // Steering with text everywhere; images only where a steer is a prompt of its own (OpenCode's).
         expect(d.caps.steersAttachments).toEqual(d.id === "opencode" ? ["image", "text"] : ["text"]);
@@ -35,11 +35,12 @@ test("every def is an agent provider; those with accounts are the account provid
     }
 });
 
-test("Antigravity's CLI: steered between tool rounds, attachments as files, nothing of Cavvy's attached", () => {
+test("Antigravity's CLI: over ACP, with its own skills, and effort in its model ids", () => {
     const d = agentCli("antigravity")!;
-    expect(d.protocol).toBe("agy-stream-json");
+    expect(d.protocol).toBe("acp");
+    expect(d.acpArgs).toEqual(["acp"]);
     expect(d.cli.command).toBe("agy");
-    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, backgroundTasks: false, fork: false, compact: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
+    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, live: { model: true, effort: false, mode: "per-turn" }, backgroundTasks: false, fork: false, compact: "command", hooks: "none", mcpAttach: "none", skills: "own", resolvesUnknownCommands: false, importSessions: false, usageLogs: false });
 });
 
 test("the defs' capabilities agree with the branches they will replace", () => {

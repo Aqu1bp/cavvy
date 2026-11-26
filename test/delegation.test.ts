@@ -304,6 +304,12 @@ describe("Cavvy's MCP server", () => {
             const plain = await fetch(reg.url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...auth }, body: JSON.stringify(call(6, "slow")) });
             expect(plain.headers.get("content-type")).toContain("application/json");
             expect(await plain.json()).toEqual({ jsonrpc: "2.0", id: 6, result });
+            // With a progress token, progress that counts up (OpenCode ends a call after 60 seconds without it).
+            const tracked = await (await post(reg.url, { ...call(7, "slow"), params: { name: "slow", arguments: {}, _meta: { progressToken: "p7" } } }, auth)).text();
+            expect(tracked).not.toContain(": keep-alive");
+            expect(tracked).toContain(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "p7", progress: 1 } })}`);
+            expect(tracked).toContain(`"progress":2}`);
+            expect(tracked).toContain(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 7, result })}`);
         } finally {
             serverTiming.keepAliveMs = old;
             reg.close();
@@ -1321,6 +1327,70 @@ describe("Codex as the main agent", () => {
         expect(steer).toContain("Only read-only commands run: plain commands such as cat");
     }, 20_000);
 
+    test("in a session in Bypass a read-only agent asks about nothing: what Manual would ask about runs, and what isn't read-only is refused", async () => {
+        // Read-only, and one Manual asks about (it names a file that may hold credentials).
+        process.env.FAKE_COMMAND = "cat .env";
+        writeFileSync(join(cwd, ".env"), "A=1\n");
+        try {
+            // On Codex.
+            process.env.FAKE_SCENARIO = "mcp";
+            process.env.FAKE_CODEX_SCENARIO = "cmd";
+            calls([{ tool: "delegate", args: { task: "Read the settings", description: "Read", model: "codex:gpt-test", agent: "explore" } }]);
+            const manual = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            expect(await manual.run("go")).toBe("done");
+            expect(manual.asked.map((a) => a.input.command)).toEqual(["cat .env"]);
+            rmSync(LOG, { force: true });
+            const onCodex = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            onCodex.switchMode("bypassPermissions");
+            expect(await onCodex.run("go")).toBe("done");
+            expect(onCodex.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "cat .env" });
+            // It stays read-only there.
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "touch y";
+            const writes = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            writes.switchMode("bypassPermissions");
+            expect(await writes.run("go")).toBe("done");
+            expect(writes.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            // Nor is it asked about what the other modes always ask about (Cavvy's own credentials, by name): Bypass asks about nothing.
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "cat ~/.cavvy/credentials.json";
+            const store = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            store.switchMode("bypassPermissions");
+            expect(await store.run("go")).toBe("done");
+            expect(store.asked).toEqual([]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+            // In a folder outside the session's (another checkout), which Manual asks about as well.
+            rmSync(LOG, { force: true });
+            const outside = realpathSync(tempDir("deleg-outside-"));
+            process.env.FAKE_COMMAND = "wc -l notes.txt";
+            process.env.FAKE_COMMAND_CWD = outside;
+            try {
+                const away = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+                away.switchMode("bypassPermissions");
+                expect(await away.run("go")).toBe("done");
+                expect(away.asked).toEqual([]);
+                expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+            } finally {
+                delete process.env.FAKE_COMMAND_CWD;
+                rmSync(outside, { recursive: true, force: true });
+            }
+            // On Claude Code.
+            process.env.FAKE_COMMAND = "cat .env";
+            process.env.FAKE_CODEX_SCENARIO = "mcp";
+            process.env.FAKE_SCENARIO = "bash";
+            calls([{ tool: "delegate", args: { task: "Read the settings", description: "Read", model: "claude-code:default", agent: "explore" } }]);
+            const onClaude = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+            onClaude.switchMode("bypassPermissions");
+            expect(await onClaude.run("go")).toBe("done");
+            expect(onClaude.asked).toEqual([]);
+            expect(received().find((m) => m.type === "control_response" && m.response?.response?.behavior)!.response.response.behavior).toBe("allow");
+        } finally {
+            rmSync(join(cwd, ".env"), { force: true });
+        }
+    }, 30_000);
+
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {
         process.env.FAKE_CODEX_SCENARIO = "mcp";
         process.env.FAKE_SCENARIO = "hang";
@@ -2261,12 +2331,12 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining("non-interactive") });
         expect(existsSync(ran)).toBe(false);
 
-        // Bypass mode doesn't approve it either.
+        // Bypass asks about nothing: it runs.
         const bypass = await makeAgent({ provider: "claude-code", secrets, ui, ask: () => ({ allow: false }) });
         bypass.switchMode("bypassPermissions");
         await bypass.run("go");
-        expect(bypass.asked).toHaveLength(1);
-        expect(existsSync(ran)).toBe(false);
+        expect(bypass.asked).toHaveLength(0);
+        expect(existsSync(ran)).toBe(true);
 
         calls([{ tool: "run_with_secrets", args: { command: `echo "$RULE_TOKEN"`, secrets: ["RULE_TOKEN"] } }]);
         const ruled = await makeAgent({ provider: "claude-code", secrets, ui, settings: { permissions: { allow: ["Bash(echo:*)"] } } });
@@ -2302,7 +2372,6 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
             const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
             calls([{ tool, args }]);
             const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__cavvy__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
-            t.switchMode("bypassPermissions");
             await t.run("go");
             expect(mcpResults().at(-1)?.isError).toBe(true);
             expect(t.asked).toHaveLength(1);

@@ -17,6 +17,7 @@ export type { BackgroundTaskInfo } from "../backends/live/info";
 export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
+import type { Scheme as ThemeScheme, ThemeEntry } from "../themes/format";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -92,9 +93,6 @@ export const MODE_LABELS: Record<PermissionModeId, { label: string; description:
     auto: { label: "Auto", description: "A reviewer model approves routine actions" },
     bypassPermissions: { label: "Bypass", description: "Run everything without asking (sandboxes only)" },
 };
-
-/** Auto mode on an agent CLI it has no reviewer for (Antigravity): what it does there. */
-export const AUTO_WITHOUT_REVIEWER = "No reviewer for this model: commands ask";
 
 // ---------------------------------------------------------------------------
 // Diffs
@@ -666,6 +664,9 @@ export interface ModelSummary {
     providerName?: string;
     id: string;
     name: string;
+    /** For an alias ("default"): the model the CLI listed it as, on account `resolvedFor` (ModelInfo). */
+    resolvedModel?: string;
+    resolvedFor?: string;
     contextWindow?: number;
     maxOutput?: number;
     pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -829,6 +830,8 @@ export interface SessionState {
     /** The other worktree of the session's repository the agent works in now; unset while it works in the session's own folder. */
     workingIn?: WorkingIn;
     model?: ModelSummary;
+    /** The model id the CLI said it served for the model (an alias's resolution, on the session's account); unset until its first usage. */
+    servedModel?: string;
     mode: PermissionModeId;
     bypassAllowed: boolean;
     effort?: EffortLevel;
@@ -1335,8 +1338,6 @@ export interface ProviderInfo {
         multiAccount?: boolean;
         /** It reports plan limits (false: there's no plan row to show). */
         planLimits?: boolean;
-        /** Auto mode has no reviewer for it: commands ask (AUTO_WITHOUT_REVIEWER). */
-        autoAsks?: boolean;
         /** The environment variables it's started with. A secret's value is never sent: only that it's set. */
         env?: AgentEnvVar[];
         /** Its named instances (src/providers/instances.ts), each a provider of its own in the model picker. */
@@ -1407,13 +1408,31 @@ export interface LimitWindow {
     usedPercent?: number;
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
+    /** At its limit (true), said not to be (false), or not said (then a full window is taken to be). */
     reached?: boolean;
+    /** When this window was last reported (ms), when it's older than the plan's report (`at`): kept from an earlier one. */
+    at?: number;
     /**
-     * Only on a window of another metered limit than the plan's own (a Codex model's): whether
-     * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
-     * stops there, whatever the plan's credits.
+     * Only for one of Claude Code's windows that count some models (Weekly Fable, Opus, Sonnet): the family it covers,
+     * a word of their model ids ("fable"). Reached, it stops those models, not the plan (plan-meter.ts covers).
+     */
+    scope?: string;
+    /**
+     * Whether this window's limit is carried past by credits, as the report that named it said:
+     * a Codex model's metered limit, a Claude Code rejection's window (PlanLimits.credits is the
+     * plan's latest verdict). False stops there, whatever the plan's credits.
      */
     credits?: boolean;
+}
+
+/** The model an agent CLI last served an alias as ("default" → "claude-opus-5-5"), on an account. */
+export interface ServedModel {
+    provider: string;
+    accountId: string;
+    /** The model id asked for (an alias). */
+    model: string;
+    /** The model id the CLI said it served. */
+    served: string;
 }
 
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
@@ -1442,7 +1461,8 @@ export interface PlanLimits {
  * view of which still are) is another limit's that has none.
  */
 export function usingCredits(l: PlanLimits, reached: boolean, reachedNow: (i: number) => boolean = (i) => Boolean(l.windows[i]?.reached)): boolean {
-    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && reachedNow(i));
+    // A window of some models (Fable's: scope) says only for those models (plan-meter.ts).
+    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && !w.scope && reachedNow(i));
 }
 
 /** The ranges the Usage view offers, in days. */
@@ -2140,9 +2160,15 @@ export interface ServerCheck {
     git: boolean;
     gh: { installed: boolean; signedIn?: boolean };
     browser: boolean;
-    /** Starts again by itself after the server restarts; when not, the command that makes it so. */
+    /**
+     * Starts again by itself after the server restarts; when not, the command that makes it so: `bootFix` is run on
+     * the server, and `bootHere` says `cavvy servers boot <name>` is run on this computer (a Mac).
+     */
     service: boolean;
-    lingerFix?: string;
+    bootFix?: string;
+    bootHere?: true;
+    /** A Mac: how Xcode stands for iOS work there. */
+    xcode?: "ready" | "missing" | "unopened" | "no-simulator";
 }
 
 
@@ -2226,8 +2252,17 @@ export type ServerEvent =
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits }
+    /** A CLI served an alias as this model on this account (the model limits that cover it): ServedModel. */
+    | { type: "served"; served: ServedModel }
     /** The keybindings file was saved, created or deleted. */
     | { type: "keybindings.changed"; keybindings: KeybindingsFile }
+    /** A theme file in ~/.cavvy/themes was saved, added or deleted: the whole list, checked. */
+    | { type: "themes.changed"; themes: ThemeEntry[] }
+    /**
+     * An agent asked to show a theme (or none, null). `entry`: the one it just saved, ahead of the folder's watch.
+     * The window answers with themes.report under `request` once it's drawn it.
+     */
+    | { type: "theme.apply"; id: string | null; entry?: ThemeEntry; request: string; replaced?: ThemeReplaced }
     /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
     | { type: "app.update"; info: AppUpdateInfo };
 
@@ -2266,6 +2301,31 @@ export interface KeybindingsFile {
     text?: string;
     /** It exists but couldn't be read. */
     error?: string;
+}
+
+export type { ThemeEntry };
+
+/** A theme of the user's an agent's theme was saved over (theme.apply): its name, and its file's text for Undo. */
+export interface ThemeReplaced {
+    name: string;
+    text: string;
+}
+
+/** How a theme came out in a window, for the agent that asked for it (theme.apply). */
+export interface ThemeReport {
+    request: string;
+    /** It's showing (false: the window couldn't find or load it). */
+    shown: boolean;
+    scheme?: ThemeScheme;
+    /** How much of the theme's background lies over its scene so text reads, 0–1: on average, and where it's most. */
+    veil?: number;
+    veilMost?: number;
+    /** Layers (by index in the look shown) that couldn't be drawn. */
+    failed?: number[];
+    /** The window rests the scene (reduced motion, or the theme's Animate is off). */
+    still?: boolean;
+    /** The window with the theme on, the app sketched over it with made-up text: a JPEG, in base64. */
+    picture?: string;
 }
 
 export interface HelloResult {
@@ -2343,6 +2403,8 @@ export interface Methods {
     "peers.list": { params: { query?: string; limit: number }; result: unknown[] };
     "peers.read": { params: { id: string; turns?: number }; result: unknown };
     "peers.send": { params: { id: string; message: string; from: { id: string; title: string; mode: string } }; result: unknown };
+    /** A new session on this server in `cwd`, started by a session on another machine (`from`), with `prompt` as its first message. */
+    "peers.start": { params: { cwd: string; prompt: string; title?: string; model?: string; effort?: string; from: { id: string; title: string; mode: string } }; result: unknown };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
@@ -2451,6 +2513,16 @@ export interface Methods {
     "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
     "keybindings.get": { params: Record<string, never>; result: KeybindingsFile };
+    /** The user's themes in ~/.cavvy/themes, each checked. */
+    "themes.list": { params: Record<string, never>; result: ThemeEntry[] };
+    /** Deletes one; answers what its file held, for Undo. */
+    "themes.remove": { params: { id: string }; result: { text?: string } };
+    /** Puts back a deleted one (Undo). */
+    "themes.restore": { params: { id: string; text: string; replace?: boolean }; result: null };
+    /** A window's answer to theme.apply. */
+    "themes.report": { params: ThemeReport; result: null };
+    /** The theme a window shows now (null: none) and in which scheme: sent as it changes, for ThemeList. */
+    "themes.showing": { params: { id: string | null; scheme: ThemeScheme }; result: null };
     /** Creates the keybindings file from the template when there's none; true when it did. */
     "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
@@ -2718,6 +2790,10 @@ export interface Methods {
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Asks the CLIs where these plans stand now (all turned on, without `plans`); what's new comes as `limits` events. */
+    /** The model each alias was last served as, by CLI and account (ServedModel). */
+    "served.get": { params: Record<string, never>; result: ServedModel[] };
+    "limits.refresh": { params: { plans?: { provider: string; accountId?: string }[] }; result: null };
     /** Tokens and cost per provider and model, from the session transcripts. */
     /** `brief`: without `buckets`, for another machine adding this one's to its own. */
     "usage.summary": { params: { days: UsageDays; brief?: boolean; /** This computer's own at once if its servers are slow (UsageSummary.waiting), for a window that then asks for the rest. */ first?: boolean; /** The rest of the summary just asked for: with the servers it was waiting for. */ rest?: boolean }; result: UsageSummary };

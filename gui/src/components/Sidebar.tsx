@@ -5,10 +5,10 @@
 // dot; sending to one brings it back. The ones waiting on you are pinned above
 // them all, under Needs you, with what they ask, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, limitsFor, providersFor, refreshSessions, reportError, warmFor } from "../state/app";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
@@ -17,7 +17,7 @@ import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since, wakeTime } from "../lib/format";
 import { dayOf, folderOf, holdSidebar, isSnoozed, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
+import { groupCounts, inFront, needsRowLine, needsYou } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -197,22 +197,8 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
 
-/** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
-function PlanGauge(p: { plan: RailPlan }) {
-    const fill = () => (p.plan.reached ? 100 : Math.max(0, Math.min(100, p.plan.pct ?? 0)));
-    return (
-        <span class="pl-g">
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-                <circle class="pl-track" cx="10" cy="10" r="9" />
-                <Show when={fill() > 0}>
-                    {/* A sliver at least, so 1% still shows. */}
-                    <circle class="pl-arc" cx="10" cy="10" r="9" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 10 10)" />
-                </Show>
-            </svg>
-            <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
-        </span>
-    );
-}
+/** The plans' chips and their card (PlanFooter.tsx): loaded a moment after the window, not with it. */
+const PlanFooter = lazy(() => import("./PlanFooter").then((m) => ({ default: m.PlanFooter })));
 
 /**
  * Beside Settings while the desktop app has an update from main, or one is running: one click updates it, and Cavvy
@@ -232,97 +218,6 @@ function UpdateButton() {
                 )}
             </Show>
             <update.Confirm />
-        </>
-    );
-}
-
-/**
- * The plans' usage, beside Settings: one row however many there are. A gauge per
- * plan, its mark in a ring that fills as its fullest window does, then the
- * figure: the same size in every state, the ring and figure turning amber, then
- * red, near a limit. Nothing reported yet: an empty ring and no figure (PlanGauge).
- * The mark names the plan (the tooltip and card spell it out); a plan on its
- * own adds the window where the whole of it fits. Short of room (a narrow or floating rail), the % signs
- * go first; only then do chips fold into "+N", the plain ones first
- * (lib/rail.ts planFit). The row opens every window's detail.
- */
-function PlanRow(p: { plans: RailPlan[] }) {
-    const [open, setOpen] = createSignal(false);
-    const [tight, setTight] = createSignal(false);
-    const [folded, setFolded] = createSignal(0);
-    /** A plan on its own without its window: the whole of it didn't fit (never "resets 2:4"). */
-    const [bare, setBare] = createSignal(false);
-    let row: HTMLButtonElement | undefined;
-    let more: HTMLSpanElement | undefined;
-    const solo = () => p.plans.length === 1;
-    const order = createMemo(() => foldOrder(p.plans));
-    const hidden = (i: number) => order().indexOf(i) < folded();
-    // Measures the chips as they are and tight, with none folded, then settles on the fit
-    // (outside Solid's updates each change is in the DOM at once, so it can be read back).
-    const fit = () => {
-        if (!row) return;
-        batch(() => (setFolded(0), setTight(false), setBare(false)));
-        if (p.plans.length < 2) return setBare(row.scrollWidth > row.clientWidth + 0.5);
-        const chips = [...row.querySelectorAll<HTMLElement>(".pl:not(.more)")];
-        const widths = () => chips.map((c) => c.getBoundingClientRect().width);
-        const gap = () => parseFloat(getComputedStyle(row!).columnGap) || 0;
-        const style = getComputedStyle(row);
-        const room = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-        const normal = widths();
-        const normalGap = gap();
-        setTight(true);
-        const f = planFit({ room, normal, tight: widths(), gap: normalGap, tightGap: gap(), more: more?.getBoundingClientRect().width ?? 0, order: order() });
-        batch(() => (setTight(f.tight), setFolded(f.folded)));
-    };
-    // The rail's width changes it (dragging its edge, the drawer); so do the text size and what the
-    // chips say, once they're drawn.
-    onMount(() => {
-        const ro = new ResizeObserver(() => fit());
-        ro.observe(row!.parentElement ?? row!);
-        onCleanup(() => ro.disconnect());
-    });
-    createEffect(on(() => `${prefs.fontSize} ${p.plans.map((plan) => `${plan.provider} ${plan.pct} ${plan.tone} ${plan.reached} ${plan.window} ${plan.lifts}`).join()}`, () => queueMicrotask(fit), { defer: true }));
-    const label = () => `Plan usage. ${p.plans.map((plan) => `${plan.name}: ${plan.brief}`).join(". ")}`;
-    return (
-        <>
-            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <For each={p.plans}>{(plan, i) => (
-                    <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
-                        <PlanGauge plan={plan} />
-                        <Show when={plan.pct !== undefined}>
-                            <span class="pl-v">
-                                {plan.pct}<small>%</small>
-                                <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
-                            </span>
-                        </Show>
-                    </span>
-                )}</For>
-                {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
-                <span ref={more} class={`pl more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
-            </button>
-            {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
-            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
-                <div class="menu-head">Plan usage</div>
-                <For each={p.plans}>{(plan) => (
-                    <div class="pu-plan">
-                        <div class="pu-h" title={plan.detail}>
-                            <ProviderIcon id={plan.provider} name={plan.name} size={14} />
-                            <span class="truncate">{plan.name}</span>
-                            <Show when={plan.asOf}>{(at) => <span class="pu-asof">{at()}</span>}</Show>
-                        </div>
-                        <For each={plan.windows} fallback={<div class="pu-w none">Usage shows after a turn</div>}>{(w) => (
-                            <div class={`pu-w ${w.tone}`}>
-                                <span class="truncate">{w.label}</span>
-                                <span class="pu-bar" aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
-                                <b>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</b>
-                                <Show when={w.resets}>{(r) => <span class="pu-r" title={`Resets ${r()}`}>Resets {r()}</span>}</Show>
-                            </div>
-                        )}</For>
-                    </div>
-                )}</For>
-                <div class="menu-sep" />
-                <button class="menu-item compact" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
-            </Menu>
         </>
     );
 }
@@ -619,13 +514,6 @@ export function Sidebar() {
     const snoozedCount = () => app.sessions.filter(isSnoozed).length;
     // Providers by the sessions that used them, most recent first: the plan used last leads when no session is open.
     const recent = createMemo(() => [...new Set([...app.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => modelOf(s)?.split(":")[0]).filter((p): p is string => Boolean(p)))]);
-    // The signed-in plans (Claude Code, Codex): the session in view's first, else the one used last.
-    const plans = createMemo(() => {
-        const st = handleFor(app.activeId)?.view.state;
-        const provider = st?.model?.provider;
-        // The session's machine's plans and limits: its account ("Default" there) isn't this computer's of that name.
-        return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
-    });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
@@ -1078,9 +966,10 @@ export function Sidebar() {
             </Show>
 
             <div class="side-foot">
-                <Show when={plans().length} fallback={<span class="grow" />}>
-                    <PlanRow plans={plans()} />
-                </Show>
+                {/* The plans' chips: loaded a moment after the window, which has a gap of their width until then. */}
+                <Suspense fallback={<span class="grow" />}>
+                    <PlanFooter recent={recent} />
+                </Suspense>
                 <UpdateButton />
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />

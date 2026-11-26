@@ -68,8 +68,9 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
             solid.createRenderEffect(() => { slot.content = node.content = resolve(value); });
         },
     };
-    // The lazy menu items (RowExtras.tsx): a stand-in that records what each menu hands it.
-    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/^const RowExtras = lazy\(.*\);\r?\n/m, "");
+    // The lazy menu items (RowExtras.tsx): a stand-in that records what each menu hands it. The plans' footer is
+    // loaded lazily too (PlanFooter.tsx, its own tests): not part of these.
+    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/^const RowExtras = lazy\(.*\);\r?\n/m, "").replace(/lazy\(\(\) => import\("\.\/PlanFooter"\)[^;]*;/, "() => null;");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)

@@ -39,7 +39,12 @@ export interface CliCapabilities {
     fork: boolean;
     /** It can rewind its own session to an earlier message. */
     rewind: boolean;
-    compact: "native" | "none";
+    /**
+     * `native`: it compacts its own context, and Cavvy compacts it too (at its threshold, when idle, or by /compact).
+     * `command`: /compact goes to it as its own command, and only then (Antigravity's: it compacts by itself).
+     * `none`: it can't be asked to.
+     */
+    compact: "native" | "command" | "none";
     /** It keeps goals of its own (/goal): whether one can be paused, and whether it starts turns for one by itself. */
     goal?: { canPause: boolean; ownTurns: boolean };
     /** How its plan limits are known: pushed as they change, by asking, only inside a turn, or not at all. */
@@ -56,8 +61,11 @@ export interface CliCapabilities {
     nativeAgents: boolean;
     /** It loads Cavvy's plugins itself (--plugin-dir). */
     loadsPlugins: boolean;
-    /** How it gets Cavvy's skills: as a plugin, as an extra skills root, or pasted into the prompt. */
-    skills: "plugin" | "skills-root" | "paste";
+    /**
+     * How it gets Cavvy's skills: as a plugin, or as an extra skills root; or pasted into the prompt, by one without
+     * skills (`paste`) or with its own (`own`: `/name` of one it lists goes to it as typed, and it runs its own).
+     */
+    skills: "plugin" | "skills-root" | "paste" | "own";
     /** The commands it lists are its skills (for the $ menu too). */
     cliCommandsAreSkills: boolean;
     pdfs: boolean;
@@ -82,7 +90,7 @@ export interface AgentCliDef {
     planLabel: string;
     cli: CliInfo & { signOut: string };
     /** The protocol its live sessions speak (src/backends/live). */
-    protocol: "claude-stream-json" | "codex-app-server" | "acp" | "agy-stream-json";
+    protocol: "claude-stream-json" | "codex-app-server" | "acp";
     /** The arguments that start an ACP CLI in ACP mode. */
     acpArgs?: string[];
     /** After its stdin is closed, how long it may take to exit before it's terminated (LiveOptions.stopGraceMs; 3 s when left out). */
@@ -102,10 +110,6 @@ export interface AgentCliDef {
     };
     /** The project's own configuration for it, which it loads only in a trusted folder (src/config/trust.ts). */
     projectConfig?: (cwd: string, has: (path: string) => boolean) => string[];
-    /** Nothing turns its projectConfig off: where the folder isn't trusted, it doesn't run (agentNeedsTrust). */
-    projectConfigAlways?: boolean;
-    /** Auto mode has no reviewer for it: Cavvy asks before each command (the mode menu says so). */
-    autoAsks?: boolean;
     /** Its models to prefer, best first (src/providers/models.ts PREFERRED). */
     preferredModels?: RegExp[];
     /** What it runs with its own sub-agents, so those providers' models aren't offered to it (src/agent/delegation.ts). */
@@ -320,9 +324,9 @@ const GROK: AgentCliDef = {
     caps: { ...ACP_CAPS, autoReviewer: true },
 };
 
-// Antigravity's CLI 1.4.9 in headless stream-json mode (`agy -p= --input-format stream-json --output-format
-// stream-json`): test/fixtures/protocol/agy-1.4.9-*.jsonl. Its protocol is src/backends/agy/connection.ts, and Cavvy's
-// permission gate (a PreToolUse hook in a workspace folder of Cavvy's own) src/backends/agy/gate.ts.
+// Antigravity's CLI 1.5.17 over ACP (`agy acp`): test/fixtures/protocol/agy-1.5.17-acp-*.jsonl. It runs as it runs on
+// its own: its own modes (Bypass is its --dangerously-skip-permissions), its own asks with its own choices, its own
+// skills, settings and folder trust. What's its own beyond this is in src/backends/acp/agents.ts.
 const ANTIGRAVITY: AgentCliDef = {
     id: "antigravity",
     name: "Antigravity",
@@ -336,45 +340,24 @@ const ANTIGRAVITY: AgentCliDef = {
         signIn: "agy",
         signOut: "agy, then /logout",
     },
-    protocol: "agy-stream-json",
-    // It runs a project's .agents/hooks.json whatever Cavvy's folder trust says: it runs only where the folder is trusted.
-    projectConfig: (cwd, has) => (has(join(cwd, ".agents", "hooks.json")) ? [".agents/hooks.json"] : []),
-    projectConfigAlways: true,
-    autoAsks: true,
-    preferredModels: [/^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
+    protocol: "acp",
+    acpArgs: ["acp"],
+    preferredModels: [/^gemini-4-neon/, /^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
     caps: {
-        // A message sent while a turn runs joins it at its next model call, through the gate's PreInvocation hook
-        // (agy-1.4.9-steer.jsonl); on stdin it would wait for the next turn (-midturn.jsonl). Its attachments go as
-        // files, as a prompt's do.
-        steering: "between-tool-rounds",
+        ...ACP_CAPS,
+        // A session/prompt sent while one runs ends that one (end_turn) and goes on with the work and the message
+        // (agy-1.5.17-acp-steer.jsonl). It takes images in a prompt, and a PDF as a link to the file, which it reads.
         steersAttachments: ["image", "text", "pdf"],
-        // A command it starts in the background, the turn waits for (agy-1.4.9-cancel-*.jsonl).
-        backgroundTasks: false,
-        stopTask: false,
-        moveToBackground: false,
-        wakes: "none",
-        // The model is set when it starts (a change restarts it, resuming the conversation). The mode is Cavvy's, at the gate.
-        live: { model: false, effort: false, mode: "per-turn" },
-        fork: false,
-        rewind: false,
-        compact: "none",
-        planLimits: "none",
-        hooks: "none",
-        mcpAttach: "none",
-        mcpInstructionsInSystemPrompt: false,
-        ownMonitor: false,
-        nativeAgents: false,
-        loadsPlugins: false,
-        skills: "paste",
-        cliCommandsAreSkills: false,
-        // Its stream-json input takes text only (agy-1.4.9-image.jsonl), but read_file shows it an image or a PDF
-        // (-attach-files.jsonl): attachments go as files of Cavvy's, named in the message.
+        // Each model id names its effort (gemini-4-neon-medium); its modes take effect from its next prompt
+        // (-mode-midturn.jsonl).
+        live: { model: true, effort: false, mode: "per-turn" },
+        // Its own skills (~/.agents/skills, its own folders) are among its commands: /name of one goes to it as typed.
+        skills: "own",
         pdfs: true,
-        images: true,
-        autoReviewer: false,
+        autoReviewer: true,
         resolvesUnknownCommands: false,
-        importSessions: false,
-        usageLogs: false,
+        // Its own /compact, sent as a prompt; it compacts by itself otherwise (agy-1.5.17-acp-compact.jsonl).
+        compact: "command",
     },
 };
 

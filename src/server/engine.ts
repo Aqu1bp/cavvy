@@ -17,7 +17,7 @@ import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo
 import { gitPrWorktree, gitPullRequests } from "./git-pr";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo, type GitBranchNameInfo } from "./protocol";
 import { endedText } from "../agent/background";
-import { mergeLimits } from "../backends/limits";
+import { mergeLimits, type MergeHow } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
@@ -49,10 +49,11 @@ import { allProviders, getProvider, readAgentConfig, readVertexConfig, saveAgent
 import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
 import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
 
-import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
-import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { checkAgentPlan, checkPlanLimits, vendorOf, type AgentCliStatus } from "../backends/index";
+import { loadPlanLimits, loadServedModels, savePlanLimits } from "./limits-store";
+import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
-import { findCli } from "../backends/cli";
+import { findCli, stopTiming } from "../backends/cli";
 import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
@@ -74,7 +75,7 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { peerOps, type PeerHost } from "./session-peers";
-import { checkMessage, PeerError, type FarPeers } from "../agent/peers";
+import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
 import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
@@ -103,11 +104,13 @@ import type {
     GuiSettings,
     HelloResult,
     KeybindingsFile,
+    ThemeReport,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
     McpStatus,
     PlanLimits,
+    ServedModel,
     Method,
     Methods,
     PermissionModeId,
@@ -130,6 +133,9 @@ import type {
     ProjectSearchResult,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
+import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
+import { ID as THEME_ID, type ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { listPlugins } from "../plugins/install";
 import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
@@ -188,6 +194,8 @@ export interface EngineOptions {
     working?: string;
     /** The clock snoozes wake by (tests). */
     now?: () => number;
+    /** Told when a turn starts with none running, and when the last one running ends: a Mac server stays awake between the two (src/servers/wake.ts). */
+    onTurns?: (running: boolean) => void;
 }
 
 /**
@@ -211,6 +219,16 @@ const RECENT_CLI_MS = 2 * 60_000;
 const UNLOAD_AFTER_MS = 30_000;
 /** How long a closed side chat can be brought back (the toast's Undo, which waits while it's pointed at). */
 const SIDE_CHAT_UNDO_MS = 60_000;
+/** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. Changeable for tests. */
+export const limitTiming = { freshMs: 3 * 60_000 };
+/** A plan check (Engine.refreshPlan): queued, then running; stopped by `abort`. */
+interface LimitJob {
+    provider: string;
+    done: Promise<void>;
+    abort: AbortController;
+}
+/** Plan checks that run at once, across accounts (each of Claude Code's is a process of a few hundred MB). */
+const LIMIT_CHECKS_AT_ONCE = 2;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long without a turn running before the server hands memory back (idleNow). */
@@ -242,6 +260,8 @@ export interface EngineClient {
     window?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
+    /** The theme its window shows (null: none), as it last said, and when. */
+    theme?: { id: string | null; scheme: "light" | "dark"; at: number };
     /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
     machine?: string;
     /** Sessions of servers this machine lends to that this window shows (offers.session), by `name\0id`: it hears how what's lent them changes. */
@@ -507,6 +527,9 @@ export class Engine {
 
     private readonly unregisterAccountRoots: () => void;
     private stopKeybindings?: () => void;
+    private stopThemes?: () => void;
+    /** Agents waiting to hear how a theme they asked for came out (showTheme), by request. */
+    private themeReports = new Map<string, (r: ThemeReport) => void>();
     /** The desktop app updating itself from main: only the installed app does. */
     private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
@@ -531,6 +554,8 @@ export class Engine {
         void Promise.resolve(pathSettling).then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        // And a save of a theme: one an agent is working on changes on screen as it's written.
+        this.stopThemes = watchThemes(() => this.broadcast({ type: "themes.changed", themes: listThemes() }));
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
@@ -577,7 +602,7 @@ export class Engine {
      * it held with them open after a turn each. The next turn compiles again: about 70 ms of CPU more, once.
      */
     private idleNow(id: string) {
-        this.turnsRunning.delete(id);
+        if (this.turnsRunning.delete(id) && !this.turnsRunning.size) this.o.onTurns?.(false);
         if (this.turnsRunning.size || this.stopping || this.shrinkTimer) return;
         this.shrinkTimer = setTimeout(() => {
             this.shrinkTimer = undefined;
@@ -589,6 +614,7 @@ export class Engine {
     /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
     turnRunning(rt: Runtime, running: boolean) {
         if (running) {
+            if (!this.turnsRunning.size) this.o.onTurns?.(true);
             this.turnsRunning.add(rt.id);
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;
@@ -641,12 +667,16 @@ export class Engine {
         this.serverLinks?.stopWatching();
         for (const c of [...this.mcpCallbacks.values()]) c.stop();
         this.planChecks.abort();
+        // Plan checks: those waiting don't start; those running are stopped and waited for, alongside the rest of the
+        // shutdown, as long as runCli may take to kill one that doesn't stop and give up on its output.
+        const limitChecksStopped = Promise.race([Promise.all([...this.limitUnsettled]), new Promise((r) => setTimeout(r, 2 * stopTiming.killMs + 1000))]);
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         this.alarm.stop();
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
+        this.stopThemes?.();
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
@@ -658,6 +688,7 @@ export class Engine {
         await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
         await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
+        await limitChecksStopped;
         this.unregisterAccountRoots();
     }
 
@@ -689,6 +720,53 @@ export class Engine {
     /** The session's browser changed: the windows that have it open hear of it. */
     sendBrowser(sessionId: string, state: BrowserState) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
+    }
+
+    /**
+     * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
+     * undefined when there's no window, `{ sent }` alone when none answered in time.
+     */
+    /**
+     * This machine's windows: the ones that show a theme. A window on a server is one too, by its own connection here
+     * (gui/src/lib/machines.ts home): it shows this machine's themes, whichever machine its sessions are on.
+     */
+    private themeWindowClients() {
+        return [...this.clients].filter((c) => c.window !== undefined);
+    }
+
+    themeWindows(): number {
+        return this.themeWindowClients().length;
+    }
+
+    /**
+     * The theme this machine's windows show (null: none), as the one that changed last says; undefined with no window.
+     * A window that hasn't said shows none: one with a theme says so as it starts (gui/src/state/theme-events.ts).
+     */
+    themeShowing(): { id: string | null; scheme?: "light" | "dark" } | undefined {
+        const windows = this.themeWindowClients();
+        if (!windows.length) return undefined;
+        let last: EngineClient["theme"];
+        for (const c of windows) if (c.theme && (!last || c.theme.at >= last.at)) last = c.theme;
+        return last ? { id: last.id, scheme: last.scheme } : { id: null };
+    }
+
+    async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
+        const windows = this.themeWindowClients();
+        if (!windows.length) return { sent: 0 };
+        const request = randomUUID();
+        const report = new Promise<ThemeReport | undefined>((done) => {
+            const timer = setTimeout(() => {
+                this.themeReports.delete(request);
+                done(undefined);
+            }, waitMs);
+            this.themeReports.set(request, (r) => {
+                clearTimeout(timer);
+                this.themeReports.delete(request);
+                done(r);
+            });
+        });
+        for (const c of windows) c.send({ type: "theme.apply", id, ...(entry ? { entry } : {}), ...(replaced ? { replaced } : {}), request });
+        return { sent: windows.length, report: await report };
     }
 
     sessionShown(sessionId: string): boolean {
@@ -1222,6 +1300,33 @@ export class Engine {
                 return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
             },
             defaultMode: (ws) => this.defaultMode(ws),
+            defaultModeIn: (cwd) => {
+                const p = resolve(expandHome(cwd));
+                if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+                // Each as a session made here would come out: Manual for what isn't a mode, and for Bypass where it isn't turned on (Runtime).
+                const real = (m: PermissionMode): PermissionMode => (!PERMISSION_MODES.includes(m) || (m === "bypassPermissions" && !this.bypassAllowed(p)) ? "default" : m);
+                const folder = real(this.defaultMode(this.workspaceFor(p)));
+                // On the user's own computer, no freer than their own settings file says: the folder's file can ask
+                // for more of the user (Manual, Plan), but isn't their word on what another machine's session gets.
+                return onServer() ? folder : narrowerMode(folder, real(defaultMode(loadScope("user", p), p).mode));
+            },
+            // Its recent folders, and what's inside one (a worktree of the project's): each as the folder it really is,
+            // so a link inside one that leads elsewhere isn't inside it. A recent folder counts only while the path it
+            // was opened by is still the folder itself: one put in its place since as a link (by a session working in
+            // the folder above it, say) would lead wherever that link does.
+            known: (cwd) => {
+                const real = (path: string) => {
+                    try {
+                        return realpathSync(path);
+                    } catch {
+                        return undefined;
+                    }
+                };
+                const p = real(resolve(expandHome(cwd)));
+                if (!p || !isDir(p)) return undefined;
+                const roots = [...new Set([...this.usedAt.keys(), ...(readStore().recent ?? []).map((r) => r.path)])].filter((r) => real(r) === r);
+                return roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)) ? p : undefined;
+            },
             listings: () => this.listings,
             release: (id) => this.unloadLater(id),
             starts: this.sessionStarts,
@@ -2266,12 +2371,12 @@ export class Engine {
 
     private limits = new Map<string, PlanLimits>();
 
-    /** Never let a delayed report or a different account replace this account's meter. */
-    limitsReported(limits: PlanLimits, partial: boolean) {
+    /** Never let a delayed report or a different account replace this account's meter. `full`, `statusUnsaid`: as mergeLimits takes them. */
+    limitsReported(limits: PlanLimits, partial: boolean, o: boolean | MergeHow = false) {
         const key = planLimitKey(limits.provider, limits.accountId);
         const prev = this.limits.get(key);
         if (prev && prev.at > limits.at) return;
-        const merged = mergeLimits(prev, limits, partial);
+        const merged = mergeLimits(prev, limits, partial, o);
         this.limits.set(key, merged);
         this.saveLimits();
         this.broadcast({ type: "limits", limits: merged });
@@ -2280,16 +2385,32 @@ export class Engine {
     /** The limits saved when the server last ran, for accounts that still exist; shown with their age until a newer report. */
     private loadLimits() {
         for (const l of loadPlanLimits()) {
-            if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(l.provider) || !listAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
+            // Any agent CLI that reports plan limits, for an account it still has.
+            if (agentCli(l.provider)?.caps.planLimits === "none" || !agentCli(l.provider) || !cliAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
             const key = planLimitKey(l.provider, l.accountId);
             const prev = this.limits.get(key);
             if (!prev || prev.at < l.at) this.limits.set(key, l);
         }
+        for (const s of loadServedModels()) if (agentCli(s.provider) && cliAccounts(s.provider).some((a) => a.id === s.accountId)) this.served.set(JSON.stringify([s.provider, s.accountId, s.model]), s);
+    }
+
+    /** The model each alias was last served as, by CLI, account and alias (a model limit covers it or not): saved with the limits. */
+    private served = new Map<string, ServedModel>();
+
+    /** A session's CLI served `model` (an alias, say) as `served` on this account. */
+    modelServed(provider: string, accountId: string, model: string, served: string) {
+        const key = JSON.stringify([provider, accountId, model]);
+        if (this.served.get(key)?.served === served) return;
+        this.served.delete(key);
+        this.served.set(key, { provider, accountId, model, served });
+        if (this.served.size > 200) this.served.delete(this.served.keys().next().value!);
+        this.saveLimits();
+        this.broadcast({ type: "served", served: { provider, accountId, model, served } });
     }
 
     private saveLimits() {
         try {
-            savePlanLimits([...this.limits.values()]);
+            savePlanLimits([...this.limits.values()], [...this.served.values()]);
         } catch (e) {
             this.log(`Couldn't save plan limits: ${(e as Error).message}`);
         }
@@ -2297,6 +2418,121 @@ export class Engine {
 
     private readonly planChecks = new AbortController();
     private checkingPlans: Promise<void> = Promise.resolve();
+
+    /** Plan checks queued or running (limits.refresh), and when each account's last one started: by planLimitKey. */
+    private limitJobs = new Map<string, LimitJob>();
+    private limitAsked = new Map<string, number>();
+    /** Every check not settled yet, including one stopped by its account's removal: the server waits for them as it stops. */
+    private limitUnsettled = new Set<Promise<void>>();
+    /** Checks running now, and those waiting for one of the LIMIT_CHECKS_AT_ONCE places. */
+    private limitRunning = 0;
+    private limitWaiting: { give: (placed: boolean) => void; signal: AbortSignal }[] = [];
+
+    /**
+     * Where the plans stand now, asked of the CLIs without a turn (checkPlanLimits): when their usage is opened (the
+     * rail's card, Settings → Usage). `plans`: those accounts, else every account of each CLI turned on. An account
+     * has one check at a time (asked again meanwhile, that one answers), and isn't asked again while the oldest
+     * figure shown for it (or its last check) is a few minutes old, unless one of its windows has reset since. A
+     * couple of checks run at a time (Claude Code's take a process of a few hundred MB each). What a check can't
+     * read leaves the last report.
+     */
+    refreshLimits(plans?: { provider: string; accountId?: string }[]): Promise<void> {
+        const which = plans ?? AGENT_CLIS.filter((d) => readAgentConfig(d.id)).flatMap((d) => cliAccounts(d.id).filter((a) => !a.invalid).map((a) => ({ provider: d.id, accountId: a.id })));
+        return Promise.all(which.map((p) => this.refreshPlan(p.provider, p.accountId ?? "default"))).then(() => undefined);
+    }
+
+    /** Whether an account's plan can be checked now: its CLI reports limits and is turned on, the account exists and isn't signed out or on an API key. */
+    private limitCheckable(provider: string, accountId: string): boolean {
+        const def = agentCli(provider);
+        if (!def || def.caps.planLimits === "none" || !readAgentConfig(provider) || this.stopping) return false;
+        if (!this.hasAccount(provider, accountId)) return false;
+        const status = this.accountStatus.get(`${provider}:${accountId}`);
+        return !(status?.signedIn === false || status?.apiKey);
+    }
+
+    private refreshPlan(provider: string, accountId: string): Promise<void> {
+        if (!this.limitCheckable(provider, accountId)) return Promise.resolve();
+        const key = planLimitKey(provider, accountId);
+        // Queued or running: that check answers this too.
+        const current = this.limitJobs.get(key);
+        if (current) return current.done;
+        const now = Date.now();
+        const prev = this.limits.get(key);
+        const since = Math.max(prev ? reportedOf(prev, now) : 0, this.limitAsked.get(key) ?? 0);
+        if (now - since < limitTiming.freshMs && !prev?.windows.some((w) => w.resetsAt !== undefined && w.resetsAt > since && w.resetsAt <= now)) return Promise.resolve();
+        const abort = new AbortController();
+        const stop = () => abort.abort();
+        this.planChecks.signal.addEventListener("abort", stop, { once: true });
+        const job: LimitJob = { provider, abort, done: Promise.resolve() };
+        let placed = false;
+        // Still wanted: not stopped (the account removed, the CLI turned off, the server stopping), and still checkable.
+        const wanted = () => !abort.signal.aborted && this.limitJobs.get(key) === job && this.limitCheckable(provider, accountId);
+        job.done = this.limitPlace(abort.signal)
+            .then((got): ReturnType<typeof checkPlanLimits> | undefined => {
+                placed = got;
+                if (!got || !wanted()) return undefined;
+                this.limitAsked.set(key, Date.now());
+                return checkPlanLimits(provider, abort.signal, accountId);
+            })
+            .then((r): void => {
+                if (r && wanted()) this.limitsReported(r.limits, false, { full: r.full, statusUnsaid: r.statusUnsaid });
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                this.planChecks.signal.removeEventListener("abort", stop);
+                if (placed) this.limitFree();
+                this.limitUnsettled.delete(job.done);
+                if (this.limitJobs.get(key) === job) this.limitJobs.delete(key);
+            });
+        this.limitJobs.set(key, job);
+        this.limitUnsettled.add(job.done);
+        return job.done;
+    }
+
+    private hasAccount(provider: string, accountId: string): boolean {
+        return cliAccounts(provider).some((a) => a.id === accountId && !a.invalid);
+    }
+
+    /** Waits for one of the places for a plan check (true), or until `signal` gives up waiting (false); limitFree gives a place back. */
+    private limitPlace(signal: AbortSignal): Promise<boolean> {
+        if (signal.aborted) return Promise.resolve(false);
+        if (this.limitRunning < LIMIT_CHECKS_AT_ONCE) {
+            this.limitRunning++;
+            return Promise.resolve(true);
+        }
+        return new Promise((resolve) => {
+            const entry = { give: (placed: boolean) => (signal.removeEventListener("abort", leave), resolve(placed)), signal };
+            const leave = () => {
+                this.limitWaiting = this.limitWaiting.filter((w) => w !== entry);
+                resolve(false);
+            };
+            signal.addEventListener("abort", leave, { once: true });
+            this.limitWaiting.push(entry);
+        });
+    }
+
+    private limitFree() {
+        const next = this.limitWaiting.shift();
+        if (next) next.give(true);
+        else this.limitRunning--;
+    }
+
+    /** An account removed: its check is stopped (its answer isn't wanted), and its next isn't held back. */
+    private forgetLimitChecks(provider: string, accountId: string) {
+        const key = planLimitKey(provider, accountId);
+        this.limitJobs.get(key)?.abort.abort();
+        this.limitJobs.delete(key);
+        this.limitAsked.delete(key);
+    }
+
+    /** A CLI turned off: its checks are stopped. */
+    private stopLimitChecks(provider: string) {
+        for (const [key, job] of this.limitJobs) {
+            if (job.provider !== provider) continue;
+            job.abort.abort();
+            this.limitJobs.delete(key);
+        }
+    }
 
     /**
      * Without a turn: is each account of a CLI in use signed in, on what plan,
@@ -2313,7 +2549,7 @@ export class Engine {
                 try {
                     const { status, limits } = await checkAgentPlan(provider, this.planChecks.signal, id);
                     if (this.stopping) return false;
-                    if (limits) this.limitsReported(limits, false);
+                    if (limits) this.limitsReported(limits, false, true);
                     return this.noteStatus(provider, id, status);
                 } catch {
                     // Left as it was: Settings asks again.
@@ -2356,7 +2592,7 @@ export class Engine {
                     // Codex on a plan says where its limits stand from the same app-server.
                     const { status, limits } = await checkAgentPlan(provider, undefined, a.id);
                     this.noteStatus(provider, a.id, status);
-                    if (limits) this.limitsReported(limits, false);
+                    if (limits) this.limitsReported(limits, false, true);
                 } catch (e) {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
@@ -2402,7 +2638,6 @@ export class Engine {
                         planLimits: def.caps.planLimits !== "none",
                         env: agentEnvInfo(p.id),
                         instances: listInstances(p.id),
-                        ...(def.autoAsks ? { autoAsks: true } : {}),
                     },
                 });
                 continue;
@@ -2719,7 +2954,9 @@ export class Engine {
                         // This computer's own rules for the session tools hold for what a server asks through it: of its sessions, and of the other servers'.
                         const { settings, unreadable } = loadScopeChecked("user", homedir());
                         if (unreadable) return "Cavvy on your computer couldn't read its settings, so it doesn't answer about sessions on other machines.";
-                        return peersDenied(settings.permissions?.deny ?? [], tool) ? `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.` : undefined;
+                        if (peersDenied(settings.permissions?.deny ?? [], tool)) return `Your computer's settings deny ${tool}, so sessions on other machines can't use it through your computer.`;
+                        // A rule that asks first: there's nobody to ask for a call from another machine, so it isn't made.
+                        return peersDenied(settings.permissions?.ask ?? [], tool) ? `Your computer's settings ask before ${tool}, and a call from another machine can't be asked about there, so it isn't made. Ask the user to do it themselves.` : undefined;
                     }),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
@@ -2777,7 +3014,7 @@ export class Engine {
         forgetClient(def.id);
         await this.afterKeyChange(def.id);
         this.noteStatus(def.id, "default", st);
-        if (limits) this.limitsReported(limits, false);
+        if (limits) this.limitsReported(limits, false, true);
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
     }
 
@@ -3152,6 +3389,7 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "theme", description: "Pick a theme for the window" },
             { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
@@ -3382,6 +3620,23 @@ export class Engine {
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "themes.list":
+                return listThemes();
+            case "themes.remove":
+                return { text: removeTheme(str(p.id, "id")) };
+            case "themes.restore":
+                restoreTheme(str(p.id, "id"), str(p.text, "text"), undefined, p.replace === true);
+                return null;
+            case "themes.report": {
+                const r = p as unknown as ThemeReport;
+                if (typeof r.request === "string") this.themeReports.get(r.request)?.({ request: r.request, shown: r.shown === true, ...(r.scheme === "light" || r.scheme === "dark" ? { scheme: r.scheme } : {}), ...(typeof r.veil === "number" ? { veil: r.veil } : {}), ...(typeof r.veilMost === "number" ? { veilMost: r.veilMost } : {}), ...(Array.isArray(r.failed) ? { failed: r.failed.filter((n) => typeof n === "number").slice(0, 60) } : {}), ...(r.still === true ? { still: true } : {}), ...(typeof r.picture === "string" && r.picture.length < 2_000_000 && /^[A-Za-z0-9+/]+=*$/.test(r.picture) ? { picture: r.picture } : {}) });
+                return null;
+            }
+            case "themes.showing": {
+                const id = typeof p.id === "string" && THEME_ID.test(p.id) ? p.id : null;
+                client.theme = { id, scheme: p.scheme === "light" ? "light" : "dark", at: Date.now() };
+                return null;
+            }
             case "keybindings.create": {
                 const path = keybindingsPath();
                 return { created: ensureKeybindingsFile(path), path };
@@ -3888,6 +4143,7 @@ export class Engine {
                 if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
+                this.forgetLimitChecks(provider, id);
                 this.limits.delete(planLimitKey(provider, id));
                 this.saveLimits();
                 this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
@@ -4023,6 +4279,7 @@ export class Engine {
             }
             case "peers.list":
             case "peers.read":
+            case "peers.start":
             case "peers.send": {
                 // Asked by the user's own computer, about this server's sessions (far-peers.ts).
                 if (!this.o.away) throw new RpcError("Only a server is asked about its sessions this way.", "unsupported");
@@ -4035,6 +4292,13 @@ export class Engine {
                     // Named as this server names another machine's session (`mac/<id>`, `box/<id>`): shown in the message.
                     const from = str(f.id, "from.id");
                     if (!/^[\w.-]{1,40}\/[\w.-]{1,120}$/.test(from)) throw new RpcError("That message names no session it's from.", "invalid");
+                    if (method === "peers.start") {
+                        const prompt = checkMessage(p.prompt, "prompt");
+                        return await ops.start(
+                            { cwd: str(p.cwd, "cwd"), prompt, title: (optStr(p.title) ?? prompt).replace(/\s+/g, " ").trim().slice(0, 80), ...(optStr(p.model) ? { model: optStr(p.model)!.slice(0, 200) } : {}), ...(optStr(p.effort) ? { effort: optStr(p.effort)!.slice(0, 40) } : {}) },
+                            { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode },
+                        );
+                    }
                     return await ops.send(str(p.id, "id"), checkMessage(p.message), { id: from, title: typeof f.title === "string" ? f.title.slice(0, 300) : "", mode });
                 } catch (e) {
                     if (e instanceof PeerError) throw new RpcError(e.message, "peer");
@@ -4151,6 +4415,7 @@ export class Engine {
                     if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
                     await turnOffAgent(id);
+                    this.stopLimitChecks(id);
                     forgetClient(id);
                     await this.afterKeyChange(id);
                     return this.providerRemoved(id);
@@ -4368,6 +4633,13 @@ export class Engine {
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
             case "limits.get":
                 return [...this.limits.values()];
+            case "served.get":
+                return [...this.served.values()];
+            case "limits.refresh": {
+                const plans = Array.isArray(p.plans) ? p.plans.slice(0, 20).filter((x: any) => x && typeof x.provider === "string" && x.provider.length <= 60 && (x.accountId === undefined || (typeof x.accountId === "string" && x.accountId.length <= 100))).map((x: any) => ({ provider: x.provider as string, accountId: x.accountId as string | undefined })) : undefined;
+                await this.refreshLimits(plans);
+                return null;
+            }
             case "usage.summary": {
                 const days = usageDays(p.days);
                 const reading = usageSummary(days, Date.now(), [...this.limits.values()]).then((own) => {

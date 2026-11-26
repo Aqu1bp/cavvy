@@ -177,12 +177,17 @@ function callTool(req: Request, srv: Server<undefined>, entry: Entry, id: unknow
     srv.timeout(req, 0);
     if (!(req.headers.get("accept") ?? "").includes("text/event-stream")) return jsonWhenDone(result, id);
     const enc = new TextEncoder();
+    // A client that sent a progress token gets progress instead: some (OpenCode) end a call after 60 seconds unless
+    // progress comes, and a comment doesn't count.
+    const token = typeof meta.progressToken === "string" || typeof meta.progressToken === "number" ? meta.progressToken : undefined;
+    let beats = 0;
     let timer: ReturnType<typeof setInterval> | undefined;
     const stream = new ReadableStream<Uint8Array>({
         start(c) {
             timer = setInterval(() => {
                 try {
-                    c.enqueue(enc.encode(": keep-alive\n\n"));
+                    const progress = { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: ++beats } };
+                    c.enqueue(enc.encode(token === undefined ? ": keep-alive\n\n" : `event: message\ndata: ${JSON.stringify(progress)}\n\n`));
                 } catch {
                     clearInterval(timer);
                 }

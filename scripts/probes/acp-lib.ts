@@ -57,7 +57,10 @@ export const HOME = homedir();
 export const STATE_DIRS = {
     grok: [join(HOME, ".grok")],
     opencode: [".local/share/opencode", ".local/state/opencode", ".cache/opencode", ".config/opencode"].map((p) => join(HOME, p)),
+    // Its sign-in, conversations and settings.
+    agy: [join(HOME, ".gemini")],
 };
+const BINS = { grok: join(HOME, ".local/bin/grok"), opencode: "/opt/homebrew/bin/opencode", agy: join(HOME, ".local/bin/agy") };
 
 export type Answer = "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancelled" | "none";
 
@@ -68,13 +71,14 @@ export type PermissionRequest = { id: any; params: any; command?: string; paths:
 /** The shell command a tool call carries, if any (each CLI names the field differently). */
 function commandOf(toolCall: any): string | undefined {
     const ri = toolCall?.rawInput ?? {};
-    const c = ri.command ?? ri.cmd ?? ri.commands;
+    // Antigravity's run_command names it CommandLine.
+    const c = ri.command ?? ri.cmd ?? ri.commands ?? ri.CommandLine;
     return typeof c === "string" ? c : Array.isArray(c) ? c.join(" ") : undefined;
 }
 function pathsOf(toolCall: any, cwd: string): string[] {
     const ri = toolCall?.rawInput ?? {};
     const out: string[] = [];
-    for (const k of ["filePath", "file_path", "path", "target_file", "filepath", "file"]) if (typeof ri[k] === "string") out.push(ri[k]);
+    for (const k of ["filePath", "file_path", "path", "target_file", "filepath", "file", "Path", "AbsolutePath", "TargetFile"]) if (typeof ri[k] === "string") out.push(ri[k]);
     for (const l of toolCall?.locations ?? []) if (typeof l?.path === "string") out.push(l.path);
     return out.map((p) => (p.startsWith("/") ? p : resolve(cwd, p)));
 }
@@ -86,7 +90,7 @@ const inside = (p: string, dir: string) => {
 };
 
 export type AcpOpts = {
-    cli: "grok" | "opencode";
+    cli: keyof typeof BINS;
     args: string[];
     workspace: string;
     env?: Record<string, string>;
@@ -107,7 +111,7 @@ export class Acp {
         readonly log: Log,
         readonly opts: AcpOpts,
     ) {
-        const bin = opts.cli === "grok" ? join(HOME, ".local/bin/grok") : "/opt/homebrew/bin/opencode";
+        const bin = BINS[opts.cli];
         const inner = [bin, ...opts.args];
         const sandboxed = opts.sandbox !== false ? ["sandbox-exec", "-p", sandboxProfile(opts.workspace, STATE_DIRS[opts.cli])] : [];
         const cmd = ["perl", "-e", "alarm shift; exec @ARGV", String(opts.timeoutSec ?? 240), ...sandboxed, ...inner];

@@ -841,9 +841,7 @@ async function main() {
 
     if (mode === "bypassPermissions")
         notes.push(
-            thisIsAServer()
-                ? `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules still apply).`
-                : `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules and catastrophic-command guards still apply).`,
+            `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules still apply).`,
         );
     const { App } = await import("./ui/app");
     const app = new App({

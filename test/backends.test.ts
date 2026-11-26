@@ -2084,7 +2084,7 @@ describe("review findings (PR #1)", () => {
         expect((toolEnds(a.events)[0] as any).result.content).toMatch(/Denied by permission rule Edit\(secrets\/\*\*\)/);
     });
 
-    test("4. Codex's requests for more permissions: refused in plan mode and past deny rules, otherwise asked", async () => {
+    test("4. Codex's requests for more permissions: refused in plan mode and past deny rules, granted unasked in Bypass, otherwise asked", async () => {
         process.env.FAKE_SCENARIO = "perms";
         const granted = () => logLines().find((l) => "granted" in l)?.granted;
         const plan = await makeAgent({ provider: "codex", mode: "plan", ask: () => ({ allow: true }) });
@@ -2103,6 +2103,20 @@ describe("review findings (PR #1)", () => {
         expect(asked.asked).toHaveLength(1);
         expect(asked.asked[0]!.decision.reason).toContain(`write ${join(realpathSync(cwd), "secrets")}`);
         expect(granted()?.permissions?.fileSystem?.write).toEqual([join(realpathSync(cwd), "secrets")]);
+        // In Bypass nothing is asked about: granted, past the deny rules.
+        rmSync(LOG, { force: true });
+        const bypass = await makeAgent({ provider: "codex", mode: "bypassPermissions", ask: () => ({ allow: false }) });
+        await bypass.run("go");
+        expect(bypass.asked).toHaveLength(0);
+        expect(granted()?.permissions?.fileSystem?.write).toEqual([join(realpathSync(cwd), "secrets")]);
+    });
+
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) still reaches the user", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        // The stand-in asks about what an ask rule names, as the CLI does for a hook that says ask.
+        const a = await makeAgent({ provider: "claude-code", mode: "bypassPermissions", settings: { permissions: { ask: ["Bash(npm test)"] } }, ask: () => ({ allow: false }) });
+        await a.run("go");
+        expect(a.asked.map((r) => r.input.command)).toEqual(["npm test"]);
     });
 
     test("4. switching to plan mode mid-turn stops Codex's turn and goes on under plan mode", async () => {
@@ -4256,7 +4270,7 @@ describe("Cavvy's agents on Claude Code", () => {
         expect(starts()[0].argv).not.toContain("--agents");
     });
 
-    test("what a sub-agent asks about: the session's mode, or the agent's own where stricter; a card whenever Claude Code asks, but none in bypass", async () => {
+    test("what a sub-agent asks about: the session's mode, or the agent's own where stricter; a card whenever Claude Code asks, in its own bypass mode too", async () => {
         mkdirSync(paths.userAgents(), { recursive: true });
         writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
         writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
@@ -4276,8 +4290,9 @@ describe("Cavvy's agents on Claude Code", () => {
         expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
         expect(await run("general-purpose", "default")).toEqual({ asked: 1, answer: "deny" });
         expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
-        // Bypass: no card, whoever asks; an agent stricter than that (careful) still asks.
-        expect(await run("general-purpose", "bypassPermissions")).toEqual({ asked: 0, answer: "allow" });
+        // Bypass: Claude Code runs in its own bypass mode, where it asks only what a hook of the user's says to ask
+        // about (BackendPermission.ownBypassAsk): that's the user's, a card. An agent stricter than that (careful) asks too.
+        expect(await run("general-purpose", "bypassPermissions")).toEqual({ asked: 1, answer: "deny" });
         expect(await run("careful", "bypassPermissions")).toEqual({ asked: 1, answer: "deny" });
         // Plan mode in the session wins over the agent's own.
         expect((await run("writer", "plan")).answer).toBe("deny");

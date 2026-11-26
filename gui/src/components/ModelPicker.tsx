@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, servedFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -13,9 +13,9 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
-import { meterOf } from "../lib/limits";
+import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, windowShort, type NearLimit } from "../lib/limits";
+import { covers } from "@shared/plan-meter";
 import { now } from "../lib/clock";
-import { nearLimit } from "./ComposerMeter";
 
 function fuzzy(q: string, s: string): boolean {
     q = q.toLowerCase();
@@ -262,13 +262,14 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
     const limitOf = (provider: string, id: string) => limitsFor(p.sessionId)[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
-        const l = limitOf(provider, id);
-        return nearLimit(meterOf(l, now()), l, now());
+        return nearLimit(meterOf(limitOf(provider, id), now()));
     };
     const accountTip = (provider: string, a: Partial<AccountInfo> & { id: string }) => {
         const m = meterOf(limitOf(provider, a.id), now());
-        const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.filter((w) => w.pct !== undefined).map((w) => `${w.label} ${w.pct}%`).join(", ");
-        return [accountDetail(a), limits].filter(Boolean).join(". ") || undefined;
+        const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.map(windowShort).filter(Boolean).join(", ");
+        // Named as every surface names a plan (planTitle), then its email and whether it can be used.
+        const title = planTitle(providersFor(p.sessionId).find((x) => x.id === provider), a.id).title;
+        return [[title, accountDetail({ ...a, plan: undefined })].filter(Boolean).join(" · "), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
         const needed = Boolean(target() && handleFor(target()!)?.view.state.accountNeeded === provider);
@@ -417,8 +418,26 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         return { text: "No models." };
     };
 
+    /**
+     * What stops a model on its account's plan, when its row has to say it: a model's limit (Fable's) that covers it
+     * (the session's own model by the one its CLI served, as the composer; an alias not served yet may be under it),
+     * or the plan's own where the account's badge isn't in view (search, Favorites).
+     */
+    const modelLimit = (m: ModelSummary) => {
+        if (!accountInfo(m.provider)) return undefined;
+        const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
+        const account = selectedAccount(m.provider);
+        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, servedFor(p.sessionId));
+        const model = { id: m.id, resolved: served };
+        const stop = limitFor(meter, model);
+        if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;
+        const name = stop.window ? `${limitName(stop.window)} limit` : "Limit";
+        const sure = !stop.window?.scope || covers(stop.window.scope, model) === true;
+        return `${sure ? `${name} reached` : `May be under the ${name}, reached`}${stop.resets ? `, resets ${stop.resets}` : ""}`;
+    };
     const rowView = (r: Row) => {
         const name = modelName(r.m);
+        const stopped = () => modelLimit(r.m);
         const i = r.i;
         const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
         return (
@@ -455,6 +474,10 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={r.line} size={14} /></span>
                         </Show>
                         <span class="mr-name truncate">{name}</span>
+                        {/* Its model limit reached: marked as an account at its limit is. */}
+                        <Show when={stopped()}>
+                            {(title) => <span class="mp-acct-lv full mr-lim" title={title()}>limit</span>}
+                        </Show>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>
                         </Show>
@@ -478,7 +501,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const accounts = (provider: string) => {
         const label = `${providerName(provider)} account`;
         const current = () => accountChoices(provider).find((a) => a.id === selectedAccount(provider));
-        const level = (pct: number, long: boolean) => <span class={`mp-acct-lv ${pct >= 100 ? "full" : ""}`}>{pct >= 100 ? (long ? "Limit reached" : "limit") : `${pct}%${long ? " used" : ""}`}</span>;
+        // Read through the accessor in the JSX, so an open picker follows the account's limit as it changes.
+        const level = (n: () => NearLimit, long: boolean) => <span class={`mp-acct-lv ${n().reached ? "full" : ""}`}>{limitBadge(n(), long)}</span>;
         return (
             <span class="mp-acct" ref={(el) => (acctEl = el)} onFocusOut={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setAcctOpen(false)}>
                 <button
@@ -490,7 +514,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     onClick={(e) => openAccounts(!acctOpen(), e.detail === 0)}
                 >
                     <span class="truncate">{current()?.name ?? "Choose account"}</span>
-                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l().pct, false)}</Show>
+                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l, false)}</Show>
                     <ChevronDown size={12} class="chev" />
                 </button>
                 <Show when={acctOpen()}>
@@ -515,7 +539,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                             </Show>
                                         </span>
                                         <span class="truncate">{a.name}</span>
-                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l().pct, true)}</Show>
+                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l, true)}</Show>
                                     </button>
                                 );
                             }}

@@ -10,13 +10,20 @@ const source = readFileSync(new URL("../../gui/src/components/TurnView.tsx", imp
 const icon = (name: string) => () => node(`icon:${name}`);
 const rewinds: number[] = [];
 let imagesReady = false;
+type Img = { mediaType: string; data: string };
+let thumbsOf: () => Promise<{ mediaType: string; thumb: string }[]> = async () => [];
+let wholeOf: (id: string, pos: unknown, key: string) => Promise<Img[]> = async () => [];
+const viewed: { images: { name: string; full: unknown; preview?: string }[]; index: number }[] = [];
+const toasts: string[] = [];
 const UserPrompt = component(source, "UserPrompt", {
     splitComments, linesLabel, linesPhrase, plural, promptTime, shortPrompt,
     formatSize: (n: number) => `${n} B`,
     findReveal: () => undefined,
     imagesReady: () => imagesReady,
-    promptImages: async () => [],
-    setViewedImage() {},
+    promptImages: () => thumbsOf(),
+    wholePromptImages: (id: string, pos: unknown, key: string) => wholeOf(id, pos, key),
+    toast: (m: string) => toasts.push(m),
+    setViewedImage: (v: (typeof viewed)[number]) => viewed.push(v),
     openReview() {},
     CopyButton: (p: { label: string }) => { const n = node("copy"); n.props.label = p.label; return n; },
     BellRing: icon("bell"), Clock: icon("clock"), SquareTerminal: icon("terminal"), MessageSquareText: icon("comment"), FileText: icon("file"), RotateCcw: icon("rewind"),
@@ -102,6 +109,37 @@ test("a prompt's images keep their places, at their shapes, from the first frame
         gone.dispose();
     } finally {
         imagesReady = false;
+    }
+});
+
+test("a prompt's thumbnail opens the viewer on its images whole, asked for then; the thumbnails show first", async () => {
+    imagesReady = true;
+    const asked: unknown[][] = [];
+    thumbsOf = async () => [{ mediaType: "image/png", thumb: "data:thumb1" }, { mediaType: "image/png", thumb: "data:thumb2" }];
+    wholeOf = async (...a) => (asked.push(a), [{ mediaType: "image/png", data: "AAA" }, { mediaType: "image/png", data: "BBB" }]);
+    try {
+        const m = mount({ pos: { seg: 0, index: 3 }, prompt: { text: "these", images: 2, imagesKey: "k2", imageSizes: [[10, 10], [10, 10]], index: 3 } });
+        await new Promise((r) => setTimeout(r, 10));
+        const buttons = all(m.row).filter((n) => classOf(n).includes("prompt-image") && n.tag === "button");
+        expect(buttons.map((b) => all(b).find((n) => n.tag === "img")?.props.src)).toEqual(["data:thumb1", "data:thumb2"]);
+        // Nothing whole is asked for until one is opened.
+        expect(asked).toEqual([]);
+        buttons[1]!.props.onClick({ currentTarget: buttons[1] });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(asked).toEqual([["s1", { seg: 0, index: 3 }, "k2"]]);
+        expect(viewed.at(-1)).toEqual({ images: [{ name: "Image 1", full: { mediaType: "image/png", data: "AAA" }, preview: "data:thumb1" }, { name: "Image 2", full: { mediaType: "image/png", data: "BBB" }, preview: "data:thumb2" }], index: 1, from: buttons[1] } as never);
+        // Gone since: no viewer, a toast.
+        const before = viewed.length;
+        wholeOf = async () => { throw new Error("not_found"); };
+        buttons[0]!.props.onClick({ currentTarget: buttons[0] });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(viewed.length).toBe(before);
+        expect(toasts.at(-1)).toBe("Couldn't open the image");
+        m.dispose();
+    } finally {
+        imagesReady = false;
+        thumbsOf = async () => [];
+        wholeOf = async () => [];
     }
 });
 
