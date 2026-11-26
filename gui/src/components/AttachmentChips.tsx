@@ -88,12 +88,13 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                         return undefined;
                                     };
                                     const pasted = () => f().kind === "text" && Boolean((f() as { pasted?: boolean }).pasted);
-                                    const meta = () => {
-                                        const x = f();
-                                        return x.kind === "text" ? `${plural(x.lines, "line")} · ${formatSize(x.size)}` : formatSize(x.size);
-                                    };
                                     /** Brought back from the side chat: marked as the side chat's tab is. */
                                     const sideChat = () => f().kind === "text" && (f() as { from?: string }).from === "side-chat";
+                                    // A brought-back answer's size in bytes says nothing: its lines only.
+                                    const meta = () => {
+                                        const x = f();
+                                        return x.kind === "text" ? (sideChat() ? plural(x.lines, "line") : `${plural(x.lines, "line")} · ${formatSize(x.size)}`) : formatSize(x.size);
+                                    };
                                     const ext = () => (pasted() || sideChat() ? undefined : extensionOf(f().name));
                                     const isOpen = () => shown() === f();
                                     const Body = () => (

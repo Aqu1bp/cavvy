@@ -474,7 +474,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             </Show>
             <div class="pal-list" ref={listEl}>
                 <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading pull requests…</div>}>
-                    <Show when={list()}>{(l) => <div class="pal-h">Open in {l().repo}</div>}</Show>
+                    <Show when={list()}>{(l) => <div class="pal-h">Open pull requests in {l().repo}</div>}</Show>
                     <For each={rows()} fallback={<Show when={list()}><div class="pal-empty">{q().trim() ? "No match. Enter a number or URL." : "No open pull requests."}</div></Show>}>
                         {(r, i) => (
                             <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} disabled={Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => void start(r.ref)}>
