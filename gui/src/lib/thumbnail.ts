@@ -13,14 +13,12 @@ const pending = new Map<number, (url: string | undefined) => void>();
 const IDLE_MS = 60_000;
 let idle: ReturnType<typeof setTimeout> | undefined;
 
-/** A job done: with none left, the worker goes in a while unless another comes. */
+/** A job done: with none left, the worker goes in a while, unless it has work again then or was replaced. */
 function rest() {
     clearTimeout(idle);
-    idle = undefined;
     const active = worker;
     if (!active || pending.size) return;
     idle = setTimeout(() => {
-        idle = undefined;
         if (worker !== active || pending.size) return;
         worker = undefined;
         active.terminate();
@@ -39,8 +37,6 @@ function start(): Worker {
         if (worker !== active) return;
         worker = undefined;
         active.terminate();
-        clearTimeout(idle);
-        idle = undefined;
         for (const done of pending.values()) done(undefined);
         pending.clear();
     };
@@ -64,7 +60,6 @@ export function thumbnail(image: { blob: Blob; mediaType: string } | { data: str
     return new Promise((resolve) => {
         const id = ++sequence;
         clearTimeout(idle);
-        idle = undefined;
         try {
             worker ??= start();
             pending.set(id, resolve);

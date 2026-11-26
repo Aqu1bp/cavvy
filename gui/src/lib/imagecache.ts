@@ -38,7 +38,6 @@ export async function imagesKeyOf(images: readonly { mediaType: string; data: st
 export class ImageCache<T = string> {
     /** Each request, and its size once it's in (0 until then). */
     private entries = new Map<string, { p: Promise<T[]>; size: number }>();
-    private total = 0;
 
     /**
      * Up to `max` entries and, with `sizeOf`, `maxSize` in all (the most recent one is kept even when it alone is
@@ -47,26 +46,24 @@ export class ImageCache<T = string> {
     constructor(private max: number, private maxSize = Infinity, private sizeOf?: (value: T) => number) {}
 
     get(key: string, load: () => Promise<T[]>): Promise<T[]> {
-        const hit = this.entries.get(key);
+        const all = this.entries;
+        const hit = all.get(key);
         if (hit) {
             // Most recently used last: the first entry is the one to drop.
-            this.entries.delete(key);
-            this.entries.set(key, hit);
+            all.delete(key);
+            all.set(key, hit);
             return hit.p;
         }
         const p = load();
         const entry = { p, size: 0 };
-        this.entries.set(key, entry);
+        all.set(key, entry);
         p.then(
             (values) => {
-                if (this.entries.get(key) !== entry || !this.sizeOf) return;
+                if (all.get(key) !== entry || !this.sizeOf) return;
                 for (const v of values) entry.size += this.sizeOf(v);
-                this.total += entry.size;
                 this.trim();
             },
-            () => {
-                if (this.entries.get(key) === entry) this.drop(key);
-            },
+            () => all.get(key) === entry && all.delete(key),
         );
         this.trim();
         return p;
@@ -81,22 +78,19 @@ export class ImageCache<T = string> {
         return this.entries.size;
     }
 
-    private drop(key: string) {
-        const e = this.entries.get(key);
-        if (!e) return;
-        this.entries.delete(key);
-        this.total -= e.size;
-    }
-
     /**
      * Drops the least recently used past the limits, never the most recently used (an older one whose load ends late
      * goes before the newer ones, as it would have had it come in time).
      */
     private trim() {
-        let left = this.entries.size;
-        for (const key of this.entries.keys()) {
-            if (--left === 0 || (this.entries.size <= this.max && this.total <= this.maxSize)) return;
-            this.drop(key);
+        const all = this.entries;
+        let total = 0;
+        for (const e of all.values()) total += e.size;
+        let left = all.size;
+        for (const [key, e] of all) {
+            if (--left === 0 || (all.size <= this.max && total <= this.maxSize)) return;
+            all.delete(key);
+            total -= e.size;
         }
     }
 }

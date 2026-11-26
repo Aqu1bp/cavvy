@@ -160,10 +160,7 @@ export class PathCache {
 
     /** The session is gone (deleted): everything kept for it goes. Shown again (Undo), its replies ask again. */
     delete(sessionId: string) {
-        this.known.delete(sessionId);
-        this.asking.delete(sessionId);
-        this.failed.delete(sessionId);
-        this.held.delete(sessionId);
+        for (const m of [this.known, this.asking, this.failed, this.held]) m.delete(sessionId);
     }
 
     /** Files may have been created: missing answers are dropped, and replies showing those paths ask again. */
