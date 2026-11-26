@@ -80,6 +80,8 @@ describe("restoring files on rewind", () => {
             write(cwd, ".cavvy/.gitignore", "settings.local.json\n");
             write(cwd, "src/.cavvy/.gitignore", "settings.local.json\n");
         });
+        // The prompt's row counts what the plan lists.
+        expect(changedBy(s.snapshots, s.history, cp).files).toBe(1);
         const plan = await planFileRestore({ snapshots: s.snapshots, history: s.history, checkpoint: cp });
         expect(plan.items.map((i) => i.path.slice(cwd.length + 1))).toEqual(["a.txt"]);
         await restoreFiles(plan);
