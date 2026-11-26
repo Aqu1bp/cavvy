@@ -93,7 +93,7 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
-            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : reviewing() ? "Pick one, then Answer" : "Pick one, or type your own answer"} />
+            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : reviewing() ? "Pick one" : "Pick one, or type your own answer"} />
             {/* The options, the field and what's attached: in a short window the options give way first, then all of it
                 scrolls, so the question and the Answer row stay in sight (composer.css .q-mid). */}
             <div class="q-mid">

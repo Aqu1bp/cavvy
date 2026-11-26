@@ -193,10 +193,9 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <span class="wt-label">Branch name</span>
                     <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
                     <span class="wt-hint">
-                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? undefined : "Describe the task in the message box, or type a few words here"} onClick={() => void suggest()}>
+                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${modelName(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
                             {suggesting() ? "Suggesting…" : "Suggest a name"}
                         </button>
-                        <Show when={suggested()?.model}>{(m) => <> · Suggested by {modelName(m())}</>}</Show>
                     </span>
                     <Show when={suggested()?.error}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                     <Show when={errorFor("branch")}>{(m) => <span class="wt-error">{m()}</span>}</Show>

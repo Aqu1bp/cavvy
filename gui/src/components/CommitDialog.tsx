@@ -87,9 +87,9 @@ export function CommitDialog() {
         (["main", "master"].includes(view()?.head?.branch ?? "") ? view()?.head?.branch : undefined);
     const warning = () =>
         !view()?.head?.branch
-            ? "Detached HEAD: this commit will not belong to a branch."
+            ? "This commit won't be on a branch."
             : view()!.head!.branch === mainBranch()
-              ? "You're committing straight to the main branch."
+              ? "Committing to the main branch."
               : undefined;
 
     const generate = async () => {
@@ -103,7 +103,7 @@ export function CommitDialog() {
             const result = await gitCommitMessage(request.id, names, tokens);
             if (commitRequest() !== request) return;
             if (revision !== version) {
-                setError("The message or files changed while generating. Generate again to replace the draft.");
+                setError("Changed while generating. Generate again.");
                 return;
             }
             setMessage(result.message);
@@ -195,11 +195,10 @@ export function CommitDialog() {
                                 <Show when={toNew()}>
                                     <div class="commit-generate">
                                         <input class="input mono grow" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
-                                        <button class="btn ghost sm" disabled={committing() || naming()} onClick={() => void suggestName()}>
+                                        <button class="btn ghost sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${modelName(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
                                             {naming() ? "Suggesting…" : "Suggest"}
                                         </button>
                                     </div>
-                                    <Show when={nameNote()?.model}>{(m) => <span class="muted small">Suggested by {modelName(m(), commitRequest()?.id)}.</span>}</Show>
                                     <Show when={nameNote()?.error}>{(m) => <span class="commit-warning small">{m()}</span>}</Show>
                                 </Show>
                             </div>
@@ -223,7 +222,7 @@ export function CommitDialog() {
                                 )}
                             </For>
                             <Show when={!files().length}>
-                                <p class="muted">The selected files no longer have changes. Refresh the Review pane.</p>
+                                <p class="muted">No changes left in these files.</p>
                             </Show>
                         </div>
                         <label class="sr-only" for="commit-message">
@@ -234,7 +233,7 @@ export function CommitDialog() {
                             class="input mono"
                             rows={7}
                             autofocus
-                            placeholder={"Subject (about 72 characters)\n\nOptional body"}
+                            placeholder="Commit message"
                             value={message()}
                             disabled={committing()}
                             onKeyDown={onMessageKey}
@@ -244,14 +243,10 @@ export function CommitDialog() {
                             }}
                         />
                         <div class="commit-generate">
-                            <button class="btn ghost" disabled={!ready() || generating() || committing()} onClick={() => void generate()}>
+                            <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${modelName(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
                                 {generating() ? "Generating…" : "Generate message"}
                             </button>
-                            <Show when={model()}>
-                                <span class="muted small">Drafted by {modelName(model()!, commitRequest()?.id)}.</span>
-                            </Show>
                         </div>
-                        <p class="muted small">Only the checked files are committed; other changes stay as they are.</p>
                     </Show>
                 </Show>
                 <Show when={blocked()}>

@@ -318,7 +318,7 @@ describe("GitPush", () => {
         const { cwd } = repo();
         git(cwd, "checkout", "-q", "--detach");
         const r = await run(GitPushTool, {}, ctxFor(cwd));
-        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("detached HEAD") });
+        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("Check out a branch to push") });
     });
 });
 

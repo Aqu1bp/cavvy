@@ -222,10 +222,10 @@ function FileFinder() {
     const summary = () => {
         const r = found();
         if (!r) return undefined;
-        const skipped = r.skippedLarge ? `. ${r.skippedLarge.toLocaleString()} big ${r.skippedLarge === 1 ? "file wasn't" : "files weren't"} searched` : "";
-        if (!r.matches) return (r.timedOut ? "Nothing found before the search timed out" : r.truncated ? "Nothing found. Not every file was searched" : "No results") + skipped;
+        const skipped = r.skippedLarge ? ` · ${r.skippedLarge.toLocaleString()} large ${r.skippedLarge === 1 ? "file" : "files"} skipped` : "";
+        if (!r.matches) return (r.timedOut || r.truncated ? "Stopped early: narrow the search" : "No results") + skipped;
         const n = `${r.matches.toLocaleString()}${r.truncated ? "+" : ""} ${r.matches === 1 ? "result" : "results"} in ${r.files.length.toLocaleString()} ${r.files.length === 1 ? "file" : "files"}`;
-        return (r.timedOut ? `${n}. Timed out: narrow the search` : r.truncated ? `${n}. Narrow the search to see the rest` : n) + skipped;
+        return (r.timedOut ? `${n} · timed out` : n) + skipped;
     };
     const Toggle = (p: { on: boolean; set: (v: boolean) => void; name: string; key: string; icon: typeof Regex }) => (
         <button class="ff-tog" aria-pressed={p.on} aria-label={p.name} title={`${p.name} (${altKey}${p.key})`} onClick={() => (p.set(!p.on), input?.focus())}>
@@ -245,7 +245,7 @@ function FileFinder() {
                     value={q()}
                     onInput={(e) => setQ(e.currentTarget.value)}
                     onKeyDown={onKey}
-                    placeholder={mode() === "files" ? "Go to file (add :line to jump)" : "Search in project"}
+                    placeholder={mode() === "files" ? "Go to file" : "Search in project"}
                     aria-label={mode() === "files" ? "Go to file" : "Search in project"}
                     spellcheck={false}
                     autocomplete="off"

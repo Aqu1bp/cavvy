@@ -157,15 +157,15 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         act("fetch", "Can't fetch", () => rpc.call("git.fetch", where), (r) => {
             setSync(r);
             void refetch();
-            setNote({ text: `Fetched ${r.remote}. ${syncWords(r)}.`, level: "info" });
+            setNote({ text: `Fetched ${r.remote}.`, level: "info" });
         });
     const pull = () =>
         act("pull", "Can't pull", () => rpc.call("git.pull", where), (r) => {
             void refetch();
             void refetchSync();
             if (r.result === "pulled") setNote({ text: `Pulled ${plural(r.pulled ?? r.behind, "commit")} from ${r.upstream}.`, level: "info" });
-            else if (r.result === "current") setNote({ text: `Already up to date with ${r.upstream}.`, level: "info" });
-            else setNote({ text: `Diverged: ${r.ahead} ahead, ${r.behind} behind ${r.upstream}. Merge or rebase it in a terminal.`, level: "warn" });
+            else if (r.result === "current") setNote({ text: "Already up to date.", level: "info" });
+            else setNote({ text: `Diverged from ${r.upstream}: merge or rebase in a terminal.`, level: "warn" });
         });
     const switchTo = (branch: string, remote?: boolean) =>
         act("switch", `Can't switch to ${branch}`, () => rpc.call("git.switch", { ...where, branch, ...(remote ? { remote } : {}) }), (r) => {
@@ -276,7 +276,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             <h2 id="branch-dialog-h" class="sr-only">Switch branch</h2>
             <div class="pal-in">
                 <Search size={17} class="pal-search" />
-                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Switch to a branch, or name a new one" aria-label="Branch" spellcheck={false} autocomplete="off" disabled={busy() === "switch"} />
+                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Switch or create a branch" aria-label="Branch" spellcheck={false} autocomplete="off" disabled={busy() === "switch"} />
                 <Show when={busy() === "switch"}><Spinner size={13} class="muted" /></Show>
                 <kbd>Esc</kbd>
             </div>
@@ -286,10 +286,10 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                     <b>{sync()?.branch ?? (sync()?.detached ? "Detached HEAD" : list()?.current ?? "")}</b>
                     <Show when={syncWords(sync())}>{(w) => <span class="muted"> · {w()}</span>}</Show>
                 </span>
-                <button class="btn sm" disabled={Boolean(busy())} onClick={() => void fetchNow()} title="Fetch from the remote">
+                <button class="btn sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
                     <Show when={busy() === "fetch"} fallback={<CloudDownload size={14} />}><Spinner size={13} /></Show> Fetch
                 </button>
-                <button class="btn sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "This branch has no upstream"}>
+                <button class="btn sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
                     <Show when={busy() === "pull"} fallback={<ArrowDown size={14} />}><Spinner size={13} /></Show> Pull
                 </button>
             </div>
@@ -408,7 +408,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                 end: pr.updatedAt ? ago(pr.updatedAt) : undefined,
                 ref: `#${pr.number}`,
             }));
-        if (n !== undefined && !out.some((r) => r.key === String(n))) out.unshift({ key: `n${n}`, label: `Pull request #${n}`, desc: "Not among the open ones listed", ref: query });
+        if (n !== undefined && !out.some((r) => r.key === String(n))) out.unshift({ key: `n${n}`, label: `Pull request #${n}`, ref: query });
         return out;
     });
     createEffect(on(rows, () => setSel(0)));
@@ -436,12 +436,12 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                 <kbd>Esc</kbd>
             </div>
             <Show when={busy() && busy() !== "sign-in"}>
-                <div class="br-note" role="status">Checking out {busy()!.startsWith("#") ? busy() : "the pull request"} in a new worktree…</div>
+                <div class="br-note" role="status">Checking out {busy()!.startsWith("#") ? busy() : "the pull request"}…</div>
             </Show>
             <Show when={failure()}>
                 {(f) => (
                     <div class="br-note error br-fail" role="alert">
-                        <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Sign in from a session, or run <code>gh auth login</code> in a terminal.</Show></span>
+                        <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Run <code>gh auth login</code> in a terminal.</Show></span>
                         <Show when={f().code === "sign_in" && signInSession()}>
                             <button class="btn sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>
                         </Show>
@@ -454,7 +454,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             <div class="pal-list" ref={listEl}>
                 <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading pull requests…</div>}>
                     <Show when={list()}>{(l) => <div class="pal-h">Open in {l().repo}</div>}</Show>
-                    <For each={rows()} fallback={<Show when={list()}><div class="pal-empty">{q().trim() ? "No open pull request matches. Enter its number or URL." : "No open pull requests."}</div></Show>}>
+                    <For each={rows()} fallback={<Show when={list()}><div class="pal-empty">{q().trim() ? "No match. Enter a number or URL." : "No open pull requests."}</div></Show>}>
                         {(r, i) => (
                             <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} disabled={Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => void start(r.ref)}>
                                 <span class="pal-ic"><GitPullRequest size={15} /></span>

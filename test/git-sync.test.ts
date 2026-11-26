@@ -210,7 +210,7 @@ test("a URL rewrite on the remote is refused, as for publishing", async () => {
     const { mine, remote } = setup();
     git(mine, "config", `url.${remote}.insteadOf`, "elsewhere:");
     git(mine, "remote", "set-url", "origin", "elsewhere:repo");
-    await expect(gitFetch(mine)).rejects.toThrow("URL rewrite");
+    await expect(gitFetch(mine)).rejects.toThrow("Git rewrites this remote");
 });
 
 test("git's reasons, briefly", () => {

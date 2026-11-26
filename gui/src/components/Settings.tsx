@@ -299,7 +299,7 @@ function General() {
                 </Row>
             </Section>
             <Section title="Sidebar">
-                <Row title="Settle idle sessions after" desc="Moves them under Settled. Pinned ones stay." changed={(s().autoSettleDays ?? 7) !== 7} reset={() => void update({ autoSettleDays: 7 })}>
+                <Row title="Settle idle sessions after" changed={(s().autoSettleDays ?? 7) !== 7} reset={() => void update({ autoSettleDays: 7 })}>
                     <SelectButton>
                         <select class="select" aria-label="Settle idle sessions after" value={String(s().autoSettleDays ?? 7)} onChange={(e) => void update({ autoSettleDays: Number(e.currentTarget.value) })}>
                             <option value="0">Off</option>
@@ -334,7 +334,7 @@ function General() {
                 <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
                 </Row>
-                <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : "The display can still sleep."}>
+                <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : undefined}>
                     {/* Unavailable: off, as it acts; the choice is kept for when it works (another computer, a fixed install). */}
                     <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false && !s().keepAwakeUnavailable} disabled={s().keepAwakeUnavailable} onChange={(v) => void update({ keepAwake: v })} />
                 </Row>
