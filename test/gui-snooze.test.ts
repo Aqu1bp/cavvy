@@ -19,15 +19,16 @@ describe("snooze times, in the window's time zone", () => {
         ]);
     });
 
-    test("past 6 pm, tonight is three hours on; on a Monday, next week is the Monday after; Sunday's is the next day", () => {
-        const evening = at(2026, 11, 18, 19, 15);
-        expect(snoozeChoices(evening)[1]!.at).toBe(evening + 3 * HOUR);
-        // Under 2 hours before 6 pm: 3 hours on, after "1 hour", not before it.
-        const late = at(2026, 11, 18, 17) + 11 * 60_000;
-        expect(snoozeChoices(late)[1]!.at).toBe(late + 3 * HOUR);
-        expect(snoozeChoices(at(2026, 11, 18, 16))[1]!.at).toBe(at(2026, 11, 18, 18));
-        expect(snoozeChoices(at(2026, 11, 23, 10))[3]!.at).toBe(at(2026, 11, 30, 9));
-        expect(snoozeChoices(at(2026, 11, 22, 10))[3]!.at).toBe(at(2026, 11, 23, 9));
+    test("tonight is 9 pm once 6 pm is under 2 hours away, and isn't offered later; on a Monday, next week is the Monday after; Sunday's is the next day", () => {
+        const pick = (now: number, label: string) => snoozeChoices(now).find((c) => c.label === label)?.at;
+        expect(pick(at(2026, 11, 18, 16), "Tonight")).toBe(at(2026, 11, 18, 18));
+        // 5:11 pm: 6 pm would come before "1 hour" is up.
+        expect(pick(at(2026, 11, 18, 17, 11), "Tonight")).toBe(at(2026, 11, 18, 21));
+        expect(pick(at(2026, 11, 18, 19), "Tonight")).toBe(at(2026, 11, 18, 21));
+        expect(pick(at(2026, 11, 18, 19, 15), "Tonight")).toBeUndefined();
+        expect(snoozeChoices(at(2026, 11, 18, 23, 30)).map((c) => c.label)).toEqual(["1 hour", "Tomorrow morning", "Next week"]);
+        expect(pick(at(2026, 11, 23, 10), "Next week")).toBe(at(2026, 11, 30, 9));
+        expect(pick(at(2026, 11, 22, 10), "Next week")).toBe(at(2026, 11, 23, 9));
     });
 
     test("over the end of a month", () => {

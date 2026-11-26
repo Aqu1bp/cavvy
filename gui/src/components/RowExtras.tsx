@@ -108,7 +108,7 @@ async function neverSettle(id: string, on: boolean) {
 function askCustom(ids: readonly string[]) {
     const host = document.body.appendChild(document.createElement("div"));
     const dispose = render(() => {
-        const [value, setValue] = createSignal(localInput(snoozeChoices(Date.now())[2]!.at));
+        const [value, setValue] = createSignal(localInput(snoozeChoices(Date.now()).find((c) => c.label === "Tomorrow morning")!.at));
         const [problem, setProblem] = createSignal<string>();
         const close = () => {
             dispose();
