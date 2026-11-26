@@ -34,6 +34,7 @@ With the code as built (`src/servers/service.ts`), on the same Mac:
 | Stop and start after that reboot, still without admin | The daemon stayed loaded and idle; the agent ran Cavvy. With `sudo` back, the next start moved it to the daemon and removed the agent. |
 | `servers rollback` | Went back a build through the same path. |
 | Set-up by a compiled Cavvy with no checkout, laid out as the app is (`Cavvy.app/Contents/MacOS/cavvy`, `Resources/gui`) | It packed its own program (`Packing Cavvy for macOS…`), sent it, and the Mac ran that build with its GUI; the program arrived with no extended attributes. 28 s in all. |
+| A real agent again, in a session of the server as the daemon now runs it (through `sh`), nobody logged in | Haiku 5.5 through Claude Code ran `xcodebuild` for the sample app (`** BUILD SUCCEEDED **`), then booted a simulator with `simctl` and counted one booted. |
 | The wake lock, with a real turn (Haiku 5.5 through Claude Code running `sleep 12`) | `pmset -g assertions` showed no `caffeinate` before, one during the turn and just after it, none a minute later. |
 | `servers check`'s Xcode questions | 0.18 s in all on a Mac with Xcode ready (`xcode-select -p` 0.01, `xcodebuild -version` 0.07, `simctl list runtimes` 0.10), asked while Cavvy's own check (0.2 s) runs. The connection itself took 3.3 s from where it was tried. |
 
