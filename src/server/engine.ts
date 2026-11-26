@@ -845,8 +845,9 @@ export class Engine {
             const parent = this.runtimes.get(rt.side.of);
             return parent?.sideChat === rt.id ? parent.sideChatChanged(rt.id, rt.status) : undefined;
         }
-        // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
+        // An empty new session isn't listed, unless it has a side chat (/btw on Home). A turn can end with nothing in the
+        // history (a !command, a prompt a hook blocked): its row has to hear that it ended.
+        if (!rt.session.messageCount && !rt.busy && !rt.sideChat && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -1188,7 +1189,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", ...(s.stopped ? { stopped: true as const } : {}), pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy && !rt.sideChat) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1467,6 +1468,8 @@ export class Engine {
             await rt.ready.catch(() => undefined);
             if (parent.effort) rt.setEffort(parent.effort);
             parent.sideChatChanged(id, rt.status);
+            // Listed from now on, even with nothing in its own conversation yet (/btw on Home).
+            this.sessionChanged(parent);
         }
         if (text?.trim()) await rt.send(text.trim());
         return rt;
