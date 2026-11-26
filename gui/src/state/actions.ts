@@ -156,8 +156,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
             if (id) void fork(id);
             return true;
         case "sidechat":
+            // On Home, the server's: in the session made for it (send).
             if (id) void openSideChat(id, args);
-            return true;
+            return Boolean(id);
         case "mcp":
             if (id) setMcpOpen({ focus: args.trim() || undefined });
             return true;
@@ -347,6 +348,8 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             return false;
         }
         opts.accepted?.(id);
+        // /btw from Home (the one client command that gets this far): asked in the new session's side chat, shown.
+        if (created && !opts.literal && clientAction(text)) void openSideChat(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && stillHome()) setApp("activeId", id);
         return true;

@@ -2,7 +2,7 @@
 // adding to it (src/agent/side-chat.ts). The conversation's own views in a
 // narrower column: its turns (Transcript, read-only: no rewind or fork) and
 // its composer, with the composer's model and mode menus for the side chat's
-// own model and mode (read-only to start). It takes no commands or shell
+// own model and mode (the session's to start). It takes no commands or shell
 // lines. With none open, the composer asks one. Bring back attaches its last
 // answer, or what's selected in it, to the session's message as a chip.
 // Closing it discards it, after a while in which Undo brings it back. Loaded

@@ -4,8 +4,10 @@
 // parent's messages as they were when it opened, the same objects, so an open
 // side chat keeps no second copy of them (a parent whose messages aren't held
 // in memory, read for it, lets go of them again). Its own messages never reach
-// the parent. It runs read-only (plan mode) unless the user changes that, and
-// is discarded when it's closed or its parent is.
+// the parent. It starts in the parent's permission mode, then keeps its own, and
+// works in the parent's folder: its edits are real ones there, as another
+// session's would be. A session with nothing in it yet can have one too: it's a
+// question in that folder. It's discarded when it's closed or its parent is.
 
 import { join } from "path";
 import { cavvyHome } from "../config/paths";
@@ -32,6 +34,15 @@ export function sideChatCut(messages: readonly Message[]): number {
 /** Said to the side chat's model with its first question. */
 export const SIDE_CHAT_REMINDER =
     "This is a side chat: the user is asking about the conversation above without adding to it. What's said here never reaches that session or its agent, which may still be working. Answer the question; don't carry on that session's task, and don't change files unless the user asks you to here.";
+
+/** Said instead, when the session it's beside has nothing in it yet. */
+export const SIDE_CHAT_REMINDER_EMPTY =
+    "This is a side chat beside a session that hasn't started yet: what's said here never reaches that session. Answer the question; don't change files unless the user asks you to here.";
+
+/** What the side chat's model is told with its first question: of the conversation it's given, or that there's none yet. */
+export function sideChatReminder(context: readonly Message[]): string {
+    return context.length ? SIDE_CHAT_REMINDER : SIDE_CHAT_REMINDER_EMPTY;
+}
 
 /** Where side chats keep their files while they're open: a folder each, removed with it. Never listed with the sessions. */
 export function sideChatsDir(): string {

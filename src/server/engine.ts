@@ -1427,8 +1427,9 @@ export class Engine {
 
     /**
      * The session's side chat (src/agent/side-chat.ts), opened now if it has none, with `text` sent to it. It's given
-     * the session's conversation as it is now (a turn under way, up to its last step), works in its folder with its
-     * model, accounts and speed, read-only (plan mode), and isn't listed.
+     * the session's conversation as it is now (a turn under way, up to its last step; none yet, nothing), works in its
+     * folder with its model, accounts, speed and permission mode as they are now, and isn't listed. Its mode is its own
+     * after that, as another session's would be: a change to either doesn't reach the other.
      */
     async openSideChat(parent: Runtime, text?: string): Promise<Runtime> {
         if (parent.side) throw new RpcError("A side chat can't have a side chat of its own.", "invalid");
@@ -1454,7 +1455,8 @@ export class Engine {
             if (parent.session.workdir) session.setWorkdir(parent.session.workdir);
             session.setTitle("Side chat");
             try {
-                rt = new Runtime(this, parent.ws, session, { mode: "plan", resumed: false, side: { of: parent.id, context } });
+                // Never looser than the session: its mode (Bypass only where it's allowed, which the Runtime checks as anywhere).
+                rt = new Runtime(this, parent.ws, session, { mode: parent.mode, resumed: false, side: { of: parent.id, context } });
             } catch (e) {
                 session.release();
                 rmSync(dir, { recursive: true, force: true });

@@ -2330,6 +2330,12 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         // Until it has listed them (before the first turn), let Claude Code resolve the name.
         const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
         if (cli?.has(name) || (!cli && baseCli(app.model?.provider) === "claude-code")) return false;
+        // The desktop app's side chat: not a command here, nor a message (it would join the session).
+        if (name === "btw") {
+            app.notice("/btw asks in a side chat, which only the desktop app has.", "warn");
+            if (draft?.attachments.size) app.editor.restore([draft]);
+            return true;
+        }
         app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills?.length ? " and /skills for skills" : ""}.`, "error");
         if (draft?.attachments.size) app.editor.restore([draft]);
         return true;
