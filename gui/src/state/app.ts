@@ -103,8 +103,10 @@ export function homeOn(): string | undefined {
  */
 export function homeOnMachine(on: string, cwd: string): boolean {
     const id = [...awayOn].find(([k, m]) => m === on && away.has(k))?.[0];
-    if (id === undefined) return false;
-    homeOnLink(on, cwd, away.get(id)!);
+    // Or Home's own, when it's there already (another of its projects picked on Home).
+    const link = id !== undefined ? away.get(id) : homeAway()?.on === on ? homeAway()!.link : undefined;
+    if (!link) return false;
+    homeOnLink(on, cwd, link);
     return true;
 }
 /** Home in `cwd` on `on`, over `link` (linkFor's): what it shows of that machine is asked for again behind it. */
@@ -649,7 +651,8 @@ createRoot(() => createEffect(() => {
     const id = app.activeId;
     // Another machine's: which, to open it from there again after a reload (machineOf). Read once as it's picked.
     const on = id !== undefined ? untrack(() => machineOf(id)) : undefined;
-    const saved = JSON.stringify({ activeId: id, homeCwd: app.homeCwd, ...(on !== machine ? { on: on ?? "" } : {}) });
+    // Home's folder on another machine isn't one here: a reload starts in this machine's latest.
+    const saved = JSON.stringify({ activeId: id, homeCwd: homeOn() === undefined ? app.homeCwd : undefined, ...(on !== machine ? { on: on ?? "" } : {}) });
     try {
         sessionStorage.setItem(NAVIGATION_KEY, saved);
     } catch {

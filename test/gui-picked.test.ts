@@ -23,6 +23,8 @@ test("what a window leaves with is the pick as its composer shows it, and never 
     // An effort or fast mode saved from an earlier model, which this one doesn't take and the composer doesn't show.
     expect(pickedOf({ model: "claude-code:haiku", effort: "low", fastMode: true }, models)).toEqual({ model: "claude-code:haiku", fastMode: false });
     expect(pickedOf({ model: "grok:fast", effort: "high" }, models)).toEqual({ model: "grok:fast" });
+    // Unset on another machine arrives as null: nothing to bring, not a null the server refuses.
+    expect(pickedOf({ model: "codex:gpt-6-luna", fastMode: null } as never, models)).toEqual({ model: "codex:gpt-6-luna" });
     // No model picked, or one this machine doesn't list: nothing to bring.
     expect(pickedOf({ effort: "high", defaultMode: "default" }, models)).toBeUndefined();
     expect(pickedOf({ model: "gone:model" }, models)).toBeUndefined();

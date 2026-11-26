@@ -35,7 +35,9 @@ const LINK_MS = 3000;
  */
 export async function goHomeOn(name: string | undefined) {
     const mine = ++going;
-    const current = () => mine === going;
+    // Not if another machine was picked since, or a session opened meanwhile (the sidebar): that's where the user is.
+    const from = app.activeId;
+    const current = () => mine === going && app.activeId === from;
     const ahead = (work: Promise<unknown>[]) => Promise.race([Promise.allSettled(work), new Promise((r) => setTimeout(r, AHEAD_MS))]);
     const there = () => void serversUi().then((m) => current() && m.switchMachine(name), reportError);
     setGoingTo({ name });
@@ -70,7 +72,10 @@ export async function goHomeOn(name: string | undefined) {
         let cwd = known?.cwd;
         if (!known || !inspectedBefore(on, known.cwd)) {
             const ready = known ? undefined : machineReady(on, link);
-            cwd ??= (await link.call("projects.recent", {}).catch(() => []))[0]?.path;
+            if (!cwd) {
+                const recent = link.call("projects.recent", {}).catch(() => []);
+                cwd = (await Promise.race([recent, new Promise<[]>((r) => setTimeout(() => r([]), AHEAD_MS))]))[0]?.path;
+            }
             if (!current()) return;
             if (!cwd) return there();
             await ahead([...(ready ? [ready] : []), inspect(link, on, cwd)]);
@@ -83,6 +88,6 @@ export async function goHomeOn(name: string | undefined) {
         });
         requestComposerFocus();
     } finally {
-        if (current()) setGoingTo(undefined);
+        if (mine === going) setGoingTo(undefined);
     }
 }
