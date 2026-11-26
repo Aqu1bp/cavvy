@@ -311,7 +311,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                 </Show>
                 <div class="dialog-actions">
                     <Show when={p.busy}>
-                        <span class="muted small">Checking out files; a big repository takes a while…</span>
+                        <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
                     <button type="button" class="btn ghost" disabled={p.busy} onClick={p.onClose}>

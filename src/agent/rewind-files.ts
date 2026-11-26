@@ -60,7 +60,7 @@ export interface FileRestoreResult {
     undo?: string;
 }
 
-const SHARED = "Another session is working in this folder.";
+const SHARED = "Another session is working here.";
 const CHANGED = "changed while you were choosing; left as it is";
 
 const inside = (root: string, abs: string) => {

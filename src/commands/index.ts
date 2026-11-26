@@ -2332,7 +2332,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         if (cli?.has(name) || (!cli && baseCli(app.model?.provider) === "claude-code")) return false;
         // The desktop app's side chat: not a command here, nor a message (it would join the session).
         if (name === "btw") {
-            app.notice("/btw asks in a side chat, which only the desktop app has.", "warn");
+            app.notice("Side chats are only in the desktop app.", "warn");
             if (draft?.attachments.size) app.editor.restore([draft]);
             return true;
         }

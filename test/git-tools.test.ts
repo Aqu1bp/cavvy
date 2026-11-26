@@ -244,7 +244,7 @@ describe("GitPush", () => {
         expect(calls(state, ".git-calls").some((a) => a.includes("push"))).toBe(false);
     });
 
-    test("a rejected push says to reconcile and never forces", async () => {
+    test("a rejected push says to pull first and never forces", async () => {
         const { cwd, remote } = repo();
         const ctx = ctxFor(cwd);
         await run(GitPushTool, {}, ctx);
@@ -256,8 +256,8 @@ describe("GitPush", () => {
         git(cwd, "commit", "--allow-empty", "-qm", "mine");
         const r = await run(GitPushTool, {}, ctx);
         expect(r.isError).toBe(true);
-        expect(r.content).toMatch(/rejected|fetch/i);
-        expect(r.content).toContain("No force push was attempted");
+        expect(r.content).toContain("The remote has commits this branch doesn't. Pull, then push again.");
+        expect(r.content).toMatch(/rejected|fetch first/i);
         expect(git(remote, "log", "-1", "--format=%s", "feature")).toBe("theirs");
     });
 

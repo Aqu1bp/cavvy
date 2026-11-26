@@ -176,4 +176,25 @@ describe("drafts on a Codex session", () => {
             await engine.stop();
         }
     }, 60_000);
+    test("a provider's own failure (a timeout's \"aborted\") isn't shown: each says it couldn't, and the log has why", async () => {
+        const { engine, call, id, cwd, rt } = await codexSession("claude-code:haiku");
+        const lines: string[] = [];
+        engine.log = (m: string) => void lines.push(m);
+        const abort = async () => {
+            throw new DOMException("aborted", "AbortError");
+        };
+        try {
+            (rt as any).smallTarget = async () => ({ model: { provider: "mock", id: "mock-haiku" }, client: { stream: abort } });
+            await expect(call("session.gitCommitMessage", { id, paths: ["selected.txt"] })).rejects.toMatchObject({ code: "draft_failed", message: "Couldn't generate a message." });
+            await expect(call("session.gitPrText", { id, base: "main" })).rejects.toMatchObject({ code: "draft_failed", message: "Couldn't generate a title and description." });
+            await expect(call("session.gitBranchName", { id, text: "Add it" })).rejects.toMatchObject({ code: "draft_failed", message: "Couldn't suggest a name." });
+            expect(lines.filter((l) => l.endsWith(": aborted"))).toHaveLength(3);
+            // Home's Suggest, on Claude Code's one-off failing.
+            process.env.FAKE_ONEOFF_FAIL = "aborted";
+            await expect(call("projects.suggestBranch", { path: cwd, text: "Add it" })).rejects.toMatchObject({ code: "draft_failed", message: "Couldn't suggest a name." });
+        } finally {
+            delete process.env.FAKE_ONEOFF_FAIL;
+            await engine.stop();
+        }
+    }, 60_000);
 });

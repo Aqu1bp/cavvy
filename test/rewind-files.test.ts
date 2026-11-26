@@ -197,7 +197,7 @@ describe("restoring files on rewind", () => {
         });
         const plan = await planFileRestore({ snapshots: s.snapshots, history: s.history, checkpoint: cp, alongside: [join(cwd, "src")] });
         expect(plan.whole).toBe(false);
-        expect(plan.refused).toBe("Another session is working in this folder.");
+        expect(plan.refused).toBe("Another session is working here.");
         expect(plan.items.map((i) => [i.path.slice(cwd.length + 1), i.action])).toEqual([["a.txt", "write"]]);
         const r = await restoreFiles(plan);
         expect(r.failed).toEqual([]);
@@ -210,7 +210,7 @@ describe("restoring files on rewind", () => {
         // And refused at restore time too, if another session started working since the plan.
         const again = await planFileRestore({ snapshots: s.snapshots, history: s.history, checkpoint: cp });
         expect(again.whole).toBe(true);
-        await expect(restoreFiles(again, { alongside: [cwd] })).rejects.toThrow(/Another session is working in this folder. Nothing was restored./);
+        await expect(restoreFiles(again, { alongside: [cwd] })).rejects.toThrow(/Another session is working here. Nothing was restored./);
         expect(read(cwd, "src/b.txt")).toBe("by a shell command\n");
         await s.snapshots.stop();
     });

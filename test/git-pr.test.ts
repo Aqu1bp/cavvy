@@ -115,7 +115,11 @@ test("without gh signed in, a sign-in is asked for; another repository's URL or 
     await expect(gitPrWorktree(cwd, "#7")).rejects.toMatchObject({ code: "sign_in" });
     delete process.env.FAKE_PR_GH;
     await expect(gitPrWorktree(cwd, "https://github.com/other/repo/pull/7")).rejects.toMatchObject({ code: "other_repo" });
-    await expect(gitPrWorktree(cwd, "#404")).rejects.toThrow("Could not resolve");
+    await expect(gitPrWorktree(cwd, "#404")).rejects.toMatchObject({ code: "not_found", message: "No pull request #404." });
+    // gh's other errors are its own words.
+    process.env.FAKE_PR_GH = "http-error";
+    await expect(gitPrWorktree(cwd, "#7")).rejects.toMatchObject({ code: "gh", message: expect.stringContaining("HTTP 502") });
+    delete process.env.FAKE_PR_GH;
     await expect(gitPrWorktree(cwd, "not a pr")).rejects.toMatchObject({ code: "invalid" });
 });
 

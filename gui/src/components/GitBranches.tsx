@@ -115,6 +115,9 @@ function prRef(s: string): number | undefined {
     return m ? Number(m[1]) : undefined;
 }
 
+/** The same, a bare number too: what the pull request dialog takes. */
+const prNumber = (s: string) => prRef(s) ?? (/^\d{1,9}$/.test(s.trim()) ? Number(s.trim()) : undefined);
+
 function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     const [q, setQ] = createSignal(p.query ?? "");
     const [sel, setSel] = createSignal(0);
@@ -399,7 +402,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
 
     const rows = createMemo<PrRow[]>(() => {
         const query = q().trim();
-        const n = prRef(query) ?? (/^\d{1,9}$/.test(query) ? Number(query) : undefined);
+        const n = prNumber(query);
         const words = query.toLowerCase();
         const out: PrRow[] = (list()?.prs ?? [])
             .filter((pr) => !words || pr.number === n || `#${pr.number} ${pr.title} ${pr.branch} ${pr.author}`.toLowerCase().includes(words))
@@ -438,7 +441,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                 <kbd>Esc</kbd>
             </div>
             <Show when={busy() && busy() !== "sign-in"}>
-                <div class="br-note" role="status">Checking out {busy()!.startsWith("#") ? busy() : "the pull request"}…</div>
+                <div class="br-note" role="status">Checking out {prNumber(busy()!) ? `#${prNumber(busy()!)}` : "the pull request"}…</div>
             </Show>
             <Show when={failure()}>
                 {(f) => (

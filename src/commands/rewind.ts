@@ -105,12 +105,12 @@ export async function rewindCommand(app: App, args = "") {
     const snapshots = snapshotsOf(app);
     const undo = lastRestore.get(app.session);
     const undoable = !!undo && canUndoRestore(snapshots, undo);
-    const header = [theme.muted("Go back to before one of your prompts. Pick one, then choose what to restore.")];
+    const header: string[] = [];
     if (compacted) header.push(theme.muted("Prompts from before the last /compact can't be rewound to."));
     if (history?.unsaved) header.push(theme.warning(`File history couldn't be saved (${history.unsaved}), so it will be lost when this session ends.`));
     const pick = (await app.showDialog(
         new SelectDialog<number>({
-            title: "Rewind",
+            title: "Rewind to before which prompt?",
             header,
             items: [
                 ...(undoable ? [{ label: "Undo the last file restore", value: -1, description: "put the files back as they were" }] : []),
@@ -137,7 +137,8 @@ export async function rewindCommand(app: App, args = "") {
     const forked = beforeFork(app.session.meta, chosen, target.index);
     const tracked = plan.whole || (!!history && target.checkpoint !== undefined);
     if (forked) lines.push(theme.warning(FORKED_NOTE));
-    if (plan.refused) lines.push(theme.warning(`${plan.refused} Only ${APP_TITLE}'s own edits can be restored.`));
+    // One line, as the GUI's Rewind says it (RewindDialog.tsx).
+    if (plan.refused) lines.push(theme.warning(`${plan.refused.replace(/\.$/, "")}: only ${APP_TITLE}'s edits can be restored.`));
     if (!tracked) lines.push(theme.muted("File changes from then weren't tracked, so only the conversation can be restored."));
     else if (restore.length) {
         lines.push(plan.whole ? `${plural(restore.length, "file")} changed since then:` : `${APP_TITLE} changed ${plural(restore.length, "file")} since then:`);
@@ -151,7 +152,7 @@ export async function rewindCommand(app: App, args = "") {
         const except = restore.length ? ", except in the files listed above, which go back to how they were then" : "";
         lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it${except}. Use git to review or undo the rest.`));
     }
-    if (!plan.whole) lines.push(theme.subtle("Changes made by shell commands aren't undone."));
+    if (!plan.whole && !plan.refused) lines.push(theme.subtle("Changes made by shell commands aren't undone."));
 
     type Choice = "both" | "conversation" | "code" | "cancel";
     const noCode = !restore.length;

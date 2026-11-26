@@ -323,7 +323,7 @@ describe("in the TUI", () => {
         const { app, turns, notices } = testApp();
         expect(await runCommand(app, "/btw what is this?")).toBe(true);
         expect(turns).toHaveLength(0);
-        expect(notices.at(-1)).toBe("/btw asks in a side chat, which only the desktop app has.");
+        expect(notices.at(-1)).toBe("Side chats are only in the desktop app.");
     });
 
     test("a skill added after startup runs without a restart", async () => {

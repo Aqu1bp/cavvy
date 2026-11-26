@@ -96,7 +96,7 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
                         fallback={
                             <>
                                 <Head />
-                                <div class="none sc-none">Ask about this session. Nothing here is added to it.</div>
+                                <div class="none sc-none">Ask about this session without adding to it.</div>
                                 <div class="sc-body">
                                     <div class="stage">
                                         <Dock>

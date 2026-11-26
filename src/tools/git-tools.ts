@@ -165,7 +165,7 @@ Only the named files are committed; anything already staged for other files stay
             };
         } catch (e) {
             // The commit code speaks to the GUI's Review pane; the agent needs what it can do instead.
-            const m = /^Not a changed file: (.*)\. Refresh the Review pane\.$/.exec(message(e));
+            const m = /^(.*) has no changes now\.$/s.exec(message(e));
             if (m) return fail(`Commit failed: ${m[1]} has no changes git lists one by one. If it's in a new folder of more than 200 files, commit it with git in Bash; otherwise check the path.`);
             return fail(`Commit failed: ${message(e)}`);
         }

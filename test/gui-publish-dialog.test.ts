@@ -136,3 +136,11 @@ test("a pre-push PR refresh cannot overwrite the newly published PR", async () =
     resolve({ pr: undefined }); await tick();
     expect(values[0]).toEqual({ number: 7 });
 });
+
+test("where the branch stands says only what isn't zero, and Up to date when nothing is", () => {
+    const syncWords = componentCode("syncWords", {}, undefined, "PublishDialog") as (ahead: number, behind: number) => string;
+    expect(syncWords(0, 0)).toBe("Up to date");
+    expect(syncWords(2, 0)).toBe("2 ahead");
+    expect(syncWords(0, 3)).toBe("3 behind");
+    expect(syncWords(2, 3)).toBe("2 ahead · 3 behind");
+});

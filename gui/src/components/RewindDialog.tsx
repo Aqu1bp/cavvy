@@ -12,6 +12,8 @@ import { Spinner } from "./ui/bits";
 
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
+/** Why everything can't be restored, and what can: one line ("Another session is working here: only Cavvy's edits can be restored."). As the terminal's /rewind says it (src/commands/rewind.ts). */
+const onlyOwnEdits = (refused: string) => `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.`;
 
 /** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
@@ -147,7 +149,7 @@ export function RewindDialog() {
     // An idle compaction stops for a rewind.
     const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
     return (
-        <Dialog open={rewindOpen()} onClose={close} title="Rewind" subtitle="Go back to before one of your prompts" width={620}>
+        <Dialog open={rewindOpen()} onClose={close} title="Rewind to before which prompt?" width={620}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
                 <Show when={targets()} fallback={<Spinner />}>
                     <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
@@ -177,7 +179,7 @@ export function RewindDialog() {
                                 <Show when={plan()!.refused}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">{plan()!.refused} Only Cavvy's own edits can be restored.</span>
+                                        <span class="small">{onlyOwnEdits(plan()!.refused!)}</span>
                                     </div>
                                 </Show>
                                 <Show when={plan()!.backends?.length && !plan()!.whole}>
@@ -188,7 +190,7 @@ export function RewindDialog() {
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div>}>
+                                <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
                                     <div class="small">{plan()!.whole ? `${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} changed since then:` : `Cavvy changed ${plural(plan()!.restore.length + (plan()!.more ?? 0), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
@@ -215,7 +217,8 @@ export function RewindDialog() {
                                         </div>
                                     )}
                                 </For>
-                                <Show when={!plan()!.whole}>
+                                {/* Said already by the line on why only Cavvy's edits can be restored. */}
+                                <Show when={!plan()!.whole && !plan()!.refused}>
                                     <div class="muted small">Changes made by shell commands aren't undone.</div>
                                 </Show>
                                 <Show when={confirming()}>

@@ -9,6 +9,8 @@ test("a variable named like a credential starts secret; reserved names are refus
     for (const n of ["ANTHROPIC_BASE_URL", "FAKE_ECHO_ENV", "", "TOKENS_PER_MINUTE"]) expect(looksSecret(n)).toBe(false);
     expect(envNameProblem("CLAUDE_CONFIG_DIR")).toBe("CLAUDE_CONFIG_DIR is set by the account: add an account instead.");
     expect(envNameProblem("CAVVY_SESSION")).toBe("CAVVY_SESSION is Cavvy's own.");
-    expect(envNameProblem("MY-VAR")).toMatch(/isn't a variable name/);
+    // Under its field, the name isn't said again; elsewhere it is.
+    expect(envNameProblem("MY-VAR")).toBe("Letters, digits and _ only, not starting with a digit.");
+    expect(envNameProblem("1BAD", { named: true })).toBe(`"1BAD" isn't a variable name. Letters, digits and _ only, not starting with a digit.`);
     expect(envNameProblem("ANTHROPIC_BASE_URL")).toBeUndefined();
 });

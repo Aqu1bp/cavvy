@@ -123,9 +123,10 @@ function askCustom(ids: readonly string[]) {
         };
         return (
             <Dialog open onClose={close} title={ids.length === 1 ? "Snooze until when?" : `Snooze ${sessionCount(ids.length)} until when?`} width={360}>
-                <form class="snz-custom" onSubmit={submit}>
-                    <input class="input" type="datetime-local" aria-label="Wake at" autofocus value={value()} min={localInput(Date.now())} onInput={(e) => (setValue(e.currentTarget.value), setProblem(undefined))} />
-                    <Show when={problem()}>{(p) => <p class="snz-problem" role="alert">{p()}</p>}</Show>
+                {/* noValidate: a past time gets the app's own line below, not the browser's bubble for `min`. */}
+                <form class="snz-custom" noValidate onSubmit={submit}>
+                    <input class="input" type="datetime-local" aria-label="Wake at" autofocus value={value()} min={localInput(Date.now())} aria-invalid={Boolean(problem())} aria-describedby={problem() ? "snz-problem" : undefined} onInput={(e) => (setValue(e.currentTarget.value), setProblem(undefined))} />
+                    <Show when={problem()}>{(p) => <p id="snz-problem" class="snz-problem" role="alert">{p()}</p>}</Show>
                     <div class="dialog-actions">
                         <span class="grow" />
                         <button type="button" class="btn ghost" onClick={close}>Cancel</button>

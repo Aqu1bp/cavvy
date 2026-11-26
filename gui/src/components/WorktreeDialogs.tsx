@@ -9,7 +9,7 @@ import { AlertTriangle } from "lucide-solid";
 import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
-import { modelName } from "../lib/model-name";
+import { draftedBy } from "../lib/model-name";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
 import { app, homeDraftKey, homeOn, reportError, rpcFor, toast, trustRequest } from "../state/app";
 import { composerStorage } from "../lib/drafts";
@@ -193,7 +193,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <span class="wt-label">Branch name</span>
                     <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
                     <span class="wt-hint">
-                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${modelName(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
+                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${draftedBy(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
                             {suggesting() ? "Suggesting…" : "Suggest a name"}
                         </button>
                     </span>
@@ -203,7 +203,6 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 <label class="wt-field">
                     <span class="wt-label">Base</span>
                     <input class="input mono" spellcheck={false} autocomplete="off" placeholder="HEAD" maxLength={200} disabled={busy()} value={base()} onInput={(e) => setBase(e.currentTarget.value)} aria-invalid={Boolean(errorFor("base"))} />
-                    <span class="wt-hint">The branch or commit the new branch starts from.</span>
                     <Show when={errorFor("base")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
                 <div class="wt-field">
@@ -286,7 +285,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 </Show>
                 <div class="dialog-actions">
                     <Show when={busy()}>
-                        <span class="muted small">Checking out files; a big repository takes a while…</span>
+                        <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
                     <button type="button" class="btn ghost" disabled={busy()} onClick={close}>

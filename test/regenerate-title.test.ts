@@ -94,7 +94,7 @@ describe("Regenerate title", () => {
             await turn(id, "Explain the billing module");
             await until("its first title", () => engine.runtimes.get(id)!.title === "Explain the billing module");
             await turn(id, "keep it untitled for now");
-            await expect(call("session.regenerateTitle", { id })).rejects.toThrow("The model didn't answer");
+            await expect(call("session.regenerateTitle", { id })).rejects.toThrow("Couldn't make a title.");
             expect(engine.runtimes.get(id)!.title).toBe("Explain the billing module");
         } finally {
             await engine.stop();

@@ -145,7 +145,7 @@ import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, textOf, type AttachedPart, type ImagePart } from "../providers/types";
 import { isAgentBackend } from "../backends/types";
-import { BRANCH_NAME_SYSTEM, branchName, branchPrompt } from "./git-generate";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, DRAFT_FAILED } from "./git-generate";
 import { attachmentsDir, checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
 import { sideChatCut, sideChatDir, sideChatsDir } from "../agent/side-chat";
 import { BrowserError } from "../browser/page";
@@ -3304,10 +3304,12 @@ export class Engine {
             .catch((e) => {
                 // It runs whole turns only (an ACP agent, Antigravity).
                 if (e instanceof WholeTurnsOnly) throw new RpcError(`${providerLabel(model.provider)} can't suggest branch names. Choose ${set === model ? "another" : "a"} small model in Settings.`, "no_model");
-                throw e;
+                // The provider's own words (a timeout's "aborted") go to the log, as a session's drafts do (runtime.ts).
+                this.log(`Suggest a branch name: ${(e as Error)?.message ?? e}`);
+                throw new RpcError(DRAFT_FAILED["suggest branch names"], "draft_failed");
             });
         const branch = branchName(textOf(res), worktreeSettings(settings).branchPrefix);
-        if (!branch) throw new RpcError("The model returned no name. Try again or write your own.");
+        if (!branch) throw new RpcError(DRAFT_FAILED["suggest branch names"]);
         return { branch, model: modelRef(model) };
     }
 
