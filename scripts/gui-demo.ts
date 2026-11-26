@@ -7,6 +7,7 @@
 //   bun run gui:demo --update        the desktop app's Update button, with main 7 changes ahead (scripts/demo-update.ts)
 //   bun run gui:demo --update fail   the same, with a build that fails
 //   bun run gui:demo --fake-claude   Claude Code on, as a stand-in that echoes its environment (FAKE_ECHO_ENV)
+//   bun run gui:demo --fake-codex    Codex on, as a stand-in (test/fixtures/fake-codex.ts); both flags together work too
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
@@ -55,12 +56,16 @@ const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Numb
 // The stand-in is also first on PATH: turned off and on again in Settings, Claude Code loses its saved path and is
 // looked up there, where this machine's own would otherwise be found and asked who's signed in.
 const agents: Record<string, unknown> = {};
-const fakeBin = args.includes("--fake-claude") ? join(root, "fake-bin") : undefined;
-if (fakeBin) {
-    const bin = join(fakeBin, "claude");
+// --fake-codex: the same for Codex (test/fixtures/fake-codex.ts), signed in as me@example.com. A one-off (a title, a commit
+// message) answers FAKE_ONEOFF_ANSWER, as Claude Code's stand-in does.
+const fakes = { "claude-code": args.includes("--fake-claude") && "claude", codex: args.includes("--fake-codex") && "codex" } as const;
+const fakeBin = fakes["claude-code"] || fakes.codex ? join(root, "fake-bin") : undefined;
+for (const [id, name] of Object.entries(fakes)) {
+    if (!fakeBin || !name) continue;
+    const bin = join(fakeBin, name);
     mkdirSync(fakeBin, { recursive: true });
-    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${resolve(import.meta.dir, "..", "test", "fixtures", "fake-claude.ts")}" "$@"\n`, { mode: 0o755 });
-    agents["claude-code"] = { path: bin };
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${resolve(import.meta.dir, "..", "test", "fixtures", `fake-${name}.ts`)}" "$@"\n`, { mode: 0o755 });
+    agents[id] = { path: bin };
 }
 writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }], ...(Object.keys(agents).length ? { agents } : {}) }, null, 2));
 // Sign-ins to try ("signin gh", "signin aws", "signin gcloud", "signin docker", "signin fly: fly auth login"): a pretend
@@ -88,6 +93,8 @@ for (const [name, text] of Object.entries(demoSkills)) {
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
 const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: [fakeBin, acme.bin, process.env.PATH].filter(Boolean).join(":") };
+// The stand-in's own folder, not this machine's ~/.codex (its sessions, its sign-in).
+if (fakes.codex) mkdirSync((env.CODEX_HOME = join(root, "codex-home")), { recursive: true });
 if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
 if (arg("--token")) env.CAVVY_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];

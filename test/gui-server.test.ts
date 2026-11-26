@@ -719,32 +719,29 @@ describe("connecting", () => {
         }
     });
 
-    test("agent backends explain the small-model setting and generate messages with another provider", async () => {
+    test("agent backends generate messages on their own small model, or on the small model set", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         const git = commitRepo(cwd);
         writeFileSync(join(cwd, "selected.txt"), "selected\n");
         const head = git("rev-parse", "HEAD");
         const original = rt.complete;
-        let calls = 0;
+        const asked: string[] = [];
         rt.complete = async (_system, _prompt, _signal, opts) => {
-            calls++;
-            expect(opts?.target?.model).toMatchObject({ provider: "mock", id: "mock-haiku" });
-            expect((opts?.target?.client as { agentBackend?: boolean }).agentBackend).not.toBe(true);
+            asked.push(`${opts?.target?.model.provider}:${opts?.target?.model.id}`);
             return "feat: add selected file";
         };
         try {
             await rt.ready;
-            // The same capability flag exposed by both Claude Code and Codex clients.
+            // The same capability flag exposed by both Claude Code and Codex clients: they answer one-offs, as titles.
             rt.client = Object.assign({}, rt.client, { agentBackend: true });
             for (const provider of ["claude-code", "codex"]) {
                 rt.model = { ...rt.model!, provider, id: "default" };
                 rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
-                const before = calls;
-                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate messages." });
-                expect(calls).toBe(before);
+                expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toMatchObject({ message: "feat: add selected file" });
+                expect(asked.at(-1)!.startsWith(`${provider}:`)).toBe(true);
                 rt.ws.settings = { ...rt.ws.settings, smallModel: "mock:mock-haiku" };
                 expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toEqual({ message: "feat: add selected file", model: "mock:mock-haiku" });
-                expect(calls).toBe(before + 1);
+                expect(asked.at(-1)).toBe("mock:mock-haiku");
             }
             expect(git("rev-parse", "HEAD")).toBe(head);
         } finally {
@@ -776,11 +773,6 @@ describe("connecting", () => {
             const home = await engine.handle(c, "projects.suggestBranch", { path: cwd, text: "Add dark mode to settings" }) as { branch: string };
             expect(home.branch).toBe("cavvy/add-dark-mode-settings");
             await expect(engine.handle(c, "projects.suggestBranch", { path: cwd, text: "  " })).rejects.toThrow(/Describe the work first/);
-            // No small model a one-off request can use: said, and nothing else changes.
-            rt.client = Object.assign({}, rt.client, { agentBackend: true });
-            rt.model = { ...rt.model!, provider: "claude-code", id: "default" };
-            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
-            await expect(engine.handle(c, "session.gitPrText", { id })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate pull request text." });
         } finally {
             await engine.stop();
         }
