@@ -204,6 +204,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
         openProject: stub,
         trustAndContinue: async (...args: unknown[]) => void trusts.push(args),
+        homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
         requestComposerFocus: stub, setSettingsTab: (t: string) => void tabs.push(t),
         columnHeight: () => "800px", shellLayout: () => ({ column: { w: o.width ?? 900, h: o.height ?? 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p.split("/").pop(), tildify: (p: string) => p, now: stub, isWindowShown: () => true,

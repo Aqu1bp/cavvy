@@ -7,13 +7,14 @@ import { createEffect, createResource, createSignal, For, onCleanup, onMount, Sh
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
 import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
-import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
+import { chooseProject, connectCli, homeJumped, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isElectron, isWindowShown, machine } from "../lib/platform";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
+import { forgetInspected, inspect, inspectedBefore } from "../state/home-ahead";
 import { Composer } from "./Composer";
 import { Menu } from "./ui/Menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -64,15 +65,26 @@ export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
-    const [inspected, { refetch }] = createResource(
+    const [inspected, { refetch: inspectAgain, mutate }] = createResource(
         // On Home's machine (another's, in a folder of its own).
         () => (app.conn === "open" && app.homeCwd ? { path: app.homeCwd, on: homeOn() } : false),
-        ({ path }) =>
-            rpcFor(undefined).call("projects.inspect", { path }).catch((e) => {
+        ({ path, on }) => {
+            const fresh = inspect(rpcFor(undefined), on, path).catch((e) => {
                 if (app.conn === "open") reportError(e);
                 return undefined;
-            }),
+            });
+            // Asked for before Home came here (state/home-ahead.ts): shown with the folder, and replaced by what's said now.
+            const before = inspectedBefore(on, path);
+            if (!before) return fresh;
+            void fresh.then((r) => r && app.homeCwd === path && homeOn() === on && mutate(r));
+            return before;
+        },
     );
+    /** After trusting or not: what it says now, not what it said before. */
+    const refetch = () => {
+        if (app.homeCwd) forgetInspected(homeOn(), app.homeCwd);
+        return inspectAgain();
+    };
     // No folder (none chosen yet, or none on the machine Home came back to): what the last one was isn't this one's.
     const info = () => (app.homeCwd ? inspected() : undefined);
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
@@ -193,11 +205,11 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() }}>
+        <div class="home" classList={{ instant, glide: glide() && !homeJumped(), "home-jumped": homeJumped() }}>
             <div
                 class="home-col"
                 classList={{ asking: askHere() }}
-                style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
+                style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd && homeOn() === undefined ? cliRows() : 0, "--cli-on": app.homeCwd && homeOn() === undefined && cliOn() ? 1 : 0, "--home-cards": cards() }}
             >
                 <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>

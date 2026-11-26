@@ -40,6 +40,9 @@ const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: 
 /** The servers that can't be reached as they are, and why. */
 const [trouble, setTrouble] = createStore<{ list: { name: string; note: string }[] }>({ list: [] });
 
+/** How this computer's Cavvy last heard `name` was (servers.overview): undefined, not heard yet. */
+export const machineState = (name: string): MachineOverview["state"] | undefined => servers.get(name)?.state;
+
 /** The other machines' sessions, each with its machine. */
 const rows = () => otherRows(machine, mac.values(), servers.values());
 
