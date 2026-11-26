@@ -59,16 +59,17 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
             setAsideFocused(false);
         });
     });
-    // A bare /btw: its box takes the keyboard, for the question (the session's had it).
+    // Asked for with none open yet (a bare /btw): the empty tab's box takes the keyboard, for the question. The ask stays
+    // until the side chat is shown (Chat), which takes it then.
     createEffect(
-        on(askSideChat, (n) => {
-            if (!n) return;
-            setAskSideChat(0);
-            requestAnimationFrame(() => root?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+        on(askSideChat, (id) => {
+            if (id === p.handle.id && !p.handle.view.state.sideChat) requestAnimationFrame(() => root?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
         }),
     );
     /** With none open: the question opens one, and goes to it with what's attached. */
     const open = async (text: string, attachments: Attachment[]) => {
+        // Asked from here: the side chat's own box keeps the keyboard once it's shown.
+        setAskSideChat(p.handle.id);
         try {
             const { id } = await rpcFor(p.handle.id).call("session.sideChat", { id: p.handle.id });
             return Boolean(await send(text, attachments, { to: { id }, literal: true }));
@@ -148,8 +149,15 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
         ro.observe(el);
         onCleanup(() => ro.disconnect());
     };
-    // Opened (asked from the session's box with /btw, or here): the next question is written here.
-    createEffect(on(() => Boolean(h()), (shown) => shown && requestAnimationFrame(() => stage?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus())));
+    // Just asked for (/btw, or from the empty tab): its box takes the keyboard, once. Not when the session is opened with
+    // a side chat already there: the keyboard stays in the session's box.
+    createEffect(
+        on([() => Boolean(h()), askSideChat], ([shown, asked]) => {
+            if (!shown || asked !== p.parent.id) return;
+            setAskSideChat(undefined);
+            requestAnimationFrame(() => stage?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+        }),
+    );
 
     /** Closed at once; Undo brings it back as it was, for a while (the server keeps it: Engine.closeSideChat). */
     const close = () => {
