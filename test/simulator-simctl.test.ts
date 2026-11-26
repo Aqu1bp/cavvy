@@ -2,7 +2,7 @@
 // its errors without their boilerplate, and what another tool has taken of a device's input.
 import { expect, test } from "bun:test";
 import { afterEach } from "bun:test";
-import { cutInputs, keyboardOf, launch, parseDevices, pasteboard, runningFor, runtimeName, setRunner, simctlError, takeInput, typesAsUS } from "../src/simulator/simctl";
+import { cutInputs, keyboardOf, launch, parseDevices, pasteboard, runningFor, runtimeName, setRunner, simctlError, simulatorsAvailable, takeInput, typesAsUS } from "../src/simulator/simctl";
 
 afterEach(() => setRunner(undefined));
 
@@ -137,4 +137,21 @@ test("the input process failing to restart: the service is said to have the inpu
     });
     await expect(takeInput("UDID")).rejects.toThrow("Could not kickstart service");
     expect(calls.at(-1)).toBe("notifyutil -s com.apple.coredevice.dtuhidd.active 1 -p com.apple.coredevice.dtuhidd.active");
+});
+
+test("sessions asking at once whether there are simulators share one lookup", async () => {
+    let helps = 0;
+    setRunner(async (args) => {
+        if (args.includes("help")) helps++;
+        // Slow, as on a busy Mac: everyone asks before the first answer is in.
+        await new Promise((r) => setTimeout(r, 30));
+        return args[0] === "xcode-select" ? { code: 0, stdout: "/Applications/Xcode.app/Contents/Developer\n", stderr: "" } : { code: 0, stdout: "", stderr: "" };
+    });
+    const answers = await Promise.all(Array.from({ length: 10 }, () => simulatorsAvailable()));
+    // Simulators are looked for on macOS only.
+    expect(helps).toBe(process.platform === "darwin" ? 1 : 0);
+    expect(new Set(answers.map((a) => a.ok)).size).toBe(1);
+    // Within the minute the answer is kept: no lookup at all.
+    await simulatorsAvailable();
+    expect(helps).toBe(process.platform === "darwin" ? 1 : 0);
 });

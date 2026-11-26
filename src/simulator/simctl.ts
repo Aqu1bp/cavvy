@@ -58,6 +58,7 @@ export function setAvailability(a: Availability | undefined) {
 export function setRunner(r: Runner | undefined) {
     runner = r ?? run;
     availability = undefined;
+    looking = undefined;
 }
 
 async function simctl(args: string[], o?: { timeoutMs?: number; signal?: AbortSignal; input?: string; env?: Record<string, string> }): Promise<string> {
@@ -85,14 +86,24 @@ export function simctlError(text: string): string {
 export type Availability = { ok: true; developerDir: string } | { ok: false; error: string };
 
 let availability: { at: number; value: Availability } | undefined;
+/** The lookup under way: everyone who asks meanwhile gets its answer. */
+let looking: Promise<Availability> | undefined;
 
-/** Whether Xcode's simulators can be used here (macOS with Xcode chosen by xcode-select), looked up at most once a minute. */
+/**
+ * Whether Xcode's simulators can be used here (macOS with Xcode chosen by xcode-select), looked up at most once a
+ * minute, and one lookup at a time: each session asked as it started, and ten starting together ran ten `simctl help`
+ * at once, each to its 20 s limit on a busy Mac.
+ */
 export async function simulatorsAvailable(): Promise<Availability> {
     if (forced) return forced;
     if (availability && Date.now() - availability.at < 60_000) return availability.value;
-    const value = await lookUp();
-    availability = { at: Date.now(), value };
-    return value;
+    looking ??= lookUp()
+        .then((value) => {
+            availability = { at: Date.now(), value };
+            return value;
+        })
+        .finally(() => (looking = undefined));
+    return looking;
 }
 
 /**
