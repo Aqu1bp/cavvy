@@ -1,6 +1,6 @@
 // The rewind dialog (gui/src/components/RewindDialog.tsx) compiled with Solid's client reactivity, as
 // gui-confirm-dialog.test.ts does: only the renderer and the server are replaced. What it asks the server for, and when.
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { transformSync } from "../gui/node_modules/@babel/core/lib/index.js";
 import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
@@ -70,7 +70,7 @@ function rewind() {
         rewindTimes: (at: unknown[]) => at.map(() => undefined),
         refreshGitChanges() {},
         promptPreview: (t: string) => t,
-        takeFocus() {},
+        userMovedFocus: () => false,
         Dialog,
         Spinner: Icon, AlertTriangle: Icon, FileMinus2: Icon, FilePen: Icon, FilePlus2: Icon, History: Icon,
     });
@@ -91,7 +91,14 @@ function rewind() {
 }
 
 const settle = async () => { for (let i = 0; i < 6; i++) await Bun.sleep(0); };
-(globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame ??= (f: () => void) => setTimeout(f, 0);
+const g = globalThis as { requestAnimationFrame?: unknown };
+const hadFrame = "requestAnimationFrame" in g;
+const frame = g.requestAnimationFrame;
+beforeAll(() => void (g.requestAnimationFrame ??= (f: () => void) => setTimeout(f, 0)));
+afterAll(() => {
+    if (hadFrame) g.requestAnimationFrame = frame;
+    else delete g.requestAnimationFrame;
+});
 
 test("opened for another session, it asks only for that one's prompts, never the last one's", async () => {
     const d = rewind();

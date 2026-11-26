@@ -9,7 +9,7 @@ import { rewindTimes } from "../lib/rewind-times";
 import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
-import { takeFocus } from "../lib/focus-trap";
+import { userMovedFocus } from "../lib/focus-trap";
 
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
@@ -145,8 +145,13 @@ export function RewindDialog() {
             if (!t?.length || waiting || !rewindOpen()) return;
             requestAnimationFrame(() => {
                 if (!listEl?.isConnected) return;
-                // Not if the user has moved it since the dialog opened (takeFocus).
-                takeFocus(listEl.querySelector<HTMLElement>(".rw-item.on") ?? listEl.querySelector<HTMLElement>(".rw-item") ?? undefined);
+                // Not if the user has moved it since the dialog opened.
+                const dialog = listEl.closest('[role="dialog"]');
+                if (!dialog || userMovedFocus(dialog)) return;
+                const chosenRow = listEl.querySelector<HTMLElement>(".rw-item.on");
+                const at = document.activeElement;
+                if (at === chosenRow || (!chosenRow && listEl.contains(at))) return;
+                (chosenRow ?? listEl.querySelector<HTMLElement>(".rw-item"))?.focus();
             });
         }),
     );
