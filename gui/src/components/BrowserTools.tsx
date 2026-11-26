@@ -216,13 +216,28 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         if (d) setView({ device: { width: d.height, height: d.width }, zoom: zoom() });
     };
     const zoomBy = (dir: 1 | -1 | 0) => setView({ device: o.view()?.device, zoom: dir ? zoomStep(zoom(), dir) : 1 });
+    const clamp = (n: number) => Math.min(MAX_SIDE, Math.max(MIN_SIDE, Math.round(n)));
+    /** A custom size just taken from the pane: the size strip that comes with it takes some of the pane's height. */
+    let seeded = false;
     const custom = () => {
         setMenuOpen(false);
         const box = o.root()?.querySelector(".br-view")?.getBoundingClientRect();
-        const clamp = (n: number) => Math.min(MAX_SIDE, Math.max(MIN_SIDE, Math.round(n)));
+        if (!o.view()?.device) {
+            seeded = true;
+            setTimeout(() => (seeded = false), 1000);
+        }
         setView({ device: o.view()?.device ?? { width: clamp(box?.width ?? 800), height: clamp(box?.height ?? 600) }, zoom: zoom() });
         requestAnimationFrame(() => (widthInput?.focus(), widthInput?.select()));
     };
+    // …so it's made to fit what's left, rather than shown at 92% from the start.
+    createEffect(
+        on(o.box, (b) => {
+            const d = o.view()?.device;
+            if (!seeded || !d) return;
+            const w = clamp(b.width), h = clamp(b.height);
+            if (w < d.width || h < d.height) setView({ device: { width: Math.min(d.width, w), height: Math.min(d.height, h) }, zoom: zoom() });
+        }, { defer: true }),
+    );
     /** A side typed that a page can't have: kept in its field, marked, with what it takes beside it. */
     const [refused, setRefused] = createSignal<"width" | "height">();
     createEffect(on(() => o.view()?.device, () => setRefused(undefined), { defer: true }));
