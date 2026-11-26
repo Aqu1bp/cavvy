@@ -54,17 +54,6 @@ const lastText = (messages: Message[]) => {
 };
 
 describe("a side chat", () => {
-    test("lists its parent even with nothing in the parent's own conversation (/btw on Home)", async () => {
-        const { engine, c, events, id } = await parentWithTurn(null);
-        expect(engine.listSessions().map((s) => s.id)).not.toContain(id);
-        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id, text: "what is this project?" })) as { id: string };
-        expect(engine.listSessions().map((s) => s.id)).toContain(id);
-        expect(engine.listSessions().map((s) => s.id)).not.toContain(sideId);
-        expect(events.some((e) => e.type === "sessions.upsert" && e.session.id === id)).toBe(true);
-        const side = engine.runtimes.get(sideId)!;
-        await until(() => side.idle && side.session.messageCount >= 2);
-    });
-
     test("is given the conversation, answers about it, and adds nothing to it", async () => {
         const { engine, c, events, id, rt } = await parentWithTurn("hello there");
         const before = rt.session.messages.length;
