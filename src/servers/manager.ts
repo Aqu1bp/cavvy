@@ -382,6 +382,7 @@ export class ServerLinks {
             browser: check.browser,
             service: service.service,
             ...(service.bootFix ? { bootFix: service.bootFix } : {}),
+            ...(service.bootHere ? { bootHere: true as const } : {}),
             ...(check.xcode ? { xcode: check.xcode } : {}),
         };
     }

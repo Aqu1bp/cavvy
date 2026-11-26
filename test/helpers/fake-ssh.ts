@@ -41,14 +41,15 @@ export interface FakeServer {
     asked(): string[];
     /** With `systemd`: whether the server lets a user's services outlive their sign-in when asked. */
     allowLinger(yes: boolean): void;
-    /** With `mac`: whether `sudo` there runs things without asking for a password. */
-    allowSudo(yes: boolean): void;
+    /** With `mac`: whether `sudo` there runs things without asking for a password (true), or only when it may ask for one ("password"). */
+    allowSudo(yes: boolean | "password"): void;
     /** With `mac`: launchd there won't load a daemon, whoever asks (true), or will again. */
     refuseDaemon(yes: boolean): void;
     /** With `mac`: what was asked of the pretend launchd, in order ("user bootstrap user/501 <file>"; "root …" when through sudo). */
     launchd(): string[];
-    /** With `mac`: where the pretend Mac keeps its LaunchDaemons. */
+    /** With `mac`: where the pretend Mac keeps its LaunchDaemons, and its stand-ins for the system's tools (for src/servers/remote.ts macLaunchd). */
     daemons: string;
+    shims: string;
     /** With `mac`: how Xcode stands there. `hangs`: it's there and waits on a question at the Mac's screen. `broken`: it runs and its simulator tool doesn't. */
     xcode(state: "ready" | "missing" | "unopened" | "hangs" | "broken" | "no-simulator"): void;
     /** As if the user had connected to it before: its key is in the pretend known_hosts. */
@@ -110,9 +111,14 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
         writeFileSync(join(dir, "xcode"), "ready");
         shim("sysctl", 'if [ "$2" = hw.memsize ]; then echo 17179869184; else exit 1; fi');
         shim("launchctl", `FAKE_DIR=${q(dir)} exec sh ${q(join(REPO, "test", "helpers", "fake-launchctl.sh"))} "$@"`);
-        shim("sudo", `[ -f ${q(join(dir, "sudo-allowed"))} ] || { echo "sudo: a password is required" >&2; exit 1; }\n[ "$1" = "-n" ] && shift\nFAKE_SUDO=1 exec "$@"`);
-        // Only as an administrator, as into /Library: the owner and mode it's asked for are taken as given.
-        shim("install", '[ -n "$FAKE_SUDO" ] || { echo "install: Operation not permitted" >&2; exit 1; }\nwhile [ $# -gt 2 ]; do shift; done\ncp "$1" "$2"');
+        // As sudo: it says who asked. `-n`: without asking for a password, which only works where none is needed.
+        shim(
+            "sudo",
+            `n=""\nwhile :; do case "$1" in -n) n=1; shift ;; -p) shift 2 ;; *) break ;; esac; done\nif [ -f ${q(join(dir, "sudo-allowed"))} ] || { [ -z "$n" ] && [ -f ${q(join(dir, "sudo-password"))} ]; }; then SUDO_USER=$(id -un) FAKE_SUDO=1 exec "$@"; fi\necho "sudo: a password is required" >&2\nexit 1`,
+        );
+        // The Mac's own record of an account, and handing a file to root (which the tests' user can't): taken as done.
+        shim("dscl", `case "$4" in NFSHomeDirectory) echo "NFSHomeDirectory: ${home}" ;; UserShell) echo "UserShell: /bin/zsh" ;; *) exit 1 ;; esac`);
+        shim("chown", `echo "$*" >> ${q(join(dir, "chown.log"))}`);
         const state = `$(cat ${q(join(dir, "xcode"))})`;
         shim("xcode-select", `if [ "${state}" = missing ]; then echo /Library/Developer/CommandLineTools; else echo ${q(join(dir, "Xcode.app", "Contents", "Developer"))}; fi`);
         // Not let run yet: killed as it starts with nobody at the Mac, left waiting when somebody is.
@@ -134,7 +140,7 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
     }
     shim("getconf", 'if [ "$1" = GNU_LIBC_VERSION ]; then echo "glibc 2.39"; else PATH="$FAKE_REAL_PATH" exec getconf "$@"; fi');
     const bin = join(dir, "ssh");
-    writeFileSync(bin, `#!/bin/sh\n${o.mac ? `CAVVY_LAUNCH_DAEMONS=${JSON.stringify(daemons)} ` : ""}FAKE_SSH_DIR=${JSON.stringify(dir)} exec ${JSON.stringify(process.execPath)} --no-env-file ${JSON.stringify(join(REPO, "test", "helpers", "fake-ssh-main.ts"))} "$@"\n`);
+    writeFileSync(bin, `#!/bin/sh\nFAKE_SSH_DIR=${JSON.stringify(dir)} exec ${JSON.stringify(process.execPath)} --no-env-file ${JSON.stringify(join(REPO, "test", "helpers", "fake-ssh-main.ts"))} "$@"\n`);
     chmodSync(bin, 0o755);
     process.env.CAVVY_SSH = bin;
 
@@ -221,8 +227,8 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
             else rmSync(join(dir, "linger-allowed"), { force: true });
         },
         allowSudo(yes) {
-            if (yes) writeFileSync(join(dir, "sudo-allowed"), "");
-            else rmSync(join(dir, "sudo-allowed"), { force: true });
+            for (const f of ["sudo-allowed", "sudo-password"]) rmSync(join(dir, f), { force: true });
+            if (yes) writeFileSync(join(dir, yes === true ? "sudo-allowed" : "sudo-password"), "");
         },
         refuseDaemon(yes) {
             if (yes) writeFileSync(join(dir, "refuse-daemon"), "");
@@ -235,6 +241,7 @@ export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServe
                       .filter(Boolean)
                 : [],
         daemons,
+        shims: join(dir, "bin"),
         xcode(state) {
             writeFileSync(join(dir, "xcode"), state);
         },

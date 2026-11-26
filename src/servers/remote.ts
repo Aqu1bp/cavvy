@@ -29,14 +29,20 @@ export type ServerTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | 
 /** The name of Cavvy's job in launchd, and of its files. */
 export const MAC_LABEL = "dev.cavvy.server";
 
+/** Where a Mac keeps what only an administrator changes, and the PATH its root is given (changeable for tests: the pretend Mac's own). */
+export const macLaunchd = { daemons: "/Library/LaunchDaemons", rootPath: "/usr/bin:/bin:/usr/sbin:/sbin" };
+
+/** A script with those filled in. */
+export const withMacPaths = (script: string) => script.replaceAll("@@DAEMONS@@", macLaunchd.daemons).replaceAll("@@ROOT_PATH@@", macLaunchd.rootPath);
+
 /**
- * `$daemon`: the LaunchDaemon's file, and `boots`: whether it's there and is this user's Cavvy (another user of the
- * same Mac may have their own under that name, which is left alone). For scripts where `$HOME` is the user's.
- * CAVVY_LAUNCH_DAEMONS: where the tests' pretend Mac keeps them (test/helpers/fake-ssh.ts).
+ * `$daemon`: the LaunchDaemon's file, and `boots`: whether it's there and runs Cavvy as this account (another account
+ * of the same Mac may have its own under that name, which is left alone). Root wrote the file (service.ts MAC_BOOT),
+ * so what it says can be believed.
  */
 export const MAC_DAEMON = `
-daemon="\${CAVVY_LAUNCH_DAEMONS:-/Library/LaunchDaemons}/${MAC_LABEL}.plist"
-boots() { [ -f "$daemon" ] && grep -qF "$HOME/.cavvy/server" "$daemon"; }
+daemon="@@DAEMONS@@/${MAC_LABEL}.plist"
+boots() { [ -f "$daemon" ] && grep -qF "<key>UserName</key><string>$(id -un)</string>" "$daemon"; }
 `;
 
 export interface ServerFacts {
@@ -141,7 +147,7 @@ export function parseFacts(out: string): ServerFacts {
 }
 
 export async function probeServer(e: ServerEntry, signal?: AbortSignal): Promise<ServerFacts> {
-    const r = await ssh(e, remoteSh(PROBE), { timeoutMs: 45_000, signal });
+    const r = await ssh(e, remoteSh(withMacPaths(PROBE)), { timeoutMs: 45_000, signal });
     // csh and tcsh can't take a quoted script of several lines, which is how every command is sent (ssh.ts remoteSh).
     if (r.code !== 0 && /Unmatched ['"]/.test(r.stderr)) throw new ServerError(`Cavvy can't run commands on ${hostOf(e)}: your login shell there is csh or tcsh. It needs sh, bash, zsh, dash or ksh.`);
     if (r.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);

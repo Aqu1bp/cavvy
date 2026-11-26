@@ -1,9 +1,11 @@
 // A Mac as a server, against a pretend one (test/helpers/fake-ssh.ts with `mac`): the real scripts run, and the
 // Cavvy "installed" there is this checkout's. What isn't real: launchd (fake-launchctl.sh loads a job and runs its
-// program once, and refuses what launchd refuses), sudo, and Xcode's tools. The real ones are tried on a real Mac.
+// program once, and refuses what launchd refuses), sudo, the Mac's record of an account, and Xcode's tools. The real
+// ones are tried on a real Mac.
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { userInfo } from "os";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
@@ -13,9 +15,11 @@ setDefaultTimeout(60_000);
 const iso = isolate();
 const mac = fakeSsh({ mac: true });
 const { setUpServer } = await import("../src/servers/install");
-const { probeServer, targetFor, MAC_LABEL } = await import("../src/servers/remote");
-const { MAC_BOOT_FIX, pairOverSsh, remoteCheck, remoteStatus, serviceReport, setUpService, stopRemote, xcodeTiming } = await import("../src/servers/service");
-const { checkLines } = await import("../src/servers/cli");
+const { probeServer, targetFor, macLaunchd, MAC_LABEL } = await import("../src/servers/remote");
+const { bootCommand, pairOverSsh, remoteCheck, remoteStatus, serviceReport, setUpService, stopRemote, xcodeTiming } = await import("../src/servers/service");
+const { sshCommandArgv } = await import("../src/servers/ssh");
+const { checkLines, serversCommand } = await import("../src/servers/cli");
+const { saveServer } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { ServerEntry } from "../src/servers/store";
 
@@ -25,6 +29,32 @@ const serverDir = join(mac.home, ".cavvy", "server");
 const agentFile = join(mac.home, "Library", "LaunchAgents", `${MAC_LABEL}.plist`);
 const daemonFile = join(mac.daemons, `${MAC_LABEL}.plist`);
 const uid = process.getuid!();
+const me = userInfo().username;
+// The pretend Mac's own, in place of /Library/LaunchDaemons and the system's tools.
+const real = { ...macLaunchd };
+macLaunchd.daemons = mac.daemons;
+macLaunchd.rootPath = `${mac.shims}:${real.rootPath}`;
+saveServer(entry);
+
+/** How bootCommand asks for sudo, and a command run on the pretend Mac as it stands. */
+const SUDO = 'exec sudo -p "Password for %p on %h: " /bin/sh';
+async function overSsh(command: string): Promise<{ code: number; err: string }> {
+    const p = Bun.spawn(sshCommandArgv(entry, command), { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    return { code: await p.exited, err: (await new Response(p.stderr).text()).trim() };
+}
+
+/** `cavvy servers …` here, with what it printed. */
+async function servers(...args: string[]): Promise<{ code: number; said: string }> {
+    let said = "";
+    const streams = [process.stdout, process.stderr] as const;
+    const writes = streams.map((s) => s.write);
+    for (const s of streams) s.write = ((text: string | Uint8Array) => ((said += String(text)), true)) as typeof s.write;
+    try {
+        return { code: await serversCommand(args), said };
+    } finally {
+        streams.forEach((s, i) => (s.write = writes[i]!));
+    }
+}
 const M = "0123456789abcdef0123456789abcdef";
 
 const A = "aaaaaaaaaaaa-1";
@@ -51,6 +81,7 @@ const loaded = (domain: string) => asked().findLast((l) => l.includes(`${domain}
 
 afterAll(async () => {
     await stopRemote(entry).catch(() => undefined);
+    Object.assign(macLaunchd, real);
     mac.cleanup();
     iso.cleanup();
 });
@@ -62,9 +93,9 @@ describe("a Mac that asks for a password before it lets anyone be an administrat
         expect(targets).toEqual(["darwin-arm64"]);
         expect(r.facts).toMatchObject({ os: "Darwin", arch: "arm64", memMb: 16384, libc: "unknown", systemd: false });
         expect(r.status).toMatchObject({ running: true, build: A });
-        // Not a service: nothing would start it after a reboot, and one command would.
-        expect(r.service).toEqual({ service: false, bootFix: MAC_BOOT_FIX });
-        expect(MAC_BOOT_FIX).toBe("sudo install -o root -g wheel -m 644 ~/.cavvy/server/dev.cavvy.server.plist /Library/LaunchDaemons/");
+        // Not a service: nothing would start it after a reboot, and one command would, run on this computer.
+        expect(r.service).toEqual({ service: false, bootHere: true });
+        expect(checkLines("mini", await remoteCheck(entry), r.service)).toContain("It won't start Cavvy again after a reboot. To fix that, run here: cavvy servers boot mini");
         // The agent, in the user's own part of launchd: nothing of the system's was touched.
         expect(new Set(asked())).toEqual(new Set([`user bootout user/${uid}/${MAC_LABEL}`, `user bootstrap user/${uid} ${agentFile}`]));
         expect(asked().at(-1)).toBe(`user bootstrap user/${uid} ${agentFile}`);
@@ -89,20 +120,50 @@ describe("a Mac that asks for a password before it lets anyone be an administrat
         expect(readFileSync(join(serverDir, "server.log"), "utf-8")).toContain("running");
     });
 
-    test("the daemon's file is left beside Cavvy for the command to install, and once it's there the Mac is a service", async () => {
-        const beside = join(serverDir, `${MAC_LABEL}.plist`);
-        const daemon = readFileSync(beside, "utf-8");
-        expect(daemon).toContain("<key>UserName</key><string>");
-        expect(daemon).toContain(`<key>HOME</key><string>${mac.home}</string>`);
-        expect(daemon).not.toContain("LimitLoadToSessionType");
-        expect(serviceReport(await probeServer(entry))).toEqual({ service: false, bootFix: MAC_BOOT_FIX });
-        // The user ran the command. What runs now is left as it is.
-        writeFileSync(daemonFile, daemon);
+    test("`servers boot` has root there write the daemon, with the user's own password: nothing the account holds goes into it", async () => {
+        expect(serviceReport(await probeServer(entry))).toEqual({ service: false, bootHere: true });
+        // Nothing of the daemon's is kept where the account could change it before an administrator installs it.
+        expect(existsSync(join(serverDir, `${MAC_LABEL}.plist`))).toBe(false);
+        // sudo refuses (no password given): nothing is installed, and it says so.
+        const refused = await servers("boot", "mini");
+        expect(refused.code).toBe(1);
+        expect(refused.said).toContain("mini wasn't set up to start Cavvy at boot.");
+        expect(existsSync(daemonFile)).toBe(false);
+
+        // The account, or an agent working as it, leaves what it would like root to run. None of it is read.
+        writeFileSync(join(serverDir, `${MAC_LABEL}.plist`), "<plist><key>UserName</key><string>root</string><key>Program</key><string>/tmp/evil</string></plist>\n");
+        mac.allowSudo("password");
         const before = await remoteStatus(entry);
-        expect((await probeServer(entry)).launchDaemon).toBe("mine");
-        expect(serviceReport(await probeServer(entry))).toEqual({ service: true });
-        expect(await setUpService(entry)).toEqual({ service: true });
+        const done = await servers("boot", "mini");
+        expect(done).toEqual({ code: 0, said: "mini will start Cavvy at boot.\n" });
+        const daemon = readFileSync(daemonFile, "utf-8");
+        expect(daemon).not.toContain("evil");
+        // As the account that ran sudo, in the home the Mac has on record for it, with the keys Cavvy's script gives.
+        const keys = [...daemon.matchAll(/^<key>(\w+)<\/key>/gm)].map((m) => m[1]);
+        expect(keys).toEqual(["Label", "ProgramArguments", "EnvironmentVariables", "WorkingDirectory", "RunAtLoad", "KeepAlive", "ProcessType", "ExitTimeOut", "UserName"]);
+        expect(daemon).toContain(`<key>UserName</key><string>${me}</string>`);
+        expect(daemon).toContain(`<key>HOME</key><string>${mac.home}</string>`);
+        expect(daemon).toContain(`<string>${serverDir}</string></array>`);
+        expect(daemon).not.toContain("LimitLoadToSessionType");
+        // Root's, and nobody else's to write.
+        expect(readFileSync(join(mac.daemons, "..", "chown.log"), "utf-8")).toContain("root:wheel ");
+        expect(statSync(daemonFile).mode & 0o777).toBe(0o644);
+        expect(readdirSync(mac.daemons)).toEqual([`${MAC_LABEL}.plist`]);
+        // What runs now is left as it is, and the Mac is a service from the next boot.
         expect((await remoteStatus(entry))?.pid).toBe(before!.pid);
+        expect((await probeServer(entry)).launchDaemon).toBe("mine");
+        expect(await setUpService(entry)).toEqual({ service: true });
+        // Asked again, there's nothing to do, and no password to ask for.
+        mac.allowSudo(false);
+        expect(await servers("boot", "mini")).toEqual({ code: 0, said: "mini already starts Cavvy at boot.\n" });
+        rmSync(join(serverDir, `${MAC_LABEL}.plist`));
+    });
+
+    test("the script that writes the daemon runs only through sudo, as an account", async () => {
+        // Run by the account itself: sudo names nobody.
+        const was = readFileSync(daemonFile, "utf-8");
+        expect(await overSsh(bootCommand().replace(SUDO, "exec /bin/sh"))).toEqual({ code: 64, err: "This is run with sudo, by the account Cavvy runs as." });
+        expect(readFileSync(daemonFile, "utf-8")).toBe(was);
     });
 
     test("an update there goes through the agent: only an administrator may start the daemon", async () => {
@@ -135,13 +196,16 @@ describe("a Mac that asks for a password before it lets anyone be an administrat
 describe("a Mac where sudo doesn't ask", () => {
     test("gets the daemon installed by itself, and it's the daemon that's started and stopped from then on", async () => {
         mac.allowSudo(true);
-        writeFileSync(daemonFile, "<plist><!-- an older Cavvy's, for this user -->" + serverDir + "</plist>\n");
+        writeFileSync(daemonFile, `<plist><!-- an older Cavvy's, for this account --><key>UserName</key><string>${me}</string></plist>\n`);
         const from = mac.launchd().length;
         const r = await setUpServer(entry, { source: source(A) });
         expect(r.status).toMatchObject({ running: true, build: A });
         expect(r.service).toEqual({ service: true });
-        // What was installed before is replaced by this Cavvy's.
-        expect(readFileSync(daemonFile, "utf-8")).toBe(readFileSync(join(serverDir, `${MAC_LABEL}.plist`), "utf-8"));
+        // What was installed before is replaced by what root writes from this Cavvy's script.
+        const daemon = readFileSync(daemonFile, "utf-8");
+        expect(daemon).not.toContain("an older Cavvy's");
+        expect(daemon).toContain(`<key>UserName</key><string>${me}</string>`);
+        expect(daemon).toContain(`<string>${serverDir}</string></array>`);
         // The agent that ran it goes, file and all: one job keeps it running, not two.
         expect(existsSync(agentFile)).toBe(false);
         expect(loaded(`user/${uid}`)).toBe(false);
@@ -175,9 +239,15 @@ describe("a Mac where sudo doesn't ask", () => {
     });
 
     test("another user's daemon under the same name is left alone, and there's nothing to tell this one to run", async () => {
-        const theirs = "<plist><string>/Users/other/.cavvy/server</string></plist>\n";
+        const theirs = "<plist><key>UserName</key><string>other</string><string>/Users/other/.cavvy/server</string></plist>\n";
         writeFileSync(daemonFile, theirs);
-        expect(await setUpService(entry)).toEqual({ service: false, bootFix: undefined });
+        expect(await setUpService(entry)).toEqual({ service: false });
+        // Nor by `servers boot`, which says why.
+        const taken = await servers("boot", "mini");
+        expect(taken).toEqual({ code: 1, said: "Another account on mini.example already starts its own Cavvy at boot.\n" });
+        // The script itself refuses too, whoever runs it.
+        expect(bootCommand()).toContain(SUDO);
+        expect(await overSsh(bootCommand())).toEqual({ code: 66, err: "Another account's Cavvy already starts at boot on this Mac." });
         expect(readFileSync(daemonFile, "utf-8")).toBe(theirs);
         expect((await probeServer(entry)).launchDaemon).toBe("other");
         expect(serviceReport(await probeServer(entry))).toEqual({ service: false });
