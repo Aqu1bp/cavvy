@@ -70,6 +70,25 @@ async function turn(s: { snapshots: InstanceType<typeof TurnSnapshots>; history:
 }
 
 describe("restoring files on rewind", () => {
+    test("leaves Cavvy's own local settings alone: an Always allow rule, and the .gitignore beside it", async () => {
+        const s = setup();
+        const { cwd } = s;
+        const cp = await turn(s, () => {
+            write(cwd, "a.txt", "changed\n");
+            // What "Always allow" writes (config/settings.ts updateSettings, ensureLocalGitignore).
+            write(cwd, ".cavvy/settings.local.json", '{"permissions":{"allow":["Bash(bun test)"]}}\n');
+            write(cwd, ".cavvy/.gitignore", "settings.local.json\n");
+            write(cwd, "src/.cavvy/.gitignore", "settings.local.json\n");
+        });
+        const plan = await planFileRestore({ snapshots: s.snapshots, history: s.history, checkpoint: cp });
+        expect(plan.items.map((i) => i.path.slice(cwd.length + 1))).toEqual(["a.txt"]);
+        await restoreFiles(plan);
+        expect(read(cwd, "a.txt")).toBe("a\n");
+        expect(read(cwd, ".cavvy/settings.local.json")).toContain("Bash(bun test)");
+        expect(existsSync(join(cwd, ".cavvy/.gitignore"))).toBe(true);
+        expect(existsSync(join(cwd, "src/.cavvy/.gitignore"))).toBe(true);
+    });
+
     test("puts back every change since the prompt, whoever made it, and Undo puts them back again", async () => {
         const s = setup();
         const { cwd } = s;
