@@ -746,6 +746,8 @@ describe("/rewind command", () => {
         expect(header).toContain("restore a.txt");
         expect(header).toContain("delete  b.txt");
         expect(header).toContain("shell commands aren't undone");
+        // The GUI's buttons, without hints.
+        expect(f.shown[1].list.items.map((i: any) => [stripAnsi(i.label), i.description])).toEqual([["Restore both", undefined], ["Conversation only", undefined], ["Code only", undefined], ["Cancel", undefined]]);
         expect(readFileSync(a, "utf-8")).toBe("1\n");
         expect(existsSync(b)).toBe(false);
         expect(rewindTargets(s.session.messages).map((t) => t.text)).toEqual(["one"]);

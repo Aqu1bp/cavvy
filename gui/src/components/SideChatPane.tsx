@@ -101,7 +101,7 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
                                 <div class="sc-body">
                                     <div class="stage">
                                         <Dock>
-                                            <Composer aside={{ of: p.handle.id, open }} placeholder="Ask about this session" />
+                                            <Composer aside={{ of: p.handle.id, open }} placeholder="Ask a question" />
                                         </Dock>
                                     </div>
                                 </div>

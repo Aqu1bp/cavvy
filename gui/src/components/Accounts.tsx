@@ -270,7 +270,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         </Dialog>
         <Show when={envOpen()}><EnvDialog provider={p.provider} onClose={() => setEnvOpen(false)} /></Show>
         <Show when={instanceOpen()} keyed>{(i) => <InstanceDialog provider={p.provider} instance={i === "new" ? undefined : i} onClose={() => setInstanceOpen(undefined)} />}</Show>
-        <Show when={removingInstance()}>{(i) => <Dialog open onClose={() => { if (!busy()) setRemovingInstance(undefined); }} title={`Remove ${p.provider.name} · ${i().name}?`} width={460}>
+        <Show when={removingInstance()}>{(i) => <Dialog open onClose={() => { if (!busy()) setRemovingInstance(undefined); }} title={`Remove ${i().name}?`} width={460}>
             <p>Sessions using it will need another model.</p>
             <Show when={removeInstanceError()}><p class="account-error" role="alert">{removeInstanceError()}</p></Show>
             <div class="dialog-actions">

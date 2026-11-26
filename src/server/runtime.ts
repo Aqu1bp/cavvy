@@ -4970,7 +4970,11 @@ export class Runtime {
             throw new RpcError("Couldn't make a title.", "failed");
         }
         const title = modelTitle(raw);
-        if (!title) throw new RpcError("The model's answer wasn't a title.", "failed");
+        if (!title) {
+            // The prompt said back, or a paragraph: to the user, as any other failure.
+            this.engine.log(`session ${this.id}: no new title: the answer wasn't a title`);
+            throw new RpcError("Couldn't make a title.", "failed");
+        }
         if (this.closed) throw new RpcError("The session was closed.", "closed");
         this.rename(title);
         return title;

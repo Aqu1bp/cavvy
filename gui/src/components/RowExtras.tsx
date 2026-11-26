@@ -75,7 +75,7 @@ const naming = new Set<string>();
 
 /**
  * Named again by the small model from the conversation so far (the row's menu, or the title bar's). Undo puts the old
- * title back; a failure leaves it as it was and says so.
+ * title back; a failure leaves it as it was and says why.
  */
 export async function regenerateTitle(id: string) {
     if (naming.has(id)) return;
@@ -84,8 +84,9 @@ export async function regenerateTitle(id: string) {
     let title: string;
     try {
         ({ title } = await rpc.call("session.regenerateTitle", { id }));
-    } catch {
-        return void toast("Couldn't regenerate the title", "warn");
+    } catch (e) {
+        // The server says why: nothing to name it after yet, no model that can, or that it couldn't.
+        return void toast((e instanceof Error && e.message) || "Couldn't make a title.", "warn");
     } finally {
         naming.delete(id);
     }

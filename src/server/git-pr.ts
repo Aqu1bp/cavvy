@@ -3,7 +3,7 @@
 // and the worktree is made as **New worktree…** makes one (worktrees.ts, its trust checks unchanged).
 import type { GitPrListInfo, GitPrWorktree, WorktreeInfo } from "./protocol";
 import { cleanGitText, ghState, githubRepo, remoteUrl, runGh, runGit } from "./git-publish";
-import { gitReason } from "./git-sync";
+import { gitReason, withReason } from "./git-sync";
 import { RpcError } from "./rpc-error";
 import { createWorktree, createWorktreeWithHooks, listWorktrees } from "./worktrees";
 import type { Log } from "./worktrees";
@@ -109,7 +109,12 @@ export async function gitPrWorktree(cwd: string, input: string, log?: Log): Prom
     // Fetched from the URL checked as publishing checks it: the branch into its remote-tracking ref, a fork's head into FETCH_HEAD.
     const spec = fork ? `refs/pull/${ref.number}/head` : `+refs/heads/${head}:refs/remotes/${remote}/${head}`;
     const fetched = await runGit(cwd, ["-c", "fetch.recurseSubmodules=false", "fetch", "--no-recurse-submodules", "--no-tags", "--", url, spec], true);
-    if (fetched.code) throw fail(`Couldn't fetch pull request #${ref.number}. ${gitReason(fetched.err + fetched.out)}`, "fetch_failed");
+    if (fetched.code) {
+        const said = fetched.err + fetched.out;
+        // Its branch was deleted, or never pushed there.
+        if (/couldn't find remote ref/i.test(said)) throw fail(`#${ref.number}'s branch isn't on ${remote}.`, "fetch_failed");
+        throw fail(withReason(`Couldn't fetch pull request #${ref.number}.`, gitReason(said)), "fetch_failed");
+    }
     const commit = await local(cwd, ["rev-parse", "--verify", "--quiet", `${fork ? "FETCH_HEAD" : `refs/remotes/${remote}/${head}`}^{commit}`]);
     if (!/^[0-9a-f]{40,64}$/.test(commit)) throw fail(`Couldn't find pull request #${ref.number}'s commits after fetching.`, "fetch_failed");
 

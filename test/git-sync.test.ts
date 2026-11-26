@@ -15,7 +15,7 @@ afterAll(() => {
     iso.cleanup();
 });
 
-const { gitBranches, gitCreateBranch, gitFetch, gitPull, gitReason, gitSwitch, gitSyncInfo } = await import("../src/server/git-sync");
+const { gitBranches, gitCreateBranch, gitFetch, gitPull, gitReason, gitSwitch, gitSyncInfo, withReason } = await import("../src/server/git-sync");
 
 const realGit = Bun.which("git")!;
 function git(cwd: string, ...args: string[]) {
@@ -216,6 +216,11 @@ test("a URL rewrite on the remote is refused, as for publishing", async () => {
 test("git's reasons, briefly", () => {
     expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("Untracked x, y, z and 1 more would be overwritten. Move or remove them first.");
     expect(gitReason("fatal: 'feature' is already used by worktree at '/tmp/wt'\n")).toBe("'feature' is already used by worktree at '/tmp/wt'");
+    // After a sentence of Cavvy's: a sentence of its own.
+    expect(withReason("Couldn't fetch origin.", gitReason("fatal: could not read from remote repository\n"))).toBe("Couldn't fetch origin. Could not read from remote repository.");
+    expect(withReason("Couldn't fetch origin.", "Connection timed out.")).toBe("Couldn't fetch origin. Connection timed out.");
+    expect(withReason("Couldn't fetch origin.", "")).toBe("Couldn't fetch origin.");
+    expect(withReason("Couldn't fetch origin.", "git@github.com: Permission denied (publickey).")).toBe("Couldn't fetch origin. git@github.com: Permission denied (publickey).");
 });
 
 test("engine: switching waits for the folder's sessions, and the header's branch follows", async () => {
