@@ -210,7 +210,8 @@ export class AcpBackend implements AgentBackendClient {
         return acpModels(this.def.id, signal);
     }
 
-    async runTurn(t: BackendTurn): Promise<BackendResult> {
+    /** `command`: its own command's turn (/compact), which may well end without a reply. */
+    async runTurn(t: BackendTurn, command = false): Promise<BackendResult> {
         const name = this.cli.name;
         if (t.adopt) return { reason: "error", text: "", actions: [], error: `${name} doesn't start turns of its own.` };
         // A fork shares the session it came from: it can't be copied, so the fork starts one of its own with the conversation.
@@ -252,7 +253,7 @@ export class AcpBackend implements AgentBackendClient {
                 sent ||= !r.refused;
                 const restart = run.restartFor;
                 run.restartFor = undefined;
-                if (!restart || t.signal.aborted || r.reason !== "aborted") return this.result(t, rec, { ...r, refused: r.refused && !sent });
+                if (!restart || t.signal.aborted || r.reason !== "aborted") return this.result(t, rec, { ...r, refused: r.refused && !sent }, command);
                 // Stopped for the mode, not by the user: it goes on under it (its prompt again, if it never got there).
                 liveDebug("acp", "mode restart", { key, mode: restart });
                 if (!r.refused) input = { text: modeSwitched(restart), images: [] };
@@ -268,7 +269,7 @@ export class AcpBackend implements AgentBackendClient {
         }
     }
 
-    private result(t: BackendTurn, rec: TurnRecord, r: LiveTurnResult): BackendResult {
+    private result(t: BackendTurn, rec: TurnRecord, r: LiveTurnResult, command = false): BackendResult {
         const name = this.cli.name;
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: `${name} didn't answer the stop in time. The turn ended here; if it stays busy, its next turn says so.` });
         const out = rec.take();
@@ -277,13 +278,15 @@ export class AcpBackend implements AgentBackendClient {
             const error = r.error ?? `${name} stopped with an error.`;
             return { ...out, reason: "error", error, resumeFailed: Boolean(t.resumeId && error.startsWith(RESUME_FAILED)), ...refused };
         }
-        if (r.reason === "done" && !rec.any) t.sink.emit({ type: "notice", level: "warn", message: `${name} ended the turn without a reply.` });
+        if (r.reason === "done" && !rec.any && !command) t.sink.emit({ type: "notice", level: "warn", message: `${name} ended the turn without a reply.` });
         return { ...out, reason: r.reason, ...refused };
     }
 
     /** Not supported: it compacts by itself, if at all (Agent.compactBackend says so before this). */
-    async compact(): Promise<BackendResult> {
-        return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+    /** Its own /compact, as a prompt on the session being continued (agy-1.5.17-acp-compact.jsonl). */
+    async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
+        if (this.cli.caps.compact !== "command") return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+        return this.runTurn({ ...t, prompt: `/compact${t.instructions ? ` ${t.instructions}` : ""}`, images: [] }, true);
     }
 
     /**

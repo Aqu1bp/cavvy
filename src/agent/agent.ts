@@ -1446,7 +1446,7 @@ export class Agent {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
         if (this.idleTried) return null;
-        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact === "none") return null;
+        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact !== "native") return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 
@@ -2897,7 +2897,8 @@ export class Agent {
             emit: (e) => {
                 // The CLI saying it compacted: this compaction's own rule (compact_end) says so.
                 if (e.type === "notice" && e.data?.compacted) return;
-                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
+                // Its commands too: listed as it reopened, they'd not be listed again.
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits" || e.type === "cli_commands") this.emit(e);
             },
             drainQueued: () => [],
         };

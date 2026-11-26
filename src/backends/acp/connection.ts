@@ -466,7 +466,11 @@ export class AcpConnection implements CliConnection {
                     // What it said so far goes before them.
                     const taken = await source.drain(() => this.steerable(turn), () => this.flushText(turn));
                     for (const m of taken) {
-                        const ok = await this.deliver(turn, m);
+                        // One whose attachment couldn't be written didn't go: handed back as one that didn't.
+                        const ok = await this.deliver(turn, m).catch((e) => {
+                            liveDebug("acp", "steer not sent", { ref: turn.ref, error: errorText(e) });
+                            return false;
+                        });
                         if (m.settle) await m.settle(ok);
                         else if (!ok) unsent.push(m);
                     }

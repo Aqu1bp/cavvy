@@ -20,6 +20,7 @@ const { canAnswerOneOff } = await import("../src/agent/goal");
 const { loginCommand } = await import("../src/backends/account-login");
 const { permissionFor } = await import("../src/backends/acp/connection");
 const { agentCli } = await import("../src/backends/defs");
+const { acpAgent } = await import("../src/backends/acp/agents");
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
 type PermissionResponse = import("../src/agent/agent").PermissionResponse;
@@ -305,6 +306,31 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
         await a.run("[[run:cavvy_exit_worktree]]");
         expect(a.asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Bash", "cavvy_exit_worktree"]]);
         expect(answers()).toEqual([reject]);
+    });
+});
+
+describe("/compact", () => {
+    test("one that has its own (Antigravity's): sent as its command on the same session, which may say nothing", async () => {
+        const caps = agentCli("opencode")!.caps as { compact: string };
+        const was = caps.compact;
+        const own = acpAgent("opencode");
+        const a = await makeAgent();
+        await a.run("hi");
+        const id = a.session.backends.get("opencode")?.id;
+        try {
+            await expect(a.agent.compact({ auto: false, signal: new AbortController().signal })).rejects.toThrow(/isn't supported for OpenCode/);
+            caps.compact = "command";
+            own.listsCommands = true;
+            const before = a.events.length;
+            expect(await a.agent.compact({ auto: false, signal: new AbortController().signal, instructions: "Keep the word." })).toBe(true);
+            const prompts = logLines().flatMap((l) => (l.received?.method === "session/prompt" ? [l.received.params] : []));
+            expect(prompts.at(-1)).toMatchObject({ sessionId: id, prompt: [{ type: "text", text: "/compact Keep the word." }] });
+            // No reply is no warning; its commands, listed as it ran, still reach the menus.
+            expect(a.events.slice(before).flatMap((e) => (e.type === "usage" ? [] : [e.type]))).toEqual(["compact_start", "cli_commands", "compact_end"]);
+        } finally {
+            caps.compact = was;
+            own.listsCommands = undefined;
+        }
     });
 });
 
