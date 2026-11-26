@@ -47,6 +47,9 @@ test("the buttons are in the dialog's footer, kept in view; its tick boxes are t
     const rows = elements(body.children, "label").filter((l) => elements(l.children, "input").some((i) => i.props.type === "checkbox"));
     expect(rows).toHaveLength(2);
     for (const row of rows) expect(row.props.class).toBe("check-row");
+    // One Cancel, not one per layout: the keyboard put on it while the dialog loaded stays on it once the form comes.
+    expect(elements(footer, "button").filter((b) => text(b) === "Cancel")).toHaveLength(1);
+    expect(footer.children.flat(Infinity).filter((n: any) => n?.tag === "button").map(text)).toContain("Cancel");
 });
 
 test("a new branch to a remote that doesn't say its default pushes without the protected acknowledgement", async () => {

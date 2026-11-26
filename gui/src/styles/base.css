@@ -317,7 +317,10 @@ h3 {
     flex: none;
 }
 
+/* Its own size in a flex column too: stretched across it, it turned round its middle, off its box and out of sight, and
+   made a dialog's body scroll (a Tab stop with nothing to show). */
 .spinner {
+    align-self: center;
     animation: spin 0.8s steps(16) infinite;
     animation-play-state: var(--loops);
 }

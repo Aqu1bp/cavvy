@@ -136,10 +136,10 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const prs = () => Boolean(view()?.gh) && !(view()?.base && view()?.base === view()?.target);
     const actions = () => (
         <div class="dialog-actions">
-            <Show when={prs()} fallback={<><span class="grow" />{cancel()}</>}>
-                {cancel()}
-                <span class="grow" />
-            </Show>
+            {/* One Cancel, moved by the space around it as the form comes: the keyboard may be on it. */}
+            <Show when={!prs()}><span class="grow" /></Show>
+            {cancel()}
+            <Show when={prs()}><span class="grow" /></Show>
             <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
             <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
