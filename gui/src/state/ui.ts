@@ -77,8 +77,11 @@ export const closeReview = () => setReview((r) => (r?.file ? r.back : undefined)
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
-/** Bumped by a bare /btw: the side chat's box takes the focus, to be asked (SideChatPane). */
-export const [askSideChat, setAskSideChat] = createSignal(0);
+/**
+ * The session whose side chat was just asked for (/btw, or a question typed into its empty tab): its box takes the
+ * keyboard once it's shown (SideChatPane), and only then; opening a session that has one leaves it with the session.
+ */
+export const [askSideChat, setAskSideChat] = createSignal<string | undefined>(undefined, { equals: false });
 /** For a session's composer (Home's: no `sessionId`) to take and focus: text to add at its end, or an attachment made against its list. */
 export const [composerAdd, setComposerAdd] = createSignal<{ sessionId?: string; text?: string; attach?: (list: readonly Attachment[]) => Attachment }>();
 

@@ -130,7 +130,7 @@ export async function openSideChat(id: string, text?: string) {
         setReview(undefined);
         setInspectorPane("sidechat");
         setPrefs("panel", true);
-        if (!text?.trim()) setAskSideChat((n) => n + 1);
+        setAskSideChat(id);
     });
     if (text?.trim()) await rpcFor(id).call("session.sideChat", { id, text }).catch(reportError);
 }
