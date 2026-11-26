@@ -620,6 +620,8 @@ test("a session whose messages are under half its file lets go of them once open
     await close(t.id);
     await open(t.id, { last: 10 });
     const rt = srv.engine.runtimes.get(t.id)!;
+    // Its earlier turns left in the store: opened from it, not built again.
+    expect((rt as any).unread?.turns).toBeGreaterThan(0);
     await rt.openDone();
     await new Promise((r) => setTimeout(r, 10));
     // Opened from its store, and from a checkpoint with its messages in it (no digest).
