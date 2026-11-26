@@ -30,7 +30,7 @@ export interface ServerSetup {
      * Connects, puts Cavvy there and starts it. With a key made for it, it waits for the new machine to come up and
      * asks nothing; otherwise `trust` is asked about a host this machine hasn't seen. Throws what went wrong.
      */
-    add(spec: { name: string; address: string; port?: number; cloud?: ServerCloudInfo }, o: { signal: AbortSignal; progress(text: string): void; trust(host: string, fingerprints: string[]): Promise<boolean> }): Promise<{ note?: string; lacks: string[] }>;
+    add(spec: { name: string; address: string; port?: number; identityFile?: string; cloud?: ServerCloudInfo }, o: { signal: AbortSignal; progress(text: string): void; trust(host: string, fingerprints: string[]): Promise<boolean> }): Promise<{ note?: string; lacks: string[] }>;
     /** The one-time copy of the user's settings, memory, skills and commands. What the server took, in words. */
     copy(name: string): Promise<string>;
     /** Runs its teardown commands, then forgets it. `signIn`: a command said its CLI is signed out. Throws what went wrong: the server then stays listed. */
@@ -40,6 +40,8 @@ export interface ServerSetup {
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const LINE = /^[^\0-\x1f\x7f]{1,80}$/;
 const ADDRESS = /^[A-Za-z0-9_][A-Za-z0-9_.@:%+[\]-]{0,252}$/;
+/** A key file's path: whole (or from home), on one line. */
+const KEY_PATH = /^(?:\/|~\/)[^\0-\x1f\x7f]{1,1000}$/;
 const WORD = /^[A-Za-z0-9_@%+=:,./-]{1,200}$/;
 
 /** The CLIs a teardown command may be: the providers' own. One the user wrote a sign-in for (settings, with its status command) counts too. */
@@ -70,8 +72,10 @@ const DELETE = /^(?:delete|remove|destroy|terminate|release|rm|detach|disassocia
  * or of what's made with one ("delete-instance", "terminate-instances", "release-static-ip", "delete-key-pair").
  * A closed list, as KIND is: a database, a bucket or a user isn't part of a server.
  */
-const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister)-(?:instances?|instance-snapshots?|disks?|disk-snapshots?|static-ips?|address(?:es)?|key-pairs?|volumes?|snapshots?|images?|security-groups?|network-interfaces?|subnets?|vpcs?|internet-gateways?|route-tables?|load-balancers?)$/;
+const AWS_DELETE = /^(?:delete|terminate|release|detach|disassociate|deregister)-(?:instances?|instance-snapshots?|disks?|disk-snapshots?|static-ips?|address(?:es)?|key-pairs?|hosts?|volumes?|snapshots?|images?|security-groups?|network-interfaces?|subnets?|vpcs?|internet-gateways?|route-tables?|load-balancers?)$/;
 const AWS_SERVICE = /^(?:lightsail|ec2)$/;
+const RELEASE_HOSTS_OPTIONS = ["--host-ids", "--region", "--profile"];
+const HOST_ID = /^h-[0-9a-f]{8,17}$/;
 /** Waiting for a deletion to finish, which the next one may need: it reads, and changes nothing. */
 const AWS_GONE = /-(?:terminated|deleted|not-exists)$/;
 
@@ -110,6 +114,17 @@ export function teardownCommandError(words: string[], mine: unknown): string | u
     const bad = words.slice(1).find((w) => ELSEWHERE.test(w) || pathLike(w));
     if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted by its name or id in the command itself, not by a file, a path, a link or another place it's read from.`;
     const flag = words.findIndex((w, i) => i > 0 && w.startsWith("-"));
+    // Its answer is read to know the host was released (it exits 0 either way): nothing may filter or reshape it.
+    if (words[0] === "aws" && words[1] === "ec2" && words[2] === "release-hosts") {
+        if (words.some((w) => w.startsWith("-") && !RELEASE_HOSTS_OPTIONS.includes(w.split("=")[0]!))) return "`aws ec2 release-hosts` takes only --host-ids, --region and --profile in a teardown.";
+        // One host a command: one that's released while another isn't would otherwise be asked for again, and refused.
+        const at = words.findIndex((w) => w === "--host-ids" || w.startsWith("--host-ids="));
+        const joined = at >= 0 && words[at]!.includes("=");
+        const id = at < 0 ? undefined : joined ? words[at]!.slice("--host-ids=".length) : words[at + 1];
+        const next = words[at + (joined ? 1 : 2)];
+        const one = id !== undefined && HOST_ID.test(id) && (!next || next.startsWith("-")) && words.filter((w) => w.startsWith("--host-ids")).length === 1;
+        if (!one) return "Each `aws ec2 release-hosts` in a teardown names one host: --host-ids h-….";
+    }
     if (!deletes(words[0]!, words.slice(1, flag < 0 ? words.length : flag))) return `"${text.slice(0, 60)}" can't be a teardown command. Each one is the CLI, what kind of thing it deletes (compute instances, server, droplet, disk, address, firewall, network, ssh-key, group), then delete, terminate, release, destroy or remove, then its name and options: "gcloud compute instances delete box --zone z --quiet", "hcloud server delete box". For aws, "aws lightsail delete-…" or "aws ec2 terminate-…" of the same kinds ("aws lightsail delete-instance --instance-name box"). Options go after those words.`;
     return undefined;
 }
@@ -203,7 +218,7 @@ export const ServerKeyTool: Tool<KeyInput> = {
 
 // ---------------------------------------------------------------------------
 
-type AddInput = { name: string; address: string; port?: number; provider?: string; where?: string; cost?: string; teardown?: string[]; copy_settings?: boolean };
+type AddInput = { name: string; address: string; port?: number; identity_file?: string; provider?: string; where?: string; cost?: string; teardown?: string[]; copy_settings?: boolean };
 
 export const ServerAddTool: Tool<AddInput> = {
     name: "ServerAdd",
@@ -213,7 +228,8 @@ export const ServerAddTool: Tool<AddInput> = {
 
 - For a server you just created after ServerKey: name as approved, address as "user@address", plus provider, where, cost (as approved) and teardown. It waits for the new machine to come up, and asks the user nothing.
 - For a server the user already has: name and address ("user@host", or a Host from their SSH config). The user may be asked to trust its key.
-- teardown is the provider CLI's commands that delete the server and everything created with it (a static address, a firewall, a disk), each as plain words ("aws lightsail delete-instance --instance-name aws-mumbai --region ap-south-1"). ServerRemove runs them later, after the user's yes. Give it for anything you created.
+- If it signs in with a key file their SSH config doesn't name (a cloud key pair's .pem, a key the user points you to): identity_file, the private key's path. Cavvy reads it, so you needn't be able to.
+- teardown is the provider CLI's commands that delete the server and everything created with it (a static address, a firewall, a disk, an EC2 Mac's dedicated host), each as plain words ("aws lightsail delete-instance --instance-name aws-mumbai --region ap-south-1"). ServerRemove runs them later, after the user's yes. Give it for anything you created.
 - Afterwards the user is offered the sign-ins the server lacks (Claude Code, Codex, GitHub) in one card. You're told what's signed in and what isn't.
 - copy_settings: true copies the user's settings, memory, skills and commands there, once; only if they asked. Call it again on a server already added to do just that.`,
     parameters: {
@@ -222,6 +238,7 @@ export const ServerAddTool: Tool<AddInput> = {
             name: { type: "string", description: "What the server is called: lowercase letters, digits and dashes" },
             address: { type: "string", description: 'user@host, or a Host from the user\'s SSH config' },
             port: { type: "number", description: "The SSH port, when it isn't 22" },
+            identity_file: { type: "string", description: "The private key it signs in with, when the user's SSH config doesn't name it: its path (/… or ~/…)" },
             provider: { type: "string", description: 'For a rented machine: who from ("AWS Lightsail")' },
             where: { type: "string", description: 'Its region, in plain words ("Mumbai")' },
             cost: { type: "string", description: 'What it costs, as the user approved it ("$12/month")' },
@@ -235,6 +252,10 @@ export const ServerAddTool: Tool<AddInput> = {
         if (typeof i.name !== "string" || !NAME.test(i.name)) return "name is lowercase letters, digits and dashes, up to 40 (like build-box).";
         if (typeof i.address !== "string" || !ADDRESS.test(i.address)) return 'address must be "user@host", or a Host from the user\'s SSH config.';
         if (i.port !== undefined && (!Number.isInteger(i.port) || i.port < 1 || i.port > 65535)) return "port must be a number from 1 to 65535.";
+        if (i.identity_file !== undefined) {
+            if (typeof i.identity_file !== "string" || !KEY_PATH.test(i.identity_file)) return "identity_file is the private key's path, starting with / or ~/.";
+            if (i.identity_file.endsWith(".pub")) return "identity_file is the private key, not its .pub.";
+        }
         for (const k of ["provider", "where", "cost"] as const) if (i[k] !== undefined && !line(i[k])) return `${k} must be one short line.`;
         if ((i.cost !== undefined || i.where !== undefined || i.teardown !== undefined) && !i.provider) return "Say the provider too, for a rented machine.";
         return teardownError(i.teardown, ctx);
@@ -255,18 +276,19 @@ export const ServerAddTool: Tool<AddInput> = {
             }
         }
         const made = await servers.hasKey(i.name);
+        if (made && i.identity_file) return fail("Cavvy made the key for this server: call ServerAdd again without identity_file.");
         if (made && !i.address.includes("@")) return fail('For the server you created, address must be "user@address": the image\'s login user (ubuntu, admin, ec2-user, root) and the machine\'s address.');
         // A server of the user's own, in a mode that asks: adding it connects with their keys and installs Cavvy there.
         if (!made && ctx.mode() !== "bypassPermissions") {
             if (!ctx.ui.confirm) return fail("Adding a server needs the user's yes here, and no one is here to give it (non-interactive session).");
-            const answer = await ctx.ui.confirm({ title: `Add ${i.name} as a server`, facts: [["Address", i.address]], yes: "Add", no: "Cancel" }, ctx.signal);
+            const answer = await ctx.ui.confirm({ title: `Add ${i.name} as a server`, facts: [["Address", i.address], ...(i.identity_file ? [["Key", i.identity_file] as [string, string]] : [])], yes: "Add", no: "Cancel" }, ctx.signal);
             if (answer !== "yes") return { content: "The user said no. Don't add it, and don't ask again unless they bring it up.", display: { summary: "Cancelled" } };
         }
         const cloud = i.provider ? { provider: i.provider.trim(), ...(i.where ? { where: i.where.trim() } : {}), ...(i.cost ? { cost: i.cost.trim() } : {}), ...(i.teardown ? { teardown: words(i.teardown)! } : {}) } : undefined;
         let added: { note?: string; lacks: string[] };
         try {
             added = await servers.add(
-                { name: i.name, address: i.address, port: i.port, cloud },
+                { name: i.name, address: i.address, port: i.port, ...(i.identity_file ? { identityFile: i.identity_file } : {}), cloud },
                 {
                     signal: ctx.signal,
                     progress: (text) => ctx.onProgress?.(`${text}\n`),
@@ -279,7 +301,10 @@ export const ServerAddTool: Tool<AddInput> = {
         } catch (e) {
             // Said either way: an interrupted agent that never mentions it leaves the user paying for a machine they can't see.
             if (ctx.signal.aborted) return fail(`Interrupted while adding ${i.name}. It wasn't added.${made ? "\nThe machine you created is still there and still costs money: tell the user, and call ServerAdd again to finish or delete it with the provider's CLI." : ""}`);
-            return fail(`${i.name} wasn't added: ${e instanceof Error ? e.message : String(e)}${made ? "\nThe machine you created is still there and still costs money: fix what's wrong and call ServerAdd again, or delete it with the provider's CLI and tell the user." : ""}`);
+            const said = e instanceof Error ? e.message : String(e);
+            // The user's usual keys were tried: one in a file of its own is the next thing to try, and the agent may not know it's an option.
+            const another = !made && !i.identity_file && /refused your SSH keys/.test(said) ? "\nIf it signs in with a key file of its own, call ServerAdd again with identity_file: its path. Ask the user where it is if you don't know." : "";
+            return fail(`${i.name} wasn't added: ${said}${another}${made ? "\nThe machine you created is still there and still costs money: fix what's wrong and call ServerAdd again, or delete it with the provider's CLI and tell the user." : ""}`);
         }
         const out = [`${i.name} is one of the user's servers now${cloud?.cost ? ` (${cloud.cost})` : ""}. Sessions there run without asking (Bypass).${added.note ? ` ${added.note}` : ""}`];
         if (added.lacks.length) out.push(`It lacks: ${added.lacks.join("; ")}.`);
@@ -395,7 +420,7 @@ The user can ask you to set up a server for them at any cloud provider, or to ad
 
 To create one: sign the provider's CLI in if needed (request_sign_in), find what fits (1 GB of memory or more) and its price with that CLI, call server_key with exactly what you'll create (the user approves the price there), create the machine with the start-up script server_key gives you as its user data, then call server_add with its address, cost and teardown commands. Don't make key pairs, don't run ssh, and don't create anything before server_key says the user approved.
 
-To add a server the user already has, call server_add with its name and address: Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.
+To add a server the user already has, call server_add with its name and address (and identity_file when it signs in with a key file of its own): Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.
 
 When you tell the user what happens next, say what you'll do ("I'll add it to Cavvy"), not the tools' names.`;
 
