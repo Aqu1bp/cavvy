@@ -62,12 +62,15 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             if (revision === version) {
                 setLoading(false);
                 // The form came (drawn as loading ends) after the dialog gave the keyboard to what it had (Cancel, or
-                // nothing): to the pull request's title, else the protected-branch box, else Push. Not if it was moved since.
-                takeFocus(prs() ? titleEl : view()?.protected ? confirmEl : pushEl);
+                // nothing): to what's first needed. Not if it was moved since.
+                takeFocus(firstNeeded(), firstNeeded() === titleEl);
             }
         }
     }));
     let titleEl: HTMLInputElement | undefined, confirmEl: HTMLInputElement | undefined, pushEl: HTMLButtonElement | undefined;
+    /** The protected-branch box (Push waits on it), else the pull request's title, else Push. Marked autofocus too, for the dialog's own first pick. */
+    const first = () => (view()?.protected ? "confirm" : prs() ? "title" : "push");
+    const firstNeeded = () => ({ confirm: confirmEl, title: titleEl, push: pushEl })[first()];
     const blocked = () => commitUnavailable(handleFor(p.id))?.replace(/committing/g, "publishing").replace("Git runs the repository's hooks", "Git transports can run configured programs");
     const ready = () => Boolean(view()) && !loading() && !busy() && !blocked() && (!view()!.protected || confirmed());
     const publish = async (action: "push" | "pr") => {
@@ -134,7 +137,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                 {cancel()}
                 <span class="grow" />
             </Show>
-            <button ref={pushEl} class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
+            <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
             <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
     );
@@ -154,7 +157,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>
-                            <label class="check-row"><input ref={confirmEl} type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /><span class="commit-warning">Push to this protected branch</span></label>
+                            <label class="check-row"><input ref={confirmEl} autofocus={first() === "confirm"} type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /><span class="commit-warning">Push to this protected branch</span></label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
@@ -175,7 +178,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <label class="commit-message-label" for="pr-base">Base</label>
                             <input id="pr-base" class="input mono" placeholder="main" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-title">Title</label>
-                            <input ref={titleEl} id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
+                            <input ref={titleEl} autofocus={first() === "title"} id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
                             <div class="commit-generate">
