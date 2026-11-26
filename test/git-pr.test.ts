@@ -123,6 +123,13 @@ test("without gh signed in, a sign-in is asked for; another repository's URL or 
     await expect(gitPrWorktree(cwd, "not a pr")).rejects.toMatchObject({ code: "invalid" });
 });
 
+test("a pull request whose branch isn't on the remote says so, naming the remote", async () => {
+    const { cwd } = setup();
+    // #3's branch, old, was never pushed.
+    await expect(gitPrWorktree(cwd, "#3")).rejects.toMatchObject({ code: "fetch_failed", message: "#3's branch isn't on origin." });
+    expect(existsSync(join(cwd, ".claude"))).toBe(false);
+});
+
 test("without gh: says the GitHub CLI is needed", async () => {
     const { cwd } = setup();
     const path = process.env.PATH;

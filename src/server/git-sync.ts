@@ -48,6 +48,12 @@ export function gitReason(text: string): string {
     return (said[0] ?? "").slice(0, 300);
 }
 
+/** `lead` with git's reason after it as a sentence of its own: "Couldn't fetch origin. Could not read from remote repository." */
+export function withReason(lead: string, reason: string): string {
+    const r = reason.trim();
+    return r ? `${lead} ${r[0]!.toUpperCase()}${r.slice(1)}${/[.!?]$/.test(r) ? "" : "."}` : lead;
+}
+
 /** Ahead/behind of the upstream, from what was last fetched: `git for-each-ref`'s own count, no network. */
 export async function gitSyncInfo(cwd: string, signal?: AbortSignal): Promise<GitSyncInfo> {
     // The title bar asks this as turns end: the branch comes from the HEAD file where that says it, so it's one git, not two.
@@ -98,7 +104,7 @@ async function fetchFrom(cwd: string, remote: string, signal?: AbortSignal) {
     if (!refspecs.length) throw fail(`The remote ${remote} has nothing set to fetch.`, "invalid");
     if (refspecs.some((s) => s.startsWith("-") || /[\x00-\x20\x7f]/.test(s))) throw fail(`The remote ${remote} has a fetch setting Cavvy can't use.`, "invalid");
     const r = await runGit(cwd, ["-c", "fetch.recurseSubmodules=false", "-c", "submodule.recurse=false", "fetch", "--no-recurse-submodules", "--", url, ...refspecs], true, signal);
-    if (r.code) throw fail(`Couldn't fetch ${remote}. ${gitReason(r.err + r.out)}`, "fetch_failed");
+    if (r.code) throw fail(withReason(`Couldn't fetch ${remote}.`, gitReason(r.err + r.out)), "fetch_failed");
 }
 
 /** Fetch the current branch's remote (or origin); the counts after. */

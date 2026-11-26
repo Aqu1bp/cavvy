@@ -137,8 +137,9 @@ export async function rewindCommand(app: App, args = "") {
     const forked = beforeFork(app.session.meta, chosen, target.index);
     const tracked = plan.whole || (!!history && target.checkpoint !== undefined);
     if (forked) lines.push(theme.warning(FORKED_NOTE));
-    // One line, as the GUI's Rewind says it (RewindDialog.tsx).
-    if (plan.refused) lines.push(theme.warning(`${plan.refused.replace(/\.$/, "")}: only ${APP_TITLE}'s edits can be restored.`));
+    // One line, as the GUI's Rewind says it (RewindDialog.tsx), with where the rest is when Claude Code or Codex answered.
+    const gitFor = backends.length && !plan.whole ? ` Use git for ${backends.map((b) => `${b}'s`).join(" and ")}.` : "";
+    if (plan.refused) lines.push(theme.warning(`${plan.refused.replace(/\.$/, "")}: only ${APP_TITLE}'s edits can be restored.${gitFor}`));
     if (!tracked) lines.push(theme.muted("File changes from then weren't tracked, so only the conversation can be restored."));
     else if (restore.length) {
         lines.push(plan.whole ? `${plural(restore.length, "file")} changed since then:` : `${APP_TITLE} changed ${plural(restore.length, "file")} since then:`);
@@ -148,10 +149,8 @@ export async function rewindCommand(app: App, args = "") {
         lines.push(theme.warning(`Can't be restored:`));
         lines.push(...listed(skipped.map((it) => theme.warning(`  ${rel(it.path)} (${it.reason})`))));
     }
-    if (backends.length && !plan.whole) {
-        const except = restore.length ? ", except in the files listed above, which go back to how they were then" : "";
-        lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it${except}. Use git to review or undo the rest.`));
-    }
+    // As the GUI says it; with a refusal, its line says this.
+    if (backends.length && !plan.whole && !plan.refused) lines.push(theme.warning(`What ${backends.join(" and ")} changed in files isn't undone${restore.length ? ", except in the files above" : ""}. Use git for that.`));
     if (!plan.whole && !plan.refused) lines.push(theme.subtle("Changes made by shell commands aren't undone."));
 
     type Choice = "both" | "conversation" | "code" | "cancel";
@@ -161,9 +160,10 @@ export async function rewindCommand(app: App, args = "") {
             title: "Rewind to before this prompt?",
             header: lines,
             items: [
-                { label: "Restore code and conversation", value: "both", disabled: noCode },
-                { label: "Restore conversation only", value: "conversation", description: noCode ? undefined : "files stay as they are" },
-                { label: "Restore code only", value: "code", disabled: noCode, description: noCode ? "no file changes to undo" : "the conversation stays as it is" },
+                // The GUI's buttons.
+                { label: "Restore both", value: "both", disabled: noCode },
+                { label: "Conversation only", value: "conversation" },
+                { label: "Code only", value: "code", disabled: noCode },
                 { label: "Cancel", value: "cancel" },
             ],
             numbers: true,

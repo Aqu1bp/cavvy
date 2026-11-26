@@ -2029,7 +2029,7 @@ export class Engine {
         if (!due.length) return next;
         const settled = new Set(due);
         if (!updateStore((s) => (s.settled = [...new Set([...(s.settled ?? []), ...due])]))) return next;
-        this.log(`Settled ${due.length} session${due.length === 1 ? "" : "s"} idle ${days} days or more`);
+        this.log(`Settled ${due.length} session${due.length === 1 ? "" : "s"} idle ${days} day${days === 1 ? "" : "s"} or more`);
         for (const s of list) if (settled.has(s.id)) this.upsertRow(s.id, { settled: true }, s);
         return next;
     }

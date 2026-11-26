@@ -12,8 +12,13 @@ import { Spinner } from "./ui/bits";
 
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
-/** Why everything can't be restored, and what can: one line ("Another session is working here: only Cavvy's edits can be restored."). As the terminal's /rewind says it (src/commands/rewind.ts). */
-const onlyOwnEdits = (refused: string) => `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.`;
+/**
+ * Why everything can't be restored, and what can: one line ("Another session is working here: only Cavvy's edits can be
+ * restored."), which also says where the rest is when Claude Code or Codex answered since ("Use git for Claude Code's.").
+ * As the terminal's /rewind says it (src/commands/rewind.ts).
+ */
+const onlyOwnEdits = (refused: string, backends?: string[]) =>
+    `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.${backends?.length ? ` Use git for ${names(backends.map((b) => `${b}'s`))}.` : ""}`;
 
 /** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
@@ -179,10 +184,11 @@ export function RewindDialog() {
                                 <Show when={plan()!.refused}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">{onlyOwnEdits(plan()!.refused!)}</span>
+                                        <span class="small">{onlyOwnEdits(plan()!.refused!, plan()!.backends)}</span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.backends?.length && !plan()!.whole}>
+                                {/* With a refusal, its line says this too. */}
+                                <Show when={plan()!.backends?.length && !plan()!.whole && !plan()!.refused}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">

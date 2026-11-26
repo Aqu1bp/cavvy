@@ -227,7 +227,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                 key: `l:${b.name}`,
                 label: b.name,
                 // Its worktree's folder was deleted: switching removes that worktree first (git.switch).
-                desc: current ? "Current branch" : b.worktree ? `Its worktree folder ${tildify(b.worktree, app.hello?.homeDir)} is gone` : b.upstream,
+                desc: current ? "Current branch" : b.worktree ? `Folder missing · ${tildify(b.worktree, app.hello?.homeDir)}` : b.upstream,
                 end: when(b),
                 icon: current ? "current" : "local",
                 disabled: current,
