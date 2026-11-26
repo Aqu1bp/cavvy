@@ -256,7 +256,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }));
     };
 
-    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status, reload: () => command("reload", { tab: tab()?.id }) });
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status, reload: () => command("reload", { tab: tab()?.id }), dropDraft: () => setDraft(undefined) });
 
     // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
     // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's
@@ -441,7 +441,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         disabled={status() === "unavailable"}
                         onFocus={(e) => e.currentTarget.select()}
                         onInput={(e) => setDraft(e.currentTarget.value)}
-                        onBlur={() => setDraft(undefined)}
+                        // Left, what was typed goes; to Find in page (Ctrl+F) it stays, and the keyboard comes back to it.
+                        onBlur={(e) => tools.keepsDraft(e.relatedTarget) || setDraft(undefined)}
                         onKeyDown={(e) => {
                             if (e.key !== "Escape") return;
                             e.stopPropagation();

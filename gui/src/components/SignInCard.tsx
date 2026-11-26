@@ -12,6 +12,7 @@ import { home } from "../lib/machines";
 import { awayMachine, rpc } from "../state/app";
 import { signInPressed } from "../lib/card-keys";
 import { terminalActions } from "../state/ui";
+import { quitsApp } from "../state/keybindings";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
 import { usePane } from "../state/split";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -21,8 +22,8 @@ import "../styles/sign-in.css";
 const MASKS = typeof CSS !== "undefined" && CSS.supports("-webkit-text-security", "disc");
 
 /** A key as a terminal would send it, or undefined for one that isn't sent (a modifier alone, a shortcut of the app's). */
-export function terminalKey(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey">): string | undefined {
-    if (e.metaKey || e.altKey) return undefined;
+export function terminalKey(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): string | undefined {
+    if (e.metaKey || e.altKey || quitsApp(e)) return undefined;
     if (e.ctrlKey) return /^[a-z]$/i.test(e.key) ? String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96) : undefined;
     switch (e.key) {
         case "Enter": return "\r";

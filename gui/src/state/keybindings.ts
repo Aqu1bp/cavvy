@@ -5,7 +5,7 @@ import { createSignal } from "solid-js";
 import type { KeybindingsFile } from "@shared/protocol";
 import { KeyMatcher, keyLabel, loadKeymap, parseKeybindingsText, type Context, type KeyIssue, type Keymap, type MatchResult } from "../../../src/keybindings/core";
 import { eventStrokes } from "../lib/keystrokes";
-import { os } from "../lib/platform";
+import { isElectron, os, type Os } from "../lib/platform";
 
 const [file, setFile] = createSignal<KeybindingsFile | undefined>();
 /** The Enter-sends preference (App keeps it in step; this module stays free of prefs' DOM work). */
@@ -69,13 +69,22 @@ export const actionOf = (e: KeyboardEvent, contexts: readonly Context[]): string
 };
 
 /**
+ * Ctrl+Q, the desktop app's Quit on Linux (its menu's key, which runs only for a key the page leaves alone): the
+ * app's in a terminal too. ⌘Q on a Mac is the menu's before the page sees it, so Ctrl+Q there stays the shell's, as it
+ * does on Windows, where Quit has no key, and in a browser tab.
+ */
+export const quitsApp = (e: Pick<KeyboardEvent, "key" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey">, on: { os: Os; desktop: boolean } = { os, desktop: isElectron }): boolean =>
+    on.desktop && on.os === "linux" && e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === "q";
+
+/**
  * What the integrated terminal does with a key press. The terminal keeps its
- * keys: only the terminal toggle, and the chords that lead to it, are the
- * app's there. The first key of such a chord is held back from the shell (as
+ * keys: only the terminal toggle, and the chords that lead to it, and Quit
+ * (quitsApp) are the app's there. The first key of such a chord is held back from the shell (as
  * in VS Code); the first key of any other chord goes to the shell, and the
  * chord is dropped, since its action doesn't run from the terminal.
  */
 export function terminalKey(e: KeyboardEvent): "app" | "shell" {
+    if (quitsApp(e)) return "app";
     const r = matchKey(e, ["Global"]);
     if (r.kind === "action") return r.action === "app:toggleTerminal" ? "app" : "shell";
     if (r.kind !== "pending") return "shell";
