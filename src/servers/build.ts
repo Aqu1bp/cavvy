@@ -2,15 +2,15 @@
 //
 // A server runs the build the machine that set it up runs, so the two speak
 // the same protocol. Until Cavvy publishes builds, the server's is compiled
-// here from the checkout this Cavvy runs from (Bun compiles for Linux from
-// any machine), and kept in ~/.cavvy/cache/server-builds/.
+// here from the checkout this Cavvy runs from (Bun compiles for Linux and for
+// a Mac from any machine), and kept in ~/.cavvy/cache/server-builds/.
 
 import { createHash } from "crypto";
 import { cpSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { cavvyHome } from "../config/paths";
 import { childEnv } from "../util/env";
-import { BUILD_ID, type LinuxTarget } from "./remote";
+import { BUILD_ID, type ServerTarget } from "./remote";
 import { ServerError } from "./store";
 
 /**
@@ -144,7 +144,7 @@ export function compareBuilds(theirs: string, mine = thisBuild(), root = sourceR
 
 export interface ServerBuild {
     id: string;
-    target: LinuxTarget;
+    target: ServerTarget;
     /** The program and its GUI, as one .tar.gz to unpack on the server. */
     bundle: string;
     bundleBytes: number;
@@ -209,7 +209,7 @@ function prune(keep: string) {
  * This build for a server of that kind: made once, then kept. `onStep` says
  * what's happening, for the line the user watches.
  */
-export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: string) => void; signal?: AbortSignal } = {}): Promise<ServerBuild> {
+export async function serverBuild(target: ServerTarget, o: { onStep?: (text: string) => void; signal?: AbortSignal } = {}): Promise<ServerBuild> {
     const id = thisBuild();
     const dir = join(cacheDir(), id, target);
     const meta = join(dir, "bundle.json");
@@ -256,7 +256,7 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
  * when it's needed (serverBuild), put in the desktop app when that's packed (desktop-electron/pack.ts), or published
  * (scripts/release-server-builds.ts). `guiBuilt`: the GUI in gui/dist was just built, and is taken as it is.
  */
-export async function packServerBuild(root: string, id: string, target: LinuxTarget, tmp: string, out: string, o: { onStep?: (text: string) => void; signal?: AbortSignal; bun: string; guiBuilt?: boolean }): Promise<{ sha256: string; gui: boolean; guiFailed: boolean }> {
+export async function packServerBuild(root: string, id: string, target: ServerTarget, tmp: string, out: string, o: { onStep?: (text: string) => void; signal?: AbortSignal; bun: string; guiBuilt?: boolean }): Promise<{ sha256: string; gui: boolean; guiFailed: boolean }> {
     const stage = join(tmp, `stage-${target}`);
     mkdirSync(stage);
     o.onStep?.(`Building Cavvy for ${targetName(target)}…`);
@@ -284,7 +284,8 @@ export async function packServerBuild(root: string, id: string, target: LinuxTar
     if (gui) cpSync(guiDist, join(stage, "gui"), { recursive: true });
 
     const sha256 = await sha256File(join(stage, "cavvy"));
-    // macOS's tar would add its own metadata files, which a Linux tar unpacks as clutter.
+    // macOS's tar would add its own metadata files, which a Linux tar unpacks as clutter (and a Mac's as the
+    // attributes they hold).
     const tar = await run(["tar", "-czf", out, "-C", stage, "cavvy", ...(gui ? ["gui"] : [])], tmp, o.signal, { COPYFILE_DISABLE: "1" });
     // Packed: the unpacked copy (over a hundred MB) isn't left in the caller's folder.
     rmSync(stage, { recursive: true, force: true });
@@ -299,13 +300,14 @@ export function buildTimeDefine(): string[] {
 }
 
 /** A kind of server, in words. */
-export const targetName = (target: LinuxTarget) => (target === "linux-arm64" ? "Linux arm64" : "Linux x64");
+export const targetName = (target: ServerTarget) => (target === "darwin-arm64" ? "macOS" : target === "linux-arm64" ? "Linux arm64" : "Linux x64");
 
 /**
  * The kinds a packed desktop app carries a build for: for x64, the one that runs on every x64 processor (a
- * machine that could run the other runs this too), so the app carries two builds and not three.
+ * machine that could run the other runs this too), so the app carries two builds and not three. None for a Mac:
+ * the app's own program is that build (appsOwnBuild).
  */
-export const CARRIED_TARGETS = ["linux-x64-baseline", "linux-arm64"] as const satisfies readonly LinuxTarget[];
+export const CARRIED_TARGETS = ["linux-x64-baseline", "linux-arm64"] as const satisfies readonly ServerTarget[];
 
 /** The builds a packed desktop app carries for its servers (desktop-electron/pack.ts), if this program runs from one. */
 export function bundledBuildsDir(execPath = process.execPath): string | undefined {
@@ -319,7 +321,7 @@ export function bundledBuildsDir(execPath = process.execPath): string | undefine
  * own or they aren't used: a server runs what the machine that set it up runs.
  */
 export function bundledSource(dir: string, id = thisBuild()): BuildSource {
-    const one = (carried: LinuxTarget) => {
+    const one = (carried: ServerTarget) => {
         try {
             const m = JSON.parse(readFileSync(join(dir, carried, "bundle.json"), "utf-8")) as { id?: unknown; sha256?: unknown; gui?: unknown };
             const bundle = join(dir, carried, "bundle.tar.gz");
@@ -329,7 +331,7 @@ export function bundledSource(dir: string, id = thisBuild()): BuildSource {
         }
     };
     // The very kind asked for, or for an x64 machine the build every x64 machine runs.
-    const read = (target: LinuxTarget) => one(target) ?? (target === "linux-x64" ? one("linux-x64-baseline") : undefined);
+    const read = (target: ServerTarget) => one(target) ?? (target === "linux-x64" ? one("linux-x64-baseline") : undefined);
     return {
         id,
         gui: (read("linux-x64") ?? read("linux-arm64"))?.gui ?? false,
@@ -344,13 +346,74 @@ export function bundledSource(dir: string, id = thisBuild()): BuildSource {
     };
 }
 
+/** The server program of the packed desktop app this runs from, and the GUI beside it in the app. */
+export interface AppsOwn {
+    program: string;
+    gui?: string;
+}
+
+/**
+ * This program, when it's a packed desktop app's on Apple silicon: the same entry points, flags and build as a Mac
+ * server's build (desktop-electron/pack.ts), so it is one, and the app carries nothing more for Macs.
+ */
+export function appsOwn(execPath = process.execPath, arch: string = process.arch, platform: string = process.platform): AppsOwn | undefined {
+    const app = /^(.+\.app)\/Contents\/MacOS\/cavvy$/.exec(execPath)?.[1];
+    if (!app || platform !== "darwin" || arch !== "arm64") return undefined;
+    const gui = join(app, "Contents", "Resources", "gui");
+    return { program: execPath, ...(existsSync(join(gui, "index.html")) ? { gui } : {}) };
+}
+
+/**
+ * A Mac server's build, packed from the app's own program and GUI: made once, then kept with the others. `id`: the
+ * build this program is. The program in the app is asked which build it is first: an app replaced under this program
+ * (an update that hasn't restarted it) holds the new one's.
+ */
+export async function appsOwnBuild(own: AppsOwn, id = thisBuild(), o: { onStep?: (text: string) => void; signal?: AbortSignal } = {}): Promise<ServerBuild> {
+    const target = "darwin-arm64" as const;
+    if (id === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't set a server up: it doesn't know which build it is. Install Cavvy again, or run it from a checkout.");
+    const dir = join(cacheDir(), id, target);
+    const meta = join(dir, "bundle.json");
+    const bundle = join(dir, "bundle.tar.gz");
+    if (existsSync(meta) && existsSync(bundle)) {
+        try {
+            const m = JSON.parse(readFileSync(meta, "utf-8")) as { sha256?: unknown; gui?: unknown; own?: unknown };
+            if (m.own === true && typeof m.sha256 === "string" && /^[0-9a-f]{64}$/.test(m.sha256)) return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256: m.sha256, gui: m.gui === true };
+        } catch {
+            // packed again below
+        }
+    }
+    if (o.signal?.aborted) throw new ServerError("Stopped.");
+    o.onStep?.(`Packing Cavvy for ${targetName(target)}…`);
+    mkdirSync(cacheDir(), { recursive: true, mode: 0o700 });
+    const tmp = mkdtempSync(join(cacheDir(), ".tmp-"));
+    try {
+        const said = await run([own.program, "host", "version"], tmp, o.signal, { CAVVY_NO_KEYCHAIN: "1" });
+        if (o.signal?.aborted) throw new ServerError("Stopped.");
+        if (!said.ok || !said.out.includes(`"build":${JSON.stringify(id)}`)) throw new ServerError("Cavvy was updated since it started. Quit and reopen it, then try again.");
+        const out = join(tmp, "bundle.tar.gz");
+        // Nothing of the files' attributes goes: one marked as downloaded here would be refused by the Mac it's sent to.
+        const tar = await run(["tar", "--no-xattrs", "-czf", out, "-C", dirname(own.program), "cavvy", ...(own.gui ? ["-C", dirname(own.gui), "gui"] : [])], tmp, o.signal, { COPYFILE_DISABLE: "1" });
+        if (!tar.ok) throw new ServerError(o.signal?.aborted ? "Stopped." : `Couldn't pack the server's build:\n${tar.out}`);
+        const sha256 = await sha256File(own.program);
+        mkdirSync(join(cacheDir(), id), { recursive: true, mode: 0o700 });
+        rmSync(dir, { recursive: true, force: true });
+        mkdirSync(dir, { mode: 0o700 });
+        renameSync(out, bundle);
+        writeFileSync(meta, JSON.stringify({ sha256, gui: Boolean(own.gui), own: true }) + "\n");
+        prune(id);
+        return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256, gui: Boolean(own.gui) };
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+}
+
 /** Where a server's builds come from. Today: made here from the checkout. */
 export interface BuildSource {
     /** The build this machine runs, which a server it sets up should run too. */
     id: string;
     /** Its builds carry the GUI. */
     gui: boolean;
-    build(target: LinuxTarget, o?: { onStep?: (text: string) => void; signal?: AbortSignal }): Promise<ServerBuild>;
+    build(target: ServerTarget, o?: { onStep?: (text: string) => void; signal?: AbortSignal }): Promise<ServerBuild>;
     /** How a build found on a server stands to `id`. `theirsAt`: when its commit was made, if the server says. */
     compare(theirs: string, theirsAt?: number): BuildRelation;
 }

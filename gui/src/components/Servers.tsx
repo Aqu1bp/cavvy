@@ -9,12 +9,12 @@ import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
 import { updateServer } from "../lib/server-update";
-import { app, homeOn, reportError, rpc, setApp, toast } from "../state/app";
-import { newSession } from "../state/actions";
+import { app, homeOn, reportError, rpc, setApp, toast, warmLink } from "../state/app";
+import { goHomeOn, goingTo } from "../state/go-home";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
-import { watchOthers } from "./OtherMachines";
+import { machineState, watchOthers } from "./OtherMachines";
 import "../lib/lent";
 import "../styles/servers.css";
 
@@ -28,13 +28,12 @@ const runsOn = () => {
 };
 /** To `name` (undefined: this computer): Home on the window's own machine, in its latest project, or the window there. */
 const goTo = (name: string | undefined) => {
-    if (runsOn() === name) return;
-    if (name === machine) {
-        const cwd = app.projects[0]?.path ?? app.hello?.startCwd;
-        newSession(cwd, { machine });
-        // No project here yet: none is shown, not the folder of the machine it left.
-        if (!cwd) setApp("homeCwd", undefined);
-    } else switchMachine(name);
+    if (runsOn() === name && !goingTo()) return;
+    // One known not to be reachable as it is (can't be reached, stopped, waiting on the user): the window goes there,
+    // where the cover says why and what to do, as at once as before.
+    const state = name === undefined ? undefined : machineState(name);
+    if (state && state !== "connected" && state !== "connecting") return switchMachine(name);
+    void goHomeOn(name);
 };
 
 /** The sidebar's list of machines is open, under the button that opened it. */
@@ -87,9 +86,10 @@ export function connected() {
 export function mountWhere(el: HTMLElement): () => void {
     return render(
         () => (
-            <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" onClick={(e) => openMachines(e.currentTarget, "start")}>
+            <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "start")}>
                 <Server size={14} class="ic" />
-                <span class="truncate">{runsOn() ?? HERE}</span>
+                {/* The machine picked, while Home gets there. */}
+                <span class="truncate">{(goingTo() ? goingTo()!.name : runsOn()) ?? HERE}</span>
                 <ChevronDown size={12} stroke-width={2} class="chv" />
             </button>
         ),
@@ -162,7 +162,10 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     if (!c.gh.installed) lines.push("No GitHub CLI there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there.");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
-    if (!c.service) lines.push(c.lingerFix ? `It won't start again after a reboot. On it: ${c.lingerFix}` : "It won't start again after a reboot.");
+    if (c.xcode === "missing") lines.push("No Xcode there: iOS and Mac apps need it.");
+    else if (c.xcode === "unopened") lines.push("Open Xcode once at that Mac's screen.");
+    else if (c.xcode === "no-simulator") lines.push("No iOS simulator there. On it: xcodebuild -downloadPlatform iOS");
+    if (!c.service) lines.push(`It won't start again after a reboot.${c.bootFix ? ` On it: ${c.bootFix}` : c.bootHere ? ` In a terminal here: cavvy servers boot ${name}` : ""}`);
     return lines;
 }
 
@@ -198,7 +201,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
             <For each={list() ?? []}>
                 {(s) => (
                     <div class="server-row">
-                        <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item compact grow" title={s.destination} onClick={() => (close(), goTo(s.name))}>
+                        <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item compact grow" title={s.destination} onPointerEnter={() => runsOn() !== s.name && warmLink(s.name)} onClick={() => (close(), goTo(s.name))}>
                             <span class="grow">{s.name}</span>
                             <Show when={s.cost}>
                                 <span class="server-cost">{s.cost}</span>

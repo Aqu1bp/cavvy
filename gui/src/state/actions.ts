@@ -42,6 +42,27 @@ export function newSession(cwd?: string, on: { machine?: string } | undefined = 
     requestComposerFocus();
 }
 
+/** Home just changed machine: it's drawn where it ends up, nothing gliding or fading into place (home.css .home-jumped). */
+export const [homeJumped, setHomeJumped] = createSignal(false);
+/**
+ * Home changes now, placed at once: what fades or rises into place (home.css) is where it was going, and nothing
+ * glides, for a frame after too, so what it lays out then is placed as well.
+ */
+export function jump(change: () => void) {
+    setHomeJumped(true);
+    change();
+    // Finished rather than turned off: one turned off starts again when it's turned back on.
+    const placed = () => {
+        for (const a of document.querySelector(".home")?.getAnimations({ subtree: true }) ?? []) {
+            if (a instanceof CSSAnimation && a.effect?.getComputedTiming().endTime !== Infinity) a.finish();
+        }
+    };
+    placed();
+    requestAnimationFrame(() => {
+        placed();
+        requestAnimationFrame(() => setHomeJumped(false));
+    });
+}
 /** The session on screen archived: Home, on the window's own machine. */
 function toHome(id: string) {
     homeHere();

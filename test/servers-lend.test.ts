@@ -520,6 +520,20 @@ test("on a machine with no simulators, a session that's lent to sends its call t
     }
 });
 
+test("a Mac server's own simulators aren't held to the lender's mode; a Linux server's lent ones are", async () => {
+    const { setLent, lentMode } = await import("../src/tools/lent");
+    setLent(["simulator"], "default");
+    try {
+        // Its calls run here (simulator-tools.ts), so its own session's mode decides them: Bypass doesn't ask.
+        expect(lentMode("SimulatorControl")).toBeUndefined();
+        simctl.setAvailability({ ok: false, error: "Simulators need macOS." });
+        expect(lentMode("SimulatorControl")).toBe("default");
+    } finally {
+        setLent([]);
+        simctl.setAvailability({ ok: true, developerDir: "/Applications/Xcode.app/Contents/Developer" });
+    }
+});
+
 test("the Simulator turned off on the Mac while it's connected: the session there is told that, not that the Mac went away", async () => {
     const { Engine } = await import("../src/server/engine");
     const { MachineWatch } = await import("../src/servers/watch");

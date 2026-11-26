@@ -52,9 +52,11 @@ export function onServer(): boolean {
     if (known !== undefined) return known;
     // Run from source, the program is Bun whatever started it: the tests' pretend server says which program it
     // stands for (test/helpers/fake-ssh.ts). A compiled Cavvy, which is what everyone else runs, is asked nothing,
-    // and is a server's only on Linux, the one system a server's build is made for.
+    // and is a server's only on the systems a server's build is made for: Linux and macOS. A Mac's desktop app runs
+    // its own program from inside the app, never from a server's install, so it's never taken for one.
     const fromSource = /(^|[/\\])bun(\.exe)?$/.test(process.execPath);
-    const program = fromSource ? process.env.CAVVY_SERVER_PROGRAM : process.platform === "linux" ? process.execPath : undefined;
+    const made = process.platform === "linux" || process.platform === "darwin";
+    const program = fromSource ? process.env.CAVVY_SERVER_PROGRAM : made ? process.execPath : undefined;
     return (known = Boolean(program) && inServerInstall(program!, homedir()));
 }
 

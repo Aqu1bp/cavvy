@@ -50,7 +50,7 @@ async function sha256(file) {
 }
 
 const all = readdirSync(dir);
-const descriptions = all.filter((f) => /^cavvy-server-[0-9a-f]{12}-linux-[a-z0-9-]+\.json$/.test(f));
+const descriptions = all.filter((f) => /^cavvy-server-[0-9a-f]{12}-(linux|darwin)-[a-z0-9-]+\.json$/.test(f));
 if (!descriptions.length) stop(`Nothing to sign in ${dir}.`);
 // Everything in the folder goes on the release: only a description and the bundle it describes may be there.
 const expected = new Set(descriptions.flatMap((f) => [f, f.replace(/\.json$/, ".tar.gz")]));

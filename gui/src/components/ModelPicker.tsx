@@ -114,7 +114,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     /** The heading's list of accounts is open. */
     const [acctOpen, setAcctOpen] = createSignal(false);
     // The saved model, when nothing is connected, is no model: the chip doesn't name what can't run.
-    const currentRef = () => p.current?.ref ?? (noModel() ? undefined : p.currentRef);
+    // Nothing connected on this computer says nothing of another machine's (Home or a session there).
+    const currentRef = () => p.current?.ref ?? (noModel() && awayMachine(p.sessionId) === undefined ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
     // The machine's that the session is on (one of another machine's, opened in this window, has its own).
     const models = () => modelsFor(p.sessionId);

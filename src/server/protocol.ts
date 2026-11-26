@@ -1951,9 +1951,15 @@ export interface ServerCheck {
     git: boolean;
     gh: { installed: boolean; signedIn?: boolean };
     browser: boolean;
-    /** Starts again by itself after the server restarts; when not, the command that makes it so. */
+    /**
+     * Starts again by itself after the server restarts; when not, the command that makes it so: `bootFix` is run on
+     * the server, and `bootHere` says `cavvy servers boot <name>` is run on this computer (a Mac).
+     */
     service: boolean;
-    lingerFix?: string;
+    bootFix?: string;
+    bootHere?: true;
+    /** A Mac: how Xcode stands for iOS work there. */
+    xcode?: "ready" | "missing" | "unopened" | "no-simulator";
 }
 
 

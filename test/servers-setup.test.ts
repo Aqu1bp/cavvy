@@ -271,7 +271,7 @@ describe("setting a server up", () => {
         expect(r.status).toMatchObject({ running: true, build: A, sessions: 0, working: 0, waiting: 0, gui: true });
         expect(r.status.port).toBeGreaterThan(0);
         // No service manager on the pretend server: it says so, and there's nothing to tell the user to run.
-        expect(r.service).toEqual({ service: false, lingerFix: undefined });
+        expect(r.service).toEqual({ service: false, bootFix: undefined });
         expect(r.replaced).toBeUndefined();
         expect(readlinkSync(join(serverDir, "current"))).toBe(`builds/${A}`);
         expect(readdirSync(join(serverDir, "builds"))).toEqual([A]);
@@ -1136,7 +1136,7 @@ describe("a server with a service manager", () => {
             const r = await setUpServer(box, { source: source(A, { on: sys }) });
             // Lingering refused: not a service, and not left to start at the next sign-in either (it would stop with it).
             expect(r.service?.service).toBe(false);
-            expect(r.service?.lingerFix).toMatch(/^sudo loginctl enable-linger \S+$/);
+            expect(r.service?.bootFix).toMatch(/^sudo loginctl enable-linger \S+$/);
             expect(sys.asked()).toContain("disable cavvy.service");
             expect(sys.asked()).not.toContain("enable cavvy.service");
             expect(sys.asked()).not.toContain("start cavvy.service");

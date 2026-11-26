@@ -4,7 +4,9 @@
 // there is this checkout's, run from source, so the real server code answers.
 //
 // The pretend server reports itself as Linux x64 with glibc whatever this
-// machine is, so the flow is the same on a Mac and in CI.
+// machine is, so the flow is the same on a Mac and in CI. Asked to (`mac`), it
+// is a Mac with Apple silicon instead, on any machine: launchd, sudo and
+// Xcode's tools are stand-ins there (fake-launchctl.sh and the shims below).
 //
 // This module must not import anything from src.
 
@@ -39,6 +41,17 @@ export interface FakeServer {
     asked(): string[];
     /** With `systemd`: whether the server lets a user's services outlive their sign-in when asked. */
     allowLinger(yes: boolean): void;
+    /** With `mac`: whether `sudo` there runs things without asking for a password (true), or only when it may ask for one ("password"). */
+    allowSudo(yes: boolean | "password"): void;
+    /** With `mac`: launchd there won't load a daemon, whoever asks (true), or will again. */
+    refuseDaemon(yes: boolean): void;
+    /** With `mac`: what was asked of the pretend launchd, in order ("user bootstrap user/501 <file>"; "root …" when through sudo). */
+    launchd(): string[];
+    /** With `mac`: where the pretend Mac keeps its LaunchDaemons, and its stand-ins for the system's tools (for src/servers/remote.ts macLaunchd). */
+    daemons: string;
+    shims: string;
+    /** With `mac`: how Xcode stands there. `hangs`: it's there and waits on a question at the Mac's screen. `broken`: it runs and its simulator tool doesn't. */
+    xcode(state: "ready" | "missing" | "unopened" | "hangs" | "broken" | "no-simulator"): void;
     /** As if the user had connected to it before: its key is in the pretend known_hosts. */
     trust(host: string): void;
     knownHosts(): string;
@@ -59,7 +72,7 @@ export interface FakeServer {
      */
     install(name: string, body?: string): void;
     /** A build of Cavvy to "install": this checkout, run from source. `gui`: with a GUI page beside it. */
-    bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
+    bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64" | "darwin-arm64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
     cleanup(): void;
 }
 
@@ -73,7 +86,7 @@ function keygen(file: string) {
  * whether lingering is on. It starts nothing itself, and lingering is refused until allowLinger(true), so Cavvy
  * there runs detached as on a server that refuses it.
  */
-export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
+export function fakeSsh(o: { systemd?: boolean; mac?: boolean } = {}): FakeServer {
     // Short: a socket's path under it has to fit in 104 bytes on macOS.
     const dir = mkdtempSync("/tmp/cvr-");
     const home = join(dir, "home");
@@ -86,8 +99,32 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         writeFileSync(join(dir, "bin", name), `#!/bin/sh\n${body}\n`);
         chmodSync(join(dir, "bin", name), 0o755);
     };
-    // What the probe asks, answered as a Linux x64 server would.
-    shim("uname", 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo "Linux fake 6.8.0 x86_64" ;; esac');
+    // What the probe asks, answered as a Linux x64 server would, or a Mac.
+    if (o.mac) shim("uname", 'case "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo "Darwin fake 27.2.0 arm64" ;; esac');
+    else shim("uname", 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo "Linux fake 6.8.0 x86_64" ;; esac');
+    const daemons = join(dir, "LaunchDaemons");
+    const mac = Boolean(o.mac);
+    if (mac) {
+        const q = JSON.stringify;
+        mkdirSync(daemons);
+        mkdirSync(join(dir, "Xcode.app", "Contents", "Developer"), { recursive: true });
+        writeFileSync(join(dir, "xcode"), "ready");
+        shim("sysctl", 'if [ "$2" = hw.memsize ]; then echo 17179869184; else exit 1; fi');
+        shim("launchctl", `FAKE_DIR=${q(dir)} exec sh ${q(join(REPO, "test", "helpers", "fake-launchctl.sh"))} "$@"`);
+        // As sudo: it says who asked. `-n`: without asking for a password, which only works where none is needed.
+        shim(
+            "sudo",
+            `n=""\nwhile :; do case "$1" in -n) n=1; shift ;; -p) shift 2 ;; *) break ;; esac; done\nif [ -f ${q(join(dir, "sudo-allowed"))} ] || { [ -z "$n" ] && [ -f ${q(join(dir, "sudo-password"))} ]; }; then SUDO_USER=$(id -un) FAKE_SUDO=1 exec "$@"; fi\necho "sudo: a password is required" >&2\nexit 1`,
+        );
+        // The Mac's own record of an account, and handing a file to root (which the tests' user can't): taken as done.
+        shim("dscl", `case "$4" in NFSHomeDirectory) echo "NFSHomeDirectory: ${home}" ;; UserShell) echo "UserShell: /bin/zsh" ;; *) exit 1 ;; esac`);
+        shim("chown", `echo "$*" >> ${q(join(dir, "chown.log"))}`);
+        const state = `$(cat ${q(join(dir, "xcode"))})`;
+        shim("xcode-select", `if [ "${state}" = missing ]; then echo /Library/Developer/CommandLineTools; else echo ${q(join(dir, "Xcode.app", "Contents", "Developer"))}; fi`);
+        // Not let run yet: killed as it starts with nobody at the Mac, left waiting when somebody is.
+        shim("xcodebuild", `case "${state}" in unopened) kill -9 $$ ;; hangs) exec sleep 60 ;; esac\necho "Xcode 27.2"`);
+        shim("xcrun", `case "${state}" in broken) exit 72 ;; esac\necho "== Runtimes =="\necho "watchOS 27.2 (27.2 - 24S5) - com.apple.CoreSimulator.SimRuntime.watchOS-27-2"\n[ "${state}" = no-simulator ] || echo "iOS 27.2 (27.2 - 24C5) - com.apple.CoreSimulator.SimRuntime.iOS-27-2"`);
+    }
     // A login shell that says nothing, so the system's profile can't add this machine's tools to the pretend server's PATH.
     shim("quiet-shell", "exit 0");
     if (o.systemd) {
@@ -189,6 +226,25 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             if (yes) writeFileSync(join(dir, "linger-allowed"), "");
             else rmSync(join(dir, "linger-allowed"), { force: true });
         },
+        allowSudo(yes) {
+            for (const f of ["sudo-allowed", "sudo-password"]) rmSync(join(dir, f), { force: true });
+            if (yes) writeFileSync(join(dir, yes === true ? "sudo-allowed" : "sudo-password"), "");
+        },
+        refuseDaemon(yes) {
+            if (yes) writeFileSync(join(dir, "refuse-daemon"), "");
+            else rmSync(join(dir, "refuse-daemon"), { force: true });
+        },
+        launchd: () =>
+            existsSync(join(dir, "launchctl.log"))
+                ? readFileSync(join(dir, "launchctl.log"), "utf-8")
+                      .split("\n")
+                      .filter(Boolean)
+                : [],
+        daemons,
+        shims: join(dir, "bin"),
+        xcode(state) {
+            writeFileSync(join(dir, "xcode"), state);
+        },
         trust(host) {
             writeFileSync(join(dir, "known_hosts"), `${host} ${hostKey()}\n`, { flag: "a" });
         },
@@ -225,7 +281,7 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             const bundle = join(dir, `bundle-${id}-${o.gui ? "gui" : "plain"}.tar.gz`);
             const tar = Bun.spawnSync(["tar", "-czf", bundle, "-C", stage, "cavvy", ...(o.gui ? ["gui"] : [])], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: { ...process.env, COPYFILE_DISABLE: "1" } as Record<string, string> });
             if (tar.exitCode !== 0) throw new Error(`tar failed: ${tar.stderr.toString()}`);
-            return { id, target: "linux-x64", bundle, bundleBytes: readFileSync(bundle).length, sha256: createHash("sha256").update(program).digest("hex"), gui: Boolean(o.gui) };
+            return { id, target: mac ? "darwin-arm64" : "linux-x64", bundle, bundleBytes: readFileSync(bundle).length, sha256: createHash("sha256").update(program).digest("hex"), gui: Boolean(o.gui) };
         },
         cleanup() {
             delete process.env.CAVVY_SSH;
