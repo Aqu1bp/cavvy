@@ -57,3 +57,30 @@
     padding: 0 calc(18 * var(--sp));
     font-size: 0.929rem;
 }
+
+/* Its box sits where the session's does: the line under it ("4% context") keeps its room before there's a side chat. */
+.side-chat .composer-under:empty {
+    display: flex;
+}
+
+/* At the panel's usual width and narrower: a permission's answers one under another, each on one line, rather than
+   the broader one wrapped to three beside Deny; a turn's changed files without the icon and the total (each row has
+   its own), so Review changes stays whole; and the working line's end without the room kept for a command's chevron. */
+.side-chat[data-narrow~="360"] {
+    .ask-row.perm-row {
+        grid-template-columns: 1fr;
+    }
+
+    .ask-row.perm-row .pbtn.quiet {
+        margin: 0;
+    }
+
+    .files-head > .tcard-ic,
+    .files-head > .stat {
+        display: none;
+    }
+
+    .live-line .layer {
+        padding-right: 0;
+    }
+}
