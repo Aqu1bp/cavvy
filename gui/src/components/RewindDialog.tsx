@@ -9,6 +9,7 @@ import { rewindTimes } from "../lib/rewind-times";
 import { refreshGitChanges } from "../state/changes";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import { takeFocus } from "../lib/focus-trap";
 
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
@@ -61,26 +62,37 @@ export function RewindDialog() {
         // Reconnect reopens sessions later; a plan against the old view is no longer safe.
         if (rewindOpen() && conn() !== "open") setRewindOpen(false);
     });
-    const [targets, { refetch }] = createResource(
-        () => (conn() === "open" && rewindOpen() && id() ? id() : undefined),
+    // An idle compaction stops for a rewind.
+    const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
+    // Read once the dialog has its session, and again when a response that ran as it opened ends: what can be rewound
+    // to, and each one's plan, are only known then.
+    const readFor = createMemo(() => (conn() === "open" && rewindOpen() && !busySession() ? id() : undefined));
+    const [targets, { mutate }] = createResource(
+        readFor,
         (sid) =>
             rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
                 if (conn() === "open") reportError(e);
                 return [];
             }),
     );
+    /** The prompts, once read for the session the dialog is open for (not while they're read again). */
+    const list = () => (targets.state === "ready" ? targets() : undefined);
     /** When each was sent; to the second where the next one up or down would read the same. */
-    const times = createMemo(() => rewindTimes(targets()?.map((t) => t.at) ?? []));
+    const times = createMemo(() => rewindTimes(list()?.map((t) => t.at) ?? []));
     createEffect(
         on(rewindOpen, (open) => {
-            if (!open) return;
+            // Closed, it's for no session: opened next, it doesn't first ask for this one's prompts (deleted by then, say).
+            if (!open) {
+                setId(undefined);
+                mutate(undefined);
+                return;
+            }
             setId(app.activeId);
             setPlan(undefined);
             // Through undefined, so the plan is fetched again even for the prompt chosen last time.
             setChosen(undefined);
             setChosen(rewindTarget.get());
             rewindTarget.set(undefined);
-            void refetch();
         }),
     );
     // Open, the user is back: the session doesn't compact while idle under it (that would change what can be rewound to).
@@ -101,7 +113,7 @@ export function RewindDialog() {
         ),
     );
     createEffect(
-        on([chosen, () => conn() === "open", id, rewindOpen], ([index, connected, sid, open]) => {
+        on([chosen, () => conn() === "open", id, rewindOpen, readFor], ([index, connected, sid, open, reading]) => {
             let current = true;
             onCleanup(() => {
                 current = false;
@@ -109,7 +121,7 @@ export function RewindDialog() {
             setPlan(undefined);
             setConfirming(undefined);
             setPlanning(false);
-            if (index === undefined || !sid || !connected || !open) return;
+            if (index === undefined || !sid || !connected || !open || !reading) return;
             setPlanning(true);
             void rpc.call("session.rewindPlan", { id: sid, index }).then(
                 (value) => {
@@ -129,14 +141,12 @@ export function RewindDialog() {
     // Tab and Enter start from the list.
     let listEl: HTMLDivElement | undefined;
     createEffect(
-        on([targets, () => busySession()], ([t, waiting]) => {
+        on([list, () => busySession()], ([t, waiting]) => {
             if (!t?.length || waiting || !rewindOpen()) return;
             requestAnimationFrame(() => {
                 if (!listEl?.isConnected) return;
-                const chosenRow = listEl.querySelector<HTMLElement>(".rw-item.on");
-                const at = document.activeElement;
-                if (at === chosenRow || (!chosenRow && listEl.contains(at))) return;
-                (chosenRow ?? listEl.querySelector<HTMLElement>(".rw-item"))?.focus();
+                // Not if the user has moved it since the dialog opened (takeFocus).
+                takeFocus(listEl.querySelector<HTMLElement>(".rw-item.on") ?? listEl.querySelector<HTMLElement>(".rw-item") ?? undefined);
             });
         }),
     );
@@ -154,7 +164,7 @@ export function RewindDialog() {
     /** How many files the plan restores, those past the list's end too. */
     const listedCount = () => (plan()?.restore.length ?? 0) + (plan()?.more ?? 0);
     /** Nothing to rewind to (yet, or while a response runs): the line, and Close alone. */
-    const empty = () => busySession() || (targets.state === "ready" && !targets()!.length);
+    const empty = () => busySession() || list()?.length === 0;
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
@@ -182,15 +192,13 @@ export function RewindDialog() {
             setBusy(false);
         }
     };
-    // An idle compaction stops for a rewind.
-    const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
     return (
-        <Dialog open={rewindOpen()} onClose={close} title="Rewind to before which prompt?" width={620}>
+        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={620}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
-                <Show when={targets()} fallback={<Spinner />}>
-                    <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
+                <Show when={list()} fallback={<Spinner />}>
+                    <Show when={list()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
                         <div class="rw-list" ref={listEl} onKeyDown={onListKey}>
-                            <For each={targets()}>
+                            <For each={list()}>
                                 {(t, i) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
@@ -229,7 +237,7 @@ export function RewindDialog() {
                                 </Show>
                                 <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
                                     {/* Said only when it isn't the row's own count: changes since then, from later prompts or by hand. */}
-                                    <Show when={listedCount() !== targets()?.find((t) => t.index === chosen())?.files}>
+                                    <Show when={listedCount() !== list()?.find((t) => t.index === chosen())?.files}>
                                         <div class="small">{plan()!.whole ? `${plural(listedCount(), "file")} changed since then:` : `Cavvy changed ${plural(listedCount(), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
                                     </Show>
                                     <For each={plan()!.restore}>
