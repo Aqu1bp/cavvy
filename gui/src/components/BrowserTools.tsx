@@ -408,7 +408,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                                     <button class="hb sm" aria-label="Rotate" title="Rotate" onClick={rotate}><RotateCwSquare size={14} /></button>
                                     <Show
                                         when={refused()}
-                                        fallback={<Show when={shownAt()}>{(pct) => <span class="br-strip-note" title="Drawn smaller to fit the pane">Shown at {pct()}%</span>}</Show>}
+                                        fallback={<Show when={shownAt()}>{(pct) => <><span class="br-strip-note" title="Drawn smaller to fit the pane">Shown at</span><span class="br-strip-count" title="Drawn smaller to fit the pane">{pct()}%</span></>}</Show>}
                                     >
                                         <span id={sideNote} class="br-strip-note refused" role="alert">{`${MIN_SIDE}–${MAX_SIDE} px`}</span>
                                     </Show>

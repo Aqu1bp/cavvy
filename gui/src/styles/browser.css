@@ -77,6 +77,16 @@
 .br-strip.br-size {
     flex-wrap: wrap;
     row-gap: calc(4 * var(--sp));
+    container-type: inline-size;
+}
+
+/* Too narrow for "Shown at 77%" beside the size and zoom: it's left out, so the strip stays one row and doesn't take
+   the page's height (which would change the figure, and leave a size typed again shown smaller than before). */
+@container (max-width: 400px) {
+    .br-strip-note:not(.refused),
+    .br-strip-note + .br-strip-count {
+        display: none;
+    }
 }
 
 /* The zoom and the way back to filling the pane, at the row's end: they wrap together. */
@@ -138,6 +148,15 @@
     white-space: nowrap;
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
+}
+
+/* The words beside their figure, by the zoom. */
+.br-strip-note:not(.refused) {
+    text-align: right;
+}
+
+.br-strip-note + .br-strip-count {
+    color: var(--fg-3);
 }
 
 .br-strip-note.refused {
