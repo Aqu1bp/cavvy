@@ -54,7 +54,7 @@ export function onServer(): boolean {
     // stands for (test/helpers/fake-ssh.ts). A compiled Cavvy, which is what everyone else runs, is asked nothing,
     // and is a server's only on Linux, the one system a server's build is made for.
     const fromSource = /(^|[/\\])bun(\.exe)?$/.test(process.execPath);
-    const program = fromSource ? process.env.CAVVY_SERVER_PROGRAM : process.platform === "linux" ? process.execPath : undefined;
+    const program = fromSource ? process.env.CAVVY_SERVER_PROGRAM : process.platform === "linux" || process.platform === "darwin" ? process.execPath : undefined;
     return (known = Boolean(program) && inServerInstall(program!, homedir()));
 }
 

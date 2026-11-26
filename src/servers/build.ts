@@ -299,7 +299,7 @@ export function buildTimeDefine(): string[] {
 }
 
 /** A kind of server, in words. */
-export const targetName = (target: LinuxTarget) => (target === "linux-arm64" ? "Linux arm64" : "Linux x64");
+export const targetName = (target: LinuxTarget) => (target === "darwin-arm64" ? "macOS" : target === "linux-arm64" ? "Linux arm64" : "Linux x64");
 
 /**
  * The kinds a packed desktop app carries a build for: for x64, the one that runs on every x64 processor (a

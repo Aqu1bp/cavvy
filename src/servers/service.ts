@@ -69,8 +69,39 @@ point_at() {
     # -T: onto the link itself, not into the folder it names (GNU and BusyBox have it).
     mv -T "$d/current.new.$$" "$d/current" 2>/dev/null || { rm -f "$d/current"; mv "$d/current.new.$$" "$d/current"; }
 }
+# macOS: a launchd agent in the user's background session. It outlives the connection that starts it (nohup can't
+# detach from an SSH session there), and launchd restarts it if it crashes.
+label="dev.cavvy.server"
+agent="$HOME/Library/LaunchAgents/$label.plist"
+is_darwin() { [ "$(uname -s)" = Darwin ]; }
+start_agent() {
+    mkdir -p "$(dirname "$agent")"
+    cat > "$agent.tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>$bin</string><string>host</string><string>run</string><string>--login-env</string></array>
+<key>EnvironmentVariables</key><dict><key>CAVVY_NO_KEYCHAIN</key><string>1</string></dict>
+<key>WorkingDirectory</key><string>$HOME</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>LimitLoadToSessionType</key><string>Background</string>
+<key>ProcessType</key><string>Interactive</string>
+<key>ExitTimeOut</key><integer>30</integer>
+<key>StandardOutPath</key><string>$d/server.log</string>
+<key>StandardErrorPath</key><string>$d/server.log</string>
+</dict></plist>
+PLIST
+    mv -f "$agent.tmp" "$agent"
+    launchctl bootout "user/$(id -u)/$label" >/dev/null 2>&1
+    launchctl bootstrap "user/$(id -u)" "$agent"
+}
 start() {
-    if as_service; then
+    if is_darwin; then
+        if [ -f "$d/server.log" ] && [ "$(wc -c < "$d/server.log")" -gt 5000000 ]; then mv -f "$d/server.log" "$d/server.log.1"; fi
+        start_agent
+    elif as_service; then
         systemctl --user reset-failed cavvy.service >/dev/null 2>&1
         # Started on purpose, so started at boot again too (a stop turns that off).
         systemctl --user enable cavvy.service >/dev/null 2>&1
@@ -88,6 +119,7 @@ stop() {
     # Cavvy's own stop waits until the process is gone, sessions closed.
     "$bin" host stop >/dev/null 2>&1
     if has_systemd && [ -f "$unit" ]; then systemctl --user stop cavvy.service >/dev/null 2>&1; fi
+    if is_darwin; then launchctl bootout "user/$(id -u)/$label" >/dev/null 2>&1; fi
     return 0
 }
 # Answering, and as build $1 when one is given.

@@ -23,7 +23,7 @@ export const LOGIN_EXIT = { notInstalled: 4, notSignedIn: 5, unknown: 6, problem
 /** A build's name on disk: nothing a shell or a path would read into. */
 export const BUILD_ID = /^[0-9a-z][0-9a-z.-]{5,60}$/;
 
-export type LinuxTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64";
+export type LinuxTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | "darwin-arm64";
 
 export interface ServerFacts {
     os: string;
@@ -63,6 +63,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
     echo "linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
 fi
 awk '/^MemTotal:/ { printf "mem=%d\\n", $2 / 1024 }' /proc/meminfo 2>/dev/null
+if [ "$(uname -s)" = Darwin ]; then echo "mem=$(( $(sysctl -n hw.memsize) / 1048576 ))"; fi
 df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { printf "disk=%d\\n", $4 / 1024 }'
 d="${REMOTE_DIR}"
 if [ -d "$d/builds" ]; then
@@ -136,6 +137,10 @@ export function checkRoom(facts: ServerFacts, e: ServerEntry) {
 export function targetFor(facts: ServerFacts, e: ServerEntry): LinuxTarget {
     const host = hostOf(e);
     const cant = (why: string) => new ServerError(`Cavvy can't run on ${host}: ${why}`);
+    if (facts.os === "Darwin") {
+        if (facts.arch === "arm64") return "darwin-arm64";
+        throw cant(`it needs Apple silicon, and this is ${facts.arch || "unknown"}.`);
+    }
     if (facts.os !== "Linux") throw cant(`it needs Linux, and this is ${facts.os || "something else"}.`);
     const arch = facts.arch === "x86_64" || facts.arch === "amd64" ? "x64" : facts.arch === "aarch64" || facts.arch === "arm64" ? "arm64" : undefined;
     if (!arch) throw cant(`it needs an x64 or arm64 processor, and this is ${facts.arch || "unknown"}.`);
