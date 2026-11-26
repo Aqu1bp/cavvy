@@ -205,7 +205,10 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
             window.__bright = [];
             window.__watch = true;
             const seen = new WeakMap();
-            const shown = (n) => { let o = 1; for (let e = n.parentElement; e && !e.classList.contains("md"); e = e.parentElement) o *= Number(getComputedStyle(e).opacity); return o; };
+            // How strongly a piece is drawn: its opacity and what it's in, and for a run of plain words in the trail,
+            // how light its colour is beside the colour it would have (lib/stream-dom.ts: ink).
+            const alpha = (e) => { const c = getComputedStyle(e).color; const m = /[,/] *([0-9.]+)[)]$/.exec(c); return m && /^rgba|[/]/.test(c) ? Number(m[1]) : 1; };
+            const shown = (n) => { let o = 1; for (let e = n.parentElement; e && !e.classList.contains("md"); e = e.parentElement) o *= Number(getComputedStyle(e).opacity) * (e.dataset.fresh === "ink" ? alpha(e) / alpha(e.parentElement) : 1); return o; };
             let el, last;
             const frame = () => {
                 if (!window.__watch) return;

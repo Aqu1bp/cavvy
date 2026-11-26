@@ -27,6 +27,8 @@ import { keysHere, usePane } from "../state/split";
 const GLIDE_MS = 240;
 /** A scroll back to where a pin moved from, this soon after, is the engine undoing it (onScroll), not the reader. */
 const ENGINE_MS = 250;
+/** How long the scrollbar stays once the reader is back at the end of the conversation: past its own fade. */
+const BAR_SHOWN_MS = 2500;
 /** A scroll up this soon after the column's content changed is the layout's (onScroll), not the reader's. */
 const MUTATION_MS = 40;
 /** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
@@ -1289,6 +1291,24 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
         setStick(false);
         reading = capture();
     };
+    // Followed at its end, the conversation's scrollbar is put away where macOS lays it over the content and shows it
+    // only for a moment after a scroll. Chromium takes our own scrolls for the reader's: with each glide of a reply the
+    // bar came in, went out a second later and came in again, and each fade is a frame at every refresh, drawn and
+    // sent to the screen for a quarter of a second (a third of the frames a streaming reply drew, measured). It says
+    // nothing there: the view is at the end. It's back as the reader leaves the end (their wheel and keys unstick it
+    // before the scroll comes), stays for as long as they read elsewhere, and goes a moment after they're back, past
+    // its own fade. A scrollbar that takes room (a mouse plugged in, or "Always" in System Settings) is always there,
+    // and left alone: only one laid over the content leaves the conversation as wide as its box.
+    const barAway = (away: boolean) => scroller?.toggleAttribute("data-bar-away", away);
+    let barWait: ReturnType<typeof setTimeout> | undefined;
+    createEffect(() => {
+        // At the end itself: following starts a little short of it (atBottom), where a reader may stop.
+        const atEnd = stick() && scrolledDown();
+        barAway(false);
+        clearTimeout(barWait);
+        if (atEnd) barWait = setTimeout(() => barAway(scroller!.offsetWidth === scroller!.clientWidth), BAR_SHOWN_MS);
+    });
+    onCleanup(() => clearTimeout(barWait));
     /** A pointer or finger down on the conversation: until it's lifted, scrolls up are the reader's even as it grows. */
     const press = (e?: Event) => {
         finishAtEnd();

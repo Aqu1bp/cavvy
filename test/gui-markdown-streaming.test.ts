@@ -451,6 +451,8 @@ test("streamed text has no animation: the trail is static opacity, none with Red
     expect(css).not.toMatch(/code\.fresh/);
     const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf("}\n}\n", css.indexOf("@media (prefers-reduced-motion: no-preference)")) + 4);
     expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.12], ["2", 0.28], ["3", 0.45], ["4", 0.61], ["5", 0.75], ["6", 0.87], ["7", 0.95]]);
+    // A run of plain words is as light in its colour, with no opacity of its own.
+    expect([...trail.matchAll(/\[data-fresh="ink"\]\.md-t(\d) \{\s*opacity: 1;\s*color: color-mix\(in srgb, currentColor (\d+)%, transparent\);\s*\}/g)].map((m) => [m[1], Number(m[2]) / 100])).toEqual([["1", 0.12], ["2", 0.28], ["3", 0.45], ["4", 0.61], ["5", 0.75], ["6", 0.87], ["7", 0.95]]);
     expect(trail).not.toMatch(/animation|transition/);
     // Outside that media query nothing draws the tiers.
     expect(css.replace(trail, "")).not.toMatch(/md-t\d/);
