@@ -251,6 +251,8 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         if (name && !pr && !l.local.some((b) => b.name === name)) out.push({ key: "create", verb: "Create branch", label: name, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(name) });
         return out;
     });
+    // What went wrong goes as a new query is typed: it was about the last action, not what's listed now.
+    createEffect(on(q, () => note()?.level === "error" && setNote(undefined), { defer: true }));
     // On the first row that can be picked (not the current branch), for each new query. The same list read again (a
     // session there started or finished) keeps the row that was on, so Enter still does what it showed.
     let lastQ = q();

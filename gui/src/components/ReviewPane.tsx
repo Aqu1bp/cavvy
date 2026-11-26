@@ -941,7 +941,13 @@ function DiffReader(p: { handle: SessionHandle }) {
         if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "Snapshot incomplete" : "No changes in this turn";
         return "Nothing to commit";
     };
-    const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase, commit: git()?.commit }));
+    // The Branch view's base as last read: another view's answer (a commit's) doesn't carry one, and the menu keeps saying it.
+    const [seenBase, setSeenBase] = createSignal<string>();
+    createEffect(() => {
+        const b = git()?.base?.ref;
+        if (b) setSeenBase(b);
+    });
+    const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? seenBase() ?? git()?.defaultBase, commit: git()?.commit }));
     /** The branch of the worktree looked at, for the chip and the notice. */
     const awayBranch = () => {
         const w = worktree();

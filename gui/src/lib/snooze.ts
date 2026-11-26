@@ -21,16 +21,16 @@ function dayAt(now: number, days: number, hour: number): number {
 }
 
 /**
- * 1 hour; tonight at 6 pm (3 hours on when that's under 2 hours away, so it never comes before "1 hour"); tomorrow at
- * 9 am; next Monday at 9 am.
+ * 1 hour; tonight at 6 pm, or 9 pm once 6 pm is under 2 hours away (none later in the evening: it would come too soon
+ * after "1 hour", or after midnight); tomorrow at 9 am; next Monday at 9 am.
  */
 export function snoozeChoices(now: number): SnoozeChoice[] {
     const today = new Date(now);
     const choice = (label: string, at: number, dayNamed = false) => ({ label, at, hint: dayNamed ? clock(at) : wakeTime(at, now) });
-    const six = dayAt(now, 0, 18);
+    const tonight = [18, 21].map((h) => dayAt(now, 0, h)).find((at) => at - now >= 2 * HOUR);
     return [
         choice("1 hour", now + HOUR),
-        choice("Tonight", six - now >= 2 * HOUR ? six : now + 3 * HOUR),
+        ...(tonight ? [choice("Tonight", tonight)] : []),
         choice("Tomorrow morning", dayAt(now, 1, 9), true),
         // Monday is day 1: from a Monday, the next one.
         choice("Next week", dayAt(now, (8 - today.getDay()) % 7 || 7, 9)),
