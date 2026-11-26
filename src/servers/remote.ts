@@ -32,6 +32,7 @@ export const MAC_LABEL = "dev.cavvy.server";
 /**
  * `$daemon`: the LaunchDaemon's file, and `boots`: whether it's there and is this user's Cavvy (another user of the
  * same Mac may have their own under that name, which is left alone). For scripts where `$HOME` is the user's.
+ * CAVVY_LAUNCH_DAEMONS: where the tests' pretend Mac keeps them (test/helpers/fake-ssh.ts).
  */
 export const MAC_DAEMON = `
 daemon="\${CAVVY_LAUNCH_DAEMONS:-/Library/LaunchDaemons}/${MAC_LABEL}.plist"
