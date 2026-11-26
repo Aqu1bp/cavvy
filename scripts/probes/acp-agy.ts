@@ -125,6 +125,16 @@ const cases: Record<string, () => Promise<void>> = {
     pong: async () => {
         await promptSeries(profile, "pong", [{ label: "pong", text: "Reply with the single word: pong" }], { saveAs: "pong" });
     },
+    // Its own /compact (listed in available_commands_update) sent as a prompt, with and without instructions: what it
+    // says and sends, and whether it still knows what came before.
+    compact: async () => {
+        await promptSeries(profile, "compact", [
+            { label: "remember", text: "Remember the secret word walnut. Reply with only: ok" },
+            { label: "/compact", text: "/compact" },
+            { label: "/compact with instructions", text: "/compact Keep the secret word." },
+            { label: "recall", text: "What was the secret word? Reply with only the word." },
+        ]);
+    },
     resume: () => resumeCase(profile),
     cancel: () => cancelCase(profile),
     image: async () => {

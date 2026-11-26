@@ -34,6 +34,8 @@
 //   [[crash]]         starts a command, says something, then writes "fatal: boom" to stderr and exits 3
 //   [[auth]]          answers -32000 Authentication required. [[disabled]]: -32603 Model access is disabled
 //   [[late]]          ends, then sends a message chunk after its answer
+//   /compact ...      (as Antigravity's own command: agy-1.5.17-acp-compact.jsonl) lists its commands, says nothing,
+//                     ends end_turn
 //   [[steps:N]]       N reads it doesn't ask about, FAKE_ACP_STEP_MS apart (100), until session/cancel; then its
 //                     words, with what steered it: " (also: TEXT / TEXT)"
 //   [[stream]]        says "Before the steer.", waits for a prompt folded into it, then goes on in the same message:
@@ -300,6 +302,10 @@ async function prompt(id: number, p: any) {
         update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "Before the steer." } });
         for (let i = 0; i < 300 && !running?.steers.length; i++) await sleep(10);
         update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: ` After: ${running?.steers.join(" / ")}` } });
+        return end();
+    }
+    if (text.startsWith("/compact")) {
+        update(sid, { sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact", description: "Compact the conversation now" }] });
         return end();
     }
     update(sid, { sessionUpdate: "agent_thought_chunk", messageId: "t1", content: { type: "text", text: "thinking" } });

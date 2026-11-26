@@ -324,12 +324,16 @@ export class Session {
     /** Its messages are most of its file: a checkpoint keeps a digest of them in their place (Session.read). */
     private digestible = false;
     /**
-     * Its messages, read whole to build its turns (a first open), let go of now that those are built: a digest in their
-     * place, as a session opened from its checkpoint has, and they're read again from its file when they're asked for.
-     * Only where that checkpoint would have one (they're most of it) and the file has all of them (it writes to it).
+     * Its messages, read to build its turns or from a checkpoint that has them, let go of now that its turns are built:
+     * a digest in their place, as a session opened from a checkpoint with one has, and they're read again from its file
+     * when they're asked for. Only where the file has all of them (it writes to it). Also where they're less than half
+     * of it (no digest in its checkpoint): pasted images are most of what a session holds, and one whose file was more
+     * than half lines no longer in the conversation (rewound) kept 29 MB of them in the server while it was open; read
+     * again, its 33 MB file took 15-20 ms.
      */
     letGoOfMessages(): boolean {
-        if (!this.persist || !this.digestible || this.digest || this.loadedLines || this.pushedUnread.length) return false;
+        // Not while saving fails: the file hasn't all of them.
+        if (!this.persist || this.unsaved || this.digest || this.loadedLines || this.pushedUnread.length) return false;
         this.digest = digestOf(this.loadedMessages);
         this.loadedMessages = [];
         return true;
