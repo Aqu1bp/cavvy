@@ -2006,8 +2006,9 @@ export class Runtime {
         const m = this.model;
         if (!m) return undefined;
         const window = m.contextWindow;
-        // An agent that can't compact (an ACP agent's): never, here.
-        if (agentCli(m.provider)?.caps.compact === "none") return undefined;
+        // An agent that can't compact, or does by itself and on /compact only (an ACP agent's): never, here.
+        const compact = agentCli(m.provider)?.caps.compact;
+        if (compact === "none" || compact === "command") return undefined;
         if (m.provider === "claude-code" || m.provider === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
             if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);

@@ -39,7 +39,12 @@ export interface CliCapabilities {
     fork: boolean;
     /** It can rewind its own session to an earlier message. */
     rewind: boolean;
-    compact: "native" | "none";
+    /**
+     * `native`: it compacts its own context, and Cavvy compacts it too (at its threshold, when idle, or by /compact).
+     * `command`: /compact goes to it as its own command, and only then (Antigravity's: it compacts by itself).
+     * `none`: it can't be asked to.
+     */
+    compact: "native" | "command" | "none";
     /** It keeps goals of its own (/goal): whether one can be paused, and whether it starts turns for one by itself. */
     goal?: { canPause: boolean; ownTurns: boolean };
     /** How its plan limits are known: pushed as they change, by asking, only inside a turn, or not at all. */
@@ -351,6 +356,8 @@ const ANTIGRAVITY: AgentCliDef = {
         pdfs: true,
         autoReviewer: true,
         resolvesUnknownCommands: false,
+        // Its own /compact, sent as a prompt; it compacts by itself otherwise (agy-1.5.17-acp-compact.jsonl).
+        compact: "command",
     },
 };
 
