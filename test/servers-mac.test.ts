@@ -38,7 +38,7 @@ macLaunchd.sudo = `${mac.shims}/sudo`;
 saveServer(entry);
 
 /** How bootCommand asks for sudo, and a command run on the pretend Mac as it stands. */
-const SUDO = `exec ${macLaunchd.sudo} -p "Password for %p on %h: " /bin/sh`;
+const SUDO = `${macLaunchd.sudo} -p 'Password for %p on %h: ' /bin/sh`;
 async function overSsh(command: string): Promise<{ code: number; err: string }> {
     const p = Bun.spawn(sshCommandArgv(entry, command), { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     return { code: await p.exited, err: (await new Response(p.stderr).text()).trim() };
@@ -163,7 +163,7 @@ describe("a Mac that asks for a password before it lets anyone be an administrat
     test("the script that writes the daemon runs only through sudo, as an account", async () => {
         // Run by the account itself: sudo names nobody.
         const was = readFileSync(daemonFile, "utf-8");
-        expect(await overSsh(bootCommand().replace(SUDO, "exec /bin/sh"))).toEqual({ code: 64, err: "This is run with sudo, by the account Cavvy runs as." });
+        expect(await overSsh(bootCommand().replace(SUDO, "/bin/sh"))).toEqual({ code: 64, err: "This is run with sudo, by the account Cavvy runs as." });
         expect(readFileSync(daemonFile, "utf-8")).toBe(was);
     });
 
@@ -247,7 +247,7 @@ describe("a Mac where sudo doesn't ask", () => {
         const taken = await servers("boot", "mini");
         expect(taken).toEqual({ code: 1, said: "Another account on mini.example already starts its own Cavvy at boot.\n" });
         // The script itself refuses too, whoever runs it.
-        expect(bootCommand()).toContain(SUDO);
+        expect(bootCommand().startsWith(SUDO)).toBe(true);
         expect(await overSsh(bootCommand())).toEqual({ code: 66, err: "Another account's Cavvy already starts at boot on this Mac." });
         expect(readFileSync(daemonFile, "utf-8")).toBe(theirs);
         expect((await probeServer(entry)).launchDaemon).toBe("other");

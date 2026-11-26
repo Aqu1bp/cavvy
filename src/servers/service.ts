@@ -26,7 +26,7 @@
 import { agentCli } from "../backends/defs";
 import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
-import { BUILD_ID, MAC_DAEMON, MAC_LABEL, REMOTE_DIR, withMacPaths, type ServerFacts } from "./remote";
+import { BUILD_ID, MAC_DAEMON, MAC_LABEL, macLaunchd, REMOTE_DIR, withMacPaths, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
 import { PERMISSION_MODES } from "../permissions/modes";
 
@@ -560,7 +560,8 @@ export const BOOT_TAKEN = 66;
  * done this already.
  */
 export function bootCommand(): string {
-    return remoteSh(withMacPaths(`exec @@SUDO@@ -p "Password for %p on %h: " /bin/sh -c "$1"`), [withMacPaths(MAC_BOOT)]);
+    // sudo by its full path as the command itself: no `sh` looked up on the account's PATH first.
+    return [macLaunchd.sudo, "-p", "Password for %p on %h: ", "/bin/sh", "-c", withMacPaths(MAC_BOOT)].map(shQuote).join(" ");
 }
 
 export class UpdateFailed extends ServerError {
