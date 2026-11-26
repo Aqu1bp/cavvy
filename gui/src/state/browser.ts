@@ -2,13 +2,13 @@
 // browser.state events), the frames of the tab being watched, and whether the agent opened a page while the
 // Browser pane wasn't in view.
 
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { BrowserState, ServerEvent } from "@shared/protocol";
 import { agentOpened } from "../lib/browser";
 import { app, rpc, rpcFor, toast } from "./app";
 import { setPrefs } from "./prefs";
-import { setInspectorPane } from "./ui";
+import { setInspectorPane, setReview } from "./ui";
 
 export type BrowserFrame = Extract<ServerEvent, { type: "browser.frame" }>;
 
@@ -58,8 +58,12 @@ export async function loadBrowserState(id: string): Promise<void> {
 
 /** Shows the Browser pane: the panel open, on its tab. */
 export function showBrowser() {
-    setPrefs("panel", true);
-    setInspectorPane("browser");
+    // Over the diff reader too, as the panel's Browser icon goes (RightPanel.tsx): the page opened is in sight.
+    batch(() => {
+        setReview(undefined);
+        setPrefs("panel", true);
+        setInspectorPane("browser");
+    });
 }
 
 /** The agent's tab opened, went somewhere, or (re)loaded. */

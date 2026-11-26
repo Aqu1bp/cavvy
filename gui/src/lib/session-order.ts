@@ -276,7 +276,8 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         const before = out.findIndex((x) => later.has(x.key));
         out.splice(before < 0 ? out.length : before, 0, head, add);
     });
-    return out;
+    // A day or an open project whose last row went (deleted, archived) goes with it, as listedOnce has it.
+    return out.filter((e, i) => !((e.kind === "day" || e.kind === "project") && !e.collapsed) || /card|row|run/.test(out[i + 1]?.kind ?? ""));
 }
 
 /** What starts a part of the list: a day's or a project's heading, or a shelf's. */
