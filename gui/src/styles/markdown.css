@@ -343,4 +343,42 @@
     .md .md-t7 {
         opacity: 0.95;
     }
+
+    /* A run of plain words (lib/stream-dom.ts: ink) takes the same lightness in its colour: drawn with an opacity, each
+       run is a picture of its own, made again whenever a run beside it changes tier. */
+
+    .md [data-fresh="ink"].md-t1 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 12%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t2 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 28%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t3 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 45%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t4 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 61%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t5 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 75%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t6 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 87%, transparent);
+    }
+
+    .md [data-fresh="ink"].md-t7 {
+        opacity: 1;
+        color: color-mix(in srgb, currentColor 95%, transparent);
+    }
 }
