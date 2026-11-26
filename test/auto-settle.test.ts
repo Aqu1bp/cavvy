@@ -139,11 +139,18 @@ describe("settling idle sessions", () => {
     test("off settles nothing; a shorter setting settles what's idle that long at once; a bad one is refused", async () => {
         const { engine, call, saved, row } = setup();
         const id = saved(4 * DAY);
+        const logs: string[] = [];
+        engine.log = (m: string) => void logs.push(m);
         await call("settings.update", { patch: { autoSettleDays: 0 } });
         expect(row(id)?.settled).toBe(false);
         expect(((await call("settings.get", {})) as { autoSettleDays: number }).autoSettleDays).toBe(0);
         await call("settings.update", { patch: { autoSettleDays: 3 } });
         expect(row(id)?.settled).toBe(true);
+        expect(logs).toContain("Settled 1 session idle 3 days or more");
+        const day = saved(2 * DAY);
+        await call("settings.update", { patch: { autoSettleDays: 1 } });
+        expect(row(day)?.settled).toBe(true);
+        expect(logs).toContain("Settled 1 session idle 1 day or more");
         expect(call("settings.update", { patch: { autoSettleDays: 5 } })).rejects.toThrow("autoSettleDays must be one of");
         await engine.stop();
     });

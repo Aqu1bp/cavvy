@@ -48,10 +48,14 @@ export function gitReason(text: string): string {
     return (said[0] ?? "").slice(0, 300);
 }
 
-/** `lead` with git's reason after it as a sentence of its own: "Couldn't fetch origin. Could not read from remote repository." */
+/**
+ * `lead` with git's reason after it as a sentence of its own: "Couldn't fetch origin. Could not read from remote
+ * repository." A reason that starts with a name ("git@github.com: …", "'origin' …") keeps it as written.
+ */
 export function withReason(lead: string, reason: string): string {
     const r = reason.trim();
-    return r ? `${lead} ${r[0]!.toUpperCase()}${r.slice(1)}${/[.!?]$/.test(r) ? "" : "."}` : lead;
+    if (!r) return lead;
+    return `${lead} ${/^[a-z]+(\s|$)/.test(r) ? r[0]!.toUpperCase() + r.slice(1) : r}${/[.!?]$/.test(r) ? "" : "."}`;
 }
 
 /** Ahead/behind of the upstream, from what was last fetched: `git for-each-ref`'s own count, no network. */

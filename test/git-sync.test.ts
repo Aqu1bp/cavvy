@@ -220,6 +220,7 @@ test("git's reasons, briefly", () => {
     expect(withReason("Couldn't fetch origin.", gitReason("fatal: could not read from remote repository\n"))).toBe("Couldn't fetch origin. Could not read from remote repository.");
     expect(withReason("Couldn't fetch origin.", "Connection timed out.")).toBe("Couldn't fetch origin. Connection timed out.");
     expect(withReason("Couldn't fetch origin.", "")).toBe("Couldn't fetch origin.");
+    expect(withReason("Couldn't fetch origin.", "git@github.com: Permission denied (publickey).")).toBe("Couldn't fetch origin. git@github.com: Permission denied (publickey).");
 });
 
 test("engine: switching waits for the folder's sessions, and the header's branch follows", async () => {
