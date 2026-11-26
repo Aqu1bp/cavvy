@@ -151,8 +151,10 @@ export function RewindDialog() {
         e.preventDefault();
         rows[to]!.focus();
     };
-    /** Nothing to rewind to: the line, and Close alone. */
-    const empty = () => !busySession() && targets.state === "ready" && !targets()!.length;
+    /** How many files the plan restores, those past the list's end too. */
+    const listedCount = () => (plan()?.restore.length ?? 0) + (plan()?.more ?? 0);
+    /** Nothing to rewind to (yet, or while a response runs): the line, and Close alone. */
+    const empty = () => busySession() || (targets.state === "ready" && !targets()!.length);
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
@@ -226,6 +228,10 @@ export function RewindDialog() {
                                     </div>
                                 </Show>
                                 <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
+                                    {/* Said only when it isn't the row's own count: changes since then, from later prompts or by hand. */}
+                                    <Show when={listedCount() !== targets()?.find((t) => t.index === chosen())?.files}>
+                                        <div class="small">{plan()!.whole ? `${plural(listedCount(), "file")} changed since then:` : `Cavvy changed ${plural(listedCount(), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
+                                    </Show>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">

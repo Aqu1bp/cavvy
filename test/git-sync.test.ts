@@ -214,7 +214,8 @@ test("a URL rewrite on the remote is refused, as for publishing", async () => {
 });
 
 test("git's reasons, briefly", () => {
-    expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("Untracked x, y, z and 1 more would be overwritten. Move or remove them first.");
+    expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tx\n\ty\n\tz\n\tw\nPlease move or remove them before you switch branches.\nAborting\n")).toBe("x, y, z and 1 more are untracked and would be overwritten. Move or remove them.");
+    expect(gitReason("error: The following untracked working tree files would be overwritten by checkout:\n\tsso.txt\nAborting\n", "Can't switch to feat/sso")).toBe("Can't switch to feat/sso: sso.txt is untracked and would be overwritten. Move or remove it.");
     expect(gitReason("fatal: 'feature' is already used by worktree at '/tmp/wt'\n")).toBe("'feature' is already used by worktree at '/tmp/wt'");
     const local = "error: Your local changes to the following files would be overwritten by merge:\n\ta.txt\n\tb.txt\nPlease commit your changes or stash them before you merge.\nAborting\n";
     expect(gitReason(local, "Can't pull")).toBe("Can't pull: a.txt, b.txt have uncommitted changes. Commit or stash them.");
