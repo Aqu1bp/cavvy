@@ -8,7 +8,8 @@ import { ArrowDown, ArrowUp, Check, CloudDownload, FolderGit2, GitBranch, GitPul
 import type { GitBranchEntry, GitBranchList, GitPrListInfo, GitPrWorktree, GitSyncInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import type { SessionHandle } from "../state/app";
-import { app, connFor, createSession, handleFor, homeAt, linkedMachine, requestTrust, rpc, setApp, toast, type HomeAt } from "../state/app";
+import { activate, app, connFor, createSession, handleFor, homeAt, linkedMachine, machineFor, machineOf, requestTrust, rpc, setApp, toast, type HomeAt } from "../state/app";
+import { newSession, openProject } from "../state/actions";
 import { changedOutside, refreshGitChanges, sessionReadReady } from "../state/changes";
 import { withShortcut } from "../state/keybindings";
 import { gitDialog, requestComposerFocus, setGitDialog } from "../state/ui";
@@ -102,8 +103,11 @@ export function GitDialogs() {
     );
 }
 
-/** `label`: a branch's name (in the code font); `verb`, before it in the text's own: "Create branch". */
-type Row = { key: string; label: string; verb?: string; desc?: string; end?: string; icon: "local" | "remote" | "current" | "create" | "worktree" | "pr"; run: () => void; disabled?: boolean };
+/**
+ * `label`: a branch's name (in the code font); `verb`, before it in the text's own: "Create branch". `action`: what
+ * Enter or a click does, named at the row's end, when it isn't switching to it (a branch another worktree has).
+ */
+type Row = { key: string; label: string; verb?: string; desc?: string; end?: string; action?: string; title?: string; icon: "local" | "remote" | "current" | "create" | "worktree" | "pr"; run: () => void; disabled?: boolean };
 
 /** The number of the pull request `s` names (#123, 123, or its github.com URL); git-pr.ts checks it again. */
 function prRef(s: string): number | undefined {
@@ -119,7 +123,8 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     const [note, setNote] = createSignal<{ text: string; level: "info" | "warn" | "error" }>();
     const where = { cwd: p.cwd, ...(p.sessionId ? { sessionId: p.sessionId } : {}) };
     // The folder's machine: another machine's session, or Home on one, is asked there.
-    const { link: rpc } = folderAt(p.sessionId);
+    const at = folderAt(p.sessionId);
+    const rpc = at.link;
     const [sync, { mutate: setSync, refetch: refetchSync }] = createResource(() => connFor(p.sessionId) === "open" && moved() + 1, () => rpc.call("git.sync", where).catch(() => undefined));
     const [list, { refetch }] = createResource(
         () => connFor(p.sessionId) === "open",
@@ -173,6 +178,18 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             toast(`Created ${r.branch}`, "success");
         });
 
+    // The folder's machine, to find its sessions among the window's: none is this computer.
+    const onMachine = p.sessionId ? machineOf(p.sessionId) : at.there?.on || undefined;
+    /** The latest session in the worktree at `path`, on the folder's machine. */
+    const sessionIn = (path: string) =>
+        app.sessions.filter((s) => !s.archived && (s.machine ?? "") === (onMachine ?? "") && (s.cwd === path || s.cwd.startsWith(`${path}/`))).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    /** Home in that worktree, for a new session there: as Home's worktree picker opens one. */
+    const newSessionIn = (path: string) => {
+        setGitDialog(undefined);
+        if (p.sessionId) newSession(path, machineFor(p.sessionId));
+        else void openProject(path, true);
+    };
+
     const rows = createMemo<Row[]>(() => {
         const l = list();
         if (!l) return [];
@@ -182,18 +199,37 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const out: Row[] = [];
         const pr = prRef(q());
         if (pr) out.push({ key: "pr", label: `Work on pull request #${pr}`, desc: "In a new worktree", icon: "pr", run: () => setGitDialog({ kind: "pr", cwd: p.cwd, sessionId: p.sessionId, query: q().trim(), start: true }) });
+        // Git can't switch to a branch another worktree has: those go to that worktree, after the ones it can switch to.
+        const elsewhere: Row[] = [];
         for (const b of l.local.filter(match)) {
             const current = b.name === l.current;
+            const wt = b.worktree && !b.worktreeGone ? b.worktree : undefined;
+            if (wt) {
+                const there = sessionIn(wt);
+                const folder = tildify(wt, app.hello?.homeDir);
+                elsewhere.push({
+                    key: `w:${b.name}`,
+                    label: b.name,
+                    desc: folder,
+                    action: there ? "Open its session" : "New session there",
+                    title: there ? `Open “${there.title}”, in ${folder}` : `New session in ${folder}`,
+                    icon: "worktree",
+                    run: () => (there ? void (setGitDialog(undefined), activate(there.id)) : newSessionIn(wt)),
+                });
+                continue;
+            }
             out.push({
                 key: `l:${b.name}`,
                 label: b.name,
-                desc: current ? "Current branch" : b.worktree ? `Checked out in ${tildify(b.worktree, app.hello?.homeDir)}` : b.upstream,
+                // Its worktree's folder was deleted: switching removes that worktree first (git.switch).
+                desc: current ? "Current branch" : b.worktree ? `Its worktree folder ${tildify(b.worktree, app.hello?.homeDir)} is gone` : b.upstream,
                 end: when(b),
-                icon: current ? "current" : b.worktree ? "worktree" : "local",
-                disabled: current || Boolean(b.worktree),
+                icon: current ? "current" : "local",
+                disabled: current,
                 run: () => void switchTo(b.name),
             });
         }
+        out.push(...elsewhere);
         // A remote branch whose local one is listed is the same choice, once.
         const tracked = new Set(l.local.map((b) => b.upstream).filter(Boolean));
         for (const b of l.remote.filter((b) => match(b) && !tracked.has(b.name))) out.push({ key: `r:${b.name}`, label: b.name, end: when(b), icon: "remote", run: () => void switchTo(b.name, true) });
@@ -223,7 +259,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             runAt(sel());
         }
     };
-    const group = (r: Row) => (r.icon === "remote" ? "Remote branches" : r.icon === "create" ? "New branch" : r.icon === "pr" ? "Pull request" : "Branches");
+    const group = (r: Row) => (r.icon === "remote" ? "Remote branches" : r.icon === "create" ? "New branch" : r.icon === "pr" ? "Pull request" : r.icon === "worktree" ? "Checked out in other worktrees" : "Branches");
     const icon = (r: Row) => {
         switch (r.icon) {
             case "current": return <Check size={15} />;
@@ -267,7 +303,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                                     <Show when={i() === 0 || group(rows()[i() - 1]!) !== group(r)}>
                                         <div class="pal-h">{group(r)}</div>
                                     </Show>
-                                    <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
+                                    <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} title={r.title} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
                                         <span class="pal-ic">{icon(r)}</span>
                                         <span class="pal-text">
                                             <Show when={r.verb} fallback={<span class="pal-l mono">{r.label}</span>}>
@@ -275,7 +311,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                                             </Show>
                                             <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
                                         </span>
-                                        <Show when={r.end}><span class="pal-end">{r.end}</span></Show>
+                                        <Show when={r.action} fallback={<Show when={r.end}><span class="pal-end">{r.end}</span></Show>}>
+                                            <span class="pal-end pal-act">{r.action}</span>
+                                        </Show>
                                     </button>
                                 </>
                             )}
