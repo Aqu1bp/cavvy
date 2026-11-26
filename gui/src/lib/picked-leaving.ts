@@ -11,6 +11,7 @@ export function pickedOf(settings: GuiSettings, models: readonly Listed[]): Pick
     return {
         model: model.ref,
         ...(settings.effort && model.effortLevels?.includes(settings.effort) ? { effort: settings.effort } : {}),
-        ...(settings.fastMode !== undefined ? { fastMode: settings.fastMode && Boolean(model.supportsFastMode) } : {}),
+        // Unset comes from another machine as null (the server's wireReplacer), and the server refuses anything but a boolean.
+        ...(typeof settings.fastMode === "boolean" ? { fastMode: settings.fastMode && Boolean(model.supportsFastMode) } : {}),
     };
 }
