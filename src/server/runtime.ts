@@ -4325,10 +4325,11 @@ export class Runtime {
             await this.goalCommand(goal[1] ?? "", attachments);
             return { queued: false };
         }
-        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here.
+        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here. Without a question, there's
+        // nothing to open one with: a window shows the side chat's tab, which asks for one.
         const btw = literal || this.side ? undefined : trimmed.match(/^\/btw(?:\s+([\s\S]*))?$/i);
         if (btw) {
-            await this.engine.openSideChat(this, btw[1]);
+            if (btw[1]?.trim()) await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
         if (this.busy) {

@@ -168,6 +168,11 @@ describe("a side chat", () => {
         expect(await engine.handle(c, "session.send", { id, text: "/btw why?" })).toEqual({ queued: false });
         expect(rt.snapshot().state.sideChat?.id).toBeString();
         expect(rt.session.messageCount).toBe(0);
+        // Without a question: none is opened (the window shows the tab, which asks for one), and nothing is sent.
+        await engine.handle(c, "session.closeSideChat", { id });
+        expect(await engine.handle(c, "session.send", { id, text: "/btw" })).toEqual({ queued: false });
+        expect(rt.snapshot().state.sideChat).toBeUndefined();
+        expect(rt.session.messageCount).toBe(0);
     });
 
     for (const mode of ["default", "acceptEdits", "auto", "bypassPermissions", "plan"] as const) {

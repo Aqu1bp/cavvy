@@ -49,7 +49,7 @@ describe("/btw on Home, with no session yet", () => {
         }
     });
 
-    test("without a question, the same: the new session's side chat opens, waiting for one", async () => {
+    test("without a question, the same: the new session's Side chat tab is shown, asking for one", async () => {
         setApp({ activeId: undefined, homeCwd: "/work/app" });
         const call = spyOn(rpc, "call").mockImplementation((async (method: string) => (method === "session.create" ? snapshot("fresh3") : method === "commands.list" ? [] : { queued: false })) as never);
         try {
