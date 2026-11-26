@@ -605,6 +605,35 @@ test("a long Claude Code session opened the first time lets go of its messages o
     await close(t.id);
 }, 60_000);
 
+// A session whose file is mostly lines no longer in the conversation (rewound, withdrawn) has no digest in its
+// checkpoint, so opening it from its store read its messages whole from there and kept them, pasted images and all
+// (29 MB of one real session in the server). Opened from its store, it lets go of them too.
+test("a session whose messages are under half its file lets go of them once opened from its store, and reads them again when asked", async () => {
+    const cwd = join(tempDir("cavvy-turn-store-let-go-small-"), "project");
+    mkdirSync(cwd, { recursive: true });
+    const t = writeThread({ cwd, items: 3000, kind: "cli", seed: 7 });
+    const file = findSessionAnywhere(t.id)!;
+    // Lines the conversation doesn't have, twice the size of the rest.
+    appendFileSync(file, `${JSON.stringify({ t: "padding", text: "x".repeat(statSync(file).size * 2) })}\n`);
+    await open(t.id, { last: 10 });
+    const targets = await call("session.rewindTargets", { id: t.id });
+    await close(t.id);
+    await open(t.id, { last: 10 });
+    const rt = srv.engine.runtimes.get(t.id)!;
+    // Its earlier turns left in the store: opened from it, not built again.
+    expect((rt as any).unread?.turns).toBeGreaterThan(0);
+    await rt.openDone();
+    await new Promise((r) => setTimeout(r, 10));
+    // Opened from its store, and from a checkpoint with its messages in it (no digest).
+    expect((rt as any).store).toBeDefined();
+    expect((rt.session as any).digestible).toBe(false);
+    expect(rt.session.historyDigest).toBeDefined();
+    expect((rt.session as any).loadedMessages).toHaveLength(0);
+    expect(await call("session.rewindTargets", { id: t.id })).toEqual(targets);
+    expect(JSON.parse(JSON.stringify(rt.session.messages))).toEqual(JSON.parse(JSON.stringify((Session as any).read(file, false, true, false).messages)));
+    await close(t.id);
+}, 60_000);
+
 test("a session that grows long while it's open lets go of its older turns then, and opens again as it was", async () => {
     const cwd = join(tempDir("cavvy-turn-store-grows-"), "project");
     mkdirSync(cwd, { recursive: true });

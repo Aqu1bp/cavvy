@@ -817,6 +817,11 @@ export class Runtime {
             turns.slice(-KEEP_BUILT).forEach((t, i) => Object.assign(t, latest![i]));
             // The rest are heads already.
             this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
+            // Its messages, where its checkpoint had them (no digest there): not kept while nothing runs (storeOlderSoon).
+            // Not under a rewind already shown: that's checked against the message it showed.
+            setTimeout(() => {
+                if (!this.abort && !this.closed && !this.rewindShown) this.session.letGoOfMessages();
+            }, 0);
         } else {
             const segs = opts.resumed ? (segments ?? readSegments(session.path)) : [];
             // Compacted (and no compaction kept a prompt across: each segment's turns are its own): its last segment's
@@ -1063,7 +1068,7 @@ export class Runtime {
             this.ui.lighten();
             // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
             // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
-            if (!this.abort) this.session.letGoOfMessages();
+            if (!this.abort && !this.rewindShown) this.session.letGoOfMessages();
         }, 0);
     }
 
