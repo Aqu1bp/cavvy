@@ -8,7 +8,7 @@ import { tabMachines } from "./lib/terminal";
 import type { Rpc } from "./lib/rpc";
 import { cycleSession, far, interrupt, newSession, openReview, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { agentFocus, closeReview, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { electron, isDesktop, isElectron, isTauri, machine, os, windowCommand, type QuitAsk } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 
@@ -537,7 +537,7 @@ export function App() {
                 if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
                 // Full screen first, then the reader.
                 if (panelFull() && shellLayout().inspector.open) return e.preventDefault(), setPanelFull(false);
-                if (review()) return e.preventDefault(), setReview(undefined);
+                if (review()) return e.preventDefault(), closeReview();
             }
             // And otherwise interrupts a working session.
             // Not while it asks something, its own or what this computer asks for it (a session on a server: lib/lent.ts):
