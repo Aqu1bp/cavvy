@@ -29,7 +29,7 @@ git tag v1.2.0 && git push origin v1.2.0
 
 `.github/workflows/release.yml` then runs three jobs:
 
-- **Build** makes that commit's bundles for Linux x64 (with and without AVX2) and arm64, and a description of each (which build, which machines, the bundle's hash and the program's). It runs the GUI's build tools, so it's given no secret.
+- **Build** makes that commit's bundles for Linux x64 (with and without AVX2) and arm64 and for a Mac with Apple silicon, and a description of each (which build, which machines, the bundle's hash and the program's). It runs the GUI's build tools, so it's given no secret.
 - **Sign** waits for your approval, then signs each description. It installs nothing and runs one script (`scripts/sign-release.mjs`) on Node. It stops if the tag isn't the version's, the commit isn't on `main`, a description isn't of that commit or doesn't match its bundle, or the key's public half isn't in `RELEASE_KEYS`.
 - **Publish** puts the files on the release `v1.2.0`. It can write to the release and has no key.
 

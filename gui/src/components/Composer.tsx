@@ -18,6 +18,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
+import { refModel } from "../lib/limits";
 import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
@@ -698,8 +699,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return ref && (!listed.length || !refLabel(ref, listed).unavailable) ? ref : (settings().autoModel ?? ref);
     };
     const model = () => st()?.model ?? modelsFor(p.sessionId).flatMap((g) => g.models).find((m) => m.ref === savedRef());
-    /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */
-    const autoAsks = () => Boolean(app.providers.find((pr) => pr.id === model()?.provider)?.agentCli?.autoAsks);
     // Run members are validated separately by the server; the default model is irrelevant.
     const readsPdf = () => Boolean(runPicks()) || model()?.supportsPdf !== false;
     // Unknown isn't text-only: only a model known to take no images is refused them.
@@ -794,10 +793,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 sessionId={p.sessionId} ownOnly={Boolean(p.aside)} current={st()?.model} currentRef={savedRef()} open={modelOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : settings().effort} fast={st() ? st()!.fastMode : settings().fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker sessionId={p.sessionId} mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker sessionId={p.sessionId} mode={mode()} bypassAllowed={bypassAllowed()} open={modeOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </Show>
     );
-    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? savedRef()?.split(":")[0]} home={p.variant === "home"} />;
+    // The model a turn would use: listed, else the configured reference's id (a model not in the list yet).
+    const meterModel = () => model() ?? refModel(savedRef());
+    const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? savedRef()?.split(":")[0]} model={meterModel()} home={p.variant === "home"} />;
     return (
         <div
             ref={root}

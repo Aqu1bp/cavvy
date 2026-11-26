@@ -20,6 +20,8 @@ import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
+    /** One of Cavvy's own served tools that only reads (schedule_list, models): checked as read-only, so Plan allows it. */
+    readOnly?: boolean;
     /**
      * Asked by a background sub-agent of the CLI's (its work outlives the turn): the turn's end or Esc doesn't
      * withdraw it; the session's end does.
@@ -63,13 +65,24 @@ export interface BackendPermission {
     callId?: string;
     /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
     hookDecision?: "allow" | "ask";
+    /**
+     * A command the backend runs in this folder, outside the session's (Grok; Codex's come as `cd <folder> && …`):
+     * asked about, whatever the rules say, but in Bypass, where it's checked as run there.
+     */
+    elsewhere?: string;
+    /**
+     * The CLI asked while running in its own bypass mode (Claude Code): it asks nothing there but what a hook of the
+     * user's says to ask about, so this one is the user's to answer, in Bypass too.
+     */
+    ownBypassAsk?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
     /**
      * The agent CLI runs in its own counterpart of the session's mode (Claude Code in every mode, Codex's and Grok's
      * own reviewers in auto), which decided this needs the user: Cavvy adds nothing of its own mode. Its deny rules
      * and protections refuse, its allow rules and session choices approve, hooks have their say, and otherwise the
-     * user is asked. (In bypass, whatever any backend asks about runs: see Agent.backendPermission.)
+     * user is asked. (In bypass, whatever any backend asks about runs but a catastrophic command: see
+     * Agent.backendPermission.)
      */
     ownMode?: boolean;
     /**
@@ -90,6 +103,11 @@ export interface BackendPermission {
      * agent_id): the prompt says so, as it does for Cavvy's. Unlike agentLabel, what a no does is the backend's.
      */
     asker?: string;
+    /**
+     * The CLI's own ask, from a CLI that runs as it does on its own (Antigravity): the user's to answer, with Allow and
+     * Deny. Cavvy's rules, mode and hooks decide none of it; the rest of this is only how it's shown.
+     */
+    native?: boolean;
     /**
      * Its input isn't all of the call (the backend cut some of it, as Grok's gate does a long one): a yes covers this
      * call only, never remembered, and "don't ask again" isn't offered.
@@ -203,8 +221,8 @@ export interface SessionHost {
     context?(contextTokens: number, window?: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
-    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
-    limits?(limits: PlanLimits, partial: boolean): void;
+    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows; `full`: all of the account's, replacing what was known). */
+    limits?(limits: PlanLimits, partial: boolean, full?: boolean): void;
     /** Run Cavvy's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
@@ -369,6 +387,15 @@ export interface OrchestratorServer {
     /** The Authorization header (holds the token). */
     authorization: string;
     tools: string[];
+    /** Each tool's argument names: a call naming others isn't one of these tools (served-tools.ts). */
+    inputKeys?: Record<string, string[]>;
+    /**
+     * The tools that run Cavvy's checks (rules, mode, hooks) themselves when called: a backend can let the CLI's call
+     * of one go unasked. The others (delegate, schedules, watches) are checked as any tool call, before they run.
+     */
+    checksItself?: string[];
+    /** The tools that only read (their readOnlyHint): checked as read-only (BackendPermission.readOnly). */
+    readOnly?: string[];
     /** For the backend's system prompt, where its MCP server instructions don't reach the model. */
     instructions: string;
     /** How long a call may take, in seconds (a delegate call can wait an hour). */

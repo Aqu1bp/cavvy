@@ -5,6 +5,9 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import { THEME_TOOLS } from "../themes/tools";
+import type { ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
@@ -44,7 +47,7 @@ import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { partialInput, PARTIAL_SCAN } from "../tools/partial-input";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
-import { cliRunsSkills } from "../backends/native-skills";
+import { cliRunsSkill, cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import { stoppedMonitorNote } from "../tools/monitor";
@@ -73,7 +76,7 @@ import { gitBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
-import { agentNeedsTrust, trustedByUser } from "../config/trust";
+import { trustedByUser } from "../config/trust";
 import { answerAttachments, attachedLabel, attachedPrompt, fileSaver, toWire, type AnswerAttach } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
@@ -521,6 +524,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         ...(p ? {} : { unavailable: true as const }),
         id: m.id,
         name: m.name ?? m.id,
+        ...(m.resolvedModel ? { resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor } : {}),
         contextWindow: m.contextWindow,
         maxOutput: m.maxOutput,
         pricing: m.pricing,
@@ -871,6 +875,11 @@ export class Runtime {
             turns.slice(-KEEP_BUILT).forEach((t, i) => Object.assign(t, latest![i]));
             // The rest are heads already.
             this.trimmedTo = Math.max(0, turns.length - KEEP_BUILT);
+            // Its messages, where its checkpoint had them (no digest there): not kept while nothing runs (storeOlderSoon).
+            // Not under a rewind already shown: that's checked against the message it showed.
+            setTimeout(() => {
+                if (!this.abort && !this.closed && !this.rewindShown) this.session.letGoOfMessages();
+            }, 0);
         } else {
             const segs = opts.resumed ? (segments ?? readSegments(session.path)) : [];
             // Compacted (and no compaction kept a prompt across: each segment's turns are its own): its last segment's
@@ -1117,7 +1126,7 @@ export class Runtime {
             this.ui.lighten();
             // As are its messages, read whole to build them: not kept while nothing runs (read again when they're
             // asked for, 9 ms for 30,000 items). Kept, they were 2.9 MB of a 30,000-item Claude Code session's heap.
-            if (!this.abort) this.session.letGoOfMessages();
+            if (!this.abort && !this.rewindShown) this.session.letGoOfMessages();
         }, 0);
     }
 
@@ -2074,8 +2083,9 @@ export class Runtime {
         const m = this.model;
         if (!m) return undefined;
         const window = m.contextWindow;
-        // An agent that can't compact (an ACP agent's): never, here.
-        if (agentCli(m.provider)?.caps.compact === "none") return undefined;
+        // An agent that can't compact, or does by itself and on /compact only (an ACP agent's): never, here.
+        const compact = agentCli(m.provider)?.caps.compact;
+        if (compact === "none" || compact === "command") return undefined;
         if (baseCli(m.provider) === "claude-code" || baseCli(m.provider) === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
             if (baseCli(m.provider) === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
@@ -2210,9 +2220,11 @@ export class Runtime {
         this.schedules.cancelLimitResume("account");
         // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
-        // Another account may serve the alias as another model: known again from its first usage.
-        this.servedModel = undefined;
-        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
+        // Another account may serve the alias as another model: known again from its first usage. Only for the
+        // session's own CLI: another's account doesn't serve its model.
+        const served = provider === this.model?.provider ? undefined : this.servedModel;
+        this.servedModel = served;
+        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") }, servedModel: served });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messageCount > 0);
         // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
@@ -2344,6 +2356,7 @@ export class Runtime {
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.servedModel = undefined;
+        if (this.view.state.servedModel !== undefined) this.setState({ servedModel: undefined });
         this.client = client;
         this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
@@ -2671,11 +2684,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -2736,6 +2749,8 @@ export class Runtime {
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                     askSignIn: (req, then) => this.askSignIn(req, then),
                     confirm: (req, signal) => this.confirm(req, signal),
+                    // Themes show in this machine's windows: a server's sessions have none of their own.
+                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced) => this.engine.showTheme(id, entry, replaced), themeWindows: () => this.engine.themeWindows(), themeShowing: () => this.engine.themeShowing() }),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -3095,6 +3110,12 @@ export class Runtime {
             }
             case "usage": {
                 if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
+                // Which model the CLI served the alias as, on this account: a model's limit (Fable's) covers it or not. Kept
+                // for the account too, for Home and other sessions on it.
+                if (this.servedModel !== this.view.state.servedModel) {
+                    this.setState({ servedModel: this.servedModel });
+                    if (this.servedModel && this.model?.provider) this.engine.modelServed(this.model.provider, this.session.accountId(this.model.provider), this.model.id, this.servedModel);
+                }
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
@@ -3108,11 +3129,11 @@ export class Runtime {
                 this.compacted(e.summary, e.idle, e.kept);
                 break;
             case "limits":
-                this.engine.limitsReported(e.limits, e.partial);
+                this.engine.limitsReported(e.limits, e.partial, e.full);
                 break;
             case "subagent":
                 // A sub-agent on an agent CLI reports the same account's limits.
-                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial, e.event.full);
                 else this.subagentEvent(e.parentId, e.label, e.event);
                 break;
             case "goal":
@@ -3786,7 +3807,8 @@ export class Runtime {
             const words = m ? m[2]!.replace(/[_-]+/g, " ").trim() : tool.name;
             it.heading = words.charAt(0).toUpperCase() + words.slice(1);
             if (m) it.where = `From ${m[1]}`;
-            it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
+            // Its arguments, when it has any (a CLI may not say them: Antigravity's asks don't).
+            if (Object.keys(input).length) it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         }
         it.options.push({ id: "no", label: "Deny" });
@@ -4309,7 +4331,6 @@ export class Runtime {
             await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
-        if (!this.runsHere({ text, literal, attachments })) this.checkAgentTrust();
         if (this.busy) {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
@@ -4327,25 +4348,6 @@ export class Runtime {
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
-    }
-
-    /**
-     * An agent CLI that would run a folder's own hooks the user hasn't trusted (Antigravity's .agents/hooks.json) runs
-     * nothing: the message is refused before it's sent, so it stays in the box and the GUI offers to trust the folder.
-     */
-    private checkAgentTrust() {
-        const provider = this.model?.provider;
-        if (!provider) return;
-        const cwd = this.agent?.cliCwd ?? this.ws.cwd;
-        let trusted = false;
-        try {
-            // Not cliProject's: the user may have trusted it a moment ago.
-            trusted = this.agent ? this.agent.cliProjectTrusted() : trustedByUser(cwd);
-        } catch {
-            trusted = false;
-        }
-        const t = agentNeedsTrust(provider, cwd, trusted, this.settings().permissions?.additionalDirectories);
-        if (t) throw new RpcError(t.message, "needs_trust", t.folder);
     }
 
     /** A PDF the session's model can't read is refused before it's sent. */
@@ -4405,8 +4407,9 @@ export class Runtime {
             if (custom?.source === "plugin" && runsPluginCommand(provider, custom.name, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(`/${custom.name}${args.trim() ? ` ${args.trim()}` : ""}`, { display: trimmed, attachments });
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const about = skill && `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}`;
-            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (skill && cliRunsSkills(provider)) return this.startTurn(trimmed, { attachments, about });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the
+            // /name, as a CLI with skills of its own is one it has of that name.
+            if (skill && cliRunsSkill(provider, cmd, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(trimmed, { attachments, about });
             if (skill) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");

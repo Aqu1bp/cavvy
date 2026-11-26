@@ -4,10 +4,10 @@
 //   1. deny rules                       -> deny (every mode, including bypass;
 //                                          matched on the path and its symlink target)
 //   2. protected Cavvy files          -> deny (also searching their directory)
-//   3. catastrophic shell patterns      -> ask (every mode, including bypass)
-//   4. plan mode restrictions           -> deny writes
+//   3. plan mode restrictions           -> deny writes
+//   4. catastrophic shell patterns      -> ask (except bypass)
 //   5. ask rules                        -> ask (except bypass)
-//   6. bypassPermissions                -> allow
+//   6. bypassPermissions                -> allow: nothing is asked about in bypass
 //   7. edits to cavvy / git config    -> ask
 //   8. allow rules                      -> allow
 //   9. per-category defaults by mode (below)
@@ -27,7 +27,7 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, TOUCHES_CREDENTIALS, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
@@ -251,6 +251,18 @@ export class PermissionChecker {
         return d;
     }
 
+    /**
+     * What an agent CLI asks Cavvy about in Bypass that still goes to the user (the owner's rule for agent CLIs: in
+     * Bypass whatever one asks about runs, but a catastrophic command). Cavvy's own models ask about nothing there
+     * (decide). Shell commands only; on a server, the shorter list. Not one that only names Cavvy's credentials: it
+     * destroys nothing, and Bypass asks nothing about it, for a read-only agent's read either.
+     */
+    bypassGuard(tool: Tool<any>, input: any, cwd: string): Decision | undefined {
+        if (!isShellTool(tool.name)) return undefined;
+        const reason = dangerousReason(this.target(tool, input, cwd).command ?? "", 0, false, this.server());
+        return reason && reason !== TOUCHES_CREDENTIALS ? { behavior: "ask", dangerous: true, reason: `This command ${reason}.` } : undefined;
+    }
+
     /** The decision with the scoped "allow for the session" choice the popup offers, if there is one. */
     withGrant(tool: Tool<any>, input: any, d: Decision, cwd: string): Decision {
         const grant = d.grant ?? this.grantFor(tool, input, d, cwd);
@@ -463,19 +475,16 @@ export class PermissionChecker {
         }
 
         let dangerous: string | undefined;
-        // On a server, a push whose branch can't be worked out: asked about in Bypass too, as what it may be.
-        let unknownPush = false;
-        if (isShellTool(tool.name)) {
+        // Not in Bypass: nothing is asked about there, and the risk is the user's who chose it (but see bypassGuard).
+        if (isShellTool(tool.name) && mode !== "bypassPermissions") {
             const server = this.server();
             dangerous = dangerousReason(t.command ?? "", 0, false, server);
-            // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
-            // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
+            // A push on a server is an agent's own doing: one to the default branch is asked about, as Auto asks here.
+            // Looked for only where the word is: it reads the command again.
             const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;
-            // Not a command too long to read through: that says nothing of a push, and would ask for every such command.
-            if (push && push !== ANALYSIS_LIMIT) {
-                if (push.endsWith("(branch unknown)")) unknownPush = true;
-                else dangerous = `pushes to the default branch (${push})`;
-            }
+            // Not a command too long to read through (that says nothing of a push, and would ask for every such
+            // command), nor one whose branch can't be worked out.
+            if (push && push !== ANALYSIS_LIMIT && !push.endsWith("(branch unknown)")) dangerous = `pushes to the default branch (${push})`;
         }
 
         // Plan mode: research only.
@@ -511,8 +520,6 @@ export class PermissionChecker {
         if (dangerous) {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
-        // Not flagged as dangerous: it may be an ordinary push, and can be allowed for the session.
-        if (unknownPush && mode === "bypassPermissions") return { behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." };
 
         const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };

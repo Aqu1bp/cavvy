@@ -1,5 +1,5 @@
-// Makes what a release carries for servers: this commit's build for each kind of Linux server (the same steps a
-// build made on a developer's machine goes through: src/servers/build.ts) and a description of each. They are
+// Makes what a release carries for servers: this commit's build for each kind of server, Linux and a Mac (the same
+// steps a build made on a developer's machine goes through: src/servers/build.ts) and a description of each. They are
 // signed afterwards, by a job that runs nothing but the signing (scripts/sign-release.mjs): this script runs the
 // GUI's whole build, and is never given the key.
 //
@@ -36,7 +36,8 @@ mkdirSync(out, { recursive: true });
 const tmp = mkdtempSync(join(tmpdir(), "cavvy-release-"));
 try {
     let first = true;
-    for (const target of ["linux-x64", "linux-x64-baseline", "linux-arm64"] as const) {
+    // A Mac's too, from here: Bun compiles it on Linux, signed ad hoc as macOS needs to run it.
+    for (const target of ["linux-x64", "linux-x64-baseline", "linux-arm64", "darwin-arm64"] as const) {
         const bundle = join(out, bundleName(id, target));
         // The GUI is built once, with the first.
         const made = await packServerBuild(root, id, target, tmp, bundle, { bun: process.execPath, guiBuilt: !first, onStep: (text) => console.log(text) });

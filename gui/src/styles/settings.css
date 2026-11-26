@@ -774,7 +774,7 @@
     color: var(--fg-3);
 }
 
-/* Colour scheme: System, Light, Dark. */
+/* Picture tiles: the window tints. */
 .ap-tiles {
     display: flex;
     gap: calc(12 * var(--sp));
@@ -813,7 +813,7 @@
     box-shadow: 0 0 0 2px var(--accent);
 }
 
-/* One face per scheme, drawn with that scheme's tokens (its own data-theme). */
+/* A small picture of the window. */
 .ap-face {
     position: absolute;
     inset: 0;
@@ -822,10 +822,6 @@
     gap: calc(4 * var(--sp));
     padding: calc(5 * var(--sp));
     background: var(--backdrop);
-}
-
-.ap-face.half {
-    clip-path: inset(0 0 0 50%);
 }
 
 .ap-face i,

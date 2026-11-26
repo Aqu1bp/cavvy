@@ -12,13 +12,13 @@ import { prefs } from "../state/prefs";
 import { fetchGitChanges, type GitView } from "../state/changes";
 import { openInEditor, openReview, openWorktreeReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
-import { imagesReady, promptImages, type PromptImage } from "../state/images";
+import { imagesReady, promptImages, wholePromptImages, type PromptImage } from "../state/images";
 import { ActivityGroup, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { activate, app, awayMachine, handleFor, loadTurn, restoredFrom } from "../state/app";
+import { activate, app, awayMachine, handleFor, loadTurn, restoredFrom, toast } from "../state/app";
 import { machine, os } from "../lib/platform";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, isWorkRow, leadingNotices, quietBlocks, quietWake, shownBlocks } from "../lib/notices";
@@ -51,6 +51,16 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         return s?.length === p.count ? s : undefined;
     };
     const failed = () => fetched()?.key === key() && !fetched()?.images.length;
+    // Whole only for the viewer (state/images.ts holds thumbnails): asked for, then shown, as a call's images are.
+    const view = (index: number, from: Element) => {
+        const k = key();
+        const thumbs = images();
+        if (!p.sessionId || !p.turn.pos || !k || !thumbs) return;
+        wholePromptImages(p.sessionId, p.turn.pos, k).then(
+            (whole) => whole.length && setViewedImage({ images: whole.map((m, n) => ({ name: `Image ${n + 1}`, full: m, preview: thumbs[n]?.thumb })), index, from }),
+            () => toast("Couldn't open the image", "error"),
+        );
+    };
     const width = (k: number) => {
         const [w, h] = sizes()?.[k] ?? [0, 0];
         return `calc(${w && h ? Math.min(220, Math.max(56, (76 * w) / h)) : 101} * var(--sp))`;
@@ -69,7 +79,7 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
                         style={sizes() ? { width: width(i()) } : undefined}
                         title="View full size"
                         aria-label={`View image ${i() + 1} of ${images()!.length}`}
-                        onClick={(e) => setViewedImage({ images: images()!.map((m, k) => ({ name: `Image ${k + 1}`, full: m, preview: m.thumb })), index: i(), from: e.currentTarget })}
+                        onClick={(e) => view(i(), e.currentTarget)}
                     >
                         <img src={img.thumb} alt="" />
                     </button>
@@ -631,6 +641,8 @@ type TurnViewProps = {
     onElement?: (el: HTMLElement, turnId: string) => void;
     /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
     onFold?: (el: HTMLElement, fold: () => void) => void;
+    /** Far from the view a while: only its box is kept, at the size it was drawn at (Transcript), nothing in it. */
+    gone?: () => boolean;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -790,6 +802,7 @@ function TurnViewContent(p: TurnViewProps) {
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""} ${empty() ? "empty" : ""} ${attached() ? "attached" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
+            <Show when={!p.gone?.()}>
             <Show when={p.turn.prompt && !quiet}>
                 <h2 class="sr-only" data-find-skip>{said}</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
@@ -836,6 +849,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <LiveLine state={line()} />
                     </Show>
                 </div>
+            </Show>
             </Show>
         </article>
     );

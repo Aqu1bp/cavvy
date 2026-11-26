@@ -34,6 +34,8 @@ export const DELEGATE_TOOL = `mcp__${MCP_SERVER_NAME}__delegate`;
 const NATIVE: Record<string, { providers: string[]; vendor: string; models: string; own: string }> = {
     "claude-code": { providers: ["claude-code", "anthropic"], vendor: "anthropic/", models: "Claude models", own: "your own Agent tool" },
     codex: { providers: ["codex", "openai"], vendor: "openai/", models: "OpenAI models", own: "your own sub-agents" },
+    opencode: { providers: ["opencode"], vendor: "opencode/", models: "OpenCode's own models", own: "your own subagents" },
+    grok: { providers: ["grok", "xai"], vendor: "x-ai/", models: "Grok models", own: "your own subagents" },
 };
 
 export function nativeModel(caller: string, ref: { provider: string; id: string }): boolean {

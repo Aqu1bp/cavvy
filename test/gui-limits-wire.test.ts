@@ -3,7 +3,8 @@
 
 import { expect, test } from "bun:test";
 import { fromWireLimits, wireReplacer } from "../src/server/timeline";
-import { liftsAt, meterOf, windowCaption, windowLine } from "../gui/src/lib/limits";
+import { meterOf, windowLine } from "../gui/src/lib/limits";
+import { liftsAt, windowCaption } from "../gui/src/lib/usage-limits";
 import type { PlanLimits } from "../src/server/protocol";
 
 const now = Date.UTC(2026, 9, 28, 9, 0);
@@ -24,9 +25,10 @@ test("a limit restored after a restart (no percentage) reads as reached, not as 
     expect(windowLine(meter.windows[0]!)).toStartWith("5-hour reached · resets ");
 });
 
-test("a window with no reset time isn't taken for one that has reset (which read as an old report)", () => {
+test("a window with no reset time isn't taken for one that has reset", () => {
     const limits: PlanLimits = { provider: "codex", accountId: "default", windows: [{ id: "codex:primary", label: "5-hour", usedPercent: 40, resetsAt: undefined }], at: now - 60_000 };
-    expect(meterOf(overWire(limits), now)!.asOf).toBeDefined();
+    // As it came off the wire (a null reset), it read as reset, with no figure.
+    expect(meterOf(overWire(limits), now)!.windows[0]!.reset).toBeDefined();
     const meter = meterOf(fromWireLimits(overWire(limits)), now)!;
     expect(meter.asOf).toBeUndefined();
     expect(windowLine(meter.windows[0]!)).toBe("5-hour 40%");
@@ -38,6 +40,8 @@ test("Usage's caption for a window: its percentage and reset, never 'reached' ag
     expect(windowCaption({ reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("Resets 3:40 PM, in 1h 6m");
     expect(windowCaption({ reached: true })).toBe("Reached");
     expect(windowCaption({ reached: false })).toBe("Not reported");
+    // One that has reset since the report: when it did, never its old figure.
+    expect(windowCaption({ reached: false, reset: "9:52 AM" })).toBe("Reset 9:52 AM");
 });
 
 test("a reached plan's summary says when it lifts, unless its one reached window already does", () => {

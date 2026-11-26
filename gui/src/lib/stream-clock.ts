@@ -75,6 +75,10 @@ export function alignAnimations() {
         // One's own unless it's on a pseudo-element: a turn drawn again starts many short ones, and this runs for each.
         for (const a of target.getAnimations(e.pseudoElement ? { subtree: true } : undefined)) {
             if ((a as CSSAnimation).animationName !== e.animationName || a.effect?.getComputedTiming().iterations !== Infinity) continue;
+            // One that starts paused (lib/loops.ts: the window can't be seen, say) is left alone: a start time set now
+            // would make it run, and take its play state from script for good, so the gate couldn't stop it again.
+            // The gate puts it on the grid when it runs.
+            if (a.playState === "paused") continue;
             // Not started yet, as a rule, when this is told: it's starting now.
             const at = a.startTime ?? document.timeline.currentTime;
             if (typeof at === "number") a.startTime = Math.floor(at / STEP_MS) * STEP_MS;

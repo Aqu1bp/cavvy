@@ -6,6 +6,8 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import * as usage from "../gui/src/lib/usage";
 import * as limits from "../gui/src/lib/limits";
+import * as usageLimits from "../gui/src/lib/usage-limits";
+import { scopedSummary } from "../gui/src/lib/rail-plans";
 import { plural, tokens } from "../gui/src/lib/format";
 import { planLimitKey } from "../src/server/protocol";
 import type { UsageSummary, UsageTotals } from "../src/server/protocol";
@@ -17,7 +19,7 @@ function summary(): UsageSummary {
         series: [{ ...total, at: 1_800_000_000_000, sessions: 1, sources: { "claude-code": total, codex: zero(), api: zero() } }], interval: "day", accounts: [], buckets: [], limits: [], sessions: 1, approxDated: 0 };
 }
 function mount(call = async (_method: string, _params: any): Promise<UsageSummary> => summary(), limitReports: any = {}, providers: any[] = [], noModel = false) {
-    const requests: any[] = []; const tabs: string[] = []; let limitRefreshes = 0;
+    const requests: any[] = []; const tabs: string[] = []; let limitRefreshes = 0; let limitChecks = 0;
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
         createElement: (tag: string) => ({ tag, props: {} as any, children: [] as any[] }),
@@ -31,11 +33,11 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
     const source = readFileSync(new URL("../gui/src/components/UsageView.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     const compiled = transformSync(source, { filename: "UsageView.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const scope = { renderer, ...solid, ...usage, ...limits, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
-        app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; },
+    const scope = { renderer, ...solid, ...usage, ...limits, ...usageLimits, scopedSummary, tokens, plural, planLimitKey, now: () => 1_800_000_000_000,
+        app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
-        RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null,
+        RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null, Hourglass: () => null,
         Segmented: (p: any) => ({ tag: "segmented", props: p, children: [] }),
     };
     const component = new Function(...Object.keys(scope), `${js}; return UsageView;`)(...Object.values(scope));
@@ -55,7 +57,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         button: (label: string) => nodes().find(n => n.tag === "button" && n.props["aria-label"] === label).props,
         buttonText: (text: string) => nodes().find(n => n.tag === "button" && walk(n.children).join("") === text).props,
         cls: (c: string) => nodes().filter(n => typeof n === "object" && String(n.props?.class ?? "").split(/\s+/).includes(c)),
-        get limitRefreshes() { return limitRefreshes; } };
+        get limitRefreshes() { return limitRefreshes; }, get limitChecks() { return limitChecks; } };
 }
 const tick = () => Bun.sleep(0);
 
@@ -95,16 +97,59 @@ test("by account: shown once a subscription has two, named from the provider, wi
     const row = (accountId: string, cost: number) => ({ ...two.rows[0]!, source: "claude-code" as const, accountId, cost });
     two.accounts = [row("default", 1.5), row("second", 0.5)];
     const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { plan: "Claude subscription", accounts: [{ id: "default", name: "Work", plan: "max" }, { id: "second", name: "Personal" }] } }];
-    const limitReports = { [planLimitKey("claude-code", "default")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, windows: [{ id: "week", label: "Weekly", usedPercent: 31 }] } };
+    // Fable's weekly window first: By account's figure is the plan's own weekly window, not a model's.
+    const limitReports = { [planLimitKey("claude-code", "default")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 95, scope: "fable" }, { id: "week", label: "Weekly", usedPercent: 31 }] } };
     const f = mount(async () => two, limitReports, providers);
     try {
         await tick();
         expect(f.text()).toContain("By account");
         expect(f.text()).toContain("2 accounts");
         expect(f.text()).toContain("Work");
-        expect(f.text()).toContain("Max, weekly limit 31% used");
+        // The plan as every surface names it (planTitle); one that hasn't said its plan, by the CLI.
+        expect(f.text()).toContain("Claude Code Max, weekly limit 31% used");
         expect(f.text()).toContain("Personal");
-        expect(f.text()).toContain("Claude subscription");
+        expect(f.text()).not.toContain("Claude subscription");
+    } finally { f.dispose(); }
+});
+
+test("limits: a model's limit reached is an amber line of its own, not the plan's; bars are tinted as the rail's card; plans named as everywhere", async () => {
+    const empty = summary(); empty.rows = []; empty.sessions = 0;
+    const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { plan: "Claude subscription", accounts: [{ id: "default", name: "Default", plan: "ultra" }] } }];
+    const reports = { [planLimitKey("claude-code")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, reached: false, windows: [
+        { id: "seven_day", label: "Weekly", usedPercent: 86, resetsAt: 1_800_000_000_000 + 86_400_000 },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
+    ] } };
+    const f = mount(async () => empty, reports, providers);
+    try {
+        await tick();
+        f.segment("Usage view").onChange("limits"); await tick();
+        expect(f.text()).toContain("Claude Code Ultra");
+        expect(f.text()).not.toContain("Claude subscription");
+        expect(f.text()).toContain("Fable limit reached");
+        expect(f.text()).not.toContain("Limit reached");
+        expect(f.cls("plan-reached").map((n) => n.props.class)).toEqual(["plan-reached credits"]);
+        // 86% is amber, as in the card; Fable's reached limit amber too.
+        expect(f.cls("useb").map((n) => n.props.class.trim())).toEqual(["useb warn", "useb warn"]);
+        // Rejected at 97%: the bar full, as the rail's card draws it; the caption still says 97%.
+        expect(f.cls("useb-bar").map((n) => n.props["aria-valuenow"])).toEqual([86, 100]);
+        expect(f.text()).toContain("97%, resets");
+    } finally { f.dispose(); }
+});
+
+test("limits: the plan's own limit reached and Fable's: both banners", async () => {
+    const empty = summary(); empty.rows = []; empty.sessions = 0;
+    const providers = [{ id: "claude-code", name: "Claude Code", agentCli: { accounts: [{ id: "default", name: "Default", plan: "ultra" }] } }];
+    const reports = { [planLimitKey("claude-code")]: { provider: "claude-code", accountId: "default", at: 1_800_000_000_000, reached: true, resetsAt: 1_800_000_000_000 + 86_400_000, windows: [
+        { id: "seven_day", label: "Weekly", usedPercent: 100, reached: true, resetsAt: 1_800_000_000_000 + 86_400_000 },
+        { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, resetsAt: 1_800_000_000_000 + 86_400_000, reached: true, scope: "fable" },
+    ] } };
+    const f = mount(async () => empty, reports, providers);
+    try {
+        await tick();
+        f.segment("Usage view").onChange("limits"); await tick();
+        expect(f.cls("plan-reached").map((n) => n.props.class.trim())).toEqual(["plan-reached", "plan-reached credits"]);
+        expect(f.text()).toContain("Limit reached");
+        expect(f.text()).toContain("Fable limit reached");
     } finally { f.dispose(); }
 });
 
@@ -183,7 +228,7 @@ test("token counts roll over to the next unit; costs group thousands", () => {
     expect([999, 1000, 9_949, 9_960, 12_400, 999_499, 999_600, 9_960_000, 854e6, 999.6e6, 1e9, 1.24e9, 12.4e9].map((n) => tokens(n)))
         .toEqual(["999", "1.0k", "9.9k", "10k", "12k", "999k", "1.0M", "10M", "854M", "1.0B", "1.0B", "1.2B", "12B"]);
     expect([854e6, 1.236e9, 999_960].map((n) => tokens(n, 3))).toEqual(["854M", "1.24B", "1M"]);
-    expect([0, 0.004, 4.123, 41.2, 99.996, 763.4, 2184.2].map(limits.usd)).toEqual(["$0.00", "<$0.01", "$4.12", "$41.20", "$100", "$763", "$2,184"]);
+    expect([0, 0.004, 4.123, 41.2, 99.996, 763.4, 2184.2].map(usageLimits.usd)).toEqual(["$0.00", "<$0.01", "$4.12", "$41.20", "$100", "$763", "$2,184"]);
 });
 
 test("axis ticks: every 6 hours, each day of a week, weekly over a month, month starts over 90 days", () => {

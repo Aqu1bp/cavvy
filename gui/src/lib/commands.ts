@@ -11,7 +11,7 @@ export function slashName(text: string): string | undefined {
 }
 
 /** What the GUI does itself for a slash command; the rest go to the server. */
-export type ClientAction = "model" | "mode" | "new" | "rewind" | "fork" | "mcp" | "settings" | "plugins" | "usage" | "context" | "rename" | "export" | "tasks" | "sidechat";
+export type ClientAction = "model" | "mode" | "new" | "rewind" | "fork" | "mcp" | "settings" | "plugins" | "usage" | "context" | "rename" | "export" | "tasks" | "sidechat" | "theme";
 
 const CLIENT: Record<string, ClientAction> = {
     model: "model",
@@ -33,6 +33,7 @@ const CLIENT: Record<string, ClientAction> = {
     rename: "rename",
     export: "export",
     tasks: "tasks",
+    theme: "theme",
 };
 
 export function clientAction(text: string): { action: ClientAction; args: string } | undefined {

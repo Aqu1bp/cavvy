@@ -834,6 +834,22 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => r.includes("Monitor notification 1."))).toBe(true);
     });
 
+    test("what Claude Code asks about from its own bypass mode (a hook of the user's saying ask) still reaches the user", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const asked: PermissionRequest[] = [];
+        // The stand-in asks about what an ask rule names, as the CLI does for a hook that says ask.
+        const a = await makeAgent({
+            settings: { permissions: { ask: ["Bash(npm test)"] } },
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        a.setMode("bypassPermissions");
+        await a.run("go");
+        expect(asked.map((r) => r.input.command)).toEqual(["npm test"]);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];
@@ -852,6 +868,23 @@ describe("background work across turns", () => {
         expect(asked[0]!.agentLabel).toBe("Map auth");
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
+    });
+
+    test("switched to Bypass between turns, a background sub-agent's request under the earlier mode isn't asked about", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-ask";
+        const asked: PermissionRequest[] = [];
+        const a = await makeAgent({
+            ask: (req) => {
+                asked.push(req);
+                return { allow: false };
+            },
+        });
+        expect(await a.run("start it")).toBe("done");
+        // Cavvy's mode, which Claude Code hears of at its next turn: its sub-agent still asks as in Manual.
+        a.setMode("bypassPermissions");
+        await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
     });
 
     test("a background sub-agent's permission prompt after Esc stopped its turn is still asked, and its answer reaches it", async () => {
@@ -1016,15 +1049,17 @@ describe("the process: crashes, restarts, settings", () => {
         expect(controls("set_permission_mode").map((r) => r.mode)).toEqual(["acceptEdits", "default"]);
     });
 
-    test("in bypass, a background sub-agent's own ask gets no card: it's allowed", async () => {
+    test("started in bypass, what a background sub-agent asks from Claude Code's own bypass mode (a hook's ask) gets a card", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];
         const { run, setMode, wakes } = await makeAgent({ ask: (req) => (asked.push(req), { allow: false }) });
         setMode("bypassPermissions");
         expect(await run("start it")).toBe("done");
+        expect(starts()[0].argv).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions"]));
         await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
-        expect(asked).toEqual([]);
-        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
+        // In its own bypass it asks only what a hook of the user's says to: the user's to answer (ownBypassAsk).
+        expect(asked.length).toBe(1);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("deny");
         await until(() => wakes.length > 0, 5000, "its report");
     });
 

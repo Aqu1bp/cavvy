@@ -360,13 +360,24 @@ describe("what a server is", () => {
         expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.39\navx2=1"), entry)).toBe("linux-x64");
         expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.31"), entry)).toBe("linux-x64-baseline");
         expect(targetFor(f("os=Linux\narch=aarch64\nhome=/h\nlibc=glibc 2.39"), entry)).toBe("linux-arm64");
-        expect(() => targetFor(f("os=FreeBSD\narch=amd64\nhome=/h\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs Linux, and this is FreeBSD.");
+        expect(() => targetFor(f("os=FreeBSD\narch=amd64\nhome=/h\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs Linux or macOS, and this is FreeBSD.");
         expect(() => targetFor(f("os=Linux\narch=armv7l\nhome=/h\nlibc=glibc 2.39"), entry)).toThrow("it needs an x64 or arm64 processor, and this is armv7l.");
         expect(() => targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=musl"), entry)).toThrow("it needs glibc, and this system uses musl (Alpine).");
         // Room is asked about only when a build will be copied: a server that's short of it can still be looked at.
         expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.39\navx2=1\ndisk=120"), entry)).toBe("linux-x64");
         expect(() => checkRoom(f("os=Linux\nhome=/h\ndisk=120"), entry)).toThrow("There isn't room on box.example for Cavvy: it needs 400 MB free, and there are 120.");
         expect(() => checkRoom(f("os=Linux\nhome=/h\ndisk=4000"), entry)).not.toThrow();
+    });
+
+    test("a Mac: Apple silicon only, with its memory and whether it starts Cavvy at boot read from what it printed", () => {
+        const mac = parseFacts("os=Darwin\narch=arm64\nhome=/Users/me\nuser=me\nshell=/bin/zsh\nmem=16384\nboot=mine\ndisk=200000");
+        expect(mac).toMatchObject({ os: "Darwin", arch: "arm64", libc: "unknown", avx2: false, systemd: false, memMb: 16384, diskFreeMb: 200000, launchDaemon: "mine" });
+        expect(targetFor(mac, entry)).toBe("darwin-arm64");
+        expect(() => targetFor(parseFacts("os=Darwin\narch=x86_64\nhome=/Users/me"), entry)).toThrow("Cavvy can't run on box.example: it needs a Mac with Apple silicon, and this one has an Intel processor.");
+        expect(parseFacts("os=Darwin\nhome=/h\nboot=other").launchDaemon).toBe("other");
+        // Only the two answers the probe gives.
+        expect(parseFacts("os=Darwin\nhome=/h\nboot=yes").launchDaemon).toBeUndefined();
+        expect(parseFacts("os=Linux\nhome=/h").launchDaemon).toBeUndefined();
     });
 
     test("its service asks Cavvy alone to stop, outlives a command killed for memory, and gives up on a crash loop", () => {
@@ -684,7 +695,7 @@ describe("what the terminal says", () => {
 
     test("a server with everything says nothing; each thing missing is one line the user can act on", () => {
         expect(checkLines("box", all, { service: true })).toEqual([]);
-        expect(checkLines("box", { ...all, clis: all.clis.map((c) => ({ ...c, installed: false })), gh: { installed: false }, browser: false, git: false }, { service: false, lingerFix: "sudo loginctl enable-linger dev" })).toEqual([
+        expect(checkLines("box", { ...all, clis: all.clis.map((c) => ({ ...c, installed: false })), gh: { installed: false }, browser: false, git: false }, { service: false, bootFix: "sudo loginctl enable-linger dev" })).toEqual([
             "It won't start Cavvy again after a reboot. To fix that, run on it: sudo loginctl enable-linger dev",
             "No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.",
             "  Install Claude Code (https://code.claude.com/docs/en/setup)",

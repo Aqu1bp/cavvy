@@ -199,6 +199,9 @@ export interface ModelInfo {
     provider: string;
     id: string;
     name?: string;
+    /** For an alias ("default"): the model the CLI said it stands for, when it listed its models, on that account (resolvedFor). */
+    resolvedModel?: string;
+    resolvedFor?: string;
     contextWindow?: number;
     maxOutput?: number;
     /** USD per million tokens. */

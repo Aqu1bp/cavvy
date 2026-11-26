@@ -143,6 +143,11 @@ const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 };
 const argv = process.argv.slice(2);
+/** With FAKE_FAMILY_MODELS=1, the model a family alias (--model opus|fable) is served as. */
+const familyModel = () => {
+    const m = argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
+    return process.env.FAKE_FAMILY_MODELS === "1" && (m === "opus" || m === "fable") ? `claude-${m}-test` : undefined;
+};
 /** Each --plugin-dir's skills, as <plugin>:<folder>. */
 function pluginSkills(): string[] {
     return argv.flatMap((a, i) => {
@@ -167,9 +172,39 @@ if (argv.includes("--agents")) {
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";
     console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: process.env.FAKE_PLAN ?? "max", ...(process.env.FAKE_EMAIL ? { email: process.env.FAKE_EMAIL } : {}) } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
+    // FAKE_AUTH_HANG=1: having said it, it doesn't exit.
+    if (process.env.FAKE_AUTH_HANG === "1") await new Promise((r) => setTimeout(r, 30_000));
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
+// --version: FAKE_CLAUDE_CLI_VERSION, else one that answers /usage in print mode.
+if (argv[0] === "--version") {
+    // FAKE_VERSION_DELAY_MS: it answers that much later.
+    log({ version: true });
+    if (process.env.FAKE_VERSION_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_VERSION_DELAY_MS)));
+    console.log(`${process.env.FAKE_CLAUDE_CLI_VERSION ?? "2.1.322"} (Claude Code)`);
+    process.exit(0);
+}
+// -p /usage --output-format json, as 2.1.322 answers it without a model call: FAKE_USAGE_TEXT is its text (after
+// FAKE_USAGE_DELAY_MS); FAKE_USAGE_MODEL=1 answers as a CLI that sent it to the model instead, FAKE_USAGE_ERROR=1
+// with an error, FAKE_USAGE_SHAPE=other with JSON of another shape. Logs the TZ it ran with, and its pid.
+if (argv[0] === "-p" && argv[1] === "/usage") {
+    log({ usage: { tz: process.env.TZ, pid: process.pid } });
+    // FAKE_USAGE_IGNORE_TERM=1: SIGTERM doesn't stop it.
+    if (process.env.FAKE_USAGE_IGNORE_TERM === "1") process.on("SIGTERM", () => undefined);
+    // FAKE_USAGE_PARTIAL=1: the start of its answer, then nothing.
+    if (process.env.FAKE_USAGE_PARTIAL === "1") {
+        process.stdout.write('{"type":"result","subtype":"success","is_er');
+        await new Promise((r) => setTimeout(r, 30_000));
+    }
+    if (process.env.FAKE_USAGE_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_USAGE_DELAY_MS)));
+    const model = process.env.FAKE_USAGE_MODEL === "1";
+    const error = process.env.FAKE_USAGE_ERROR === "1";
+    if (process.env.FAKE_USAGE_SHAPE === "other") console.log(JSON.stringify({ hello: "world" }));
+    else console.log(JSON.stringify({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: model ? 1 : 0, total_cost_usd: model ? 0.01 : 0, result: model ? "I can't check usage." : process.env.FAKE_USAGE_TEXT ?? "", ...(model ? {} : { local_command: "usage" }) }));
+    log({ usageEnd: true });
+    process.exit(0);
+}
 // FAKE_EXIT_AFTER_MS: the CLI goes away that long after it starts, whatever it's doing (a crash).
 if (process.env.FAKE_EXIT_AFTER_MS) setTimeout(() => process.exit(3), Number(process.env.FAKE_EXIT_AFTER_MS));
 // A one-off (--tools "" with a system prompt): the question's answer is FAKE_ONEOFF_ANSWER, as one result.
@@ -375,7 +410,7 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
             ? // A subscription's turn: its history written to the one-hour cache.
               { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: Number(process.env.FAKE_CACHE_1H), cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: Number(process.env.FAKE_CACHE_1H) } }
             : { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
-        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? "claude-test-1"]: { contextWindow: 200000 } },
+        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? familyModel() ?? "claude-test-1"]: { contextWindow: 200000 } },
         ...extra,
     });
 }
@@ -1494,6 +1529,8 @@ for await (const chunk of Bun.stdin.stream()) {
                             models: [
                                 { value: "default", supportsFastMode: true, resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
                                 { value: "sonnet", resolvedModel: "claude-test-2", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
+                                // FAKE_FAMILY_MODELS=1: models of the families with limits of their own, for those limits' checks.
+                                ...(process.env.FAKE_FAMILY_MODELS === "1" ? [{ value: "opus", resolvedModel: "claude-opus-test", displayName: "Opus", supportedEffortLevels: ["low", "high"] }, { value: "fable", resolvedModel: "claude-fable-test", displayName: "Fable", supportedEffortLevels: ["low", "high"] }] : []),
                             ],
                             account: { tokenSource: "none" },
                         },

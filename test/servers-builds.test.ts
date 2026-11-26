@@ -2,7 +2,8 @@
 // app carries; and how two builds are put in order where no checkout can say (src/servers/build.ts).
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
@@ -108,6 +109,43 @@ describe("the builds a packed desktop app carries", () => {
         await expect(bundledSource(carried("ba9876543210"), ID).build("linux-x64")).rejects.toBeInstanceOf(ServerError);
         expect(source.compare(ID)).toBe("same");
         expect(source.compare("ba9876543210")).toBe("different");
+    });
+
+    test("a Mac's build isn't carried: on Apple silicon the app's own program is it, packed with the GUI beside it", async () => {
+        const { appsOwn, appsOwnBuild } = build;
+        const app = join(work, "Own.app");
+        const program = join(app, "Contents", "MacOS", "cavvy");
+        mkdirSync(join(app, "Contents", "MacOS"), { recursive: true });
+        mkdirSync(join(app, "Contents", "Resources", "gui"), { recursive: true });
+        const text = `#!/bin/sh\necho '{"version":"1.0.0","protocol":1,"build":"${ID}"}'\n`;
+        writeFileSync(program, text);
+        chmodSync(program, 0o755);
+        writeFileSync(join(app, "Contents", "Resources", "gui", "index.html"), "<!doctype html>");
+        // Only the server program of an app, on a Mac with Apple silicon.
+        expect(appsOwn(program, "arm64", "darwin")).toEqual({ program, gui: join(app, "Contents", "Resources", "gui") });
+        expect(appsOwn(program, "x64", "darwin")).toBeUndefined();
+        expect(appsOwn(program, "arm64", "linux")).toBeUndefined();
+        expect(appsOwn(join(app, "Contents", "MacOS", "cavvy-desktop"), "arm64", "darwin")).toBeUndefined();
+        expect(appsOwn("/usr/local/bin/cavvy", "arm64", "darwin")).toBeUndefined();
+
+        const steps: string[] = [];
+        const own = appsOwn(program, "arm64", "darwin")!;
+        const b = await appsOwnBuild(own, ID, { onStep: (t) => steps.push(t) });
+        expect(steps).toEqual(["Packing Cavvy for macOS…"]);
+        expect(b).toMatchObject({ id: ID, target: "darwin-arm64", gui: true, sha256: createHash("sha256").update(text).digest("hex") });
+        // What a server unpacks: the program, and its GUI beside it.
+        const out = mkdtempSync(join(work, "unpacked-"));
+        expect(Bun.spawnSync(["tar", "-xzf", b.bundle, "-C", out]).exitCode).toBe(0);
+        expect(readFileSync(join(out, "cavvy"), "utf-8")).toBe(text);
+        expect(readFileSync(join(out, "gui", "index.html"), "utf-8")).toBe("<!doctype html>");
+        // Packed once.
+        const at = statSync(b.bundle).mtimeMs;
+        expect((await appsOwnBuild(own, ID, { onStep: (t) => steps.push(t) })).bundle).toBe(b.bundle);
+        expect(statSync(b.bundle).mtimeMs).toBe(at);
+        expect(steps.length).toBe(1);
+        // The app was replaced under this program: what's in it now is another build, and isn't sent as this one.
+        await expect(appsOwnBuild(own, "ba9876543210")).rejects.toThrow("Cavvy was updated since it started. Quit and reopen it, then try again.");
+        await expect(appsOwnBuild(own, "unknown-build")).rejects.toThrow("it doesn't know which build it is");
     });
 
     test("they're looked for in the app the program runs from", () => {

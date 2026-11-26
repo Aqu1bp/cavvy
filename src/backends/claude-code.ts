@@ -29,7 +29,7 @@
 
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { basename, isAbsolute, join } from "path";
 import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
@@ -37,7 +37,7 @@ import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
-import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, parseClaudeUsage, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { cliEnv } from "../providers/agent-env";
 import { claudeCodeWindow } from "../providers/anthropic-models";
@@ -217,6 +217,8 @@ export interface ClaudeStatus {
 export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
     const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: cliEnv(providerId, accountId) });
+    // Stopped before it finished: it didn't say, whatever it had written.
+    if (r.stopped) throw new ProviderError(`claude auth status didn't answer (${r.stopped === "timeout" ? "out of time" : "cancelled"})`);
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -239,6 +241,49 @@ export function describeClaudeAuth(s: ClaudeStatus): string {
     if (s.authMethod === "oauth_token" || s.subscriptionType) return `signed in with your Claude account${s.subscriptionType ? ` (${s.subscriptionType})` : ""}${via}`;
     return `signed in${s.authMethod ? ` (${s.authMethod})` : ""}${via}`;
 }
+
+/**
+ * Where an account's plan limits stand, without a turn: Claude Code answers `/usage` in print mode by itself, with
+ * no model call (2.1.322: no turns, no cost; about 3.5 s and 360 MB on a 2-core Linux server). It's run with a
+ * model that doesn't exist (USAGE_NO_MODEL): `/usage` doesn't need one, and a CLI that sent it to the model instead
+ * would fail before any request (2.1.322 refuses an unknown model without an API call). Versions before 2.1.322
+ * aren't asked. An account whose answer isn't a local `/usage` one (no `local_command`, a turn or a cost, an
+ * error, a shape not known) isn't asked again while Cavvy runs. MCP servers and hooks stay off for it; times come
+ * in UTC. Undefined when it can't be read.
+ */
+export async function claudeUsage(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<PlanLimits | undefined> {
+    const bin = requireCli(providerId, CLAUDE_CLI);
+    const refusal = `${bin}\0${accountId ?? "default"}`;
+    if (usageRefused.has(refusal)) return undefined;
+    const env = accountEnv(providerId, accountId);
+    const version = await runCli(bin, ["--version"], { signal, timeoutMs: 10_000, env });
+    if (version.stopped) return undefined;
+    if (!claudeVersionAtLeast(/^\s*(\S+)/.exec(version.stdout)?.[1], 322)) return undefined;
+    // Stopped meanwhile (the account removed, the server stopping): /usage isn't started.
+    if (signal?.aborted) return undefined;
+    const at = Date.now();
+    const r = await runCli(bin, ["-p", "/usage", "--model", USAGE_NO_MODEL, "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true })], { signal, timeoutMs: 30_000, cwd: tmpdir(), env: { ...env, TZ: "UTC" } });
+    // Stopped (cancelled, out of time: its output may be cut short) or crashed: nothing was said either way.
+    if (r.stopped || signal?.aborted || (r.code !== 0 && !r.stdout.trim())) return undefined;
+    let j: unknown;
+    try {
+        j = JSON.parse(r.stdout);
+    } catch {
+        j = undefined;
+    }
+    const o = j && typeof j === "object" ? (j as Record<string, unknown>) : undefined;
+    if (!o || o.local_command !== "usage" || o.num_turns !== 0 || o.total_cost_usd !== 0 || o.is_error !== false || typeof o.result !== "string") {
+        usageRefused.add(refusal);
+        return undefined;
+    }
+    return parseClaudeUsage(o.result, at, accountId ?? "default");
+}
+
+/** The model `/usage` is run with: none by this name, so nothing can reach a model. */
+export const USAGE_NO_MODEL = "cavvy-usage-no-model";
+
+/** Claude Code binaries and accounts (bin \0 account) whose `/usage` wasn't answered locally. */
+const usageRefused = new Set<string>();
 
 /** Noninteractive fast mode via --settings was added in 2.1.205. */
 export function claudeFastModeVersion(version: unknown): boolean {
@@ -360,6 +405,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
                             effortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels : undefined,
                             // Its result says the window; until then, the size it serves the model at.
                             contextWindow: claudeCodeWindow(x.value) ?? claudeCodeWindow(typeof x.resolvedModel === "string" ? x.resolvedModel : undefined),
+                            // What an alias stands for, on the account it was listed with (its model limits cover it or not).
+                            ...(typeof x.resolvedModel === "string" && x.resolvedModel && x.resolvedModel !== x.value ? { resolvedModel: x.resolvedModel.slice(0, 100), resolvedFor: defaultAccount(this.def.id) } : {}),
                         }),
                     );
             }
@@ -2084,8 +2131,10 @@ class ClaudeTurn {
         // Its sub-agent asks (agent_id, its task's id): by its task, as the sub-agent's card names it.
         const call = typeof req.agent_id === "string" ? [...this.agentTasks].find(([, task]) => task === req.agent_id)?.[0] : undefined;
         const asker = typeof req.agent_id === "string" ? ((call && this.agentLabels.get(call)) || agentType) : undefined;
+        // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
+        const ownBypassAsk = MODES[this.cliSession.mode()] === "bypassPermissions";
         // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
-        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}) });
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

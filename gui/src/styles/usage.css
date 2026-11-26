@@ -84,11 +84,21 @@
     background: var(--accent);
 }
 
-.useb.reached .useb-bar i {
+/* The same tints as the rail's card (lib/limits.ts windowTone): amber from 75% and for a model's limit reached, red
+   from 90% and at the plan's limit. */
+.useb.warn .useb-bar i {
+    background: var(--warn);
+}
+
+.useb.danger .useb-bar i {
     background: var(--danger);
 }
 
-.useb.reached .useb-sub {
+.useb.warn .useb-sub {
+    color: var(--warn);
+}
+
+.useb.danger .useb-sub {
     color: var(--danger);
 }
 

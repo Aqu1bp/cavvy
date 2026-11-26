@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { planLimitKey, type AccountInfo } from "../../src/server/protocol";
-import { limitAlternatives, meterOf, windowLine } from "../../gui/src/lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, windowLine } from "../../gui/src/lib/limits";
 import { contextView } from "../../gui/src/lib/context";
 import { cost, tokens } from "../../gui/src/lib/format";
 
@@ -38,7 +38,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); }, get activeId() { return activeId(); } },
         handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, keysHere: (pane: { focused: () => boolean }) => pane.focused(), usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
-        now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
+        now: () => timestamp, planLimitKey, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, servedFor: () => ({}), windowLine, contextView, cost, tokens,
         // Another machine's session has that machine's providers and limits, asked over the connection to it.
         providersFor: () => (options.away === undefined ? [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }] : options.machineProviders ?? []),
         limitsFor: () => (options.away === undefined ? limits() : options.machineLimits ?? {}),
@@ -129,7 +129,8 @@ for (const reached of [false, true]) test(`unknown size stays empty${reached ? "
         // No share to say yet: the word alone.
         expect(text(m.trigger())).toBe("Context");
         expect(m.trigger().props["aria-label"]).toContain("size not known yet");
-        if (reached) expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage:");
+        // The limit that stops it, named, with when it resets.
+        if (reached) expect(m.trigger().props["aria-label"]).toContain("CLI · Default: ");
         m.show();
         expect(text(m.root)).toContain("After the first reply");
         expect(all(m.root).filter(n => n.props.role === "dialog")).toHaveLength(1);
@@ -166,7 +167,7 @@ for (const current of ["default", "work"]) test(`${current}: refresh only altern
 test("reached on credits (#434): says so, and switching away doesn't claim the turn stopped", async () => {
     const m = mount({ reached: true, credits: true });
     try {
-        expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage: limit reached · using credits");
+        expect(m.trigger().props["aria-label"]).toContain("CLI · Default: Limit reached, using credits");
         m.show();
         expect(text(m.root)).toContain("Limit reached, using credits");
         m.pending.resolve(accounts);
@@ -208,9 +209,10 @@ test("Home uses default account; session uses its own account", () => {
         try {
             m.setLimits(Object.fromEntries([ ["default", 100], ["work", 100] ].map(([id, pct]) => [planLimitKey("cli", id as string), { at: timestamp, reached: true, windows: [{ label: id === "work" ? "Weekly" : "5-hour", usedPercent: pct }] }])));
             m.wire();
-            expect(m.trigger().props["aria-label"]).toContain(home ? "Pro · Work usage: Weekly 100%" : "Pro · Default usage: 5-hour 100%");
+            expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work: Weekly limit reached" : "CLI · Default: 5-hour limit reached");
             m.show();
-            expect(text(m.root)).toContain(home ? "Pro · Work, weekly limit." : "Pro · Default, 5-hour limit.");
+            // Named by the limit that stops it, then whose plan it is.
+            expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work." : "5-hour limit reachedCLI · Default.");
             expect(m.button("Compact now").props["aria-disabled"]).toBe(home ? true : undefined);
         } finally { m.dispose(); }
     }

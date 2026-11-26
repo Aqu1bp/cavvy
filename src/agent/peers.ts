@@ -63,7 +63,17 @@ export interface SessionPeers {
         read: FarPeers["read"];
         /** From this session. Throws PeerError. */
         send(id: string, message: string): ReturnType<FarPeers["send"]>;
+        /** A new session on another machine, started by this one. Throws PeerError. */
+        start(o: FarStart): ReturnType<FarPeers["start"]>;
     };
+}
+
+/** A session to start on another of the user's machines: `machine` as listings name it, `cwd` a folder of that machine's. */
+export interface FarStart extends StartChoice {
+    machine: string;
+    cwd: string;
+    prompt: string;
+    title: string;
 }
 
 /**
@@ -77,6 +87,8 @@ export interface FarPeers {
     read(id: string, turns?: number): Promise<{ text: string; title: string; turns: number } | undefined>;
     /** A message to it from `from` (this session, as that machine names it back). Throws PeerError. */
     send(id: string, message: string, from: { id: string; title: string; mode: PermissionMode }): Promise<{ text: string; delivery: Delivery; title: string }>;
+    /** A new session there, given `prompt` as a message from `from`; its id names the machine. Throws PeerError. */
+    start(o: FarStart, from: { id: string; title: string; mode: PermissionMode }): Promise<PeerSummary & { effort?: Effort }>;
 }
 
 /** Whether an id names a session on another machine (`<machine>/<id>`). */
@@ -90,6 +102,8 @@ export interface StartChoice {
 
 /** A refusal the model is told as it is. */
 export class PeerError extends Error {}
+/** Another machine didn't say whether it did what was asked: it may have. */
+export class PeerUnsure extends PeerError {}
 
 const SHOWN_PER_PROVIDER = 12;
 const SHOWN_OF_ONE = 200;
@@ -368,16 +382,20 @@ export function readText(found: { summary: PeerSummary; messages: Message[] }, o
 // ---------------------------------------------------------------------------
 // Messages between sessions.
 
-/** The wake a message arrives as, in the session it's sent to. */
-export function peerWake(from: { id: string; title: string }, text: string): WakeInput {
+/** The wake a message arrives as, in the session it's sent to. `task`: it's what the session was started with (StartSession). */
+export function peerWake(from: { id: string; title: string }, text: string, task = false): WakeInput {
     const title = oneLine(from.title, 80);
+    const answer = `send a message to session ${from.id} (SendToSession, or send_to_session among Cavvy's tools)`;
     return {
         source: "session",
         key: `session:${from.id}`,
         label: `Message from “${title}”`,
-        text: `From session ${from.id} (“${title}”):\n\n${text}\n\nTo answer, send a message to session ${from.id} (SendToSession, or send_to_session among Cavvy's tools). Answer only when there's something it needs: not to acknowledge.`,
+        text: task
+            ? `Session ${from.id} (“${title}”) started this session to do this:\n\n${text}\n\nWhen it's done, or if you can't go on, ${answer} with the result.`
+            : `From session ${from.id} (“${title}”):\n\n${text}\n\nTo answer, ${answer}. Answer only when there's something it needs: not to acknowledge.`,
         from: { id: from.id, title },
         message: text,
+        ...(task ? { task: true } : {}),
     };
 }
 

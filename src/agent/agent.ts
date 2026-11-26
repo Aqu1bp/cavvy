@@ -70,7 +70,9 @@ import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/im
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { loadAgentSecrets } from "../providers/agent-env";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { inputKeysOf } from "../backends/served-tools";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
+import { THEME_INSTRUCTIONS, THEME_TOOL_NAMES, servedThemeName, themeServerTools } from "../themes/tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, SERVERS_ELSEWHERE_INSTRUCTIONS, servedServerName, serverServerTools } from "../tools/server-tools";
@@ -145,7 +147,7 @@ export type AgentEvent =
     | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
-    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    | { type: "limits"; limits: PlanLimits; partial: boolean; full?: boolean }
     /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
     | { type: "cli_commands"; provider: string; names: string[] }
     /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
@@ -317,6 +319,8 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
+    /** A read-only agent on a CLI (Claude Code, Codex, OpenCode and the like): the mode of the session it works for (its own is one where the CLI asks about everything). */
+    sessionMode?: () => PermissionMode;
     /** Sub-agents: the folder its memory is kept in, which isn't Cavvy configuration for it. */
     memoryDir?: string;
     maxTurns?: number;
@@ -1457,7 +1461,7 @@ export class Agent {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
         if (this.idleTried) return null;
-        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact === "none") return null;
+        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact !== "native") return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 
@@ -1757,33 +1761,36 @@ export class Agent {
     private orchestrator(): OrchestratorServer | undefined {
         if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        // Antigravity's CLI takes no MCP server from Cavvy (its own come from its settings).
-        if (agentCli(caller)?.protocol === "agy-stream-json") return undefined;
-        // An ACP agent (OpenCode, Grok) gets the worktree tools only: Cavvy's others aren't offered to it.
+        // An ACP agent (OpenCode, Grok) gets them too, through session/new's mcpServers.
         const acp = agentCli(caller)?.protocol === "acp";
-        const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
-        const store = acp ? undefined : this.state.secrets;
+        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
         // Where there's someone to sign in (not a -p run).
-        const signIn = acp ? undefined : this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
-        const scheduling = !acp && Boolean(this.state.scheduler);
+        const signIn = this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
+        const scheduling = Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
-        const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
         const monitoring = watching && baseCli(caller) === "codex";
-        // Neither has a browser to show Cavvy's pane: its tools go to both.
-        const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
-        // Nor a simulator: its tools go to both, on a Mac with Xcode.
-        const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
+        // None has a browser to show Cavvy's pane: its tools go to all.
+        const browsing = offered(BrowserNavigateTool, this.o.settings());
+        // Nor a simulator: its tools go to all, on a Mac with Xcode.
+        const simulating = offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = baseCli(caller) === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
-        const peers = !acp && !this.oneShot ? this.state.peers : undefined;
+        const peers = !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
-        const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
-        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
+        const servers = !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
+        // Cavvy's own window: where there's one on this machine to show a theme in.
+        const theming = Boolean(this.o.host.ui.showTheme);
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers && !theming) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
+        /** Tools whose calls run Cavvy's checks themselves (runServed, authorizeServedTool). */
+        const checksItself = new Set<string>();
+        const selfChecked = (added: ServerTool[]) => (added.forEach((t) => checksItself.add(t.name)), added);
         if (delegating) {
             tools.push(
                 ...orchestratorTools({
@@ -1799,12 +1806,12 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...selfChecked(secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) })));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         if (signIn) {
             // Under the CLI's limit for one of Cavvy's tools (toolTimeoutSec below): a call still waiting then answers "still waiting", and the card stays.
-            tools.push(...signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) }));
+            tools.push(...selfChecked(signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) })));
             instructions.push(SIGN_IN_INSTRUCTIONS);
         }
         if (scheduling) {
@@ -1816,30 +1823,34 @@ export class Agent {
             instructions.push(WATCH_INSTRUCTIONS);
         }
         if (monitoring) {
-            tools.push(...monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(MONITOR_INSTRUCTIONS);
         }
         if (browsing) {
-            tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(BROWSER_INSTRUCTIONS);
         }
         if (simulating) {
-            tools.push(...simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SIMULATOR_INSTRUCTIONS);
         }
         if (worktrees) {
-            tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            tools.push(...selfChecked(worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state)));
             instructions.push(WORKTREE_INSTRUCTIONS);
         }
         if (servers) {
-            tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
         // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
-        else if (!acp && !this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        if (theming) {
+            tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
+            instructions.push(THEME_INSTRUCTIONS);
+        }
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
-            tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
+            tools.push(...selfChecked(sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives)));
             instructions.push(sessionInstructions(drives));
         }
         this.serverTools = tools;
@@ -1854,6 +1865,9 @@ export class Agent {
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
+            inputKeys: Object.fromEntries(tools.map((t) => [t.name, inputKeysOf(t.inputSchema)])),
+            checksItself: [...checksItself],
+            readOnly: tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
             instructions: this.serverInstructions,
             // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
@@ -2477,7 +2491,7 @@ export class Agent {
             context: (tokens, window) => this.recordBackendContext(tokens, window),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messageCount, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
-            limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emitFromBackend({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
             // that took its place (the TUI's /new keeps the same host).
@@ -2902,14 +2916,15 @@ export class Agent {
             // prompt, once and whole. Not into the compaction: Codex's (thread/compact/start) takes no input, and
             // Claude Code's /compact only instructions for its summary, which would keep a summary of them at best.
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.backends.get(provider)?.synced ?? resume.synced, place),
-            limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
+            limits: (limits, partial, full) => this.emit({ type: "limits", limits, partial, ...(full ? { full } : {}) }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
         };
         const sink: TurnSink = {
             emit: (e) => {
                 // The CLI saying it compacted: this compaction's own rule (compact_end) says so.
                 if (e.type === "notice" && e.data?.compacted) return;
-                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
+                // Its commands too: listed as it reopened, they'd not be listed again.
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits" || e.type === "cli_commands") this.emit(e);
             },
             drainQueued: () => [],
         };
@@ -3074,14 +3089,15 @@ export class Agent {
     private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>, lent = false): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
-        // Like the command check below, explicit asks still apply in bypass mode.
+        // Checked as in the default mode, for its deny rules and the ask rules that name it.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         // A denied call is refused as denied, whatever its input; one that can't run isn't asked about.
         const invalid = await refusal?.();
         if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
-        if (lent || decision.behavior !== "ask" || !decision.rule) return undefined;
+        // Nor is one asked about in Bypass.
+        if (lent || decision.behavior !== "ask" || !decision.rule || this.inBypass()) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
         const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
         if (signal.aborted) return refuse("Interrupted by user");
@@ -3203,7 +3219,7 @@ export class Agent {
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name) ?? servedThemeName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
@@ -3231,8 +3247,8 @@ export class Agent {
     /**
      * run_with_secrets (Claude Code, Codex): one command with Cavvy's Bash and those secrets. The CLI approves
      * Cavvy's tools without asking, so the check is here, at least as strict as backendPermission's for a
-     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
-     * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
+     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule or Bypass runs it without
+     * asking (no other mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
      */
     private async runWithSecrets(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
@@ -3247,7 +3263,7 @@ export class Agent {
         const decision = this.o.checker.check(BashTool, input, "default", cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
         const names = o.names.join(", ");
-        if (!(decision.behavior === "allow" && decision.rule)) {
+        if (!(decision.behavior === "allow" && decision.rule) && mode !== "bypassPermissions") {
             if (!this.o.host.askPermission) return refuse("Permission to run a command with secrets was not granted (non-interactive session).");
             const ask = {
                 ...decision,
@@ -3278,15 +3294,48 @@ export class Agent {
     }
 
     /**
-     * A permission prompt from the backend. Its own permission system decided
-     * to ask; Cavvy's rules then apply: deny rules (and Cavvy's
-     * protected files) refuse it, an explicit allow rule approves it, and
-     * anything else goes to the user. Cavvy's mode defaults never
-     * approve on the user's behalf what the backend wanted confirmed, except
-     * where the ask says nothing of its own: Codex asking about every command,
-     * or a read-only agent asking because of Cavvy's own rule. There a
-     * read-only command Cavvy would run for its own models runs.
+     * A CLI's own ask (BackendPermission.native: Antigravity's): the user answers it, with Allow and Deny, and Cavvy's
+     * rules, mode and hooks decide none of it. Only a read-only agent of Cavvy's stays read-only, as it was asked to.
      */
+    private async nativePermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
+        const input = req.input;
+        if (this.o.readOnly) {
+            const reads = tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? "")));
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? "")), stop: false };
+        }
+        if (!this.o.host.askPermission) return { allow: false, message: `Permission to use ${tool.name} was not granted (non-interactive session).`, stop: false };
+        let title = req.title ?? tool.name;
+        try {
+            title = tool.title(input as any) || title;
+        } catch {
+            // keep the backend's title
+        }
+        let preview = req.preview;
+        if (!preview) {
+            try {
+                preview = await tool.preview?.(input, this.toolContext("", signal));
+            } catch {
+                // preview is optional
+            }
+        }
+        const answer = await this.o.host.askPermission({
+            tool,
+            input,
+            title,
+            decision: { behavior: "ask", ...(req.reason ? { reason: req.reason } : {}) },
+            preview: oneLineSummary(preview),
+            ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}),
+            ...(req.callId ? { callId: req.callId } : {}),
+            ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}),
+        });
+        if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
+        if (answer.allow) return { allow: true };
+        const fb = answer.feedback?.trim();
+        if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };
+        return { allow: false, message: "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it.", stop: true };
+    }
+
     /**
      * A PermissionRequest hook approved other input than the backend asked about: it goes back to the
      * backend to run (Claude Code takes it; Codex refuses it), once it passes what the original had to.
@@ -3305,13 +3354,29 @@ export class Agent {
         return { allow: true, updatedInput: input };
     }
 
+    /**
+     * A permission prompt from the backend. Its own permission system decided
+     * to ask; Cavvy's rules then apply: deny rules (and Cavvy's
+     * protected files) refuse it, an explicit allow rule approves it, and
+     * anything else goes to the user. Cavvy's mode defaults never
+     * approve on the user's behalf what the backend wanted confirmed, except
+     * where the ask says nothing of its own: Codex asking about every command,
+     * or a read-only agent asking because of Cavvy's own rule. There a
+     * read-only command Cavvy would run for its own models runs. A CLI's own
+     * ask (native) goes to the user as it is (nativePermission).
+     */
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
-        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
-        const input = req.input;
+        if (req.native) return this.nativePermission(req, signal);
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title, req.readOnly);
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
-        const mode = childMode(this.o.mode.get(), own?.permissionMode);
-        const cwd = this.runningIn ?? this.state.cwd;
+        // A read-only agent in a session in Bypass: the user isn't asked there, so what it reads is checked as the session's own
+        // calls are, in another folder or over the network too (the session itself runs anything there unasked).
+        const bypass = Boolean(this.o.readOnly) && this.o.sessionMode?.() === "bypassPermissions";
+        const input = req.input;
+        const mode = bypass ? "bypassPermissions" : childMode(this.o.mode.get(), own?.permissionMode);
+        // In Bypass, where a command the backend runs in another folder isn't asked about, it's checked as run from that folder.
+        const cwd = mode === "bypassPermissions" && req.elsewhere ? req.elsewhere : (this.runningIn ?? this.state.cwd);
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
         if (req.exempt) {
             const d = this.o.checker.check(tool, input, "bypassPermissions", cwd, { memoryDir: this.o.memoryDir });
@@ -3340,6 +3405,10 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        // In Bypass nothing is asked about, whatever the backend wanted confirmed: past the deny rules (and, for a read-only
+        // agent, the read-only check above), it runs.
+        // Not what Claude Code asks about from its own bypass mode: that's a hook of the user's own saying ask.
+        if (mode === "bypassPermissions" && decision.behavior === "allow" && !req.ownBypassAsk) ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         const saysNothing = (req.asksAlways ?? this.o.readOnly) && !ownMode;
@@ -3363,7 +3432,8 @@ export class Agent {
                     if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds Cavvy's credential store.`, stop: false };
                 }
             }
-            ruled = false;
+            // Asked about, but in Bypass (Codex can keep an earlier mode's policy until its turn ends).
+            ruled = mode === "bypassPermissions" && decision.behavior === "allow";
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
         let title = req.title ?? tool.name;
@@ -3372,13 +3442,20 @@ export class Agent {
         } catch {
             // keep the backend's title
         }
-        // Bypass: whatever an agent CLI (or its sub-agent) still asks about runs, as in the CLI's own bypass mode, where
-        // it asks about nothing. Deny rules and Cavvy's credential store refused it above (extra sandbox access too).
-        // What bypass itself still asks about (a catastrophic command: rm -rf ~, mkfs) reaches the user, as for Cavvy's
-        // own tools. Hooks still have their say. (Codex and Grok told to ask only so PreToolUse hooks see the call: hooksOnly.)
-        if ((mode === "bypassPermissions" || req.hooksOnly) && decision.behavior === "allow") ruled = true;
-        // A PreToolUse hook that asks wants the user, whatever the rules say.
-        if (req.hookDecision === "ask") ruled = false;
+        // Bypass: whatever an agent CLI (or its sub-agent) still asks about runs (above), as in the CLI's own bypass mode,
+        // where it asks about nothing. Deny rules and Cavvy's credential store refused it above (extra sandbox access too).
+        // Codex and Grok told to ask only so PreToolUse hooks see the call (hooksOnly): the mode decides, as it would have.
+        if (req.hooksOnly && decision.behavior === "allow") ruled = true;
+        // But what an agent CLI asks about in Bypass that is catastrophic (rm -rf ~, mkfs; on a server, a push to the
+        // default branch) reaches the user, whatever else allowed it.
+        const guarded = mode === "bypassPermissions" && decision.behavior === "allow" ? this.o.checker.bypassGuard(tool, input, cwd) : undefined;
+        if (guarded) {
+            decision = guarded;
+            ruled = false;
+        }
+        // A PreToolUse hook that asks wants the user, whatever the rules say. So does a command in another folder
+        // (Grok), but for a read-only agent in a session in Bypass.
+        if (req.hookDecision === "ask" || (req.elsewhere && mode !== "bypassPermissions")) ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
@@ -3432,6 +3509,11 @@ export class Agent {
 
     // -----------------------------------------------------------------------
     // Tools
+
+    /** The session is in Bypass (a read-only agent's own mode is another: `sessionMode`): nothing is asked about. */
+    private inBypass(): boolean {
+        return (this.o.sessionMode?.() ?? this.o.mode.get()) === "bypassPermissions";
+    }
 
     private findTool(name: string): Tool<any> | undefined {
         return this.tools.find((t) => t.name === name);
@@ -3953,7 +4035,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES, ...THEME_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];
@@ -4028,6 +4110,7 @@ export class Agent {
             parentFastMode: () => this.fastMode(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
+            sessionMode: backend && def.readOnly ? (this.o.sessionMode ?? (() => parentMode.get())) : undefined,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and Cavvy refuses).
             // In auto, Codex's is its read-only auto mode: reads run in its read-only sandbox without asking. Claude Code's
             // stays in default, where every command comes to Cavvy, which runs read-only ones without asking.
@@ -4190,13 +4273,13 @@ const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: anothe
 const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool Cavvy has no tool of its own for (rules still match its name). */
-function backendTool(name: string, title?: string): Tool<any> {
+function backendTool(name: string, title?: string, readOnly = false): Tool<any> {
     return {
         name,
         description: "",
         parameters: { type: "object" },
         category: name.startsWith("mcp__") ? "mcp" : "execute",
-        readOnly: false,
+        readOnly,
         title: () => title ?? name,
         run: async () => ({ content: "" }),
     };

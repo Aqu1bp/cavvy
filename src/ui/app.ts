@@ -68,7 +68,7 @@ import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { findCli } from "../backends/cli";
 import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
-import { commandList, commandRefusesImages, openInBrowser, runCommand } from "../commands/index";
+import { commandList, commandRefusesImages, openInBrowser, runCommand, type Command } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
@@ -224,6 +224,8 @@ export class App {
     private turnTokens = 0;
     /** The agent CLIs' plan limits as last reported, by provider and account (/cost shows them). */
     planLimits = new Map<string, PlanLimits>();
+    /** Each account's plan as its CLI said when this terminal checked it ("max"), by planLimitKey: for /cost's headings. */
+    accountPlans = new Map<string, string>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;
@@ -1616,7 +1618,7 @@ export class App {
                 {
                     const key = planLimitKey(e.limits.provider, e.limits.accountId);
                     const prev = this.planLimits.get(key);
-                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial));
+                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial, e.full));
                 }
                 break;
             case "usage":
@@ -2524,8 +2526,15 @@ export class App {
         const tok = e.tokenAtCursor();
         if (e.text.startsWith("/") && tok.start === 0 && !e.text.includes(" ")) {
             const q = e.text.slice(1).toLowerCase();
-            const all = commandList(this);
-            const items = all
+            // The CLI's own commands too, once it has listed them, as the desktop app's menu has (Codex's are skills: in $).
+            const listed = commandList(this);
+            const taken = new Set(listed.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
+            const provider = this.model?.provider;
+            const own: Pick<Command, "name" | "description" | "args" | "aliases">[] =
+                provider && baseCli(provider) !== "codex" && this.cliCommands?.provider === provider
+                    ? [...this.cliCommands.names].filter((n) => !taken.has(n)).map((n) => ({ name: n, description: `${getProvider(provider)?.name ?? provider}'s own command` }))
+                    : [];
+            const items = [...listed, ...own]
                 .filter((c) => c.name.startsWith(q) || (q.length > 1 && c.name.includes(q)) || c.aliases?.some((a) => a.startsWith(q)))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
                 .slice(0, 8)

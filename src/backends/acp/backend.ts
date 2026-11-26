@@ -1,4 +1,4 @@
-// ACP agents (OpenCode, Grok Build) as agent backends: one process per Cavvy session on
+// ACP agents (OpenCode, Grok Build, Antigravity) as agent backends: one process per Cavvy session on
 // the live CLI layer (src/backends/live), kept between turns, as Claude Code's
 // are (claude-live.ts). The protocol is connection.ts; what each agent does
 // its own way is its def (defs.ts) and agents.ts.
@@ -7,7 +7,10 @@
 // installed program, whose environment (childEnv) has Cavvy's provider keys
 // removed, so it signs in its own way.
 
-import { homedir } from "os";
+import { randomUUID } from "crypto";
+import { realpathSync, rmSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join } from "path";
 import type { PermissionMode } from "../../permissions/modes";
 import type { ProviderDef } from "../../providers/registry";
 import { type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
@@ -20,11 +23,11 @@ import type { AgentCliStatus } from "../index";
 import { liveDebug } from "../live/debug";
 import { LiveCliPool, type PoolOptions } from "../live/pool";
 import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveTurnResult } from "../live/session";
-import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec } from "../live/types";
+import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec, TurnInput } from "../live/types";
 import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
-import { acpAgent, type AcpAgent } from "./agents";
-import { AcpConnection, RESUME_FAILED, type SteerSource } from "./connection";
+import { acpAgent, acpModelTraits, type AcpAgent } from "./agents";
+import { AcpConnection, RESUME_FAILED, type AttachedFiles, type SteerSource } from "./connection";
 import { AcpGone, AcpRpc } from "./rpc";
 
 /** How long the status check waits for initialize. */
@@ -44,11 +47,24 @@ class AcpAdapter implements AgentCliAdapter {
     /** Where the turn under way takes messages to steer it with. */
     steering?: SteerSource;
     conn?: AcpConnection;
+    /** The session's attachments as files (AcpAgent.pdfAsLink): kept while the session is, gone with it. */
+    private files?: AttachedFiles;
 
     constructor(
         readonly def: AgentCliDef,
         private agent: AcpAgent,
     ) {}
+
+    private attached(): AttachedFiles | undefined {
+        if (!this.agent.pdfAsLink) return undefined;
+        return (this.files ??= { dir: join(realpathSync(tmpdir()), `${this.def.id}-attachments-${randomUUID()}`), paths: new Set(), count: 0 });
+    }
+
+    /** The session is over: its attachments go. */
+    dispose() {
+        if (this.files?.count) rmSync(this.files.dir, { recursive: true, force: true });
+        this.files = undefined;
+    }
 
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, this.def.cli);
@@ -60,7 +76,18 @@ class AcpAdapter implements AgentCliAdapter {
     }
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
-        const conn = new AcpConnection(proc, events, host, this.def, this.agent, this.current?.cwd ?? homedir(), () => this.steering, () => (this.current?.readOnly ? undefined : this.current?.orchestrator));
+        const conn = new AcpConnection(
+            proc,
+            events,
+            host,
+            this.def,
+            this.agent,
+            this.current?.cwd ?? homedir(),
+            () => this.steering,
+            () => (this.current?.readOnly ? undefined : this.current?.orchestrator),
+            () => Boolean(this.current?.readOnly),
+            () => this.attached(),
+        );
         this.conn = conn;
         liveDebug("acp", "spawned", { agent: this.def.id, pid: proc.pid });
         try {
@@ -139,8 +166,12 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
 export async function acpModels(providerId: string, signal?: AbortSignal): Promise<ModelInfo[]> {
     const def = acpDef(providerId);
     const bin = requireCli(providerId, def.cli);
-    const listed = await acpAgent(providerId).listModels(bin, signal, cliEnv(providerId));
-    return listed.map((m) => backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images }));
+    const agent = acpAgent(providerId);
+    const listed = await agent.listModels(bin, signal, cliEnv(providerId));
+    // Where each id names its effort (gemini-4-neon-medium), Cavvy's effort setting has nothing to set.
+    return listed.map((m) =>
+        backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...acpModelTraits(providerId, m.id) }),
+    );
 }
 
 /** A turn running here, for a mode change mid-turn (setMode). */
@@ -182,7 +213,8 @@ export class AcpBackend implements AgentBackendClient {
         return acpModels(this.def.id, signal);
     }
 
-    async runTurn(t: BackendTurn): Promise<BackendResult> {
+    /** `command`: its own command's turn (/compact), which may well end without a reply. */
+    async runTurn(t: BackendTurn, command = false): Promise<BackendResult> {
         const name = this.cli.name;
         if (t.adopt) return { reason: "error", text: "", actions: [], error: `${name} doesn't start turns of its own.` };
         // A fork shares the session it came from: it can't be copied, so the fork starts one of its own with the conversation.
@@ -215,15 +247,16 @@ export class AcpBackend implements AgentBackendClient {
             };
             adapter.steering = steering;
             stopSteering = t.sink.onQueued?.(() => (adapter.steering === steering ? adapter.conn?.steerQueued() : undefined));
-            let input = { text: t.prompt, images: t.images };
+            let input: TurnInput = { text: t.prompt, images: t.images, ...(t.documents?.length ? { documents: t.documents } : {}) };
             let sent = false;
             for (;;) {
-                const r = await live.runTurn(input, rec.sink, run.part.signal, { spawn: t, settings: { model: t.model, mode: run.mode, effort: t.effort, fastMode: t.fastMode }, host: t.session });
+                // Started in the mode it runs in now: one that starts with flags of its own (Antigravity's Bypass) restarts to change.
+                const r = await live.runTurn(input, rec.sink, run.part.signal, { spawn: { ...t, mode: run.mode }, settings: { model: t.model, mode: run.mode, effort: t.effort, fastMode: t.fastMode }, host: t.session });
                 liveDebug("acp", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered });
                 sent ||= !r.refused;
                 const restart = run.restartFor;
                 run.restartFor = undefined;
-                if (!restart || t.signal.aborted || r.reason !== "aborted") return this.result(t, rec, { ...r, refused: r.refused && !sent });
+                if (!restart || t.signal.aborted || r.reason !== "aborted") return this.result(t, rec, { ...r, refused: r.refused && !sent }, command);
                 // Stopped for the mode, not by the user: it goes on under it (its prompt again, if it never got there).
                 liveDebug("acp", "mode restart", { key, mode: restart });
                 if (!r.refused) input = { text: modeSwitched(restart), images: [] };
@@ -239,7 +272,7 @@ export class AcpBackend implements AgentBackendClient {
         }
     }
 
-    private result(t: BackendTurn, rec: TurnRecord, r: LiveTurnResult): BackendResult {
+    private result(t: BackendTurn, rec: TurnRecord, r: LiveTurnResult, command = false): BackendResult {
         const name = this.cli.name;
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: `${name} didn't answer the stop in time. The turn ended here; if it stays busy, its next turn says so.` });
         const out = rec.take();
@@ -248,20 +281,22 @@ export class AcpBackend implements AgentBackendClient {
             const error = r.error ?? `${name} stopped with an error.`;
             return { ...out, reason: "error", error, resumeFailed: Boolean(t.resumeId && error.startsWith(RESUME_FAILED)), ...refused };
         }
-        if (r.reason === "done" && !rec.any) t.sink.emit({ type: "notice", level: "warn", message: `${name} ended the turn without a reply.` });
+        if (r.reason === "done" && !rec.any && !command) t.sink.emit({ type: "notice", level: "warn", message: `${name} ended the turn without a reply.` });
         return { ...out, reason: r.reason, ...refused };
     }
 
     /** Not supported: it compacts by itself, if at all (Agent.compactBackend says so before this). */
-    async compact(): Promise<BackendResult> {
-        return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+    /** Its own /compact, as a prompt on the session being continued (agy-1.5.17-acp-compact.jsonl). */
+    async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
+        if (this.cli.caps.compact !== "command") return { reason: "error", text: "", actions: [], error: `Compaction isn't supported for ${this.cli.name}.` };
+        return this.runTurn({ ...t, prompt: `/compact${t.instructions ? ` ${t.instructions}` : ""}`, images: [] }, true);
     }
 
     /**
      * Asks are decided by the mode when they come; its own plan mode follows at the next turn (apply). A mode its
-     * session must be opened with (Grok's auto) can't change mid-turn: a stricter one stops the turn, which goes on
-     * under it in a process that resumed the session (one being readied is readied again); a looser one waits for the
-     * next turn.
+     * session must be opened with (Grok's auto), or that its own mode takes only from its next prompt (Antigravity's),
+     * can't change mid-turn: a stricter one stops the turn, which goes on under it (in a process that resumed the
+     * session, where the process must start so); a looser one waits for the next turn.
      */
     setMode() {
         for (const run of this.runs) {
@@ -274,10 +309,15 @@ export class AcpBackend implements AgentBackendClient {
         }
     }
 
-    /** A turn readied in mode `was` can't go on in `now`: its session was opened for another, and `now` is stricter. */
+    /**
+     * A turn readied in mode `was` can't go on in `now`: `now` is stricter, and its session was opened for another, or
+     * the agent's own mode for it is another (set from its next prompt), or its process starts otherwise.
+     */
     private stale(was: PermissionMode, now: PermissionMode): boolean {
-        const meta = this.agent.sessionMeta;
-        return Boolean(meta) && JSON.stringify(meta!(was) ?? null) !== JSON.stringify(meta!(now) ?? null) && STRICTNESS[now] > STRICTNESS[was];
+        if (STRICTNESS[now] <= STRICTNESS[was]) return false;
+        const same = (f: ((m: PermissionMode) => unknown) | undefined) => !f || JSON.stringify(f(was) ?? null) === JSON.stringify(f(now) ?? null);
+        const own = this.agent.sessionModes;
+        return !same(this.agent.sessionMeta) || !same(this.agent.modeArgs) || !same(own && ((m) => own[m]));
     }
 
     async restart(key: string): Promise<void> {
@@ -285,10 +325,14 @@ export class AcpBackend implements AgentBackendClient {
     }
 
     async release(key: string): Promise<void> {
+        const adapter = this.pool.get(key, this.def.id)?.adapter as AcpAdapter | undefined;
         await this.pool.release(key, this.def.id);
+        adapter?.dispose();
     }
 
     async shutdown(): Promise<void> {
+        const adapters = this.pool.list().map((s) => s.adapter as AcpAdapter);
         await this.pool.shutdownAll();
+        for (const a of adapters) a.dispose();
     }
 }

@@ -60,6 +60,10 @@ export interface Prefs {
     chatWidth: "narrow" | "default" | "wide";
     /** How panels and menus open and close. */
     motion: "instant" | "quick" | "smooth";
+    /** Settings → Appearance → Theme: a built-in's id or one of ~/.cavvy/themes; unset, none. */
+    themeId?: string;
+    /** A theme's scene moves (the system's reduced motion always stops it). */
+    themeMotion: boolean;
 }
 
 /** The column's widths at text size 14: it widens and narrows with the text (--sp, tokens.css). */
@@ -90,8 +94,11 @@ export const PREF_DEFAULTS: Prefs = {
     chatWidth: "default",
     // "instant" came from t3code; new installs get quick panels. Saved prefs keep their value (they're stored whole).
     motion: "quick",
+    themeMotion: true,
 };
 
+/** A theme's id (src/themes/format.ts ID). */
+const THEME_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const SCHEMES: readonly string[] = ["system", "light", "dark"];
 const GLASSES: readonly string[] = ["glass", "tinted", "solid"];
 const TINTS: readonly string[] = ["clear", "ocean", "accent"];
@@ -121,6 +128,7 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     if (!GLASSES.includes(out.glass as string)) delete out.glass;
     if (!TINTS.includes(out.tint as string)) delete out.tint;
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
+    if ("themeId" in out && !(typeof out.themeId === "string" && THEME_ID.test(out.themeId))) delete out.themeId;
     // Folded projects: a list of paths, or the default (none).
     if ("collapsedProjects" in out && !(Array.isArray(out.collapsedProjects) && out.collapsedProjects.every((c) => typeof c === "string"))) delete out.collapsedProjects;
     if ("foldedDays" in out && !(Array.isArray(out.foldedDays) && out.foldedDays.every((d) => DAYS.includes(d as DayLabel)))) delete out.foldedDays;
@@ -140,8 +148,9 @@ export interface Appearance {
     style: Record<string, string>;
 }
 
-export function appearanceOf(p: Prefs, systemDark: boolean): Appearance {
-    const theme = p.scheme === "system" ? (systemDark ? "dark" : "light") : p.scheme;
+/** `forced`: the one scheme the theme showing is made for, which the window follows while it shows. */
+export function appearanceOf(p: Prefs, systemDark: boolean, forced?: "light" | "dark"): Appearance {
+    const theme = forced ?? (p.scheme === "system" ? (systemDark ? "dark" : "light") : p.scheme);
     return {
         theme,
         dataset: { theme, scheme: theme, glass: p.glass, tint: p.tint, contrast: p.contrast, accent: p.accent, density: p.density, motion: p.motion },

@@ -365,6 +365,28 @@ describe("in the TUI", () => {
         expect(labels("use $")).not.toContain("$imagegen");
     });
 
+    test("the / menu has the CLI's own commands once it has listed them, as the desktop app's does (Codex's are in $)", () => {
+        const { app } = testApp();
+        const menu = (text: string) => {
+            app.editor.set(text);
+            return ((app as any).completions()?.items ?? []).map((i: any) => [i.label, i.description]);
+        };
+        app.model = { id: "gemini-4-neon-medium", provider: "antigravity" } as any;
+        app.cliCommands = { provider: "antigravity", names: new Set(["antigravity-guide", "goal"]) };
+        expect(menu("/antigravity-g")).toEqual([["/antigravity-guide", "Antigravity's own command"]]);
+        // One Cavvy has too is Cavvy's entry, once.
+        expect(menu("/goa").filter(([l]: string[]) => l.startsWith("/goal"))).toHaveLength(1);
+        app.model = { id: "default", provider: "claude-code" } as any;
+        app.cliCommands = { provider: "claude-code", names: new Set(["code-review"]) };
+        expect(menu("/code-r")).toEqual([["/code-review", "Claude Code's own command"]]);
+        app.model = { id: "default", provider: "codex" } as any;
+        app.cliCommands = { provider: "codex", names: new Set(["imagegen"]) };
+        expect(menu("/imageg")).toEqual([]);
+        // Another model: the list isn't its.
+        app.model = { id: "m", provider: "anthropic" } as any;
+        expect(menu("/imageg")).toEqual([]);
+    });
+
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {
         skill(userSkills, "shared", "description: Both have it", "Cavvy body");
         const { app, turns, notices } = testApp();
@@ -383,6 +405,21 @@ describe("in the TUI", () => {
         expect(await runCommand(app, "/code-review")).toBe(true);
         await runCommand(app, "/shared y");
         expect(turns[1]!.text).toContain("Cavvy body");
+    });
+
+    test("on Antigravity, a skill of a name it lists goes to it as typed; Cavvy's others are pasted, as it has no plugin for them", async () => {
+        skill(userSkills, "shared", "description: Both have it", "Cavvy body");
+        skill(userSkills, "cavvy-only", "description: Only here", "Cavvy only");
+        const { app, turns } = testApp();
+        app.model = { id: "gemini-4-neon-medium", provider: "antigravity" } as any;
+        app.cliCommands = { provider: "antigravity", names: new Set(["shared", "antigravity-guide"]) };
+        await runCommand(app, "/shared x");
+        await runCommand(app, "/cavvy-only y");
+        expect(turns[0]).toMatchObject({ text: "/shared x" });
+        expect(turns[1]).toMatchObject({ display: "/cavvy-only y", kind: "command" });
+        expect(turns[1]!.text).toContain("Cavvy only");
+        // One of its own Cavvy doesn't have goes as typed.
+        expect(await runCommand(app, "/antigravity-guide")).toBe(false);
     });
 
     test("/skills lists them with where they come from, and says how to add one when there are none", async () => {

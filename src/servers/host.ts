@@ -1,6 +1,7 @@
 // The Cavvy a server runs for the machines that connect to it: `cavvy host …`.
 // The machine that sets a server up puts Cavvy there and starts this
-// (src/servers/install.ts); systemd keeps it running where there is one.
+// (src/servers/install.ts); systemd keeps it running where there is one, and
+// launchd on a Mac (src/servers/service.ts).
 //
 // One runs per user on a machine, however many machines connect:
 //   - `<home>/server/host.lock` names the process that is it. One found there
@@ -364,7 +365,11 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
     const staticDir = named === undefined ? defaultStatic() : existsSync(join(named, "index.html")) ? named : undefined;
-    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json") });
+    // A Mac goes to sleep with nobody at it: not while a session here works (wake.ts).
+    let busy: (() => boolean) | undefined;
+    const wake = process.platform === "darwin" ? new (await import("./wake")).WakeLock({ working: () => busy?.() ?? false }) : undefined;
+    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json"), onTurns: wake && ((running) => wake.turnsRunning(running)) });
+    busy = () => srv.engine.activity().working > 0;
     for (const n of env.notes) log(`note: ${n}`);
 
     let stopping = false;
@@ -377,6 +382,7 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
         const timer = setTimeout(() => process.exit(code), 20_000);
         controlServer?.stop(true);
         await srv.stop().catch(() => undefined);
+        wake?.stop();
         clearTimeout(timer);
         rmSync(socketPath(), { force: true });
         rmSync(stateFile(), { force: true });
@@ -459,6 +465,8 @@ export interface HostCheck {
     /** The permission mode sessions start in there. Left out by a server from before it was said. */
     mode?: PermissionMode;
     memMb: number;
+    /** A Mac: how Xcode stands. Not the server's own word: the machine that asks finds out beside this (service.ts remoteCheck). */
+    xcode?: "ready" | "missing" | "unopened" | "no-simulator";
 }
 
 async function runs(argv: string[], timeoutMs = 15_000): Promise<boolean> {

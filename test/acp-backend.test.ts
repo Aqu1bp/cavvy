@@ -20,6 +20,7 @@ const { canAnswerOneOff } = await import("../src/agent/goal");
 const { loginCommand } = await import("../src/backends/account-login");
 const { permissionFor } = await import("../src/backends/acp/connection");
 const { agentCli } = await import("../src/backends/defs");
+const { acpAgent } = await import("../src/backends/acp/agents");
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
 type PermissionResponse = import("../src/agent/agent").PermissionResponse;
@@ -55,7 +56,7 @@ afterEach(async () => {
     await (c as any).shutdown?.();
 });
 
-async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
+async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[]; scheduler?: import("../src/agent/schedule").Scheduler } = {}) {
     const settings = o.settings ?? {};
     const events: AgentEvent[] = [];
     const asked: PermissionRequest[] = [];
@@ -71,7 +72,7 @@ async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: P
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), scheduler: o.scheduler },
         host: {
             drainQueued: () => o.queued?.splice(0) ?? [],
             emit: (e) => events.push(e),
@@ -308,6 +309,31 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
     });
 });
 
+describe("/compact", () => {
+    test("one that has its own (Antigravity's): sent as its command on the same session, which may say nothing", async () => {
+        const caps = agentCli("opencode")!.caps as { compact: string };
+        const was = caps.compact;
+        const own = acpAgent("opencode");
+        const a = await makeAgent();
+        await a.run("hi");
+        const id = a.session.backends.get("opencode")?.id;
+        try {
+            await expect(a.agent.compact({ auto: false, signal: new AbortController().signal })).rejects.toThrow(/isn't supported for OpenCode/);
+            caps.compact = "command";
+            own.listsCommands = true;
+            const before = a.events.length;
+            expect(await a.agent.compact({ auto: false, signal: new AbortController().signal, instructions: "Keep the word." })).toBe(true);
+            const prompts = logLines().flatMap((l) => (l.received?.method === "session/prompt" ? [l.received.params] : []));
+            expect(prompts.at(-1)).toMatchObject({ sessionId: id, prompt: [{ type: "text", text: "/compact Keep the word." }] });
+            // No reply is no warning; its commands, listed as it ran, still reach the menus.
+            expect(a.events.slice(before).flatMap((e) => (e.type === "usage" ? [] : [e.type]))).toEqual(["compact_start", "cli_commands", "compact_end"]);
+        } finally {
+            caps.compact = was;
+            own.listsCommands = undefined;
+        }
+    });
+});
+
 describe("the server's lists", () => {
     test("providers.list, accounts.list and the plan checks don't throw with OpenCode on", async () => {
         const { Engine } = await import("../src/server/engine");
@@ -325,5 +351,93 @@ describe("the server's lists", () => {
         } finally {
             await engine.stop();
         }
+    });
+});
+
+describe("Cavvy's browser tools, which OpenCode has none of", () => {
+    const { fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+    const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+    const savedBrowser = process.env.CAVVY_BROWSER;
+    const made: InstanceType<typeof Agent>[] = [];
+    beforeEach(() => {
+        process.env.CAVVY_BROWSER = fakeChromeProgram();
+        forgetChromeLookup();
+    });
+    afterEach(async () => {
+        for (const a of made.splice(0)) await a.state.browser?.dispose();
+        process.env.CAVVY_BROWSER = savedBrowser;
+        forgetChromeLookup();
+    });
+    async function browsing(o: Parameters<typeof makeAgent>[0] = {}) {
+        const a = await makeAgent(o);
+        made.push(a.agent);
+        return a;
+    }
+
+    test("go to OpenCode on Cavvy's MCP server: reading a local page runs unasked, OpenCode's own ask is answered yes, and the row is Cavvy's", async () => {
+        const a = await browsing({ ask: () => ({ allow: true }) });
+        expect(await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]')).toBe("done");
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_navigate", isError: false, text: expect.stringContaining('button "Click me"') });
+        expect(answers()).toEqual([once]);
+        expect(a.asked).toEqual([]);
+        expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "BrowserNavigate", input: { url: "http://localhost:4000/" } }, title: "BrowserNavigate(http://localhost:4000/)" });
+    });
+
+    test("acting on the page is asked about by Cavvy, once, as BrowserAct; a no reaches OpenCode as the tool's error", async () => {
+        const a = await browsing({ ask: () => ({ allow: false }) });
+        await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]');
+        rmSync(LOG, { force: true });
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        expect(a.asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+        expect(answers()).toEqual([once]);
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true });
+    });
+
+    test("Plan mode refuses acting on the page, though OpenCode approves Cavvy's tools", async () => {
+        const a = await browsing({ mode: "plan", ask: () => ({ allow: true }) });
+        await a.run('[[mcp:browser_navigate {"url":"http://localhost:4000/"}]]');
+        rmSync(LOG, { force: true });
+        await a.run('[[mcp:browser_act {"action":"click","ref":"e5"}]]');
+        expect(a.asked).toEqual([]);
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "browser_act", isError: true, text: expect.stringMatching(/plan mode/i) });
+    });
+
+    test("one of Cavvy's tools that doesn't check itself (schedule_create) is asked about before it runs, and Plan refuses it", async () => {
+        const { Scheduler } = await import("../src/agent/schedule");
+        const scheduler = new Scheduler({ idle: () => false, fire: () => {} });
+        try {
+            const call = '[[mcp:schedule_create {"cron":"*/5 * * * *","prompt":"check"}]]';
+            const a = await browsing({ scheduler, ask: () => ({ allow: false }) });
+            await a.run(call);
+            expect(a.asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__schedule_create"]);
+            expect(answers()).toEqual([reject]);
+            expect(scheduler.list()).toEqual([]);
+            rmSync(LOG, { force: true });
+            const p = await browsing({ scheduler, mode: "plan", ask: () => ({ allow: true }) });
+            await p.run(call);
+            expect(p.asked).toEqual([]);
+            expect(answers()).toEqual([reject]);
+            expect(scheduler.list()).toEqual([]);
+            // Reading them (schedule_list) is checked as read-only: Plan lets it run, and a deny rule still holds.
+            rmSync(LOG, { force: true });
+            await p.run("[[mcp:schedule_list {}]]");
+            expect(p.asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__schedule_list"]);
+            expect(answers()).toEqual([once]);
+            expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ tool: "schedule_list", isError: false });
+            rmSync(LOG, { force: true });
+            const denied = await browsing({ scheduler, settings: { permissions: { deny: ["mcp__cavvy__schedule_list"] } }, ask: () => ({ allow: true }) });
+            await denied.run("[[mcp:schedule_list {}]]");
+            expect(denied.asked).toEqual([]);
+            expect(answers()).toEqual([reject]);
+        } finally {
+            scheduler.dispose();
+        }
+    });
+
+    test("a command named like the tool is checked as what it is", async () => {
+        const a = await browsing({ ask: () => ({ allow: false }) });
+        await a.run("[[run:cavvy_browser_navigate]]");
+        expect(a.asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Bash", "cavvy_browser_navigate"]]);
+        expect(answers()).toEqual([reject]);
     });
 });

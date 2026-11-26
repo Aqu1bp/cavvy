@@ -215,8 +215,9 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
     }
     // A message from the agent in another session: say what it asked.
-    if (/messages? from (the agent|agents) in (another of )?the user's/.test(p)) {
-        const said = /From session \S+ \(“[^”]*”\):\n\n([^\n]*)/.exec(prompt)?.[1] ?? "";
+    // (Or what it started this session with: the same answer.)
+    if (/messages? from (the agent|agents) in (another of )?the user's|in another of the user's sessions started this session/.test(p)) {
+        const said = /(?:From session \S+ \(“[^”]*”\)|Session \S+ \(“[^”]*”\) started this session to do this):\n\n([^\n]*)/.exec(prompt)?.[1] ?? "";
         return { text: `Another session asked: “${said}” I'll take it from here.` };
     }
     // Hands work to another session of this project (ListSessions, SendToSession), or starts one (StartSession).
@@ -354,7 +355,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
-    // Sets a server up for the user ("newserver aws-mumbai ubuntu@203.0.113.7"), adds one they have ("addserver box dev@box.example"), or deletes one ("deleteserver aws-mumbai").
+    // Sets a server up for the user ("newserver aws-mumbai ubuntu@203.0.113.7"), adds one they have ("addserver box dev@box.example", with its own key file: "… key=~/keys/box"), or deletes one ("deleteserver aws-mumbai").
     const newServer = /\bnewserver ([\w-]+) (\S+)/.exec(p);
     if (newServer) {
         const [, name, address] = newServer;
@@ -365,8 +366,9 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         }
         return { text: lastResult };
     }
-    const addServer = /\baddserver ([\w-]+) (\S+)/.exec(p);
-    if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1], address: addServer[2] } }] } : { text: lastResult };
+    // From the prompt as written: a key file's path keeps its case.
+    const addServer = /\baddserver ([\w-]+) (\S+)(?: key=(\S+))?/i.exec(prompt);
+    if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1]!.toLowerCase(), address: addServer[2], ...(addServer[3] ? { identity_file: addServer[3] } : {}) } }] } : { text: lastResult };
     const deleteServer = /\bdeleteserver ([\w-]+)/.exec(p);
     if (deleteServer) return toolRounds === 0 ? { text: "Deleting it.", calls: [{ name: "ServerRemove", args: { name: deleteServer[1] } }] } : { text: lastResult };
     // Asks the user to sign in to something ("signin gh", "signin fly on box"; "signin fly: fly auth login" offers a command Cavvy doesn't know), then carries on.

@@ -131,6 +131,23 @@ describe("what the agent reads", () => {
         expect(wakesFrom([{ source: "monitor", label: "m", text: "t", at: 0 }])).toBeUndefined();
     });
 
+    test("what a session was started with is its task, not a request to weigh against the user's", () => {
+        const w = { ...peerWake({ id: "box/s1", title: "Build" }, "run the tests on the Mac", true), at: 0 };
+        const text = formatWakes([w]);
+        expect(text).toContain("The agent in another of the user's sessions started this session, with the task below");
+        expect(text).toContain("do it as you would one the user gave you, under this session's own permission mode and rules");
+        // The user may have got there first (the task joins a turn they started): theirs stands.
+        expect(text).toContain("What the user has told this session themselves comes first");
+        expect(text).not.toContain("only within what the user asked of this session");
+        expect(text).toContain("Session box/s1 (“Build”) started this session to do this:\n\nrun the tests on the Mac");
+        expect(text).toContain("send a message to session box/s1");
+        // Shown in the transcript as any message from it is.
+        expect(wakesFrom([w])).toEqual({ id: "box/s1", title: "Build" });
+        // With anything else arriving in the same turn, the careful reading holds for all of it.
+        const later = { ...peerWake({ id: "s2", title: "Other" }, "and this too"), at: 0 };
+        expect(formatWakes([w, later])).toContain("only within what the user asked of this session");
+    });
+
     test("modes: no handing work to a session that asks less; a new one gets the narrower", () => {
         expect(freerMode("bypassPermissions", "default")).toBe(true);
         expect(freerMode("default", "auto")).toBe(false);
@@ -515,6 +532,8 @@ describe("in the app", () => {
             const r = await startSession(a.toolState.peers, { prompt: `Task ${i}.`, title: `Task ${i}` });
             expect(r.isError).toBeFalsy();
             ids.push(/Started session (\S+)/.exec(r.text)![1]!);
+            // The first is used further down: a window has it open, so it isn't let go a moment after its turn.
+            if (i === 0) (client as any).subs.add(ids[0]);
         }
         expect((await startSession(a.toolState.peers, { prompt: "One more." })).text).toContain("started 5 sessions in the last hour");
         const child = engine.runtimes.get(ids[0]!)!;
@@ -538,14 +557,143 @@ describe("in the app", () => {
         }
     }, 40_000);
 
+    test("a session on another machine starts one here: in a folder the user has opened, in the folder's default mode, and bounded as its own are", async () => {
+        const { peerOps } = await import("../src/server/session-peers");
+        const mac = peerOps(engine.peerHost(), false);
+        const from = { id: "box/s1", title: "On box", mode: "auto" as const };
+        // The user's own computer: not in a folder they never opened in Cavvy there.
+        const strange = realpathSync(tempDir("peers-strange-"));
+        dirs.push(strange);
+        await expect(mac.start({ cwd: strange, prompt: "Look around.", title: "Look" }, from)).rejects.toThrow("isn't a folder the user has opened in Cavvy on this machine");
+        // In one they have (a session of their own was made there): started, with the prompt as a message from that session, named by its machine.
+        await (await engine.createSession(project, { mode: "default" })).ready;
+        const s = await mac.start({ cwd: project, prompt: "Write a README section about SSO sign-in.", title: "From box" }, from);
+        const n = engine.runtimes.get(s.id)!;
+        expect([n.ws.cwd, n.title, s.model]).toEqual([project, "From box", "mock:mock-opus"]);
+        // The folder's default here (Manual), not the starter's Auto.
+        expect(n.mode).toBe("default");
+        await until(() => turns(n).length > 0 && n.idle && turns(n).at(-1)!.status !== "running");
+        expect(turns(n)[0]!.prompt?.from?.id).toBe("box/s1");
+        // It was started by another: it starts none itself, here or on another machine.
+        expect((await startSession(n.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
+        expect(JSON.parse(readFileSync(n.session.path, "utf-8").split("\n")[0]!).startedBy).toBe("box/s1");
+        // Inside a folder they've opened (a worktree of the project's) counts as theirs.
+        const inside = join(project, "sub-tree");
+        mkdirSync(inside, { recursive: true });
+        expect((await mac.start({ cwd: inside, prompt: "In the tree.", title: "Tree" }, from)).cwd).toBe(inside);
+        // A link inside an opened folder that leads out of it isn't inside it.
+        symlinkSync(strange, join(project, "way-out"));
+        await expect(mac.start({ cwd: join(project, "way-out"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
+        // Nor is an opened folder that has since been put aside for a link to somewhere else.
+        const swapped = join(realpathSync(tempDir("peers-swap-")), "app");
+        dirs.push(join(swapped, ".."));
+        mkdirSync(swapped);
+        await (await engine.createSession(swapped, { mode: "default" })).ready;
+        expect((await mac.start({ cwd: swapped, prompt: "While it's a folder.", title: "Folder" }, { ...from, id: "lab/swap" })).cwd).toBe(swapped);
+        for (const rt of [...engine.runtimes.values()]) if (rt.ws.cwd === swapped) await until(() => !rt.busy);
+        rmSync(swapped, { recursive: true, force: true });
+        symlinkSync(strange, swapped);
+        await expect(mac.start({ cwd: swapped, prompt: "p", title: "t" }, { ...from, id: "lab/swap" })).rejects.toThrow("isn't a folder the user has opened");
+        // A model this machine doesn't have, a folder that isn't one: refused, and nothing started.
+        const before = engine.runtimes.size;
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, from)).rejects.toThrow("isn't a model on this machine");
+        await expect(mac.start({ cwd: join(project, "missing"), prompt: "p", title: "t" }, from)).rejects.toThrow("isn't a folder the user has opened");
+        expect(engine.runtimes.size).toBeLessThanOrEqual(before);
+        // Whatever the starter runs in: where the user's default is Bypass, a Manual starter's session runs in Bypass.
+        const settingsFile = join(iso.home, "settings.json");
+        const settings = readFileSync(settingsFile, "utf-8");
+        const free = realpathSync(createDemoProject(tempDir("peers-free-"), { git: false }));
+        dirs.push(free);
+        writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: true, defaultMode: "bypassPermissions" } }));
+        const manual = { id: "lab/manual", title: "Manual on lab", mode: "default" as const };
+        try {
+            await (await engine.createSession(free, { mode: "default" })).ready;
+            const freer = engine.runtimes.get((await mac.start({ cwd: free, prompt: "Tidy the notes.", title: "Free" }, manual)).id)!;
+            expect(freer.mode).toBe("bypassPermissions");
+            // A message named as from the session that started it is taken; one named as from another there isn't.
+            expect((await mac.send(freer.id, "And the tests.", manual)).text).toStartWith(`Sent to session ${freer.id} `);
+            await expect(mac.send(freer.id, "From another.", { ...manual, id: "lab/other" })).rejects.toThrow("can't be sent work from there");
+            // Bypass turned off since: one started now would run in Manual, so the starter's messages are held to the rule again.
+            writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: false, defaultMode: "bypassPermissions" } }));
+            await expect(mac.send(freer.id, "After it was turned off.", manual)).rejects.toThrow("can't be sent work from there");
+            // A default that isn't a mode is Manual, whatever the project's file says.
+            writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: true, defaultMode: "everything" } }));
+            expect(engine.peerHost().defaultModeIn(free)).toBe("default");
+        } finally {
+            writeFileSync(settingsFile, settings);
+        }
+        // A project's own settings can ask more of the user than the user's do, not less: Auto there doesn't make a Manual default Auto.
+        const own = realpathSync(createDemoProject(tempDir("peers-own-"), { git: false }));
+        dirs.push(own);
+        mkdirSync(join(own, ".cavvy"), { recursive: true });
+        writeFileSync(join(own, ".cavvy", "settings.json"), JSON.stringify({ permissions: { defaultMode: "auto" } }));
+        (await import("../src/config/trust")).trustFolder(own);
+        expect((await engine.createSession(own)).mode).toBe("auto");
+        const loosened = engine.runtimes.get((await mac.start({ cwd: own, prompt: "Again.", title: "Loosened" }, manual)).id)!;
+        expect(loosened.mode).toBe("default");
+        // Nor where the user's own default is a Bypass that isn't turned on: that's Manual, not the project's Auto.
+        writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), permissions: { allowBypass: false, defaultMode: "bypassPermissions" } }));
+        try {
+            expect(engine.peerHost().defaultModeIn(own)).toBe("default");
+        } finally {
+            writeFileSync(settingsFile, settings);
+        }
+        // Once the user has put it in a freer mode than one started now would get, its starter's messages are held to the rule again.
+        expect((await mac.send(loosened.id, "More.", manual)).text).toStartWith(`Sent to session ${loosened.id} `);
+        loosened.setMode("auto");
+        await expect(mac.send(loosened.id, "Still more.", manual)).rejects.toThrow("can't be sent work from there");
+        // No more an hour from one starter than a session may start: the refused ones above didn't count.
+        for (let i = 0; i < 3; i++) await mac.start({ cwd: project, prompt: `Task ${i}.`, title: `Task ${i}` }, from);
+        await expect(mac.start({ cwd: project, prompt: "One more.", title: "More" }, from)).rejects.toThrow("box/s1 has started 5 sessions here in the last hour");
+        // Which session asks is the server's word: all of one server's together start no more than 10 an hour here.
+        for (let i = 0; i < 5; i++) await mac.start({ cwd: project, prompt: `Other ${i}.`, title: `Other ${i}` }, { ...from, id: `box/other${i}` });
+        await expect(mac.start({ cwd: project, prompt: "An eleventh.", title: "Eleventh" }, { ...from, id: "box/yet-another" })).rejects.toThrow("Sessions on box have started 10 sessions here in the last hour");
+        // Another starter has its own count; and on a server, any folder will do.
+        const server = peerOps(engine.peerHost(), true);
+        const onServer = await server.start({ cwd: strange, prompt: "Anywhere.", title: "Anywhere" }, { id: "mac/s2", title: "On the Mac", mode: "bypassPermissions" });
+        expect(onServer.cwd).toBe(strange);
+        // Refused once the session was made (an effort its model doesn't take): its folder's start-up has run, so it counts.
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", effort: "bogus" }, { ...from, id: "lab/eff" })).rejects.toThrow('doesn\'t take "bogus" effort');
+        expect((engine as any).sessionStarts.times.get("lab/eff")).toHaveLength(1);
+        // Refused before (a model this machine hasn't): it doesn't.
+        await expect(mac.start({ cwd: project, prompt: "p", title: "t", model: "nope:model" }, { ...from, id: "lab/early" })).rejects.toThrow("isn't a model on this machine");
+        expect((engine as any).sessionStarts.times.get("lab/early") ?? []).toHaveLength(0);
+        for (const rt of [...engine.runtimes.values()]) await until(() => !rt.busy);
+    }, 40_000);
+
+    test("a start on another machine counts against the starter's hour unless that machine refused it", async () => {
+        const { appPeers } = await import("../src/server/session-peers");
+        const { PeerUnsure } = await import("../src/agent/peers");
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        await a.ready;
+        let answer: () => never = () => {
+            throw new PeerError("box refused it.");
+        };
+        const peers = appPeers(engine.peerHost(), a, () => ({ list: async () => [], read: async () => undefined, send: async () => ({ text: "", delivery: "started" as const, title: "" }), start: async () => answer() }));
+        const start = () => startSession(peers, { prompt: "Over there.", machine: "box", folder: "/srv/app" });
+        // Refused: as if never asked, however often.
+        for (let i = 0; i < 7; i++) expect((await start()).text).toBe("box refused it.");
+        // Not answered: it may have started, so it counts, and the sixth isn't asked for.
+        answer = () => {
+            throw new PeerUnsure("box didn't answer. The session may have started all the same.");
+        };
+        for (let i = 0; i < 5; i++) expect((await start()).text).toContain("may have started all the same");
+        expect((await start()).text).toContain("started 5 sessions in the last hour");
+        // A folder without a machine, a machine without a folder: said before anything is asked.
+        expect((await startSession(peers, { prompt: "p", folder: "/srv/app" })).text).toContain("folder is for a session on another machine");
+        expect((await startSession(peers, { prompt: "p", machine: "box" })).text).toContain("Say which folder on box");
+    });
+
     test("a session started by another runs on its Claude Code and Codex accounts", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });
         await a.ready;
         a.session.setAccount("codex", "work");
         const s = await startSession(a.toolState.peers, { prompt: "Write the changelog.", title: "Changelog" });
         const id = /Started session (\S+)/.exec(s.text)![1]!;
-        expect(engine.runtimes.get(id)!.session.accountId("codex")).toBe("work");
-        await until(() => turns(engine.runtimes.get(id)!).length > 0 && engine.runtimes.get(id)!.idle);
+        // Held here: nothing has it open, so the engine lets go of it a moment after its turn.
+        const started = engine.runtimes.get(id)!;
+        expect(started.session.accountId("codex")).toBe("work");
+        await until(() => turns(started).length > 0 && started.idle);
     });
 
     describe("a model and effort to start on", () => {

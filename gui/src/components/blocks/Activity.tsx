@@ -23,6 +23,7 @@ import {
     Hand,
     ListChecks,
     MessageCircleQuestion,
+    Layers,
     Plug,
     Radar,
     Search,
@@ -114,6 +115,7 @@ export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
             <Match when={p.agent}><Bot size={s()} /></Match>
             <Match when={kind().startsWith("Browser")}><Globe size={s()} /></Match>
             <Match when={kind().startsWith("Simulator")}><Smartphone size={s()} /></Match>
+            <Match when={kind().startsWith("Theme")}><Layers size={s()} /></Match>
             <Match when={p.name === "Read"}><FileText size={s()} /></Match>
             <Match when={p.name === "Grep" || p.name === "Glob"}><Search size={s()} /></Match>
             <Match when={p.name === "LS"}><FolderTree size={s()} /></Match>
