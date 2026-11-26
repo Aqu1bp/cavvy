@@ -178,7 +178,10 @@ export function CommitDialog() {
                 <Show when={!loading()} fallback={<Spinner />}>
                     <Show when={view()?.repo}>
                         <Show when={warning()}>
-                            <p class="commit-warning" role="status">{warning()}</p>
+                            {/* Ticked, the box below says where the commit goes. */}
+                            <Show when={!toNew()}>
+                                <p class="commit-warning" role="status">{warning()}</p>
+                            </Show>
                             <div class="commit-branch">
                                 <label class="check-row">
                                     <input

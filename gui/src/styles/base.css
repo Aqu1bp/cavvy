@@ -501,6 +501,10 @@ h3 {
     text-underline-offset: 2px;
 }
 
+.link-btn:disabled {
+    opacity: 0.45;
+}
+
 /* ---- Chips ---- */
 
 .chip {

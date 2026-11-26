@@ -15,7 +15,9 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
         toast() {}, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal() {},
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
     });
-    const tree = render(props);
+    // The dialog and its footer, where the buttons are.
+    const shown = render(props);
+    const tree = [shown, shown.props.footer];
     const button = (text: string) => elements(tree, "button").find((n) => n.children.flat(Infinity).some((s: unknown) => typeof s === "string" && s.includes(text)))!;
     const input = (id: string) => elements(tree, "input").find((n) => n.props.id === id)!;
     return { effects, calls, props, tree, button, input, closed: () => closed, result: () => result, block: (s: string) => { blocked = s; } };
@@ -33,6 +35,18 @@ test("opening only previews; push requires protected acknowledgement and sends d
     d.button("Push").props.onClick(); await tick();
     expect(d.calls[1]).toMatchObject({ method: "session.gitPublish", params: { id: "one", action: "push", fingerprint: defaults.fingerprint, confirmProtected: true, base: "main" } });
     expect(d.closed()).toBe(true);
+});
+
+test("the buttons are in the dialog's footer, kept in view; its tick boxes are the app's check rows", async () => {
+    const d = dialog({ ...defaults, protected: true });
+    await d.effects[0]!();
+    const [body, footer] = d.tree as [any, any];
+    const text = (n: any) => n.children.flat(Infinity).filter((s: unknown) => typeof s === "string").join("");
+    expect(elements(footer, "button").map(text)).toEqual(expect.arrayContaining(["Cancel", "Push", "Open pull request"]));
+    expect(elements(body.children, "button").map(text)).not.toContain("Push");
+    const rows = elements(body.children, "label").filter((l) => elements(l.children, "input").some((i) => i.props.type === "checkbox"));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.props.class).toBe("check-row");
 });
 
 test("a new branch to a remote that doesn't say its default pushes without the protected acknowledgement", async () => {
