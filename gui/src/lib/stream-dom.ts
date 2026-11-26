@@ -23,7 +23,8 @@ const FRESH = "md-fresh";
 const WRITTEN = "md-written";
 /** The trail's tiers by a mark's age (ms), between the clock's steps: younger than the first, tier 1, and so on; older than the last, plain. */
 export const TRAIL_MS = [25, 75, 125, 175, 225, 275, 325] as const;
-const TIERS = ["md-t1", "md-t2", "md-t3", "md-t4", "md-t5", "md-t6", "md-t7"] as const;
+/** md-t1 to md-t7 (markdown.css). */
+const TIERS = TRAIL_MS.map((_, i) => `md-t${i + 1}`);
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
 const KEPT = new Set(["src", "tabindex", "data-loading"]);
 
@@ -161,10 +162,21 @@ function isFreshText(n: Node): n is HTMLElement {
     return n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).dataset.fresh !== undefined;
 }
 
-function freshText(text: string): Node {
+/** Something a font may draw in colours of its own (an emoji, a symbol): anything past letters, digits and punctuation. */
+const OWN_COLOUR = /[^\0-\u206f]/;
+/** Elements that draw a line with the words in them, in a colour of their own. */
+const LINED = "a,del,s,u,ins";
+
+/**
+ * New words, wrapped to go into the trail. Plain ones (`ink`) are drawn light in their colour rather than through an
+ * opacity of their own (markdown.css): the same on screen, but each run with an opacity is drawn into a picture of its
+ * own first, every time one near it changes. Words whose looks aren't all in their colour (an emoji, a link's
+ * underline) keep the opacity.
+ */
+function freshText(text: string, parent: Node): Node {
     if (!text.trim()) return document.createTextNode(text);
     const span = document.createElement("span");
-    span.dataset.fresh = "";
+    span.dataset.fresh = OWN_COLOUR.test(text) || (parent as Element).closest(LINED) ? "" : "ink";
     span.textContent = text;
     mark(span);
     return span;
@@ -182,7 +194,7 @@ function sync(old: Node, next: Node) {
         const u = have[i];
         if (!u) {
             // Added at the end: new.
-            if (n.nodeType === Node.TEXT_NODE) old.appendChild(freshText((n as Text).data));
+            if (n.nodeType === Node.TEXT_NODE) old.appendChild(freshText((n as Text).data, old));
             else {
                 if (n.nodeType === Node.ELEMENT_NODE) mark(n as HTMLElement);
                 old.appendChild(n);
@@ -193,7 +205,7 @@ function sync(old: Node, next: Node) {
             const data = (n as Text).data;
             if (u.text === data) return;
             // The run grew: only the new end fades in.
-            if (u.text !== undefined && data.startsWith(u.text)) old.insertBefore(freshText(data.slice(u.text.length)), u.nodes.at(-1)!.nextSibling);
+            if (u.text !== undefined && data.startsWith(u.text)) old.insertBefore(freshText(data.slice(u.text.length), old), u.nodes.at(-1)!.nextSibling);
             else replace(old, u, document.createTextNode(data));
             return;
         }
