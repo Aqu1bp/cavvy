@@ -30,10 +30,10 @@ export type ServerTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | 
 export const MAC_LABEL = "dev.cavvy.server";
 
 /** Where a Mac keeps what only an administrator changes, and the PATH its root is given (changeable for tests: the pretend Mac's own). */
-export const macLaunchd = { daemons: "/Library/LaunchDaemons", rootPath: "/usr/bin:/bin:/usr/sbin:/sbin" };
+export const macLaunchd = { daemons: "/Library/LaunchDaemons", rootPath: "/usr/bin:/bin:/usr/sbin:/sbin", sudo: "/usr/bin/sudo" };
 
 /** A script with those filled in. */
-export const withMacPaths = (script: string) => script.replaceAll("@@DAEMONS@@", macLaunchd.daemons).replaceAll("@@ROOT_PATH@@", macLaunchd.rootPath);
+export const withMacPaths = (script: string) => script.replaceAll("@@DAEMONS@@", macLaunchd.daemons).replaceAll("@@ROOT_PATH@@", macLaunchd.rootPath).replaceAll("@@SUDO@@", macLaunchd.sudo);
 
 /**
  * `$daemon`: the LaunchDaemon's file, and `boots`: whether it's there and runs Cavvy as this account (another account

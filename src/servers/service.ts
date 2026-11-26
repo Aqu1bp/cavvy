@@ -144,7 +144,7 @@ if [ "$(uname -s)" = Darwin ]; then mac=1; uid=$(id -u); fi
 label="${MAC_LABEL}"
 agent="$HOME/Library/LaunchAgents/$label.plist"
 ${MAC_DAEMON}
-admin() { sudo -n true >/dev/null 2>&1; }
+admin() { @@SUDO@@ -n true >/dev/null 2>&1; }
 ${XML}
 mac_agent_plist() {
     p_dir=$(xml "$d")
@@ -157,7 +157,7 @@ ${PLIST}
 PLIST
 }
 # launchctl, as an administrator for the system's jobs.
-lctl() { case "$2" in system*) sudo -n launchctl "$@" ;; *) launchctl "$@" ;; esac; }
+lctl() { case "$2" in system*) @@SUDO@@ -n launchctl "$@" ;; *) launchctl "$@" ;; esac; }
 # Takes job $1 out of launchd, which ends it if it runs, and waits until it's out: one loaded while the last is
 # still going is refused.
 mac_unload() {
@@ -261,7 +261,7 @@ wait_up() {
  */
 const SETUP = `${LIB}
 if [ -n "$mac" ]; then
-    if { boots || [ ! -f "$daemon" ]; } && admin; then sudo -n /bin/sh -c "$2" >/dev/null 2>&1 || true; fi
+    if { boots || [ ! -f "$daemon" ]; } && admin; then @@SUDO@@ -n /bin/sh -c "$2" >/dev/null 2>&1 || true; fi
     echo "mac=1"
     if boots; then echo "boot=mine"; elif [ -f "$daemon" ]; then echo "boot=other"; fi
 elif has_systemd; then
@@ -560,7 +560,7 @@ export const BOOT_TAKEN = 66;
  * done this already.
  */
 export function bootCommand(): string {
-    return remoteSh(`exec sudo -p "Password for %p on %h: " /bin/sh -c "$1"`, [withMacPaths(MAC_BOOT)]);
+    return remoteSh(withMacPaths(`exec @@SUDO@@ -p "Password for %p on %h: " /bin/sh -c "$1"`), [withMacPaths(MAC_BOOT)]);
 }
 
 export class UpdateFailed extends ServerError {

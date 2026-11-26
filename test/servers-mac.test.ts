@@ -34,10 +34,11 @@ const me = userInfo().username;
 const real = { ...macLaunchd };
 macLaunchd.daemons = mac.daemons;
 macLaunchd.rootPath = `${mac.shims}:${real.rootPath}`;
+macLaunchd.sudo = `${mac.shims}/sudo`;
 saveServer(entry);
 
 /** How bootCommand asks for sudo, and a command run on the pretend Mac as it stands. */
-const SUDO = 'exec sudo -p "Password for %p on %h: " /bin/sh';
+const SUDO = `exec ${macLaunchd.sudo} -p "Password for %p on %h: " /bin/sh`;
 async function overSsh(command: string): Promise<{ code: number; err: string }> {
     const p = Bun.spawn(sshCommandArgv(entry, command), { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     return { code: await p.exited, err: (await new Response(p.stderr).text()).trim() };
