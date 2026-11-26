@@ -87,6 +87,12 @@
     .br-strip-note + .br-strip-count {
         display: none;
     }
+
+    /* What a side takes, said whole: on a row of its own under the size, while the side typed is refused. */
+    .br-strip-note.refused {
+        order: 1;
+        flex-basis: 100%;
+    }
 }
 
 /* The zoom and the way back to filling the pane, at the row's end: they wrap together. */
@@ -137,8 +143,8 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
 }
 
-/* After the size: how small it's drawn to fit, or what a side takes. The first thing to give way when the pane is narrow:
-   it never wraps the strip to a second row (which would take the page's height, and change the fit it reports). */
+/* After the size: how small it's drawn to fit, or what a side takes. The fit is the first thing to give way when the pane
+   is narrow: it never wraps the strip to a second row (which would take the page's height, and change the fit it reports). */
 .br-strip-note {
     flex: 1 1 0;
     min-width: 0;

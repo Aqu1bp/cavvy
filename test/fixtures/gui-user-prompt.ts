@@ -87,6 +87,15 @@ test("what came with it sits above the bubble: the schedule, then the attachment
     dispose();
 });
 
+test("a message that's only attachments (a side chat's answer brought back) has no empty bubble, nor Copy", () => {
+    const { row, dispose } = mount({ prompt: { text: "", files: [{ name: "Side chat answer", size: 40, lines: 3, from: "side-chat" }], index: 2 }, startedAt: at }, () => {});
+    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["prompt-attachments", "user-actions"]);
+    expect(text(kids(row)[0]!)).toContain("3 lines");
+    expect(all(row).some((n) => n.tag === "copy")).toBe(false);
+    expect(all(row).some((n) => n.props["aria-label"] === "Rewind to before this prompt")).toBe(true);
+    dispose();
+});
+
 test("a prompt's images keep their places, at their shapes, from the first frame; the count when they can't be had", async () => {
     const sizes: [number, number][] = [[1280, 800], [600, 800], [0, 0]];
     const waiting = mount({ pos: { seg: 0, index: 1 }, prompt: { text: "these", images: 3, imagesKey: "k", imageSizes: sizes, index: 1 } });

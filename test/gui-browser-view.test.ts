@@ -1,7 +1,7 @@
 // The Browser pane's page size and zoom (gui/src/lib/browser-view.ts): what the headless page is asked for, and how
 // large a device's page is drawn in the pane (gui/src/lib/browser.ts placeFrame).
 import { expect, test } from "bun:test";
-import { fitScale, pageTarget, side, viewLabel, zoomStep } from "../gui/src/lib/browser-view";
+import { DEVICES, deviceOf, fitScale, pageTarget, side, viewLabel, zoomStep } from "../gui/src/lib/browser-view";
 import { placeFrame } from "../gui/src/lib/browser";
 
 const pane = { width: 400, height: 700 };
@@ -54,4 +54,12 @@ test("zoom steps, sides typed in, and the label", () => {
     expect(side("")).toBeUndefined();
     expect(viewLabel()).toBe("Fill pane");
     expect(viewLabel({ device: { width: 390, height: 844 }, zoom: 1.5 })).toBe("390 × 844 · 150%");
+});
+
+test("a device either way round is that device; any other size is a custom one", () => {
+    const phone = DEVICES.find((d) => d.name === "Phone")!;
+    expect(deviceOf(phone.size)).toBe(phone);
+    expect(deviceOf({ width: phone.size.height, height: phone.size.width })).toBe(phone);
+    expect(deviceOf({ width: 390, height: 845 })).toBeUndefined();
+    expect(deviceOf(undefined)).toBeUndefined();
 });

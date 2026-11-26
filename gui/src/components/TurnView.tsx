@@ -190,29 +190,32 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     </For>
                 </span>
             </Show>
-            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
-                <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
-                    <span class="user-text mono">
-                        <SquareTerminal size={13} /> {text().slice(1)}
-                    </span>
-                </Show>
-                <Show when={parts().comments.length}>
-                    <div class="prompt-comments">
-                        <For each={parts().comments}>
-                            {(c) => (
-                                <div class="prompt-comment">
-                                    <button class="prompt-comment-where mono" data-find-skip title={`Show ${c.path} in the review`} aria-label={`Comment on ${c.path}, ${linesPhrase(c)}. Show the file in the review`} onClick={() => openReview(c.path)}>
-                                        <MessageSquareText size={12} aria-hidden="true" />
-                                        <span class="truncate">{c.path}:{linesLabel(c)}</span>
-                                    </button>
-                                    <span class="prompt-comment-text">{c.text}</span>
-                                </div>
-                            )}
-                        </For>
-                    </div>
-                </Show>
-                {more()}
-            </div>
+            {/* Not for a message that's only attachments (a side chat's answer brought back, say). */}
+            <Show when={text().trim() || parts().comments.length}>
+                <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
+                    <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
+                        <span class="user-text mono">
+                            <SquareTerminal size={13} /> {text().slice(1)}
+                        </span>
+                    </Show>
+                    <Show when={parts().comments.length}>
+                        <div class="prompt-comments">
+                            <For each={parts().comments}>
+                                {(c) => (
+                                    <div class="prompt-comment">
+                                        <button class="prompt-comment-where mono" data-find-skip title={`Show ${c.path} in the review`} aria-label={`Comment on ${c.path}, ${linesPhrase(c)}. Show the file in the review`} onClick={() => openReview(c.path)}>
+                                            <MessageSquareText size={12} aria-hidden="true" />
+                                            <span class="truncate">{c.path}:{linesLabel(c)}</span>
+                                        </button>
+                                        <span class="prompt-comment-text">{c.text}</span>
+                                    </div>
+                                )}
+                            </For>
+                        </div>
+                    </Show>
+                    {more()}
+                </div>
+            </Show>
             <div class="user-actions" data-find-skip>
                 <Show when={p.turn.startedAt}>
                     {(at) => (
@@ -221,7 +224,9 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                         </time>
                     )}
                 </Show>
-                <CopyButton text={raw} label="Copy prompt" />
+                <Show when={raw().trim()}>
+                    <CopyButton text={raw} label="Copy prompt" />
+                </Show>
                 <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
                     <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
                         <RotateCcw size={14} />
