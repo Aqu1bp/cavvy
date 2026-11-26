@@ -10,6 +10,19 @@ import { Spinner } from "./ui/bits";
 /** Where the branch stands with its upstream: "Up to date", else only the counts that aren't zero. */
 export const syncWords = (ahead: number, behind: number) => [ahead ? `${ahead} ahead` : "", behind ? `${behind} behind` : ""].filter(Boolean).join(" · ") || "Up to date";
 
+/**
+ * How a failed push is shown: a refused push (`push_failed`) leads with what to do, git's output after it; other git
+ * failures are only git's output; anything else is Cavvy's own sentence.
+ */
+export function publishError(message: string, code?: string): { text?: string; raw?: string } {
+    if (code === "push_failed") {
+        const at = message.indexOf("\n");
+        const raw = at < 0 ? "" : message.slice(at + 1).trim();
+        return { text: at < 0 ? message : message.slice(0, at), ...(raw ? { raw } : {}) };
+    }
+    return code === "git" ? { raw: message } : { text: message };
+}
+
 export function PublishDialog(p: { id?: string; onClose: () => void; onPublished: (pr?: GitPrInfo) => void }) {
     const [view, setView] = createSignal<GitPublishInfo>();
     const [title, setTitle] = createSignal("");
@@ -19,8 +32,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const [confirmed, setConfirmed] = createSignal(false);
     const [busy, setBusy] = createSignal(false);
     const [loading, setLoading] = createSignal(false);
-    /** What went wrong: Cavvy's own sentence, or git's output (`raw`, shown as it printed it). */
-    const [error, setError] = createSignal<{ text: string; raw?: boolean }>();
+    /** What went wrong: Cavvy's own sentence (`text`), git's output (`raw`, shown as it printed it), or both. */
+    const [error, setError] = createSignal<{ text?: string; raw?: string }>();
     // Generate: the model that drafted the title and description, what they were before (for Undo), or why it couldn't.
     const [generating, setGenerating] = createSignal(false);
     const [drafted, setDrafted] = createSignal<{ model: string; title: string; body: string }>();
@@ -63,8 +76,9 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         } catch (e) {
             if (revision !== version) return;
             // Signed out since the dialog opened: the button for it, not the CLI's advice.
-            if ((e as { code?: string }).code === "sign_in") setView({ ...info, gh: false, ghSignedOut: true });
-            else setError({ text: errorText(e), raw: (e as { code?: string }).code === "git" });
+            const code = (e as { code?: string }).code;
+            if (code === "sign_in") setView({ ...info, gh: false, ghSignedOut: true });
+            else setError(publishError(errorText(e), code));
         }
         finally { setBusy(false); }
     };
@@ -113,8 +127,10 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
     );
+    // Without the GitHub CLI, or signed out of it, it can only push: titled for that.
+    const heading = () => (view() && !view()!.gh ? `Push ${view()!.branch}?` : "Push and open pull request");
     return (
-        <Dialog open={Boolean(p.id)} onClose={close} title="Push and open pull request" width={620} footer={actions()}>
+        <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={620} footer={actions()}>
             <div class="commit-dialog">
                 <Show when={!loading()} fallback={<Spinner />}>
                     <Show when={view()}>
@@ -131,10 +147,16 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>#{view()?.pr?.number} {view()?.pr?.title} · {view()?.pr?.state}</button>
                         </Show>
                         <Show when={view()?.gh} fallback={<>
-                            <Show when={view()?.ghSignedOut} fallback={<p class="muted small">Pull requests need the GitHub CLI.</p>}>
-                                <button class="btn sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
+                            <Show when={!view()?.ghSignedOut}><p class="muted small">Pull requests need the GitHub CLI.</p></Show>
+                            {/* Its own width, as the pull request dialog's Sign in to GitHub; the comparison beside it. */}
+                            <Show when={view()?.ghSignedOut || view()?.compareUrl}>
+                                <div class="commit-generate">
+                                    <Show when={view()?.ghSignedOut}>
+                                        <button class="btn sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
+                                    </Show>
+                                    <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
+                                </div>
                             </Show>
-                            <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                         </>}>
                             <label class="commit-message-label" for="pr-base">Base</label>
                             <input id="pr-base" class="input mono" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
@@ -147,14 +169,22 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                 <Show when={drafted()}>
                                     <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                 </Show>
-                                <Show when={genError()}><span class="commit-warning small" role="status">{genError()}</span></Show>
+                                <Show when={genError()}><span class="wt-error" role="status">{genError()}</span></Show>
                             </div>
                             <label class="check-row"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /><span>Draft</span></label>
                         </Show>
                     </Show>
                 </Show>
                 <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>
-                <Show when={error()}>{(e) => (e().raw ? <pre class="commit-error" role="alert" ref={reveal}>{e().text}</pre> : <p class="commit-error" role="alert" ref={reveal}>{e().text}</p>)}</Show>
+                {/* Cavvy's sentence in the dialog's own type, then what git printed, as it printed it. */}
+                <Show when={error()}>
+                    {(e) => (
+                        <div class="publish-error" role="alert" ref={reveal}>
+                            <Show when={e().text}><p class="tone-err">{e().text}</p></Show>
+                            <Show when={e().raw}><pre class="commit-error">{e().raw}</pre></Show>
+                        </div>
+                    )}
+                </Show>
             </div>
         </Dialog>
     );

@@ -119,6 +119,35 @@ export function RewindDialog() {
         }),
     );
     const close = () => setRewindOpen(false);
+    // The prompts come after the dialog has put the keyboard on what it had (Cancel, the first row of the last list, or
+    // nothing yet): once they're here (or shown, once a reply ends), it goes to the chosen prompt, else the first, so
+    // Tab and Enter start from the list.
+    let listEl: HTMLDivElement | undefined;
+    createEffect(
+        on([targets, () => busySession()], ([t, waiting]) => {
+            if (!t?.length || waiting || !rewindOpen()) return;
+            requestAnimationFrame(() => {
+                if (!listEl?.isConnected) return;
+                const chosenRow = listEl.querySelector<HTMLElement>(".rw-item.on");
+                const at = document.activeElement;
+                if (at === chosenRow || (!chosenRow && listEl.contains(at))) return;
+                (chosenRow ?? listEl.querySelector<HTMLElement>(".rw-item"))?.focus();
+            });
+        }),
+    );
+    /** Up and Down (round the ends, as the branch dialog's list goes), Home and End move between the prompts; Enter picks one. */
+    const onListKey = (e: KeyboardEvent) => {
+        const rows = [...(listEl?.querySelectorAll<HTMLElement>(".rw-item") ?? [])];
+        const at = rows.indexOf(document.activeElement as HTMLElement);
+        if (at < 0 || e.altKey || e.ctrlKey || e.metaKey) return;
+        const n = rows.length;
+        const to = e.key === "ArrowDown" ? (at + 1) % n : e.key === "ArrowUp" ? (at - 1 + n) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
+        if (to < 0) return;
+        e.preventDefault();
+        rows[to]!.focus();
+    };
+    /** Nothing to rewind to: the line, and Cancel alone. */
+    const empty = () => !busySession() && targets.state === "ready" && !targets()!.length;
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
@@ -153,7 +182,7 @@ export function RewindDialog() {
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
                 <Show when={targets()} fallback={<Spinner />}>
                     <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
-                        <div class="rw-list">
+                        <div class="rw-list" ref={listEl} onKeyDown={onListKey}>
                             <For each={targets()}>
                                 {(t, i) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
@@ -236,19 +265,24 @@ export function RewindDialog() {
                 </Show>
             </Show>
             <div class="dialog-actions">
+                <Show when={empty()}>
+                    <span class="grow" />
+                </Show>
                 <button class="btn ghost" onClick={close}>
                     Cancel
                 </button>
-                <span class="grow" />
-                <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
-                    Code only
-                </button>
-                <button class="btn secondary" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
-                    Conversation only
-                </button>
-                <button class="btn primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
-                    Restore both
-                </button>
+                <Show when={!empty()}>
+                    <span class="grow" />
+                    <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
+                        Code only
+                    </button>
+                    <button class="btn secondary" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
+                        Conversation only
+                    </button>
+                    <button class="btn primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
+                        Restore both
+                    </button>
+                </Show>
             </div>
         </Dialog>
     );

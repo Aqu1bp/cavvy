@@ -377,8 +377,9 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if ((await local(cwd, signal)).fingerprint !== info.fingerprint) throw fail("The branch or destination changed. Reopen the dialog.", "stale");
     const needsPush = !info.hasUpstream || remoteRef.split("\t")[0] !== info.sha;
     const result = needsPush ? await pushTo(cwd, info, signal) : { code: 0, out: "", err: "" };
-    // Behind the remote (git's "non-fast-forward", "fetch first"): what to do about it, over git's own words.
-    if (result.code) throw fail(`${/non-fast-forward|\(fetch first\)/i.test(result.out + result.err) ? "The remote has commits this branch doesn't. Pull, then push again." : "Push failed."}\n${result.err}${result.out}`);
+    // Behind the remote (git's "non-fast-forward", "fetch first"): what to do about it, over git's own words. Its own
+    // code: the dialog shows the first line as its error and git's words below it, as git printed them.
+    if (result.code) throw fail(`${/non-fast-forward|\(fetch first\)/i.test(result.out + result.err) ? "The remote has commits this branch doesn't. Pull, then push again." : "Push failed."}\n${result.err}${result.out}`, "push_failed");
     if (!info.hasUpstream) {
         // A SHA source cannot set upstream via push -u. Name the reviewed local
         // branch explicitly, even if another client checked out/moved HEAD.

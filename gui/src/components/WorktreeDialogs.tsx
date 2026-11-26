@@ -71,11 +71,15 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const [suggesting, setSuggesting] = createSignal(false);
     const [suggested, setSuggested] = createSignal<{ model: string; error?: undefined } | { error: string; model?: undefined }>();
     const about = () => composerStorage.draft(homeDraftKey()).trim() || branch().trim();
+    /** Why Suggest couldn't name it, gone once the name is typed or Create pressed: one error under the field. */
+    const dropSuggestError = () => suggested()?.error && setSuggested(undefined);
     const suggest = async () => {
         const text = about();
         if (!text || suggesting()) return;
         setSuggesting(true);
         setSuggested(undefined);
+        // What Create said about the name goes with it: the field shows one error, the latest.
+        if (error()?.field === "branch") setError(undefined);
         try {
             const got = await rpc.call("projects.suggestBranch", { path: r.cwd, text });
             if (!open) return;
@@ -154,6 +158,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         // Only request the setup already shown before the user clicked Create.
         const preview = note();
         const setup = asksForSetup(preview, skipSetup()) && preview.kind === "runs" ? { id: preview.script.id, command: preview.script.command } : undefined;
+        dropSuggestError();
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
@@ -191,7 +196,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             >
                 <label class="wt-field">
                     <span class="wt-label">Branch name</span>
-                    <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
+                    <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => { dropSuggestError(); setBranch(e.currentTarget.value); }} aria-invalid={Boolean(errorFor("branch"))} />
                     <span class="wt-hint">
                         <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${draftedBy(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
                             {suggesting() ? "Suggesting…" : "Suggest a name"}
