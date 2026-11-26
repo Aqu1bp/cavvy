@@ -146,3 +146,8 @@
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
+
+/* The machine picked, while Home gets there (state/actions.ts goHomeOn). */
+.strip-ctl[aria-busy="true"] {
+    opacity: 0.6;
+}
