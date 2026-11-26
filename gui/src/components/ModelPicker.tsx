@@ -684,7 +684,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                         role="tab"
                                         aria-selected={filter() === g.provider}
                                         aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
-                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : g.providerName}
+                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "Last known list: the provider didn't answer" : g.providerName}
                                         onClick={(e) => (show(g.provider), e.detail && input?.focus())}
                                     >
                                         <ProviderIcon id={g.provider} name={g.providerName} size={14} />

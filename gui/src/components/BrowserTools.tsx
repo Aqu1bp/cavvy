@@ -312,7 +312,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                 <div class="menu-sep" />
                 {item(ZoomIn, () => "Zoom in", () => zoomBy(1), () => ({ disabled: zoom() >= 2 }))}
                 {item(ZoomOut, () => "Zoom out", () => zoomBy(-1), () => ({ disabled: zoom() <= 0.5 }))}
-                {item(Scan, () => `Actual size${zoom() !== 1 ? ` (now ${Math.round(zoom() * 100)}%)` : ""}`, () => zoomBy(0), () => ({ disabled: zoom() === 1 }))}
+                {item(Scan, () => "Actual size", () => zoomBy(0), () => ({ disabled: zoom() === 1 }))}
             </Menu>
         </>
     );
@@ -378,7 +378,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                             <button class="hb sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut size={14} /></button>
                             <button class="br-strip-zoom" title="Actual size" aria-label={`Zoom ${Math.round(zoom() * 100)}%: actual size`} onClick={() => zoomBy(0)}>{Math.round(zoom() * 100)}%</button>
                             <button class="hb sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><ZoomIn size={14} /></button>
-                            <button class="hb sm" aria-label="Fill pane at 100%" title={`${viewLabel(v())}: back to filling the pane at 100%`} onClick={() => setView(undefined)}><X size={14} /></button>
+                            <button class="hb sm" aria-label="Fill pane at 100%" title="Fill pane" onClick={() => setView(undefined)}><X size={14} /></button>
                         </span>
                     </div>
                 )}

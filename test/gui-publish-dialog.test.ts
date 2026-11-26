@@ -26,11 +26,11 @@ test("opening only previews; push requires protected acknowledgement and sends d
     const d = dialog({ ...defaults, protected: true });
     await d.effects[0]!();
     expect(d.calls.map((c) => c.method)).toEqual(["session.gitPublishInfo"]);
-    d.button("Confirm push").props.onClick(); await tick();
+    d.button("Push").props.onClick(); await tick();
     expect(d.calls).toHaveLength(1);
     const confirmation = elements(d.tree, "input").find((n) => n.props.type === "checkbox")!;
     confirmation.props.onChange({ currentTarget: { checked: true } });
-    d.button("Confirm push").props.onClick(); await tick();
+    d.button("Push").props.onClick(); await tick();
     expect(d.calls[1]).toMatchObject({ method: "session.gitPublish", params: { id: "one", action: "push", fingerprint: defaults.fingerprint, confirmProtected: true, base: "main" } });
     expect(d.closed()).toBe(true);
 });
@@ -38,7 +38,7 @@ test("opening only previews; push requires protected acknowledgement and sends d
 test("a new branch to a remote that doesn't say its default pushes without the protected acknowledgement", async () => {
     const d = dialog({ ...defaults, base: undefined, defaultUnknown: true, protected: false } as never);
     await d.effects[0]!();
-    d.button("Confirm push").props.onClick(); await tick();
+    d.button("Push").props.onClick(); await tick();
     expect(d.calls[1]).toMatchObject({ method: "session.gitPublish", params: { action: "push", confirmProtected: false } });
 });
 
@@ -57,14 +57,14 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
 test("Generate fills the title and description from the small model, for the base shown; a failure keeps the commits' text", async () => {
     const d = dialog(defaults, undefined, async () => ({ title: "Add SSO", body: "## Summary\nAdds it.", model: "mock:mock-haiku" }));
     await d.effects[0]!();
-    d.button("Generate title and description").props.onClick(); await tick();
+    d.button("Generate").props.onClick(); await tick();
     expect(d.calls[1]).toEqual({ method: "session.gitPrText", params: { id: "one", base: "main" } });
     d.button("Open pull request").props.onClick(); await tick();
     expect(d.calls[2]!.params).toMatchObject({ action: "pr", title: "Add SSO", body: "## Summary\nAdds it." });
 
     const failing = dialog(defaults, undefined, async () => { throw new Error("Set a small model in Settings to generate pull request text."); });
     await failing.effects[0]!();
-    failing.button("Generate title and description").props.onClick(); await tick();
+    failing.button("Generate").props.onClick(); await tick();
     failing.button("Open pull request").props.onClick(); await tick();
     expect(failing.calls[2]!.params).toMatchObject({ action: "pr", title: "Prefilled", body: "Commits" });
 });
@@ -72,7 +72,7 @@ test("Generate fills the title and description from the small model, for the bas
 test("busy/untrusted guard and unavailable gh prevent effects even if handler is invoked", async () => {
     const d = dialog({ ...defaults, gh: false }); await d.effects[0]!();
     d.button("Open pull request").props.onClick(); await tick(); expect(d.calls).toHaveLength(1);
-    d.block("Wait for work to finish"); d.button("Confirm push").props.onClick(); await tick(); expect(d.calls).toHaveLength(1);
+    d.block("Wait for work to finish"); d.button("Push").props.onClick(); await tick(); expect(d.calls).toHaveLength(1);
 });
 
 test("late preview cannot populate another session or publish from a closed dialog", async () => {
@@ -80,7 +80,7 @@ test("late preview cannot populate another session or publish from a closed dial
     const d = dialog(defaults, () => new Promise((r) => { resolve = r; }));
     const reading = d.effects[0]!();
     d.props.id = undefined; await d.effects[0]!(); resolve(defaults); await reading;
-    d.button("Confirm push").props.onClick(); await tick();
+    d.button("Push").props.onClick(); await tick();
     expect(d.calls).toHaveLength(1);
 });
 

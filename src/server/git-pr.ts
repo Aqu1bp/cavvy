@@ -51,7 +51,7 @@ async function ghJson(cwd: string, args: string[]): Promise<unknown> {
     try {
         return JSON.parse(r.out);
     } catch {
-        throw fail("gh returned something that isn't a pull request.");
+        throw fail("Couldn't read gh's answer. Try again.");
     }
 }
 
@@ -62,7 +62,7 @@ export async function gitPullRequests(cwd: string): Promise<GitPrListInfo> {
     const { repo } = await githubRemote(cwd);
     await needGh(cwd);
     const values = await ghJson(cwd, ["pr", "list", "--repo", `https://github.com/${repo}`, "--state", "open", "--limit", "50", "--json", "number,title,headRefName,author,isDraft,url,isCrossRepository,updatedAt"]);
-    if (!Array.isArray(values)) throw fail("gh returned something that isn't a list of pull requests.");
+    if (!Array.isArray(values)) throw fail("Couldn't read gh's answer. Try again.");
     const prs = values
         .filter((v) => v && Number.isSafeInteger(v.number) && v.number > 0 && typeof v.title === "string")
         .map((v) => ({
@@ -92,7 +92,7 @@ export async function gitPrWorktree(cwd: string, input: string, log?: Log): Prom
     await needGh(cwd);
     const v = (await ghJson(cwd, ["pr", "view", String(ref.number), "--repo", `https://github.com/${repo}`, "--json", "number,title,url,headRefName,isCrossRepository,state"])) as Record<string, any>;
     const prUrl = `https://github.com/${repo}/pull/${ref.number}`;
-    if (!v || v.number !== ref.number || typeof v.title !== "string" || typeof v.url !== "string" || v.url.toLowerCase() !== prUrl.toLowerCase()) throw fail("gh returned something that isn't this pull request.");
+    if (!v || v.number !== ref.number || typeof v.title !== "string" || typeof v.url !== "string" || v.url.toLowerCase() !== prUrl.toLowerCase()) throw fail("Couldn't read gh's answer. Try again.");
     const pr = { number: ref.number, title: text(v.title, 250), url: prUrl, state: text(v.state, 20).toLowerCase() };
     const head = typeof v.headRefName === "string" ? v.headRefName : "";
     const fork = v.isCrossRepository !== false || !validBranch(head);

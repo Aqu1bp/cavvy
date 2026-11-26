@@ -1,6 +1,5 @@
 /* A CLI's environment variables (CliEnv.tsx): name, value, lock, remove, a row each. */
 .env-form { display: grid; gap: calc(10 * var(--sp)); }
-.env-hint { margin: 0; color: var(--fg-3); font-size: 0.857rem; }
 .env-editor { display: grid; gap: calc(6 * var(--sp)); }
 .env-item { display: grid; gap: calc(4 * var(--sp)); min-width: 0; }
 .env-row { display: flex; align-items: center; gap: calc(6 * var(--sp)); min-width: 0; }

@@ -61,7 +61,7 @@ export interface FileRestoreResult {
 }
 
 const SHARED = "Another session is working in this folder.";
-const CHANGED = "it changed again while you were choosing, so it was left as it is";
+const CHANGED = "changed while you were choosing; left as it is";
 
 const inside = (root: string, abs: string) => {
     const rel = relative(root, abs);
@@ -201,7 +201,7 @@ async function folderFor(root: string, abs: string) {
         dir = join(dir, part);
         const st = await lstat(dir).catch(() => undefined);
         if (!st) await mkdir(dir);
-        else if (st.isSymbolicLink() || !st.isDirectory()) throw new Error("a folder on its way isn't one now, so it was left as it is");
+        else if (st.isSymbolicLink() || !st.isDirectory()) throw new Error("a folder on its path isn't one now; left as it is");
     }
 }
 
@@ -347,7 +347,7 @@ export async function undoRestore(snapshots: TurnSnapshots | undefined, id: stri
         const abs = join(rec.root, rel);
         try {
             if (!(await matches(abs, f.now))) {
-                failed.push({ path: abs, error: "it changed since, so it was left as it is" });
+                failed.push({ path: abs, error: "changed since; left as it is" });
                 continue;
             }
             if (f.old) {

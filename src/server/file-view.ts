@@ -21,7 +21,7 @@ export async function readProjectFile(path: string, cwd: string, roots: string[]
     const image = imageMediaType(t.real) !== undefined;
     const r = await readRegular(t.real, image ? MAX_SHOWN_IMAGE : MAX_VIEW_TEXT);
     if (r === null) throw new RpcError(`${path} doesn't exist`, "not_found");
-    if (!r) throw new RpcError(`${path} isn't a regular file that can be read`, "invalid");
+    if (!r) throw new RpcError(`Can't read ${path}`, "invalid");
     if (!r.buf) return { ...named, size: r.size, kind: "large" };
     const mediaType = image ? sniffImage(r.buf) : undefined;
     if (mediaType) return { ...named, size: r.size, kind: "image", mediaType, data: r.buf.toString("base64") };

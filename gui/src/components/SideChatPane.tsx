@@ -78,7 +78,7 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
                     fallback={
                         <>
                             <Head />
-                            <div class="none sc-none">This session runs on {awayMachine(p.handle.id) || "this computer"}. Its side chat is in a window there.</div>
+                            <div class="none sc-none">Its side chat is on {awayMachine(p.handle.id) || "this computer"}.</div>
                         </>
                     }
                 >

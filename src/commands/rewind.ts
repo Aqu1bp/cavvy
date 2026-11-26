@@ -151,7 +151,7 @@ export async function rewindCommand(app: App, args = "") {
         const except = restore.length ? ", except in the files listed above, which go back to how they were then" : "";
         lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it${except}. Use git to review or undo the rest.`));
     }
-    if (!plan.whole) lines.push(theme.subtle("Changes made by shell commands aren't tracked and won't be undone."));
+    if (!plan.whole) lines.push(theme.subtle("Changes made by shell commands aren't undone."));
 
     type Choice = "both" | "conversation" | "code" | "cancel";
     const noCode = !restore.length;

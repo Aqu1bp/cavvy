@@ -36,7 +36,7 @@ test("no remote, ambiguous remotes, detached HEAD and changed confirmation canno
     git(cwd, "remote", "remove", "origin"); git(cwd, "remote", "remove", "other");
     await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "no_remote", message: "This repository has no remote." });
     git(cwd, "checkout", "--detach");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("detached HEAD");
+    await expect(gitPublishInfo(cwd)).rejects.toThrow("Check out a branch to push");
     expect(calls(state, ".git-calls").some((args) => args.includes("push"))).toBe(false);
 });
 
@@ -301,8 +301,8 @@ for (const scope of ["local", "global", "included-global"]) test(`${scope} chain
             git(cwd, "config", ...options, `url.${remote}.${rule}`, "publish:fixture");
             git(cwd, "config", ...options, "url./tmp/other-destination.insteadOf", remote);
             expect(git(cwd, "remote", "get-url", "--push", "origin")).toBe(remote);
-            await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
-            await expect(gitPublish(cwd, { fingerprint: "a".repeat(64), action: "push", confirmProtected: true })).rejects.toThrow("URL rewrite applies");
+            await expect(gitPublishInfo(cwd)).rejects.toThrow("Git rewrites this remote");
+            await expect(gitPublish(cwd, { fingerprint: "a".repeat(64), action: "push", confirmProtected: true })).rejects.toThrow("Git rewrites this remote");
             expect(calls(state, ".git-calls")).toHaveLength(0);
             git(cwd, "config", ...options, "--remove-section", `url.${remote}`);
             git(cwd, "config", ...options, "--remove-section", "url./tmp/other-destination");
@@ -315,7 +315,7 @@ test("push URLs are audited for rewrites; unrelated rewrites do not block publis
     const { cwd, remote, state } = repo(); trustFolder(cwd);
     git(cwd, "config", "remote.origin.pushurl", "publish:fixture");
     git(cwd, "config", `url.${remote}.insteadOf`, "publish:");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
+    await expect(gitPublishInfo(cwd)).rejects.toThrow("Git rewrites this remote");
     expect(calls(state, ".git-calls")).toHaveLength(0);
     git(cwd, "config", "--unset-all", "remote.origin.pushurl");
     expect((await gitPublishInfo(cwd)).destination).toBe(remote);

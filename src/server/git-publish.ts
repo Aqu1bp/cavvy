@@ -127,7 +127,7 @@ async function local(cwd: string, signal?: AbortSignal) {
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),
         git(cwd, ["remote"], signal),
     ]);
-    if (!branch) throw fail("No branch is checked out (detached HEAD). Check out a branch first.", "invalid");
+    if (!branch) throw fail("Check out a branch to push.", "invalid");
     const [, upstreamRemote, merge] = await Promise.all([
         branchName(cwd, branch, signal),
         git(cwd, ["config", "--get", `branch.${branch}.remote`], signal, false, true),
@@ -176,7 +176,7 @@ export async function remoteUrl(cwd: string, remote: string, push: boolean, sign
         if (newline < 0) throw fail("Cannot verify Git URL rewrite configuration.", "invalid");
         const prefix = entry.slice(newline + 1);
         if ([...fetchUrls, ...pushUrls].some((url) => url.startsWith(prefix))) {
-            throw fail(`A Git URL rewrite applies to this remote. Configure its literal ${push ? "destination " : ""}URL without insteadOf/pushInsteadOf before ${push ? "publishing" : "fetching"}.`, "invalid");
+            throw fail(`Git rewrites this remote's URL (insteadOf). ${push ? "Push" : "Fetch"} from a terminal.`, "invalid");
         }
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
@@ -358,7 +358,7 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     const info = await local(cwd, signal);
     if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog before publishing.", "stale");
     const base = await defaultBranch(cwd, info.url, signal);
-    if (guarded(info, base) && request.confirmProtected !== true) throw fail("Explicit confirmation is required to push a protected branch.", "protected_branch");
+    if (guarded(info, base) && request.confirmProtected !== true) throw fail("Confirm pushing to the protected branch.", "protected_branch");
     const repo = githubRepo(info.url);
     let existing: GitPrInfo | undefined;
     if (request.action === "pr") {

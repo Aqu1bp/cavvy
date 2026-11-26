@@ -192,7 +192,6 @@ export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
                     void save();
                 }}
             >
-                <p class="env-hint">Set for {p.provider.name} only, over what Cavvy passes it.</p>
                 <EnvEditor rows={rows()} onChange={setRows} disabled={busy()} />
                 <Show when={error()}>
                     <p class="account-error" role="alert">
@@ -261,18 +260,18 @@ export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInst
                 </div>
                 <label>
                     <span>More models</span>
-                    <textarea class="input mono" rows={2} spellcheck={false} placeholder="One model id a line, as the CLI takes it" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
+                    <textarea class="input mono" rows={2} spellcheck={false} placeholder="One per line" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
                 </label>
                 <details class="account-advanced" open={Boolean(p.instance?.path || p.instance?.args?.length)}>
                     <summary><ChevronRight size={14} class="chev" />Program and arguments</summary>
                     <label>
                         <span>Path</span>
                         {/* Left blank, it runs what its CLI runs: that program's path, or the one on PATH. */}
-                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ? `Same as ${cli}: ${p.provider.agentCli.path}` : `The ${cli} on your PATH`} title={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
+                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ?? "From PATH"} title={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
                     </label>
                     <label>
                         <span>Arguments</span>
-                        <textarea class="input mono" rows={2} spellcheck={false} placeholder="One argument a line, before Cavvy's own" value={args()} disabled={busy()} onInput={(e) => setArgs(e.currentTarget.value)} />
+                        <textarea class="input mono" rows={2} spellcheck={false} placeholder="One per line" value={args()} disabled={busy()} onInput={(e) => setArgs(e.currentTarget.value)} />
                     </label>
                 </details>
                 <Show when={error()}>

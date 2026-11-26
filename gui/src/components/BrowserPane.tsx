@@ -470,7 +470,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 </button>
                 <span class="grow" />
                 <Show when={agentUsing()}>
-                    <span class="br-who" title="Agent is using this tab. You can use the page too: the agent is told when you have">
+                    <span class="br-who" title="The agent is using this tab. You can too.">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this tab</span>
                     </span>

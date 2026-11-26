@@ -273,7 +273,7 @@ export function FileViewer(p: { handle: SessionHandle }) {
                     <Match when={shown()}>
                         {(f) => (
                             <div class="fv-msg">
-                                <p>{f().kind === "large" ? `This file is ${sizeText(f().size)}, too big to show here.` : "This file isn't text."}</p>
+                                <p>{f().kind === "large" ? `Too big to show (${sizeText(f().size)}).` : "Not a text file."}</p>
                                 <button class="btn secondary sm" onClick={editor}>
                                     Open in editor
                                 </button>

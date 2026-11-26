@@ -106,7 +106,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <p class="muted small">New branch</p>
                         </Show>
                         <Show when={view()?.protected}>
-                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch.</label>
+                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> Push to this protected branch</label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
@@ -118,19 +118,16 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             </Show>
                             <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                         </>}>
-                            <label class="commit-message-label" for="pr-base">Base branch</label>
+                            <label class="commit-message-label" for="pr-base">Base</label>
                             <input id="pr-base" class="input mono" value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
-                            <label class="commit-message-label" for="pr-title">Pull request title</label>
+                            <label class="commit-message-label" for="pr-title">Title</label>
                             <input id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
                             <div class="commit-generate">
-                                <button class="btn ghost sm" disabled={busy() || generating()} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate title and description"}</button>
-                                <Show when={drafted()?.model}>
-                                    {(m) => <>
-                                        <span class="muted small">Drafted by {modelName(m(), p.id)}.</span>
-                                        <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
-                                    </>}
+                                <button class="btn ghost sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${modelName(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
+                                <Show when={drafted()}>
+                                    <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                 </Show>
                                 <Show when={genError()}><span class="commit-warning small" role="status">{genError()}</span></Show>
                             </div>
@@ -143,8 +140,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                 <div class="dialog-actions">
                     <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>
                     <span class="grow" />
-                    <button class="btn" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Publishing…" : "Confirm push"}</button>
-                    <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Confirm · Open pull request</button></Show>
+                    <button class="btn" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
+                    <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Open pull request</button></Show>
                 </div>
             </div>
         </Dialog>
