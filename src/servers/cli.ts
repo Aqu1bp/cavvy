@@ -363,7 +363,7 @@ async function syncCommand(args: string[]): Promise<number> {
         out(`No servers yet. Add one: ${APP_NAME} servers add <name> <user@host>`);
         return 0;
     }
-    const links = new ServerLinks({ sync: true });
+    const links = new ServerLinks({ sync: true, signIns: true });
     if (keys !== undefined && name) links.setSync(targets[0]!.name, keys);
     let failed = 0;
     try {

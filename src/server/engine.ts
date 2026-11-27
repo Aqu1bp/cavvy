@@ -3699,14 +3699,14 @@ export class Engine {
             }
             case "sync.state": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
-                return await syncedStateFor(client.signedInAs);
+                return await syncedStateFor(client.signedInAs, p.signIns === true);
             }
             case "sync.applyState": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
                 return await this.enqueueSync(async () => {
                     const run = this.pluginQueue.then(
-                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload),
-                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload),
+                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true),
+                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true),
                     );
                     this.pluginQueue = run.catch(() => undefined);
                     let r: Awaited<typeof run> | undefined;

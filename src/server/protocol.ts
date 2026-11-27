@@ -2233,8 +2233,9 @@ export interface Methods {
      */
     "sync.files": { params: Record<string, never>; result: Record<string, string> };
     "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
-    "sync.state": { params: Record<string, never>; result: { digest?: string; missingClis: string[]; needsSignIn: { provider: string; accountId: string; name: string }[] } };
-    "sync.applyState": { params: { digest: string; payload: unknown }; result: unknown };
+    /** `signIns`: also which CLIs there need signing in (needsSignIn), which takes starting each. */
+    "sync.state": { params: { signIns?: boolean }; result: { digest?: string; missingClis: string[]; needsSignIn: { provider: string; accountId: string; name: string }[] } };
+    "sync.applyState": { params: { digest: string; payload: unknown; signIns?: boolean }; result: unknown };
     /**
      * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
      * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,

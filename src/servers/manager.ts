@@ -133,6 +133,8 @@ export class ServerLinks {
             sync?: boolean;
             /** How long a change to them settles before servers hear of it. */
             syncSettleMs?: number;
+            /** Sync asks a server which of its CLIs need signing in, which `servers sync` says. The app has its own check. */
+            signIns?: boolean;
             /** Answers what a session on server `name` asks about the user's other machines' sessions (src/server/far-peers.ts). */
             peers?: (name: string, op: string, params: Record<string, unknown>) => Promise<unknown>;
             source?: BuildSource;
@@ -692,10 +694,11 @@ export class ServerLinks {
      */
     private syncFor(name: string, ask: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<SyncRunResult | undefined> {
         const entry = getServer(name);
-        if (entry?.sync === true) return syncAllTo(ask, { includeSecrets: () => getServer(name)?.sync === true, installMissing: true });
+        const signIns = this.o.signIns === true;
+        if (entry?.sync === true) return syncAllTo(ask, { includeSecrets: () => getServer(name)?.sync === true, installMissing: true, signIns });
         if (entry?.sync === false) {
             if (!entry.takeBack) return Promise.resolve(undefined);
-            return syncAllTo(ask, { includeSecrets: false }).then((r) => {
+            return syncAllTo(ask, { includeSecrets: false, signIns }).then((r) => {
                 const now = getServer(name);
                 if (now?.sync === false && now.takeBack && !r.state.result?.keysLeft?.length && !r.state.unsupported) saveServer({ ...now, takeBack: undefined });
                 return r;

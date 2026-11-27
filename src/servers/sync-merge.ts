@@ -209,21 +209,21 @@ export function mergeSent(store: Store, from: string, raw: unknown, now: number)
 }
 
 /** What computer `from` should send next: its digest, while what it last sent was taken whole. */
-export async function syncedStateFor(from = ""): Promise<SyncRemoteStateStatus> {
-    const status = await readSyncedStateDigest();
+export async function syncedStateFor(from = "", signIns = false): Promise<SyncRemoteStateStatus> {
+    const status = await readSyncedStateDigest(signIns);
     const mine = readStore()[from]?.digest;
     const { digest: _, ...rest } = status;
     return status.digest !== undefined && mine ? { ...rest, digest: mine } : rest;
 }
 
 /** Takes computer `from`'s payload (sync.applyState) as one of the computers that sync this server. */
-export async function applyStateFrom(from: string, digest: unknown, raw: unknown): Promise<ApplyStateResult> {
+export async function applyStateFrom(from: string, digest: unknown, raw: unknown, signIns = false): Promise<ApplyStateResult> {
     const store = readStore();
     const merged = mergeSent(store, from, raw, Date.now());
     const mergedDigest = hashVal(merged);
     // Recorded before applying: what's applied next time counts this computer's items, applied whole or not.
     writeStore(store);
-    const result = await applyStateSync(mergedDigest, merged);
+    const result = await applyStateSync(mergedDigest, merged, { signIns });
     // Taken whole (the server recorded the digest): told so when it asks next, it sends again only after a change.
     if (readSyncedStateRecord().digest === mergedDigest && typeof digest === "string") {
         const after = readStore();

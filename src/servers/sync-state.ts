@@ -591,13 +591,14 @@ async function collectNeedsSignIn(cliIds: readonly string[]): Promise<SyncNeedsS
  * Reports the server's sync digest and live CLI/account sign-in status (bounded to STATUS_BUDGET_MS total).
  * If the set of installed CLIs changed since the digest was recorded, `digest` is omitted so topology reconciles.
  */
-export async function readSyncedStateDigest(): Promise<SyncRemoteStateStatus> {
+/** `signIns`: also which CLIs here need signing in, which takes starting each (most of a sync that has nothing to do). */
+export async function readSyncedStateDigest(signIns = true): Promise<SyncRemoteStateStatus> {
     const r = readSyncedStateRecord();
     const installed = installedAgentClis();
     const sameClis = Array.isArray(r.installedClis) && r.installedClis.length === installed.length && r.installedClis.every((c, i) => c === installed[i]);
     const trackedClis = Object.keys(r.agents);
     const missingClis = (r.missingClis ?? []).filter((id) => !installed.includes(id));
-    const needsSignIn = await collectNeedsSignIn(trackedClis);
+    const needsSignIn = signIns ? await collectNeedsSignIn(trackedClis) : [];
     const now = installing();
     return {
         // One being installed: asked for again once it's there, which a changed list of CLIs above sees to.
@@ -633,7 +634,7 @@ async function takeBackKey(id: string, hash: string): Promise<"gone" | "absent" 
  * Always preserves server-local overrides, pre-existing server rules/accounts/plugins, never redirects a
  * server key to a new endpoint, and never reads, copies or destroys independent CLI subscription logins.
  */
-export async function applyStateSync(digest: unknown, raw: unknown): Promise<ApplyStateResult> {
+export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns?: boolean } = {}): Promise<ApplyStateResult> {
     const p = (raw && typeof raw === "object" ? raw : {}) as Partial<SyncStatePayload>;
     const record = readSyncedStateRecord();
     let settingsChanged = 0;
@@ -1341,7 +1342,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
         writeSyncedStateRecord(record);
     }
 
-    const needsSignIn = await collectNeedsSignIn(Object.keys(record.agents));
+    const needsSignIn = o.signIns === false ? [] : await collectNeedsSignIn(Object.keys(record.agents));
     return {
         settingsChanged,
         providersChanged,
@@ -1361,7 +1362,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
 /** Brings a server's structured state (settings, plugins, providers, and opt-in API keys) level with this machine. */
 export async function syncStateTo(
     ask: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean } = {},
+    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean; signIns?: boolean } = {},
 ): Promise<SyncStateSummary> {
     const wantSecrets = () => (typeof o.includeSecrets === "function" ? o.includeSecrets() : o.includeSecrets === true);
     const includeSecrets = wantSecrets();
@@ -1369,7 +1370,7 @@ export async function syncStateTo(
     const digest = hashVal(payload);
     let theirs: unknown;
     try {
-        theirs = await ask("sync.state", {});
+        theirs = await ask("sync.state", o.signIns ? { signIns: true } : {});
     } catch (e) {
         const code = (e as { code?: string }).code;
         const msg = (e as Error)?.message ?? "";
@@ -1389,10 +1390,10 @@ export async function syncStateTo(
     if (includeSecrets && !wantSecrets()) {
         const safePayload = { ...(await localSyncState({ includeSecrets: false })), ...(o.installMissing ? { installMissing: true } : {}) };
         const safeDigest = hashVal(safePayload);
-        const result = (await ask("sync.applyState", { digest: safeDigest, payload: safePayload })) as ApplyStateResult;
+        const result = (await ask("sync.applyState", { digest: safeDigest, payload: safePayload, ...(o.signIns ? { signIns: true } : {}) })) as ApplyStateResult;
         return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn, ...(result.installing?.length ? { installing: result.installing } : {}) };
     }
-    const result = (await ask("sync.applyState", { digest, payload })) as ApplyStateResult;
+    const result = (await ask("sync.applyState", { digest, payload, ...(o.signIns ? { signIns: true } : {}) })) as ApplyStateResult;
     return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn, ...(result.installing?.length ? { installing: result.installing } : {}) };
 }
 
@@ -1404,7 +1405,7 @@ export interface SyncRunResult {
 /** Runs both file sync and structured state sync against one server over its connection. */
 export async function syncAllTo(
     ask: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean } = {},
+    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean; signIns?: boolean } = {},
 ): Promise<SyncRunResult> {
     // Each is tried though the other failed: a file the server can't take mustn't keep its settings, or keys
     // that are to leave it, as they were.
