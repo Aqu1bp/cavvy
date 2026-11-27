@@ -37,7 +37,7 @@ const resolve = (v: any): any => typeof v === "function" ? resolve(v()) : v;
 const renderer = {
     ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
     createElement(tag: string) {
-        const node: any = { tag, props: {}, style: {}, children: [], selectionStart: 0, selectionEnd: 0, scrollHeight: 30, scrollTop: 0,
+        const node: any = { tag, props: {}, style: {}, children: [], selectionStart: 0, selectionEnd: 0, scrollHeight: 30, top: 0, topReads: 0, get scrollTop() { node.topReads++; return node.top; }, set scrollTop(v: number) { node.top = v; },
             focus() { focused = node; }, matches() { return tag === "textarea"; }, setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; },
             getBoundingClientRect: () => ({ top: 0, bottom: 100 }), closest: () => undefined, attributes: new Set<string>(), toggleAttribute(name: string, on: boolean) { if (on) node.attributes.add(name); else node.attributes.delete(name); },
         };
@@ -125,6 +125,7 @@ tick();
 assert.equal(focused, ta);
 // Its top is faded only while it's scrolled (composer.css: [data-scrolled]); where it's scrolled to isn't read as it
 // mounts, when that would lay the page out.
+assert.equal(ta.topReads, 0);
 assert.equal(ta.attributes.has("data-scrolled"), false);
 ta.scrollTop = 12;
 ta.props.onScroll();
