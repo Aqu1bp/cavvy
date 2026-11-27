@@ -137,3 +137,55 @@ test("a secret that can't be read here leaves the server's variables as they are
     expect((await agents(server))["claude-code"]?.secretEnv).toEqual(["S"]);
     expect(await stored(server, "claude-code", "S")).toBe("v");
 });
+
+test("turning key sync off takes the secret variables back though the payload carries no providers", async () => {
+    writeProvidersFile({ agents: { "claude-code": {} } });
+    await saveAgentEnv("claude-code", [{ name: "S", value: "v", secret: true }]);
+    const copy = await addInstance("claude-code", { name: "Renamed there", env: [{ name: "CS", value: "cv", secret: true }] });
+    const server = tempDir("cavvy-sync-env-server-");
+    await inHome(server, () => writeProvidersFile({ agents: {} }));
+    await sync(server, true);
+    // The copy renamed on the server: its name is the server's now, but the secret sync put in it is still sync's.
+    await inHome(server, () => updateInstance(copy, { name: "Mine now", env: [{ name: "CS", secret: true }] }));
+    await sync(server, true);
+    expect((await agents(server))[copy]?.name).toBe("Mine now");
+    // An opt-out whose providers couldn't be read here: the secrets go all the same, as keys do.
+    const r = await inHome(server, () => applyStateSync(undefined, {}));
+    expect(r.keysLeft).toBeUndefined();
+    expect(await stored(server, "claude-code", "S")).toBeUndefined();
+    expect(await stored(server, copy, "CS")).toBeUndefined();
+    expect((await agents(server))["claude-code"]?.secretEnv).toBeUndefined();
+    await removeInstance(copy);
+});
+
+test("what the server added to a synced CLI or copy keeps it when this computer drops it", async () => {
+    writeProvidersFile({ agents: { "claude-code": {} } });
+    const copy = await addInstance("claude-code", { name: "Shared", env: [] });
+    const server = tempDir("cavvy-sync-env-server-");
+    await inHome(server, () => writeProvidersFile({ agents: {} }));
+    await sync(server, true);
+    // On the server: a variable of its own for the CLI sync turned on, a path for the copy.
+    await inHome(server, async () => {
+        await saveAgentEnv("claude-code", [{ name: "OWN", value: "server" }]);
+        const pf = readProvidersFile();
+        writeProvidersFile({ ...pf, agents: { ...pf.agents, [copy]: { ...pf.agents![copy], path: "/opt/claude" } } });
+    });
+    await removeInstance(copy);
+    writeProvidersFile({ agents: {} });
+    await sync(server, true);
+    const a = await agents(server);
+    expect(a["claude-code"]?.env).toEqual({ OWN: "server" });
+    expect(a[copy]?.path).toBe("/opt/claude");
+});
+
+test("a copy whose CLI the server lacks asks for that CLI", async () => {
+    writeProvidersFile({ agents: {} });
+    const copy = await addInstance("opencode", { name: "Alone", env: [] });
+    const server = tempDir("cavvy-sync-env-server-");
+    // OpenCode counts as missing there whatever this machine has installed.
+    await inHome(server, () => writeProvidersFile({ agents: { opencode: { path: join(server, "no-opencode") } } }));
+    const r = await sync(server, false);
+    expect(r.missingClis).toContain("opencode");
+    expect((await agents(server))[copy]).toBeUndefined();
+    await removeInstance(copy);
+});
