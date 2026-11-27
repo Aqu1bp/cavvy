@@ -737,6 +737,106 @@ export interface PlanLink {
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 /**
+ * A task an agent suggested (SuggestTask / suggest_task), shown as a card the user starts or dismisses. Its id is the
+ * tool call's. pending: waiting for the user. starting: a window claimed it and is starting it (session.suggestion
+ * "claim"). started: a session took it. dismissed: the user set it aside (Restore puts it back to pending).
+ */
+export type SuggestionStatus = "pending" | "starting" | "started" | "dismissed";
+
+export interface SuggestionState {
+    id: string;
+    title: string;
+    /** The new session's first message, as the agent wrote it. Missing on older resolved ones (not sent). */
+    prompt?: string;
+    /** One sentence: what the agent saw, and where. */
+    why: string;
+    /** What the agent proposed for the new session; the card preselects it when the target machine has it. */
+    hint?: { model?: string; effort?: EffortLevel };
+    /** When it was suggested, ms. */
+    at: number;
+    state: SuggestionStatus;
+    /** Set once started. */
+    started?: SuggestionStarted;
+    /** The last Start that failed (it went back to pending): what to show. Cleared by the next claim. */
+    failed?: string;
+}
+
+/** Where a suggestion went. */
+export interface SuggestionStarted {
+    sessionId: string;
+    /** The machine it runs on, as the window that started it names it; none: the suggesting session's own. */
+    machine?: string;
+    title: string;
+    cwd: string;
+    worktree?: { path: string; branch: string };
+    at: number;
+    /** It started, but its first message wasn't sent (StartTaskResult.failed). */
+    problem?: string;
+}
+
+/** Where a session came from, when it was started from a suggestion: in its state, and its file. */
+export interface SuggestedBy {
+    /** `<suggesting session id>#<suggestion id>`: tasks.start's idempotency key. */
+    key: string;
+    /** The suggesting session's id. */
+    session: string;
+    /** Its title, when the task was started. */
+    title: string;
+    /** Its machine, as the starting window names it; none: the same machine as this session. */
+    machine?: string;
+}
+
+/** Start a suggested task: a session on this machine (the target), attributed to the user. */
+export interface StartTaskParams {
+    /** The folder, on this machine. */
+    cwd: string;
+    /** The session's title. */
+    title: string;
+    /** Its first message, sent as the user's. */
+    prompt: string;
+    /** "provider:model". */
+    model: string;
+    effort?: EffortLevel;
+    /** The suggesting session's mode: the new one runs in the stricter of it (plan counts as ask) and the folder's default. */
+    mode: PermissionModeId;
+    /** In a new managed worktree of the folder's repository, on an automatic branch `fix/<slug>` (`-2`, `-3` if taken). */
+    worktree?: boolean;
+    /** A managed worktree an earlier attempt made (StartTaskResult.worktree.path), to start in instead of making one. */
+    resume?: string;
+    origin: SuggestedBy;
+}
+
+/**
+ * Checks fail before anything is made, as an RpcError with one of these codes (needs_trust carries the folder):
+ * no_folder, needs_trust, model_unavailable, effort_unavailable, not_git, worktree_failed, invalid_mode.
+ * `failed` is only for failures after something was made: the worktree (resume it), or the session too (open it).
+ */
+export type StartTaskCode = "no_folder" | "needs_trust" | "model_unavailable" | "effort_unavailable" | "not_git" | "worktree_failed" | "invalid_mode" | "send_failed";
+
+export interface StartTaskResult {
+    sessionId?: string;
+    title: string;
+    cwd: string;
+    worktree?: { path: string; branch: string };
+    /** A session from an earlier call with the same origin key: nothing new was made. */
+    existing?: true;
+    failed?: { message: string; code?: StartTaskCode | string; folder?: string };
+}
+
+/**
+ * session.suggestion's actions. claim: pending → starting, refused (RpcError) unless pending ("not_pending"), or while
+ * another Cavvy process (a terminal) holds the session ("held": "Close this session in the terminal to start it.").
+ * started / failed: after tasks.start (failed goes back to pending, with the message). dismissed: from pending.
+ * pending: Restore, from dismissed.
+ */
+export type SuggestionAction =
+    | { action: "claim" }
+    | { action: "started"; started: SuggestionStarted }
+    | { action: "failed"; message: string }
+    | { action: "dismissed" }
+    | { action: "pending" };
+
+/**
  * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
  * "turn" must wait (images, files, commands), "held" waits for the user: it came back after a restart, or the
  * session's CLI account was removed (queuedWhy says so; picking an account sends it).
@@ -867,6 +967,10 @@ export interface SessionState {
     backgroundTasks?: BackgroundTaskInfo[];
     plan?: PlanRef;
     planLinks?: PlanLink[];
+    /** Tasks its agent suggested, oldest first (none rewound away). */
+    suggestions?: SuggestionState[];
+    /** Started from another session's suggestion. */
+    suggestedBy?: SuggestedBy;
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
@@ -980,6 +1084,8 @@ export interface SessionSummary {
     live: boolean;
     /** Started with other models from one prompt (runs.start). */
     run?: RunMember;
+    /** Suggested tasks waiting for the user (pending); set for loaded sessions only. */
+    suggested?: number;
     /**
      * The server it runs on; none: the user's own computer. Never sent: a window that lists every machine's sessions
      * sets it, from where it heard of each (gui/src/components/OtherMachines.tsx).
@@ -2420,6 +2526,14 @@ export interface Methods {
     "session.planInfo": { params: { id: string; toolId?: string }; result: PlanInfo };
     /** A managed worktree on a new branch, and a new session there working on the plan; the plan card is answered so the planning session stops. */
     "session.implementPlan": { params: ImplementPlanParams; result: ImplementPlanResult };
+    /** A suggested task's card: claim it to start it, record how the start went, dismiss or restore it (SuggestionAction). */
+    "session.suggestion": { params: { id: string; suggestionId: string } & SuggestionAction; result: SuggestionState };
+    /**
+     * Start a suggested task on this machine, as the user: the window calls it on the target machine's connection.
+     * An earlier session with the same origin key is returned instead of making another. Never relayed, and never
+     * among what a server may ask this machine for.
+     */
+    "tasks.start": { params: StartTaskParams; result: StartTaskResult };
     /** Writes the plan as Markdown, in the session's folder or the Cavvy home; an existing file only with `replace`. */
     "session.savePlan": { params: { id: string; toolId?: string; path?: string; replace?: boolean }; result: { path: string } };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
