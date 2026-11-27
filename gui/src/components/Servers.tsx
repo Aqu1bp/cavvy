@@ -169,6 +169,9 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     return lines;
 }
 
+/** How many times the key switch was set, per server: an answer to an earlier setting isn't reported. */
+const asked = new Map<string, number>();
+
 /** The sidebar's list of machines. */
 function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
     const [list, { refetch }] = createResource(
@@ -191,13 +194,31 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
             reportError(e);
         }
     };
+    // Said once the server has answered, not when the switch is saved: off takes the keys away there, and one that
+    // can't be reached still has them. It can be put back, so nothing is asked first.
     const toggleKeys = async (name: string, next: boolean) => {
+        const turn = (asked.get(name) ?? 0) + 1;
+        asked.set(name, turn);
         try {
             await servers().call("servers.setSync", { name, syncSecrets: next });
             void refetch();
-            toast(next ? `Syncing API keys to ${name}` : `Stopped syncing API keys`, "info");
+            const r = (await servers().call("servers.sync", { name })).results[0];
+            void refetch();
+            // Switched again meanwhile: that one says how it stands.
+            if (asked.get(name) !== turn) return;
+            if (next) {
+                if (r?.ok) toast(`Syncing API keys to ${name}`, "info");
+                else toast(r?.error ?? `Couldn't sync ${name}`, "error");
+            } else if (r?.keysLeft?.length) {
+                toast(r.error ?? `Couldn't remove your API keys from ${name}`, "error");
+            } else if (r && (r.ok || r.warnings?.length)) {
+                // Answered, even with something else to say: the keys were dealt with.
+                toast(`${name} no longer has your API keys`, "info", { label: "Undo", run: () => toggleKeys(name, true) });
+            } else {
+                toast(`Keys leave ${name} when it reconnects`, "warn");
+            }
         } catch (e) {
-            reportError(e);
+            if (asked.get(name) === turn) reportError(e);
         }
     };
     // It can be put back, so nothing is asked first. (A rented machine stays rented: deleting it is asked of an agent.)
@@ -242,8 +263,8 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                         <button
                             role="menuitem"
                             class={`hb${s.syncSecrets ? " server-keys-on" : ""}`}
-                            title={s.syncSecrets ? `Stop syncing API keys to ${s.name}` : `Sync API keys to ${s.name}`}
-                            aria-label={s.syncSecrets ? `Stop syncing API keys to ${s.name}` : `Sync API keys to ${s.name}`}
+                            title={s.syncSecrets ? `Remove your API keys from ${s.name}` : `Sync API keys to ${s.name}`}
+                            aria-label={s.syncSecrets ? `Remove your API keys from ${s.name}` : `Sync API keys to ${s.name}`}
                             aria-pressed={s.syncSecrets ? "true" : "false"}
                             onClick={() => void toggleKeys(s.name, !s.syncSecrets)}
                         >

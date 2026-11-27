@@ -4,7 +4,7 @@
 // unreadable-file safety, dynamic secret opt-out, digest short-circuit, and backward compatibility.
 
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -51,7 +51,9 @@ test("URL, MCP and marketplace validators reject credentials, query params, loca
     expect(secretMcpEntry({ command: "npx", args: ["-y", "@scope/mcp"], env: { CLAUDE_CODE_OAUTH_TOKEN: "tok" } })).toBeUndefined();
     expect(secretMcpEntry({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer sk-ant-oat01-secret123456" } })).toBeUndefined();
     expect(secretMcpEntry({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer ya29.a0AfB_byC1234567890abcdef" } })).toBeUndefined();
-    expect(secretMcpEntry({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345" } })).toBeUndefined();
+    // A JWT may be a key as well as a sign-in: with key sync on it goes like any other secret.
+    expect(secretMcpEntry({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345" } })).toBeDefined();
+    expect(portableMcpEntry({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345" } })).toBeUndefined();
     expect(secretMcpEntry({ url: "https://mcp.example.com/v1", oauth: { clientId: "sk-ant-oat01-secret123456" } })).toBeUndefined();
     expect(secretMcpEntry({ url: "https://mcp.example.com/v1", oauth: { scopes: ["read", "ya29.a0AfB_byC1234567890abcdef"] } })).toBeUndefined();
     expect(secretMcpEntry({ url: "https://mcp.example.com/v1", headers: { "X-sk-ant-oat01-secret123456": "1" } })).toBeUndefined();
@@ -155,7 +157,7 @@ test("settings, portable rules, MCP servers and custom providers sync without ad
     });
 });
 
-test("opt-in secrets bind API keys to endpoints, block opt-out endpoint redirects, and reject CLI OAuth tokens", async () => {
+test("opt-in secrets bind API keys to endpoints, are taken back on opt-out, and reject CLI OAuth tokens", async () => {
     writeJson(paths.userSettings(), {
         permissions: { allow: ["Bash(npm test:*)", "Bash(curl -H 'Authorization: Bearer secret123')"] },
         mcpServers: {
@@ -204,8 +206,7 @@ test("opt-in secrets bind API keys to endpoints, block opt-out endpoint redirect
         expect(rawRecord).not.toContain("sk-ant-api03-1234567890abcdefghijklmnop");
     });
 
-    // Opt-out redirect & re-insert guards: after syncing `acme` + its key, opting out of secrets sync must NOT
-    // allow redirecting `acme.baseUrl`, nor removing and re-inserting `acme` onto a different URL while the key remains.
+    // Key sync turned off: the keys sync put on the server go, so none of them holds a provider's address back.
     const serverHome2 = tempDir("cavvy-optout-server-");
     await inHome(serverHome2, async () => {
         await applyStateSync("e".repeat(64), payload);
@@ -217,25 +218,42 @@ test("opt-in secrets bind API keys to endpoints, block opt-out endpoint redirect
     });
     const optOutPayload = await localSyncState({ includeSecrets: false });
     await inHome(serverHome2, async () => {
-        const blocked = await applyStateSync("f".repeat(64), optOutPayload);
+        const off = await applyStateSync("f".repeat(64), optOutPayload);
+        expect(off.warnings).toEqual([]);
+        expect(off.keysChanged).toBe(2);
+        expect([...off.changedProviders].sort()).toEqual(["acme", "anthropic"]);
+        expect(await getKey("acme")).toBeUndefined();
+        expect(await getKey("anthropic")).toBeUndefined();
+        expect(readProvidersFile().custom?.[0]?.baseUrl).toBe("https://redirected.acme.example/v1");
+        expect(JSON.parse(readFileSync(join(serverHome2, "synced-state.json"), "utf-8")).apiKeys).toEqual({});
+
+        // Turned on again: they're back.
+        await applyStateSync("e".repeat(64), payload);
         expect(readProvidersFile().custom?.[0]?.baseUrl).toBe("https://api.acme.example/v1");
         expect((await getKey("acme"))?.value).toBe("acme-mac-key-1234567890");
+        expect((await getKey("anthropic"))?.value).toBe("sk-ant-api03-1234567890abcdefghijklmnop");
+
+        // A key changed on the server since is its own: off leaves it, and it still holds its provider's address.
+        await setKey("acme", "server-own-acme-key");
+        const blocked = await applyStateSync("f".repeat(64), optOutPayload);
+        expect((await getKey("acme"))?.value).toBe("server-own-acme-key");
+        expect(await getKey("anthropic")).toBeUndefined();
+        expect(readProvidersFile().custom?.[0]?.baseUrl).toBe("https://api.acme.example/v1");
         // Said, and still sync's own: with the key gone, the next sync takes the new address.
         expect(blocked.warnings.some((w) => w.includes("acme"))).toBe(true);
         await removeKey("acme");
         const after = await applyStateSync("f".repeat(64), optOutPayload);
         expect(after.warnings).toEqual([]);
         expect(readProvidersFile().custom?.[0]?.baseUrl).toBe("https://redirected.acme.example/v1");
-        await applyStateSync("e".repeat(64), payload);
-        expect(readProvidersFile().custom?.[0]?.baseUrl).toBe("https://api.acme.example/v1");
-        expect((await getKey("acme"))?.value).toBe("acme-mac-key-1234567890");
     });
-    // Remove `acme` on serverHome2 while leaving its key behind, then try inserting `acme` with a different URL.
+    // `acme` removed on the server with a key of the server's own left behind: it isn't put back onto another address.
     await inHome(serverHome2, async () => {
         writeProvidersFile({});
+        await setKey("acme", "server-own-acme-key");
         const r = await applyStateSync("0".repeat(64), optOutPayload);
         expect(r.warnings.some((w) => w.includes("acme"))).toBe(true);
         expect(readProvidersFile().custom ?? []).toEqual([]);
+        expect((await getKey("acme"))?.value).toBe("server-own-acme-key");
     });
 
     // Derived env var on server for an absent custom provider also blocks inserting the provider onto a new endpoint.
@@ -514,4 +532,124 @@ test("ServerEntry.syncSecrets persists only when enabled", () => {
     expect(getServer("sync-box")?.syncSecrets).toBe(true);
     setServerSyncSecrets("sync-box", false);
     expect(getServer("sync-box")?.syncSecrets).toBeUndefined();
+});
+
+test("with key sync on, a key or a secret shaped like a JWT syncs; a CLI's own sign-in token never does", async () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345";
+    writeJson(paths.userSettings(), {
+        mcpServers: { internal: { url: "https://mcp.example.com/v1", headers: { Authorization: `Bearer ${jwt}` } } },
+    });
+    writeProvidersFile({
+        custom: [{ id: "gateway", name: "Gateway", baseUrl: "https://gateway.example/v1", headers: { "X-Token": jwt } }],
+    });
+    await setKey("gateway", jwt);
+    await setKey("openai", `sk-ant-oat01-${"a".repeat(30)}`);
+    try {
+        const off = await localSyncState({ includeSecrets: false });
+        expect(off.apiKeys).toBeUndefined();
+        expect(off.mcpServers?.internal).toBeUndefined();
+        expect(off.customProviders?.find((c) => c.id === "gateway")?.headers).toBeUndefined();
+
+        const on = await localSyncState({ includeSecrets: true });
+        expect(on.apiKeys?.gateway).toEqual({ value: jwt, endpoint: "https://gateway.example/v1" });
+        expect(on.apiKeys?.openai).toBeUndefined();
+        expect(on.mcpServers?.internal?.headers).toEqual({ Authorization: `Bearer ${jwt}` });
+        expect(on.customProviders?.find((c) => c.id === "gateway")?.headers).toEqual({ "X-Token": jwt });
+
+        const serverHome = tempDir("cavvy-jwt-server-");
+        await inHome(serverHome, async () => {
+            const r = await applyStateSync("a".repeat(64), on);
+            expect(r.warnings).toEqual([]);
+            expect((await getKey("gateway"))?.value).toBe(jwt);
+            expect(loadScope("user", serverHome).mcpServers?.internal?.headers).toEqual({ Authorization: `Bearer ${jwt}` });
+            // Off again: the key and the secret leave with it.
+            const back = await applyStateSync("b".repeat(64), off);
+            expect(back.warnings).toEqual([]);
+            expect(await getKey("gateway")).toBeUndefined();
+            expect(loadScope("user", serverHome).mcpServers).toBeUndefined();
+            expect(readProvidersFile().custom?.find((c) => c.id === "gateway")?.headers).toBeUndefined();
+        });
+    } finally {
+        await removeKey("gateway");
+        await removeKey("openai");
+    }
+});
+
+test("turning key sync off takes a synced key back though an environment variable stands over it", async () => {
+    writeJson(paths.userSettings(), {});
+    writeProvidersFile({});
+    await setKey("anthropic", "sk-ant-api03-1234567890abcdefghijklmnop");
+    const on = await localSyncState({ includeSecrets: true });
+    const off = await localSyncState({ includeSecrets: false });
+    await removeKey("anthropic");
+
+    const serverHome = tempDir("cavvy-env-over-server-");
+    const prevEnv = process.env.ANTHROPIC_API_KEY;
+    try {
+        await inHome(serverHome, async () => {
+            await applyStateSync("a".repeat(64), on);
+            expect((await getKey("anthropic"))?.source).not.toBe("env");
+            process.env.ANTHROPIC_API_KEY = "sk-ant-api03-the-servers-own-environment";
+            forgetCachedKeys();
+            expect((await getKey("anthropic"))?.source).toBe("env");
+
+            // Still on, with the variable over it: it stays sync's to take back.
+            await applyStateSync("b".repeat(64), on);
+            const r = await applyStateSync("c".repeat(64), off);
+            expect(r.warnings).toEqual([]);
+            expect(r.keysLeft).toBeUndefined();
+            expect(r.keysChanged).toBe(1);
+
+            delete process.env.ANTHROPIC_API_KEY;
+            forgetCachedKeys();
+            expect(await getKey("anthropic")).toBeUndefined();
+        });
+    } finally {
+        if (prevEnv === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevEnv;
+    }
+});
+
+test("a settings write that fails on the server leaves what sync owns on record, for the next sync to take back", async () => {
+    writeJson(paths.userSettings(), { mcpServers: { tool: { command: "npx", args: ["-y", "@scope/tool-mcp"], env: { TOOL_TOKEN: "abc" } } } });
+    writeProvidersFile({});
+    const on = await localSyncState({ includeSecrets: true });
+    const off = await localSyncState({ includeSecrets: false });
+
+    const serverHome = tempDir("cavvy-readonly-settings-server-");
+    // The server keeps its settings elsewhere, by a link: that folder can be closed without closing sync's own record.
+    const elsewhere = tempDir("cavvy-readonly-settings-target-");
+    writeFileSync(join(elsewhere, "settings.json"), "{}");
+    symlinkSync(join(elsewhere, "settings.json"), join(serverHome, "settings.json"));
+    await inHome(serverHome, async () => {
+        await applyStateSync("a".repeat(64), on);
+        expect(loadScope("user", serverHome).mcpServers?.tool?.env).toEqual({ TOOL_TOKEN: "abc" });
+
+        chmodSync(join(elsewhere, "settings.json"), 0o444);
+        chmodSync(elsewhere, 0o555);
+        try {
+            await expect(applyStateSync("b".repeat(64), off)).rejects.toThrow();
+        } finally {
+            chmodSync(elsewhere, 0o755);
+            chmodSync(join(elsewhere, "settings.json"), 0o644);
+        }
+        expect(loadScope("user", serverHome).mcpServers?.tool?.env).toEqual({ TOOL_TOKEN: "abc" });
+
+        const r = await applyStateSync("b".repeat(64), off);
+        expect(r.warnings).toEqual([]);
+        expect(loadScope("user", serverHome).mcpServers).toBeUndefined();
+    });
+});
+
+test("settings and keys still sync when the server can't take a file", async () => {
+    const asked: string[] = [];
+    const ask = async (method: string) => {
+        asked.push(method);
+        if (method === "sync.files") throw new Error("read-only file system");
+        if (method === "sync.state") return { digest: "none", missingClis: [], needsSignIn: [] };
+        if (method === "sync.applyState") return { warnings: [], missingClis: [], needsSignIn: [] };
+        return null;
+    };
+    await expect(syncAllTo(ask, { includeSecrets: false })).rejects.toThrow("read-only file system");
+    expect(asked).toEqual(["sync.files", "sync.state", "sync.applyState"]);
 });

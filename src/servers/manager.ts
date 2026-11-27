@@ -756,6 +756,7 @@ export class ServerLinks {
                     summary: summary || "Partial sync",
                     error: st.warnings[0],
                     warnings: st.warnings,
+                    ...(st.keysLeft?.length ? { keysLeft: st.keysLeft } : {}),
                     ...(missingClis?.length ? { missingClis } : {}),
                     ...(needsSignIn?.length ? { needsSignIn } : {}),
                 };

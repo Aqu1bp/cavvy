@@ -423,18 +423,19 @@ async function syncCommand(args: string[]): Promise<number> {
     try {
         const results = await links.syncNow(name);
         for (const r of results) {
-            if (!r.ok) {
+            if (r.ok) out(`${r.name}: ${r.summary || "Up to date"}.`);
+            else {
                 err(`${r.name}: ${r.error ?? "Sync failed."}`);
+                for (const w of (r.warnings ?? []).slice(1)) err(`  ${w}`);
                 failed++;
-                continue;
             }
-            out(`${r.name}: ${r.summary || "Up to date"}.`);
+            // It answered, even with something else to say: the keys were dealt with. One that didn't still has them.
+            if (keys === false && !r.keysLeft?.length) out(r.ok || r.warnings?.length ? `  ${r.name} no longer has your API keys.` : `  Your API keys leave ${r.name} when it next syncs.`);
             if (r.missingClis?.length) out(`  Not installed there: ${r.missingClis.join(", ")}.`);
             for (const s of r.needsSignIn ?? []) {
                 const acc = s.accountId === "default" ? "" : ` --account ${s.accountId}`;
                 out(`  Sign in to ${s.provider}${s.accountId === "default" ? "" : ` (${s.name})`}: ${APP_NAME} servers login ${r.name} ${s.provider}${acc}`);
             }
-            for (const w of r.warnings ?? []) err(`  ${w}`);
         }
     } finally {
         await links.stopAll();

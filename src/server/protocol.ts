@@ -1894,6 +1894,8 @@ export interface ServerSyncItemResult {
     missingClis?: string[];
     needsSignIn?: { provider: string; accountId: string; name: string }[];
     warnings?: string[];
+    /** Providers whose synced key was to leave the server and is still there. */
+    keysLeft?: string[];
 }
 
 /** A server as a window lists it. */

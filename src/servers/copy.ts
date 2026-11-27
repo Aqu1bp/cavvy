@@ -132,6 +132,15 @@ export const RUNNERS: Record<string, string | undefined> = { npx: undefined, bun
 /** Options a runner takes that say nothing but how to run: none of them has a value. */
 export const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
 
+/** A CLI's own sign-in token, told by its format (Claude's, Google's): never synced, in any field, key sync on or off. */
+export const CLI_SIGN_IN_TOKEN = /\bsk-ant-oat\d*-[A-Za-z0-9_-]{8,}|\bya29\.[A-Za-z0-9._-]{16,}/i;
+/**
+ * Those, and anything shaped like a JWT, which may be a sign-in or a key: what stays here while key sync is off.
+ * With it on, a JWT the user stored as a key or an MCP server's secret goes like any other: sync reads Cavvy's
+ * own key store and settings, never a CLI's sign-in files.
+ */
+export const SUBSCRIPTION_OAUTH_TOKEN = new RegExp(`${CLI_SIGN_IN_TOKEN.source}|\\beyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}`, "i");
+
 /**
  * An MCP server as it can go to another machine: the entry made again from
  * the parts that can't be holding a key, or undefined when it has to stay.
@@ -144,9 +153,6 @@ export const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]
  * secret, and no field this doesn't know. The user is told which servers
  * stayed (CopyPlan.left).
  */
-/** OAuth subscription tokens (Claude OAuth, Google OAuth, JWTs) must never be synced in any field. */
-export const SUBSCRIPTION_OAUTH_TOKEN = /\bsk-ant-oat\d*-[A-Za-z0-9_-]{8,}|\bya29\.[A-Za-z0-9._-]{16,}|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/i;
-
 export function portableMcpEntry(c: McpServerConfig): McpServerConfig | undefined {
     if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return undefined;
     const raw = JSON.stringify(c);

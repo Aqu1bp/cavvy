@@ -7,8 +7,9 @@
 //     names/ids/default) syncs, so each server keeps its own independent login.
 //   - Cavvy API keys and MCP secrets are NEVER included unless `includeSecrets` is explicitly enabled
 //     for that server. Even then, only Cavvy-owned API/search keys stored in keychain/credentials.json
-//     (never ambient env vars, never OAuth subscription tokens) are synced, bound to their effective
-//     endpoint URL, and only their sha256 hashes are recorded in synced-state.json.
+//     (never ambient env vars, never a CLI's own sign-in token) are synced, bound to their effective
+//     endpoint URL, and only their sha256 hashes are recorded in synced-state.json. Turned off again,
+//     the keys and secrets sync put on the server are removed from it.
 //   - Permission rules stay strictly portable in all modes; MCP servers stay restricted to public remote
 //     URLs or portable package runners; custom provider and marketplace URLs must carry no credentials,
 //     query strings, or local hosts.
@@ -19,7 +20,7 @@ import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { forgetCachedKeys, getKey, removeKey, setKey } from "../auth/credentials";
+import { forgetCachedKeys, getKey, removeKey, setKey, storedKey } from "../auth/credentials";
 import { checkAgentCli } from "../backends";
 import { findCli } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
@@ -31,7 +32,7 @@ import { pluginPaths, readInstalled, readKnownMarketplaces, splitId, type Market
 import { ACCOUNT_PROVIDERS, addAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
 import { allProviders, BUILTIN_PROVIDERS, customEnvKey, readAgentConfig, readProvidersFileForUpdate, readVertexConfig, removeAgentConfig, resolveBaseUrl, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject, writeProvidersFile, type CustomProviderEntry, type VertexConfig } from "../providers/registry";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { isProtectedCredentialPath, localHost, packageSpec, portableMcpEntry, portableRule, RUNNER_FLAGS, RUNNERS, SETTINGS_KEYS, SUBSCRIPTION_OAUTH_TOKEN } from "./copy";
+import { CLI_SIGN_IN_TOKEN, isProtectedCredentialPath, localHost, packageSpec, portableMcpEntry, portableRule, RUNNER_FLAGS, RUNNERS, SETTINGS_KEYS, SUBSCRIPTION_OAUTH_TOKEN } from "./copy";
 import { syncTo, type SyncFilesResult } from "./sync";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -116,6 +117,8 @@ export interface ApplyStateResult {
     missingClis: string[];
     needsSignIn: SyncNeedsSignIn[];
     warnings: string[];
+    /** Providers whose synced key was to be taken off this server and is still there. */
+    keysLeft?: string[];
 }
 
 export interface SyncStateSummary {
@@ -192,7 +195,7 @@ export function secretMcpEntry(c: McpServerConfig): McpServerConfig | undefined 
         const env: Record<string, string> = {};
         for (const [k, v] of Object.entries(c.env)) {
             if (typeof v !== "string") continue;
-            if (BLOCKED_CLI_ENV_NAME.test(k) || SUBSCRIPTION_OAUTH_TOKEN.test(v)) return undefined;
+            if (BLOCKED_CLI_ENV_NAME.test(k) || CLI_SIGN_IN_TOKEN.test(v)) return undefined;
             env[k] = v;
         }
         if (Object.keys(env).length) out.env = env;
@@ -201,7 +204,7 @@ export function secretMcpEntry(c: McpServerConfig): McpServerConfig | undefined 
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(c.headers)) {
             if (typeof v !== "string") continue;
-            if (SUBSCRIPTION_OAUTH_TOKEN.test(v)) return undefined;
+            if (CLI_SIGN_IN_TOKEN.test(v)) return undefined;
             headers[k] = v;
         }
         if (Object.keys(headers).length) out.headers = headers;
@@ -210,25 +213,25 @@ export function secretMcpEntry(c: McpServerConfig): McpServerConfig | undefined 
         const o = c.oauth;
         const oauth: NonNullable<McpServerConfig["oauth"]> = {};
         if (typeof o.clientId === "string" && o.clientId.length <= 200) {
-            if (SUBSCRIPTION_OAUTH_TOKEN.test(o.clientId)) return undefined;
+            if (CLI_SIGN_IN_TOKEN.test(o.clientId)) return undefined;
             oauth.clientId = o.clientId;
         }
         if (typeof o.clientSecret === "string" && o.clientSecret.length <= 500) {
-            if (SUBSCRIPTION_OAUTH_TOKEN.test(o.clientSecret)) return undefined;
+            if (CLI_SIGN_IN_TOKEN.test(o.clientSecret)) return undefined;
             oauth.clientSecret = o.clientSecret;
         }
         if (typeof o.callbackPort === "number") oauth.callbackPort = o.callbackPort;
         if (typeof o.scopes === "string") {
-            if (SUBSCRIPTION_OAUTH_TOKEN.test(o.scopes)) return undefined;
+            if (CLI_SIGN_IN_TOKEN.test(o.scopes)) return undefined;
             oauth.scopes = o.scopes;
         } else if (Array.isArray(o.scopes) && o.scopes.every((x) => typeof x === "string")) {
-            if (o.scopes.some((x) => SUBSCRIPTION_OAUTH_TOKEN.test(x))) return undefined;
+            if (o.scopes.some((x) => CLI_SIGN_IN_TOKEN.test(x))) return undefined;
             oauth.scopes = o.scopes;
         }
         if (Object.keys(oauth).length) out.oauth = oauth;
     }
     // Check the complete reconstructed entry (args, env names, header names, oauth, url) for subscription tokens.
-    if (SUBSCRIPTION_OAUTH_TOKEN.test(JSON.stringify(out))) return undefined;
+    if (CLI_SIGN_IN_TOKEN.test(JSON.stringify(out))) return undefined;
     return out;
 }
 
@@ -251,7 +254,7 @@ function sanitizeCustomProvider(c: CustomProviderEntry, includeSecrets: boolean)
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(c.headers)) {
             if (typeof v !== "string") continue;
-            if (SUBSCRIPTION_OAUTH_TOKEN.test(v)) return undefined;
+            if (CLI_SIGN_IN_TOKEN.test(v)) return undefined;
             headers[k] = v;
         }
         if (Object.keys(headers).length) out.headers = headers;
@@ -419,8 +422,8 @@ export async function localSyncState(o: { includeSecrets?: boolean } = {}): Prom
                 if (!endpoint) continue;
                 const resolved = await getKey(id);
                 // Only explicitly stored Cavvy keys (keychain or credentials.json), never ambient env vars or CLI OAuth tokens.
-                if (!resolved || resolved.source === "env") continue;
-                if (SUBSCRIPTION_OAUTH_TOKEN.test(resolved.value)) continue;
+                if (!resolved || resolved.source === "env" || typeof resolved.value !== "string") continue;
+                if (CLI_SIGN_IN_TOKEN.test(resolved.value)) continue;
                 apiKeys[id] = { value: resolved.value, endpoint };
             }
         }
@@ -597,6 +600,24 @@ export async function readSyncedStateDigest(): Promise<SyncRemoteStateStatus> {
 const ALLOWED_SETTINGS_KEYS = new Set<string>(SETTINGS_KEYS);
 
 /**
+ * Takes back a key sync put on this server. It's compared with the one Cavvy keeps, not the one in use, so an
+ * environment variable over it doesn't hide it. "kept": changed here since, so this server's own. "stuck": still
+ * there after removing it.
+ */
+async function takeBackKey(id: string, hash: string): Promise<"gone" | "absent" | "kept" | "stuck"> {
+    const stored = await storedKey(id);
+    if (!stored) return "absent";
+    if (sha(stored.value) !== hash) return "kept";
+    try {
+        await removeKey(id);
+    } catch {
+        return "stuck";
+    }
+    const after = await storedKey(id);
+    return after && sha(after.value) === hash ? "stuck" : "gone";
+}
+
+/**
  * Applies synced settings, remote plugins, provider topology, and (when included) Cavvy API keys on a server.
  * Always preserves server-local overrides, pre-existing server rules/accounts/plugins, never redirects a
  * server key to a new endpoint, and never reads, copies or destroys independent CLI subscription logins.
@@ -613,7 +634,11 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
     const restartedPlugins = new Set<string>();
     const missingClis: string[] = [];
     const warnings: string[] = [];
+    const keysLeft: string[] = [];
     const allowSecrets = p.includeSecrets === true;
+    // What sync owns is recorded as it's written. While a section works towards its write, this puts its part of
+    // the record back: a failure on the way leaves the record saying what's still on disk, so the next sync knows its own.
+    let undo: (() => void) | undefined;
 
     try {
         // 1. User settings (key-level merge), portable permission rules, and MCP servers.
@@ -625,6 +650,8 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
 
             let settingsDirty = false;
             const curSettings = readJsonForUpdate<Settings>(paths.userSettings()) ?? {};
+            const recorded = { settings: record.settings, rules: { ...record.rules }, mcpServers: record.mcpServers };
+            undo = () => void Object.assign(record, recorded);
 
             const nextSettingsRec: Record<string, string> = {};
             for (const k of ALLOWED_SETTINGS_KEYS) {
@@ -760,6 +787,27 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
                     else delete s.mcpServers;
                 });
             }
+            undo = undefined;
+        }
+
+        // Key sync is off for this server: the keys sync put here go, before the providers they belong to are
+        // looked at, so one of them never holds a provider's address back. A key changed here since is this
+        // server's own and stays. One that can't be removed stays on record, and is said.
+        if (!allowSecrets) {
+            for (const [id, prev] of Object.entries({ ...record.apiKeys })) {
+                const took = await takeBackKey(id, prev.hash);
+                if (took === "stuck") {
+                    keysLeft.push(id);
+                    warnings.push(`The API key for ${id} couldn't be removed from this server.`);
+                    continue;
+                }
+                if (took === "gone") {
+                    keysChanged++;
+                    changedProviders.add(id);
+                }
+                delete record.apiKeys[id];
+            }
+            forgetCachedKeys();
         }
 
         // 2. Custom API providers & Vertex metadata.
@@ -771,6 +819,12 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
                 .filter((c): c is CustomProviderEntry => c !== undefined);
             const pf = readProvidersFileForUpdate();
             let pfDirty = false;
+            const recorded = { customProviders: record.customProviders, vertex: record.vertex };
+            undo = () => {
+                record.customProviders = recorded.customProviders;
+                if (recorded.vertex === undefined) delete record.vertex;
+                else record.vertex = recorded.vertex;
+            };
             const curCustom = [...(pf.custom ?? [])];
             const nextCustomRec: Record<string, string> = {};
             const incomingCustomIds = new Set<string>();
@@ -880,6 +934,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
             }
 
             if (pfDirty) writeProvidersFile(pf);
+            undo = undefined;
 
             // 3. Opt-in Cavvy API keys (strictly non-CLI, non-gcloud, non-OAuth, bound to effective endpoint).
             // Ownership in `record.apiKeys` is updated immediately after each write/delete so partial failures persist it.
@@ -899,7 +954,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
                     const val = (entry as Partial<SyncedApiKey>).value;
                     const endpoint = (entry as Partial<SyncedApiKey>).endpoint;
                     if (typeof val !== "string" || !val.trim() || val.length > 4096 || typeof endpoint !== "string") continue;
-                    if (SUBSCRIPTION_OAUTH_TOKEN.test(val.trim())) continue;
+                    if (CLI_SIGN_IN_TOKEN.test(val.trim())) continue;
                     // Endpoint binding: never install a Mac key if the server points this provider ID elsewhere.
                     const serverEndpoint = effectiveEndpoint(id, latestCustom);
                     if (!serverEndpoint || serverEndpoint !== endpoint) continue;
@@ -924,22 +979,24 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
                         } else if (prev !== undefined) {
                             delete record.apiKeys[id];
                         }
-                    } else if (prev !== undefined) {
-                        delete record.apiKeys[id];
                     }
+                    // Under an environment variable here, the one sync stored stays on record: it's still sync's to take back.
                 }
                 for (const [id, prev] of Object.entries({ ...record.apiKeys })) {
                     if (incomingKeys.has(id)) continue;
-                    const cur = await getKey(id);
-                    if (cur && cur.source !== "env" && sha(cur.value) === prev.hash) {
-                        await removeKey(id);
-                        delete record.apiKeys[id];
+                    const took = await takeBackKey(id, prev.hash);
+                    if (took === "stuck") {
+                        keysLeft.push(id);
+                        warnings.push(`The API key for ${id} couldn't be removed from this server.`);
+                        continue;
+                    }
+                    if (took === "gone") {
                         keysChanged++;
                         changedProviders.add(id);
-                    } else {
-                        delete record.apiKeys[id];
                     }
+                    delete record.apiKeys[id];
                 }
+                forgetCachedKeys();
             }
         }
 
@@ -1264,6 +1321,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
             delete record.digest;
         }
     } catch (e) {
+        undo?.();
         // Clear digest on mid-apply failure so the next sync reconciles partial writes cleanly.
         delete record.digest;
         throw e;
@@ -1280,6 +1338,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
         accountsAdded,
         changedProviders: [...changedProviders],
         restartedPlugins: [...restartedPlugins],
+        ...(keysLeft.length ? { keysLeft } : {}),
         missingClis,
         needsSignIn,
         warnings,
@@ -1333,8 +1392,17 @@ export async function syncAllTo(
     ask: (method: string, params: Record<string, unknown>) => Promise<unknown>,
     o: { includeSecrets?: boolean | (() => boolean) } = {},
 ): Promise<SyncRunResult> {
-    const files = await syncTo(ask);
+    // Each is tried though the other failed: a file the server can't take mustn't keep its settings, or keys
+    // that are to leave it, as they were.
+    let files: SyncFilesResult | undefined;
+    let failed: unknown;
+    try {
+        files = await syncTo(ask);
+    } catch (e) {
+        failed = e;
+    }
     const state = await syncStateTo(ask, o);
+    if (!files) throw failed;
     return { files, state };
 }
 
