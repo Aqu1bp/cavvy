@@ -280,10 +280,15 @@ function saveRecord(dir: string, rec: UndoRecord): boolean {
     }
 }
 
-function dropRecord(dir: string) {
+/** Whether it's gone (or wasn't there). */
+function dropRecord(dir: string): boolean {
     try {
         rmSync(undoFile(dir), { force: true });
-    } catch { /* Then its Undo still checks each file is as the restore left it before writing. */ }
+        return true;
+    } catch {
+        // Then its Undo still checks each file is as the restore left it before writing.
+        return false;
+    }
 }
 
 /** Snapshot changes in an order that never meets its own work in the way: removals deepest first, then writes. */
@@ -397,8 +402,8 @@ export function lastUndo(snapshots: TurnSnapshots | undefined): string | undefin
  */
 export async function undoRestore(snapshots: TurnSnapshots | undefined, id: string, history?: FileHistory): Promise<{ done: string[]; failed: { path: string; error: string }[] }> {
     const rec = lastRecord(snapshots);
-    if (!rec || rec.id !== id) throw new Error("That restore can't be undone any more.");
-    dropRecord(snapshots!.dir);
+    // Taken before anything is written: one that can't be let go could be offered again.
+    if (!rec || rec.id !== id || !dropRecord(snapshots!.dir)) throw new Error("That restore can't be undone any more.");
     const done: string[] = [];
     const failed: { path: string; error: string }[] = [];
     const all = new Map([...rec.files].map(([rel, f]) => [rel, { old: f.to, now: f.left }]));
