@@ -58,6 +58,7 @@ function work(s: InstanceType<typeof Session>, n: number) {
     s.setBackendSession("codex", `cx-${n}`, s.messages.length, { folder: `/homes/codex-${n}` });
     s.setAccount("codex", `work-${n}`);
     s.addPlanLink({ role: "to", session: `other-${n}`, folder: "/project", path: `/plans/${n}.md`, branch: "main", at: n } as never);
+    s.setSuggestion({ id: `call-${n}`, title: `Task ${n}`, prompt: "Fix it.", why: "Saw it.", at: n, state: n % 2 ? "dismissed" : "pending", ...s.suggestionAt() });
     s.recordBackgroundTask({ id: `task-${n}`, provider: "cavvy", kind: "shell", label: `job ${n}`, startedAt: n, status: "done" } as never);
     s.setSchedules([{ id: `a${n}`, kind: "loop", prompt: "again", everyMs: 3_600_000, recurring: true, durable: true, createdAt: n, runs: 0 } as never]);
     s.refuseImages([s.messages[0]!], "mock:m");
