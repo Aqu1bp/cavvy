@@ -385,12 +385,13 @@ export function applySync(files: unknown, remove: unknown, home?: string, from =
         for (const path of Array.isArray(remove) ? remove : []) {
             if (!syncablePath(path)) continue;
             delete mine[path];
-            // Another computer still has it: it stays. One that has it otherwise than the server does sends its own
-            // next (what it sent is marked as nothing it has), or, gone there too, its removal.
+            // Another computer still has it: it stays. With none of them having the server's version, they send their
+            // own next (what they sent is marked as nothing they have), or, gone there too, their removal.
             if (!(path in given)) continue;
             const still = others().filter((r) => path in r);
             if (still.length) {
-                for (const r of still) if (r[path] !== given[path]) r[path] = RESEND;
+                // Only when none of them has what the server has: otherwise that one's stays.
+                if (!still.some((r) => r[path] === given[path])) for (const r of still) r[path] = RESEND;
                 continue;
             }
             const now = current(path, home);

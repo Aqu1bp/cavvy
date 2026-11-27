@@ -95,6 +95,16 @@ test("a file one computer deletes goes once the other, which had its own version
         expect(existsSync(join(home, SKILL))).toBe(false);
     }));
 
+test("of three, one dropping its own version leaves the server's, which another still has", () =>
+    onServer((home) => {
+        sync(home, "a", { [SKILL]: "A's" });
+        sync(home, "b", { [SKILL]: "B's" });
+        sync(home, "c", { [SKILL]: "C's" });
+        sync(home, "b", {});
+        sync(home, "c", { [SKILL]: "C's" });
+        expect(read(home, SKILL)).toBe("A's");
+    }));
+
 test("a record from before says nobody's: a computer added then takes nothing off, and one that had it all claims it", () =>
     onServer((home) => {
         // As a server synced by one computer kept it: what was given, and no computers.
