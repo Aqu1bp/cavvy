@@ -143,7 +143,8 @@ describe("Live shell execution", () => {
         expect(res.exitCode).toBe(0);
         expect(res.output).toContain(process.platform === "win32" ? "hello-win" : "hello-posix");
         expect(res.newCwd).toBeDefined();
-        expect(realpathSync(res.newCwd!).toLowerCase()).toBe(realpathSync(sub).toLowerCase());
+        const canonical = (p: string) => (realpathSync.native ? realpathSync.native(p) : realpathSync(p)).toLowerCase();
+        expect(canonical(res.newCwd!)).toBe(canonical(sub));
     });
 
     test("runShell preserves non-zero exit codes", async () => {

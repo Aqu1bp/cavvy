@@ -177,8 +177,9 @@ if (process.platform === "win32") {
             const remoteHome = join(scratch, "win-remote-home");
             mkdirSync(remoteHome, { recursive: true });
 
-            // Local SSH shim (.cmd) that runs the remote command directly in cmd.exe (just like Windows OpenSSH DefaultShell)
-            // with USERPROFILE pointed at our isolated remoteHome!
+            // Compile a real .exe SSH shim (Bun blocks metacharacters to .cmd/.bat files, whereas real ssh.exe is a .exe)
+            // that runs the remote command through cmd.exe /d /c (matching Windows OpenSSH's default shell) with USERPROFILE
+            // pointed at our isolated remoteHome.
             const shimScript = join(scratch, "local-win-ssh.ts");
             writeFileSync(
                 shimScript,
@@ -198,9 +199,10 @@ const proc = Bun.spawn(["cmd.exe", "/d", "/c", cmd], {
 process.exit(await proc.exited);
 `,
             );
-            const shimCmd = join(scratch, "local-win-ssh.cmd");
-            writeFileSync(shimCmd, `@echo off\r\n"${process.execPath}" "${shimScript}" %*\r\n`);
-            process.env.CAVVY_SSH = shimCmd;
+            const shimExe = join(scratch, "local-win-ssh.exe");
+            const compiled = Bun.spawnSync([process.execPath, "build", "--compile", "--outfile", shimExe, shimScript]);
+            expect(compiled.exitCode).toBe(0);
+            process.env.CAVVY_SSH = shimExe;
 
             // 1. Auto-detect Windows via probeServer (sh -c fails under cmd.exe -> falls back to remotePs PROBE_PS).
             const unknown: ServerEntry = { name: "winlocal", destination: "dev@127.0.0.1", addedAt: "2026-01-01T00:00:00.000Z" };
