@@ -10,7 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { setKey, getKey, removeKey, forgetCachedKeys } = await import("../src/auth/credentials");
-const { readProvidersFile, writeProvidersFile } = await import("../src/providers/registry");
+const { readProvidersFile, readProvidersFileForUpdate, writeProvidersFile } = await import("../src/providers/registry");
 const { addAccount, listAccounts, removeAccount, setDefaultAccount } = await import("../src/providers/accounts");
 const { loadScope, writeJson } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
@@ -318,6 +318,9 @@ test("CLI topology reconciles newly installed CLIs, managed account ownership/re
         const serverHome = tempDir("cavvy-cli-server-");
         // Pre-existing managed account on the server with the same ID must never be adopted or deleted by sync.
         await inHome(serverHome, () => {
+            // Grok counts as missing here even when it's installed on the machine running the tests (findCli also
+            // looks in ~/.local/bin, and homedir() doesn't follow HOME): this path is taken away when it's "installed".
+            writeProvidersFile({ agents: { grok: { path: join(serverHome, "no-grok") } } });
             addAccount("claude-code", { id: "server-own", name: "Server Local" });
         });
 
@@ -356,6 +359,11 @@ test("CLI topology reconciles newly installed CLIs, managed account ownership/re
 
         // Installing `grok` on the server invalidates the digest so the next sync enables it immediately.
         writeFileSync(join(binDir, "grok"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        await inHome(serverHome, () => {
+            const pf = readProvidersFileForUpdate();
+            delete pf.agents?.grok;
+            writeProvidersFile(pf);
+        });
         calls.length = 0;
         const third = await syncStateTo(ask, { includeSecrets: false });
         expect(third.unchanged).toBeUndefined();

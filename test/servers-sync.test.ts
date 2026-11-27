@@ -2,7 +2,7 @@
 // and what it leaves alone (its own files, and ones it was given that changed there).
 
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -173,7 +173,7 @@ test("memory, agents, themes, keybindings and symlinked skills sync while links 
     put(join(iso.home, "keybindings.json"), '{"bindings":[]}');
 
     const targets = syncedWatchTargets();
-    expect(targets.recursive).toContain(extSkill);
+    expect(targets.recursive).toContain(realpathSync(extSkill));
     expect(targets.shallow.some((s) => s.dir === iso.home && s.names.has("settings.json") && s.names.has("CAVVY.md") && s.names.has("providers.json"))).toBe(true);
 
     const mine = localSyncFiles();
