@@ -780,7 +780,9 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
             setBusy(false);
         }
     };
-    const where = () => at.server ?? "this computer";
+    // The server they're on: one shown from here, or the one this window is on. Undefined: this computer.
+    const server = () => at.server ?? machine;
+    const where = () => server() ?? "this computer";
     const LOCAL = "On this computer";
     // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on that machine, then web search.
     const models = () => at.list().filter((p) => !p.search);
@@ -805,7 +807,7 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
         <For each={sections()}>
             {(g) => (
                 <Section
-                    title={g.title === LOCAL && at.server ? `On ${at.server}` : g.title}
+                    title={g.title === LOCAL && server() ? `On ${server()}` : g.title}
                     class="prov-group"
                     caption={g.title === "API keys" ? <>Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
                 >
