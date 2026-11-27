@@ -35,6 +35,8 @@ export interface AgentCliStatus {
     apiKey?: boolean;
     /** Why it can't be used, when that isn't its sign-in (it didn't answer, or it can't run here): what to tell the user. */
     problem?: string;
+    /** True when the status probe errored/failed rather than confirming signed-out state. */
+    probeFailed?: boolean;
     /** CLI-reported identity and plan, for the settings UI only. */
     email?: string;
     plan?: string;
@@ -100,7 +102,7 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
         return { status: { ...base, installed: true, path, signedIn: Boolean(a.type) || !a.requiresAuth, description: describeCodexAuth(a), apiKey: a.type === "apiKey", email: a.email, plan: a.planType }, limits: plan.limits };
     }
     const s = await claudeStatus(providerId, signal, accountId);
-    return { status: { ...base, installed: true, path, signedIn: s.loggedIn, description: describeClaudeAuth(s), apiKey: s.authMethod === "api_key", email: s.email, plan: s.subscriptionType } };
+    return { status: { ...base, installed: true, path, signedIn: s.loggedIn, ...(s.unconfirmed ? { probeFailed: true } : {}), description: describeClaudeAuth(s), apiKey: s.authMethod === "api_key", email: s.email, plan: s.subscriptionType } };
 }
 
 /** What a vendor's own sign-in is called, for messages. */

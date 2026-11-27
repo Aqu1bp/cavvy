@@ -262,10 +262,13 @@ function providerRow(info: Record<string, any>, handler: (method: string, params
     const stubs = Object.fromEntries(imported.filter((n) => !(n in solid)).map((n) => [n, icon]));
     const s = store();
     const MessageText = component(strip(read("ErrorCards")), "MessageText", { ...s.deps, ...errorText, settingsTab: () => undefined, CircleAlert: icon, Copy: icon, X: icon });
+    const link = { call: (method: string, params: any) => { calls.push(method); return handler(method, params); } };
     const ProviderRow = component(source, "ProviderRow", {
         ...stubs, ...errorText, MessageText,
         app: { providers: [], models: [] }, prefs: {}, settingsTab: () => undefined, mod: "⌘",
-        rpc: { call: (method: string, params: any) => { calls.push(method); return handler(method, params); } },
+        rpc: link,
+        // The window's own machine (state/providers-at.ts): the row calls it there.
+        useProvidersAt: () => ({ link, list: () => [], refresh: async () => {}, changed: async () => {} }),
         reportError: (e: unknown) => reported.push(e),
         toast: (m: string, level = "info") => toasts.push([m, level]),
         copyText: async (v: string) => { copied.push(v); return true; },

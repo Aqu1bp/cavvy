@@ -18,6 +18,11 @@ export interface CliInfo {
     /** Product name for messages. */
     product: string;
     install: string;
+    /**
+     * What installs it for the user, in a terminal they watch (Settings → Providers' Install), so that `command` is in
+     * ~/.local/bin, where findCli looks. Left out: only `install`'s advice.
+     */
+    installCommand?: string;
     signIn: string;
     /**
      * Its sign-in where the browser is on another machine than the CLI (a server reached over SSH), when `signIn`

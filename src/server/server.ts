@@ -240,7 +240,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 // its messages compressed. A reply streamed at a model's pace was 5.1 bytes a character as message text,
                 // 0.78 on the wire (measured; test/ws-compress.test.ts). This machine's own windows aren't: no link to save.
                 const remote = url.pathname === "/ws" && (who !== undefined || (host !== "127.0.0.1" && host !== "localhost" && req.headers.get("host")?.toLowerCase() === `${host}:${port}`));
-                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}), ...(remote ? { compress: true } : {}) };
+                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window, ...(who ? { signedInAs: who.machine } : {}) }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}), ...(remote ? { compress: true } : {}) };
                 // Compression is offered to the windows on another machine only: one on this machine would compress what
                 // it sends, and the server take it apart on its one thread (a 12 MB send held every session 62 ms, against 11; Linux, Chrome).
                 if (!remote) req.headers.delete("sec-websocket-extensions");

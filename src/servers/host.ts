@@ -36,6 +36,7 @@ import { loadSettings, writeJson, type Settings } from "../config/settings";
 import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
 import { defaultMode, type PermissionMode } from "../permissions/modes";
 import { readAgentConfig, saveAgentConfig } from "../providers/registry";
+import { ACCOUNT_PROVIDERS, holdLogin } from "../providers/accounts";
 import { PROTOCOL_VERSION } from "../server/protocol";
 import type { SignIns } from "../server/server";
 import { childEnv } from "../util/env";
@@ -421,16 +422,22 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
             if (path === "/revoke") {
                 if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
                 signIns.revoke(machine, client);
-                // The machine itself is forgotten only when all of it is signed out.
+                // The machine itself is forgotten only when all of it is signed out, and what it synced here with it:
+                // what only it sent no longer stays for it (sync.ts, sync-merge.ts). Its connections go first, so
+                // nothing it sends comes after.
                 if (!client) noteMachine(machine, undefined);
-                return Response.json({ closed: srv.dropMachine(machine, client) });
+                const closed = srv.dropMachine(machine, client);
+                if (!client) await srv.engine.forgetSyncedMachine(machine).catch(() => undefined);
+                return Response.json({ closed });
             }
             if (path === "/connect-cli") {
                 // A CLI signed in here by `host login`: turned on as the GUI's own Connect does, which checks it again.
                 const provider = typeof body.provider === "string" && agentCli(body.provider) ? body.provider : undefined;
                 if (!provider) return Response.json({ error: "Not an agent CLI." }, { status: 400 });
+                const accountId = typeof body.accountId === "string" && body.accountId ? body.accountId : "default";
                 try {
-                    await srv.engine.connectCli(provider);
+                    if (accountId !== "default") await srv.engine.cliSignedIn(provider, accountId);
+                    else await srv.engine.connectCli(provider);
                     return Response.json({ ok: true });
                 } catch (e) {
                     return Response.json({ ok: false, error: redact((e as Error)?.message ?? String(e)) });
@@ -536,59 +543,76 @@ export async function hostCheck(): Promise<HostCheck> {
  * Makes an agent CLI usable here: signs it in with its own sign-in, in this terminal, when it isn't, then turns it
  * on in Cavvy so its models are offered. Cavvy never sees what's typed: the CLI has the terminal.
  */
-async function hostLogin(id: string | undefined): Promise<number> {
+async function hostLogin(id: string | undefined, accountId = "default"): Promise<number> {
     const def = id ? agentCli(id) : undefined;
     if (!def) {
         process.stderr.write(`login needs one of: ${AGENT_CLIS.map((d) => d.id).join(", ")}\n`);
         return LOGIN_EXIT.unknown;
     }
-    const { adoptLoginPath } = await import("../server/login-env");
-    // Found where the server finds it: with what the login shell puts on PATH.
-    await (await adoptLoginPath(paths.loginPath())).answered;
-    const { checkAgentCli } = await import("../backends");
-    // Ctrl+C while the CLI's own sign-in has the terminal is the CLI's to take (it ends, and what it left is looked
-    // at below). At any other moment it stops this, and says so by its exit code: not a connection that was lost.
-    let signingIn = false;
-    process.on("SIGINT", () => {
-        if (!signingIn) process.exit(LOGIN_EXIT.stopped);
-    });
-    // A check that fails says nothing about whether the CLI is there: its own words are passed on.
-    const status = async () => {
+    // Hold the account's login lease for named accounts (just like the GUI terminal path) so sync cannot remove it mid-login.
+    let releaseLease: (() => void) | undefined;
+    if (accountId !== "default" && (ACCOUNT_PROVIDERS as readonly string[]).includes(def.id)) {
         try {
-            return await checkAgentCli(def.id);
+            releaseLease = holdLogin(def.id, accountId);
         } catch (e) {
             process.stderr.write(`${redact((e as Error)?.message ?? String(e))}\n`);
-            return undefined;
+            return LOGIN_EXIT.problem;
         }
-    };
-    let st = await status();
-    if (!st) return LOGIN_EXIT.problem;
-    if (!st.installed) return LOGIN_EXIT.notInstalled;
-    if (st.problem) {
-        process.stderr.write(`${redact(st.problem)}\n`);
-        return LOGIN_EXIT.problem;
     }
-    if (!st.signedIn) {
-        // With no terminal there's nowhere for its link to show or its code to be typed.
-        if (!process.stdin.isTTY) return LOGIN_EXIT.notSignedIn;
-        const command = loginCommand(def.id, "default", { away: true });
-        signingIn = true;
-        const proc = Bun.spawn(command.argv, { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: command.env });
-        await proc.exited;
-        signingIn = false;
-        st = await status();
+    try {
+        const { adoptLoginPath } = await import("../server/login-env");
+        // Found where the server finds it: with what the login shell puts on PATH.
+        await (await adoptLoginPath(paths.loginPath())).answered;
+        const { checkAgentCli } = await import("../backends");
+        // Ctrl+C while the CLI's own sign-in has the terminal is the CLI's to take (it ends, and what it left is looked
+        // at below). At any other moment it stops this, and says so by its exit code: not a connection that was lost.
+        let signingIn = false;
+        process.on("SIGINT", () => {
+            if (!signingIn) {
+                releaseLease?.();
+                process.exit(LOGIN_EXIT.stopped);
+            }
+        });
+        // A check that fails says nothing about whether the CLI is there: its own words are passed on.
+        const status = async () => {
+            try {
+                return await checkAgentCli(def.id, undefined, accountId);
+            } catch (e) {
+                process.stderr.write(`${redact((e as Error)?.message ?? String(e))}\n`);
+                return undefined;
+            }
+        };
+        let st = await status();
         if (!st) return LOGIN_EXIT.problem;
-        if (!st.signedIn) return LOGIN_EXIT.notSignedIn;
+        if (!st.installed) return LOGIN_EXIT.notInstalled;
+        if (st.problem) {
+            process.stderr.write(`${redact(st.problem)}\n`);
+            return LOGIN_EXIT.problem;
+        }
+        if (!st.signedIn) {
+            // With no terminal there's nowhere for its link to show or its code to be typed.
+            if (!process.stdin.isTTY) return LOGIN_EXIT.notSignedIn;
+            const command = loginCommand(def.id, accountId, { away: true });
+            signingIn = true;
+            const proc = Bun.spawn(command.argv, { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: command.env });
+            await proc.exited;
+            signingIn = false;
+            st = await status();
+            if (!st) return LOGIN_EXIT.problem;
+            if (!st.signedIn) return LOGIN_EXIT.notSignedIn;
+        }
+        // The Cavvy running here turns it on itself, so its models are offered at once. With none running (or one from
+        // before it could be asked), it's turned on for the next one to find.
+        const r = await control<{ ok: boolean; error?: string }>("/connect-cli", { provider: def.id, accountId }, 60_000);
+        if (!r) saveAgentConfig(def.id);
+        else if (!r.ok) {
+            process.stderr.write(`${redact(r.error ?? `Couldn't turn ${def.name} on.`)}\n`);
+            return LOGIN_EXIT.problem;
+        }
+        return 0;
+    } finally {
+        releaseLease?.();
     }
-    // The Cavvy running here turns it on itself, so its models are offered at once. With none running (or one from
-    // before it could be asked), it's turned on for the next one to find.
-    const r = await control<{ ok: boolean; error?: string }>("/connect-cli", { provider: def.id }, 60_000);
-    if (!r) saveAgentConfig(def.id);
-    else if (!r.ok) {
-        process.stderr.write(`${redact(r.error ?? `Couldn't turn ${def.name} on.`)}\n`);
-        return LOGIN_EXIT.problem;
-    }
-    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +677,11 @@ export async function hostCommand(args: string[], env: HostRunEnv): Promise<numb
         print(await hostCheck());
         return 0;
     }
-    if (sub === "login") return hostLogin(rest[0]);
+    if (sub === "login") {
+        const accountId = flag("--account") ?? "default";
+        const cliId = rest.find((a, i) => !a.startsWith("-") && rest[i - 1] !== "--account");
+        return hostLogin(cliId, accountId);
+    }
     process.stderr.write(`Usage: ${APP_NAME} host <run|status|pair|revoke|stop|check|login|version>\n\nWhat a server runs for the machines that connect to it. \`${APP_NAME} servers\` on your own machine sets it up.\n`);
     return sub === undefined || sub === "-h" || sub === "--help" ? 0 : 1;
 }
