@@ -111,6 +111,10 @@ function split(p: Partial<SyncStatePayload>): Partial<Record<Group, Record<strin
             g["agents"] = true;
             for (const a of named(p.agents, "id")) g[`a:${a.id}`] = a;
         }
+        if (Array.isArray(p.agentInstances)) {
+            g["instances"] = true;
+            for (const i of named(p.agentInstances, "id")) g[`i:${i.id}`] = i;
+        }
         out.providers = g;
     }
     if (p.includeSecrets === true && isObj(p.apiKeys)) {
@@ -153,6 +157,7 @@ function join_(groups: Partial<Record<Group, Record<string, unknown>>>, keysOn: 
         p.customProviders = of(pr, "c:").map(([, v]) => v) as SyncStatePayload["customProviders"];
         if (pr["vertex"] !== undefined) p.vertex = pr["vertex"] as SyncStatePayload["vertex"];
         if (pr["agents"] === true) p.agents = of(pr, "a:").map(([, v]) => v) as SyncStatePayload["agents"];
+        if (pr["instances"] === true) p.agentInstances = of(pr, "i:").map(([, v]) => v) as SyncStatePayload["agentInstances"];
     }
     if (keysOn) {
         p.includeSecrets = true;

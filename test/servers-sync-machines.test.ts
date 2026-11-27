@@ -196,3 +196,14 @@ test("the last computer signed out for good takes the keys it synced with it", a
         expect(await getKey("openai")).toBeUndefined();
     });
 });
+
+test("a CLI's copies from two computers merge one by one; one goes once neither has it", () => {
+    const store = {};
+    const p = (instances: { id: string; name: string }[]) => ({ customProviders: [], agents: [], agentInstances: instances });
+    mergeSent(store, "a", p([{ id: "claude-code@router", name: "Router" }]), 100);
+    let m = mergeSent(store, "b", p([{ id: "claude-code@work", name: "Work" }]), 200);
+    expect(m.agentInstances?.map((i) => i.id).sort()).toEqual(["claude-code@router", "claude-code@work"]);
+    mergeSent(store, "a", p([]), 300);
+    m = mergeSent(store, "b", p([]), 400);
+    expect(m.agentInstances).toEqual([]);
+});
