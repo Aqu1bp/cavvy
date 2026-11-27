@@ -76,12 +76,15 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     const used = (id: string) => columns().some((c) => listOn(c)?.find((pr) => pr.id === id)?.configured);
     const providers = () => all().filter((pr) => used(pr.id));
     const unused = () => all().filter((pr) => !used(pr.id));
-    /** Accounts beyond Default anywhere: then each account is a row of its own. */
-    const accountsOf = (id: string): { id: string; name: string }[] => {
+    /** The account new sessions use, as this computer says (sync gives the servers the same): on the provider's own row. */
+    const mainOf = (id: string) => (app.providers.find((pr) => pr.id === id) ?? all().find((pr) => pr.id === id))?.agentCli?.defaultAccount ?? "default";
+    /** Its other accounts, on any machine: a row each, under it. */
+    const othersOf = (id: string): { id: string; name: string }[] => {
         const seen = new Map<string, string>();
-        for (const c of columns()) for (const a of listOn(c)?.find((pr) => pr.id === id)?.agentCli?.accounts ?? []) if (!a.invalid && !seen.has(a.id)) seen.set(a.id, a.name);
-        return seen.size > 1 ? [...seen].map(([id, name]) => ({ id, name })) : [];
+        for (const c of columns()) for (const a of listOn(c)?.find((pr) => pr.id === id)?.agentCli?.accounts ?? []) if (!a.invalid && a.id !== mainOf(id) && !seen.has(a.id)) seen.set(a.id, a.name);
+        return [...seen].map(([id, name]) => ({ id, name }));
     };
+    const mainName = (id: string) => app.providers.find((pr) => pr.id === id)?.agentCli?.accounts?.find((a) => a.id === mainOf(id))?.name ?? "Default";
 
     const signIn = (c: Column, pr: ProviderInfo, a: AccountInfo) =>
         terminalActions.loginAccount?.(pr.id, a.id, [pr.name, a.id === "default" ? undefined : a.name, c.server].filter(Boolean).join(" · "), c.server);
@@ -103,13 +106,13 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     };
 
     /** How one account (or a provider with only Default) stands on one machine. */
-    const Cell = (q: { c: Column; id: string; account?: string; head: boolean; split?: boolean }): JSX.Element => {
+    const Cell = (q: { c: Column; id: string; account: string; head: boolean }): JSX.Element => {
         const list = () => listOn(q.c);
         const pr = () => list()?.find((x) => x.id === q.id);
         const cli = () => pr()?.agentCli;
         const account = () => {
             const all = cli()?.accounts ?? [];
-            return q.account ? all.find((a) => a.id === q.account) : all.length <= 1 ? (all[0] ?? { id: "default", name: "Default", folder: "", managed: false }) : undefined;
+            return all.find((a) => a.id === q.account) ?? (q.account === "default" && !all.length ? { id: "default", name: "Default", folder: "", managed: false } : undefined);
         };
         const problem = () => (q.c.server ? far[q.c.server]?.problem : undefined);
         return (
@@ -131,7 +134,6 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                             <button class="btn secondary sm" onClick={() => void turnOn(q.c, pr()!)}>Turn on</button>
                         </Show>
                     </Match>
-                    <Match when={q.head && q.split}><span /></Match>
                     <Match when={account()}>
                         {(a) => (
                             <Switch fallback={<span class="sg-muted" title="Not checked yet" />}>
@@ -159,8 +161,8 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             </div>
             <For each={providers()}>
                 {(pr) => {
-                    const accounts = () => accountsOf(pr.id);
-                    const plan = () => planLabel(app.providers.find((x) => x.id === pr.id)?.agentCli?.accounts?.find((a) => a.id === (pr.agentCli?.defaultAccount ?? "default"))?.plan);
+                    const accounts = () => othersOf(pr.id);
+                    const plan = () => planLabel(app.providers.find((x) => x.id === pr.id)?.agentCli?.accounts?.find((a) => a.id === mainOf(pr.id))?.plan);
                     return (
                         <div class="sg-prov" role="rowgroup">
                             <div class="sg-row" role="row">
@@ -168,8 +170,9 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                                     <span class="prov-logo"><ProviderIcon id={pr.id} name={pr.name} size={18} /></span>
                                     <span class="truncate">{pr.name}</span>
                                     <Show when={plan()}>{(t) => <span class="tag">{t()}</span>}</Show>
+                                    <Show when={accounts().length}><span class="sg-muted truncate">{mainName(pr.id)}</span></Show>
                                 </div>
-                                <For each={columns()}>{(c) => <Cell c={c} id={pr.id} head={true} split={accounts().length > 0} />}</For>
+                                <For each={columns()}>{(c) => <Cell c={c} id={pr.id} account={mainOf(pr.id)} head={true} />}</For>
                             </div>
                             <For each={accounts()}>
                                 {(a) => (
